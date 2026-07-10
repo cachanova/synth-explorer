@@ -1,6 +1,7 @@
 // Typed API client mirroring docs/API.md. All calls go through the /api proxy.
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
+import { parseRetryAfterMs } from './lib/retry'
 import type {
   EndpointsResponse,
   ExamplesResponse,
@@ -18,17 +19,20 @@ import type {
 export class ApiRequestError extends Error {
   status: number
   log?: string
-  constructor(message: string, status: number, log?: string) {
+  retryAfterMs?: number
+  constructor(message: string, status: number, log?: string, retryAfterMs?: number) {
     super(message)
     this.name = 'ApiRequestError'
     this.status = status
     this.log = log
+    this.retryAfterMs = retryAfterMs
   }
 }
 
 async function parseError(res: Response): Promise<ApiRequestError> {
   let message = `${res.status} ${res.statusText}`
   let log: string | undefined
+  const retryAfterMs = parseRetryAfterMs(res.headers.get('Retry-After'))
   try {
     const body = await res.json()
     if (body && typeof body === 'object') {
@@ -38,7 +42,7 @@ async function parseError(res: Response): Promise<ApiRequestError> {
   } catch {
     // non-JSON error body; keep status text
   }
-  return new ApiRequestError(message, res.status, log)
+  return new ApiRequestError(message, res.status, log, retryAfterMs)
 }
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {

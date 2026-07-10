@@ -1,4 +1,5 @@
 import type { DesignFile, Mode, SynthesizeRequest } from '../types'
+import { boundedRetryDelayMs } from './retry'
 import { buildSynthesizeRequest } from './synthesize'
 
 export interface SourceSelection {
@@ -17,6 +18,11 @@ export type SynthesisOrigin = 'manual' | 'automatic'
 
 export interface QueuedSynthesis extends SynthesisInput {
   origin: SynthesisOrigin
+}
+
+export interface AutomaticSynthesisRetry {
+  input: SynthesisInput
+  delayMs: number
 }
 
 // This identity is exact but O(total source bytes). Callers deliberately
@@ -79,6 +85,36 @@ export function clearAutomaticQueuedSynthesis(
   queued: QueuedSynthesis | null,
 ): QueuedSynthesis | null {
   return queued?.origin === 'automatic' ? null : queued
+}
+
+export function shouldRunAutomaticRetry(
+  retry: AutomaticSynthesisRetry,
+  current: SynthesisInput,
+  autoEnabled: boolean,
+  designKey: string | null,
+): boolean {
+  return (
+    autoEnabled &&
+    retry.input.revision === current.revision &&
+    retry.input.key === current.key &&
+    designKey !== current.key
+  )
+}
+
+export function automaticRetryForFailure(
+  input: SynthesisInput,
+  origin: SynthesisOrigin,
+  status: number,
+  retryAfterMs: number | undefined,
+  current: SynthesisInput,
+  autoEnabled: boolean,
+  designKey: string | null,
+): AutomaticSynthesisRetry | null {
+  const retry = { input, delayMs: boundedRetryDelayMs(retryAfterMs) }
+  return origin === 'automatic' && status === 503 &&
+    shouldRunAutomaticRetry(retry, current, autoEnabled, designKey)
+    ? retry
+    : null
 }
 
 export function analysisNeedsRefresh(

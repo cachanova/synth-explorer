@@ -12,11 +12,14 @@ import * as api from './api'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
   analysisNeedsRefresh,
+  automaticRetryForFailure,
   clearAutomaticQueuedSynthesis,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
+  shouldRunAutomaticRetry,
   synthesisInput,
+  type AutomaticSynthesisRetry,
   type QueuedSynthesis,
   type SourceSelection,
   type SynthesisInput,
@@ -243,6 +246,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
   const [autoSynthesize, setAutoSynthesizeState] = useState(true)
   const [error, setError] = useState<Store['error']>(null)
+  const [automaticRetry, setAutomaticRetry] =
+    useState<AutomaticSynthesisRetry | null>(null)
 
   const [activeTab, setActiveTab] = useState<TabId>('overview')
 
@@ -282,10 +287,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   extraArgsRef.current = extraArgs
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
+  const autoSynthesizeRef = useRef(autoSynthesize)
+  autoSynthesizeRef.current = autoSynthesize
   const resolvedInputRef = useRef<SynthesisInput | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
+  const mountedRef = useRef(true)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
 
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
@@ -312,6 +327,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const revision = inputRevisionRef.current + 1
     inputRevisionRef.current = revision
     queuedInputRef.current = null
+    setAutomaticRetry(null)
     setInputRevision(revision)
   }, [])
 
@@ -493,7 +509,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let next: QueuedSynthesis | null = { ...requested, origin }
     try {
       while (next) {
-        const running: SynthesisInput = next
+        const running: QueuedSynthesis = next
         next = null
         queuedInputRef.current = null
         synthesisKeyRef.current = running.key
@@ -503,6 +519,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           setDesign(res)
           setDesignInputKey(running.key)
           designInputKeyRef.current = running.key
+          setAutomaticRetry(null)
           // A source graph tracks the selected lines across synthesis. Other
           // explicit cones remain stable until the user asks to replace them.
           setConeReq((request) =>
@@ -513,6 +530,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           const err = e as api.ApiRequestError
           setError({ message: err.message, log: err.log, status: err.status })
+          if (
+            running.origin === 'automatic' &&
+            err.status === 503 &&
+            mountedRef.current
+          ) {
+            const retry = automaticRetryForFailure(
+              running,
+              running.origin,
+              err.status,
+              err.retryAfterMs,
+              materializeCurrentInput(),
+              autoSynthesizeRef.current,
+              designInputKeyRef.current,
+            )
+            if (retry) setAutomaticRetry(retry)
+          }
           // Preserve the last valid design and graph. Their input key remains
           // unchanged, so source cross-probing stays disabled while stale.
         }
@@ -538,9 +571,45 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [requestSynthesis],
   )
 
+  useEffect(() => {
+    if (!automaticRetry || !autoSynthesize) return
+    const timer = window.setTimeout(() => {
+      if (!mountedRef.current) return
+      const current = materializeCurrentInput()
+      if (
+        !shouldRunAutomaticRetry(
+          automaticRetry,
+          current,
+          autoSynthesizeRef.current,
+          designInputKeyRef.current,
+        )
+      ) {
+        setAutomaticRetry(null)
+        return
+      }
+
+      // A manual request for this exact input has priority. Keep one timer
+      // armed until it completes; success clears the retry, while failure
+      // leaves the original automatic retry eligible.
+      if (
+        synthesisRunningRef.current &&
+        synthesisKeyRef.current === automaticRetry.input.key
+      ) {
+        setAutomaticRetry({ ...automaticRetry })
+        return
+      }
+
+      setAutomaticRetry(null)
+      void requestSynthesis('automatic')
+    }, automaticRetry.delayMs)
+    return () => window.clearTimeout(timer)
+  }, [automaticRetry, autoSynthesize, materializeCurrentInput, requestSynthesis])
+
   const setAutoSynthesize = useCallback((enabled: boolean) => {
+    autoSynthesizeRef.current = enabled
     if (!enabled) {
       queuedInputRef.current = clearAutomaticQueuedSynthesis(queuedInputRef.current)
+      setAutomaticRetry(null)
     }
     setAutoSynthesizeState(enabled)
   }, [])

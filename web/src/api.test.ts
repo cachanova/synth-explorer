@@ -1,8 +1,48 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getLineCone, getNetlist } from './api'
+import { getLineCone, getNetlist, synthesize } from './api'
+import {
+  MAX_RETRY_DELAY_MS,
+  MIN_RETRY_DELAY_MS,
+  parseRetryAfterMs,
+} from './lib/retry'
 
 afterEach(() => {
   vi.unstubAllGlobals()
+})
+
+describe('Retry-After handling', () => {
+  it('exposes the bounded server delay on synthesis errors', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'synthesis capacity exhausted' }), {
+          status: 503,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': '5',
+          },
+        }),
+      ),
+    )
+
+    await expect(
+      synthesize({ files: [{ name: 'top.sv', content: 'module top; endmodule' }], mode: 'gates' }),
+    ).rejects.toMatchObject({
+      status: 503,
+      retryAfterMs: 5_000,
+      message: 'synthesis capacity exhausted',
+    })
+  })
+
+  it('rejects invalid values and bounds zero or excessive delays', () => {
+    expect(parseRetryAfterMs(null)).toBeUndefined()
+    expect(parseRetryAfterMs('')).toBeUndefined()
+    expect(parseRetryAfterMs('-1')).toBeUndefined()
+    expect(parseRetryAfterMs('1.5')).toBeUndefined()
+    expect(parseRetryAfterMs('Wed, 21 Oct 2015 07:28:00 GMT')).toBeUndefined()
+    expect(parseRetryAfterMs('0')).toBe(MIN_RETRY_DELAY_MS)
+    expect(parseRetryAfterMs('999999999999')).toBe(MAX_RETRY_DELAY_MS)
+  })
 })
 
 describe('getLineCone', () => {

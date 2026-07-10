@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
   analysisNeedsRefresh,
+  automaticRetryForFailure,
   clearAutomaticQueuedSynthesis,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
+  shouldRunAutomaticRetry,
   synthesisInput,
 } from './lib/liveAnalysis'
 import { buildSynthesizeRequest } from './lib/synthesize'
@@ -158,5 +160,46 @@ describe('latest-only synthesis queue', () => {
       analysisNeedsRefresh(current.key, current.key, obsoleteRunning.key),
     ).toBe(true)
     expect(analysisNeedsRefresh(current.key, current.key, current.key)).toBe(false)
+  })
+})
+
+describe('automatic synthesis retry', () => {
+  const input = (content: string, revision: number) =>
+    synthesisInput([{ name: 'top.sv', content }], 'top', 'gates', '', revision)
+
+  it('retries only the same stale automatic input after a 503', () => {
+    const failed = input('A', 2)
+    const retry = automaticRetryForFailure(
+      failed,
+      'automatic',
+      503,
+      7_000,
+      failed,
+      true,
+      'older-design',
+    )
+
+    expect(retry).toEqual({ input: failed, delayMs: 7_000 })
+    expect(shouldRunAutomaticRetry(retry!, failed, true, 'older-design')).toBe(true)
+    expect(automaticRetryForFailure(failed, 'manual', 503, 7_000, failed, true, null)).toBeNull()
+    expect(automaticRetryForFailure(failed, 'automatic', 500, 7_000, failed, true, null)).toBeNull()
+  })
+
+  it('uses a conservative bounded fallback when Retry-After is absent', () => {
+    const failed = input('A', 2)
+    expect(
+      automaticRetryForFailure(failed, 'automatic', 503, undefined, failed, true, null)
+        ?.delayMs,
+    ).toBe(5_000)
+  })
+
+  it('rejects retries after edits, replacement, pause, or a current design', () => {
+    const failed = input('A', 2)
+    const retry = { input: failed, delayMs: 5_000 }
+
+    expect(shouldRunAutomaticRetry(retry, input('B', 3), true, null)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, input('A', 3), true, null)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, failed, false, null)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, failed, true, failed.key)).toBe(false)
   })
 })
