@@ -12,6 +12,12 @@ export interface SynthesisInput {
   revision: number
 }
 
+export type SynthesisOrigin = 'manual' | 'automatic'
+
+export interface QueuedSynthesis extends SynthesisInput {
+  origin: SynthesisOrigin
+}
+
 // This identity is exact but O(total source bytes). Callers deliberately
 // materialize it only for a manual or debounced synthesis, never per edit.
 export function synthesisInput(
@@ -46,9 +52,9 @@ export function normalizeSourceSelection(
  * normal idle debounce decides whether the replacement should be enqueued.
  */
 export function retainQueuedSynthesis(
-  queued: SynthesisInput | null,
+  queued: QueuedSynthesis | null,
   currentRevision: number,
-): SynthesisInput | null {
+): QueuedSynthesis | null {
   return queued?.revision === currentRevision ? queued : null
 }
 
@@ -56,8 +62,27 @@ export function retainQueuedSynthesis(
 export function queuedSynthesisForRequest(
   runningKey: string | null,
   requested: SynthesisInput,
-): SynthesisInput | null {
-  return runningKey === requested.key ? null : requested
+  origin: SynthesisOrigin,
+  queued: QueuedSynthesis | null = null,
+): QueuedSynthesis | null {
+  if (runningKey === requested.key) return null
+  // An automatic request for the same input must not downgrade work that the
+  // user explicitly queued. This lets pausing auto synthesis preserve it.
+  if (
+    origin === 'automatic' &&
+    queued?.origin === 'manual' &&
+    queued.key === requested.key
+  ) {
+    return queued
+  }
+  return { ...requested, origin }
+}
+
+/** Pausing auto synthesis cancels only idle-triggered work that has not started. */
+export function clearAutomaticQueuedSynthesis(
+  queued: QueuedSynthesis | null,
+): QueuedSynthesis | null {
+  return queued?.origin === 'automatic' ? null : queued
 }
 
 export function analysisNeedsRefresh(

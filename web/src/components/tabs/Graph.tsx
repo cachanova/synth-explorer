@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
+import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { parseSrc } from '../../lib/src'
 import { controlLabel } from '../../lib/symbols'
@@ -9,12 +10,25 @@ import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
+interface FetchedSubgraph {
+  designId: string
+  requestKey: string
+  graph: Subgraph
+}
+
+interface DisplayedGraph {
+  designId: string
+  requestKey: string
+  subgraph: Subgraph
+  graph: LaidOutGraph
+}
+
 export function Graph({ active }: { active: boolean }) {
   const store = useStore()
   const { analysisState, design, coneReq, graphOptions } = store
 
-  const [sub, setSub] = useState<Subgraph | null>(null)
-  const [laid, setLaid] = useState<LaidOutGraph | null>(null)
+  const [fetchedSubgraph, setFetchedSubgraph] = useState<FetchedSubgraph | null>(null)
+  const [displayedGraph, setDisplayedGraph] = useState<DisplayedGraph | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
@@ -43,15 +57,16 @@ export function Graph({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return
     if (!design || !coneReq) {
-      setSub(null)
-      setLaid(null)
+      setFetchedSubgraph(null)
+      setDisplayedGraph(null)
       loadedRequestKey.current = null
       laidOutSubgraph.current = null
       return
     }
     if (analysisState !== 'current') return
     if (requestDesignMismatch) return
-    const requestKey = `${design.design_id}|${coneReq.nonce}|${optsKey}`
+    const requestDesignId = design.design_id
+    const requestKey = `${requestDesignId}|${coneReq.nonce}|${optsKey}`
     if (loadedRequestKey.current === requestKey) return
 
     const myReq = ++reqSeq.current
@@ -64,7 +79,7 @@ export function Graph({ active }: { active: boolean }) {
     const fetchP =
       coneReq.kind === 'netlist'
         ? getNetlist(
-            design.design_id,
+            requestDesignId,
             graphOptions.maxNodes,
             graphOptions.showInfrastructure,
             controller.signal,
@@ -74,7 +89,7 @@ export function Graph({ active }: { active: boolean }) {
             control: false,
           }))
         : coneReq.kind === 'source'
-          ? getLineCone(design.design_id, {
+          ? getLineCone(requestDesignId, {
               file: coneReq.file,
               start_line: coneReq.startLine,
               end_line: coneReq.endLine,
@@ -87,7 +102,7 @@ export function Graph({ active }: { active: boolean }) {
               status: response.status,
               control: response.control,
             }))
-          : getCone(design.design_id, {
+          : getCone(requestDesignId, {
               node: coneReq.node,
               dir: coneReq.dir,
               max_depth: graphOptions.maxDepth,
@@ -109,7 +124,7 @@ export function Graph({ active }: { active: boolean }) {
         // An unmapped/absorbed selection is information about the source, not
         // a request to erase the user's last meaningful schematic.
         if (status == null || status === 'mapped') {
-          setSub(graph)
+          setFetchedSubgraph({ designId: requestDesignId, requestKey, graph })
           if (status === 'mapped') setSelected(null)
         }
         else setLoading(false)
@@ -117,10 +132,6 @@ export function Graph({ active }: { active: boolean }) {
       .catch((e) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         setError(e instanceof ApiRequestError ? e.message : String(e))
-        if (coneReq.kind !== 'source') {
-          setSub(null)
-          setLaid(null)
-        }
         setLoading(false)
       })
     return () => controller.abort()
@@ -130,27 +141,28 @@ export function Graph({ active }: { active: boolean }) {
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
     if (!active) return
-    if (!sub) {
-      setLaid(null)
-      laidOutSubgraph.current = null
-      return
-    }
-    if (laidOutSubgraph.current === sub) return
+    if (!fetchedSubgraph) return
+    if (laidOutSubgraph.current === fetchedSubgraph.graph) return
+    const result = fetchedSubgraph
     let cancelled = false
     const controller = new AbortController()
     setLoading(true)
-    layoutSubgraph(sub, controller.signal)
+    layoutSubgraph(result.graph, controller.signal)
       .then((g) => {
         if (cancelled) return
-        setLaid(g)
-        laidOutSubgraph.current = sub
+        setDisplayedGraph({
+          designId: result.designId,
+          requestKey: result.requestKey,
+          subgraph: result.graph,
+          graph: g,
+        })
+        laidOutSubgraph.current = result.graph
         setLoading(false)
         setFitNonce((n) => n + 1)
       })
       .catch((e) => {
         if (cancelled || controller.signal.aborted) return
         setError(String(e instanceof Error ? e.message : e))
-        setLaid(null)
         laidOutSubgraph.current = null
         setLoading(false)
       })
@@ -158,7 +170,16 @@ export function Graph({ active }: { active: boolean }) {
       cancelled = true
       controller.abort()
     }
-  }, [active, sub])
+  }, [active, fetchedSubgraph])
+
+  const sub = displayedGraph?.subgraph ?? null
+  const laid = displayedGraph?.graph ?? null
+  const displayedDesignCurrent = isDisplayedDesignCurrent(
+    design?.design_id,
+    displayedGraph?.designId,
+  )
+  const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
+  const graphInteractive = analysisState === 'current' && displayedDesignCurrent
 
   const highlight = useMemo(
     () =>
@@ -193,22 +214,22 @@ export function Graph({ active }: { active: boolean }) {
 
   return (
     <div className="graph-tab">
-      <GraphToolbar />
+      <GraphToolbar graphInteractive={graphInteractive} />
       <div className="graph-stage-wrap" style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
         {laid && laid.nodes.length > 0 ? (
           <GraphView
             graph={laid}
             rootId={rootId}
             highlight={highlight}
-            selectedId={selected?.id ?? null}
+            selectedId={graphInteractive ? (selected?.id ?? null) : null}
+            interactive={graphInteractive}
             onSelect={(node) => {
+              if (!graphInteractive) return
               setSelected(node)
-              if (analysisState === 'current' && !requestDesignMismatch) {
-                store.highlightSources(parseSrc(node?.src))
-              }
+              store.highlightSources(parseSrc(node?.src))
             }}
             onControlSelect={
-              analysisState === 'current' && !requestDesignMismatch
+              graphInteractive
                 ? (control) =>
                     store.openControlCone({
                       node: control.driver_id,
@@ -250,10 +271,13 @@ export function Graph({ active }: { active: boolean }) {
           {analysisState === 'error' && (
             <span className="msg err">analysis is stale; the last synthesis failed</span>
           )}
-          {requestDesignMismatch && (
+          {displayedDesignMismatch && (
             <span className="msg">
-              showing a cone from the previous synthesis — select a fresh endpoint or path
+              showing a graph snapshot from the previous synthesis — interactions are disabled
             </span>
+          )}
+          {requestDesignMismatch && !displayedDesignMismatch && (
+            <span className="msg">this cone belongs to the previous synthesis</span>
           )}
           {sourceStatus === 'optimized_or_absorbed' && (
             <span className="msg">
@@ -276,8 +300,8 @@ export function Graph({ active }: { active: boolean }) {
           )}
           {sub?.truncated && (
             <span className="msg">
-              truncated — {sub.nodes.length} nodes shown (raise max-depth / max-nodes to
-              see more, up to {MAX_GRAPH_RENDER_NODES})
+              truncated — {sub.nodes.length} nodes and {sub.edges.length} edges shown;
+              analysis limits omitted additional graph content
             </span>
           )}
           {sub && !sub.truncated && (
@@ -285,7 +309,7 @@ export function Graph({ active }: { active: boolean }) {
           )}
         </div>
 
-        {selected && analysisState === 'current' && !requestDesignMismatch && (
+        {selected && graphInteractive && (
           <NodeCard
             node={selected}
             drivingNet={selectedNet}
@@ -297,7 +321,7 @@ export function Graph({ active }: { active: boolean }) {
   )
 }
 
-function GraphToolbar() {
+function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
   const store = useStore()
   const { coneReq, design, graphOptions } = store
   const requestDesignMismatch = Boolean(
@@ -322,14 +346,14 @@ function GraphToolbar() {
           <div className="stepper" title="Cone direction">
             <button
               className={coneReq.dir === 'fanin' ? 'primary' : ''}
-              disabled={requestDesignMismatch}
+              disabled={requestDesignMismatch || !graphInteractive}
               onClick={() => reissue('fanin')}
             >
               fanin
             </button>
             <button
               className={coneReq.dir === 'fanout' ? 'primary' : ''}
-              disabled={requestDesignMismatch}
+              disabled={requestDesignMismatch || !graphInteractive}
               onClick={() => reissue('fanout')}
             >
               fanout

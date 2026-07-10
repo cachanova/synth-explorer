@@ -63,6 +63,14 @@ function SlotCard({
   onTake: () => void
 }) {
   const store = useStore()
+  const canSnapshot = Boolean(store.design) && store.analysisState === 'current'
+  const snapshotTitle = !store.design
+    ? 'Synthesize first'
+    : store.analysisState === 'refreshing'
+      ? 'Wait for synthesis to finish'
+      : store.analysisState === 'current'
+        ? 'Snapshot current design'
+        : 'Synthesize the current source before taking a snapshot'
   return (
     <div className="cmp-slot">
       <h4>Snapshot {slot}</h4>
@@ -87,9 +95,9 @@ function SlotCard({
       <button
         type="button"
         style={{ marginTop: 8 }}
-        disabled={!store.design}
+        disabled={!canSnapshot}
         onClick={onTake}
-        title={store.design ? 'Snapshot current design' : 'Synthesize first'}
+        title={snapshotTitle}
       >
         {snap ? 'Re-snapshot current' : `Snapshot as ${slot}`}
       </button>

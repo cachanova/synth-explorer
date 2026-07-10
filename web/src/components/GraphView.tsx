@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   panViewport,
   viewportTransformAttribute,
@@ -31,6 +31,7 @@ interface Props {
   rootId: number
   highlight: Set<number>
   selectedId: number | null
+  interactive: boolean
   onSelect: (node: GraphNode | null) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
@@ -372,11 +373,115 @@ function ControlLabels({
   )
 }
 
+interface SchematicNodeProps {
+  laidOutNode: LaidOutNode
+  rootId: number
+  highlighted: boolean
+  selected: boolean
+  portDirection: PortDirection
+  drivingNet?: string
+  pins: NodePins
+  interactive: boolean
+  suppressClick: { current: boolean }
+  onSelect: (node: GraphNode | null) => void
+  onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+}
+
+// Hover state belongs to one node, so revealing pin labels never reconciles
+// the parent GraphView's thousands of nodes and edges.
+const SchematicNode = memo(function SchematicNode({
+  laidOutNode,
+  rootId,
+  highlighted,
+  selected,
+  portDirection,
+  drivingNet,
+  pins,
+  interactive,
+  suppressClick,
+  onSelect,
+  onControlSelect,
+}: SchematicNodeProps) {
+  const [hovered, setHovered] = useState(false)
+  const [focused, setFocused] = useState(false)
+  const node = laidOutNode.node
+  const kind = symbolKind(node, portDirection)
+  const visual = nodeVisual(node, kind, rootId, highlighted)
+  const name = nodeSublabel(node, drivingNet)
+  const controls = controlsFor(node)
+  const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
+  const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
+  const showPins = (selected || hovered || focused) && node.kind !== 'port'
+  const title = name && name !== nodeLabel(node)
+    ? `${nodeLabel(node)} — ${name}`
+    : nodeLabel(node)
+
+  return (
+    <g
+      transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
+      className={`g-node-body g-symbol-${kind}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? title : undefined}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onFocus={interactive ? () => setFocused(true) : undefined}
+      onBlur={interactive ? () => setFocused(false) : undefined}
+      onClick={interactive ? (event) => {
+        event.stopPropagation()
+        if (suppressClick.current) {
+          suppressClick.current = false
+          return
+        }
+        onSelect(node)
+      } : undefined}
+      onKeyDown={interactive ? (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        onSelect(node)
+      } : undefined}
+    >
+      <title>{title}</title>
+      <SchematicOutline
+        node={node}
+        kind={kind}
+        width={laidOutNode.width}
+        height={laidOutNode.height}
+        visual={visual}
+        strokeWidth={strokeWidth}
+      />
+      <NodeContents
+        node={node}
+        kind={kind}
+        width={laidOutNode.width}
+        height={bodyHeight}
+        name={name}
+      />
+      {showPins && (
+        <PinLabels
+          pins={pins}
+          width={laidOutNode.width}
+          height={bodyHeight}
+        />
+      )}
+      {controls.length > 0 && (
+        <ControlLabels
+          node={node}
+          width={laidOutNode.width}
+          startY={bodyHeight}
+          onSelect={interactive ? onControlSelect : undefined}
+        />
+      )}
+    </g>
+  )
+})
+
 export function GraphView({
   graph,
   rootId,
   highlight,
   selectedId,
+  interactive,
   onSelect,
   onControlSelect,
   active,
@@ -386,7 +491,6 @@ export function GraphView({
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
   const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
-  const [hoveredId, setHoveredId] = useState<number | null>(null)
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
   const panState = useRef<PanState | null>(null)
   const suppressClick = useRef(false)
@@ -598,7 +702,7 @@ export function GraphView({
             suppressClick.current = false
             return
           }
-          if (event.target === event.currentTarget) onSelect(null)
+          if (interactive && event.target === event.currentTarget) onSelect(null)
         }}
       >
         <defs>
@@ -657,84 +761,22 @@ export function GraphView({
             )
           })}
 
-          {graph.nodes.map((laidOutNode) => {
-            const node = laidOutNode.node
-            const portDirection = metadata.portDirection.get(node.id) ?? 'input'
-            const kind = symbolKind(node, portDirection)
-            const highlighted = highlight.has(node.id)
-            const visual = nodeVisual(node, kind, rootId, highlighted)
-            const selected = node.id === selectedId
-            const hovered = node.id === hoveredId
-            const name = nodeSublabel(node, metadata.drivingNet.get(node.id))
-            const pins = metadata.pinsById.get(node.id) ?? { incoming: [], outgoing: [] }
-            const controls = controlsFor(node)
-            const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
-            const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
-            const showPins = (selected || hovered) && node.kind !== 'port'
-            const title = name && name !== nodeLabel(node)
-              ? `${nodeLabel(node)} — ${name}`
-              : nodeLabel(node)
-
-            return (
-              <g
-                key={node.id}
-                transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
-                className={`g-node-body g-symbol-${kind}${selected ? ' selected' : ''}`}
-                role="button"
-                tabIndex={0}
-                aria-label={title}
-                onPointerEnter={() => setHoveredId(node.id)}
-                onPointerLeave={() => setHoveredId((current) => current === node.id ? null : current)}
-                onFocus={() => setHoveredId(node.id)}
-                onBlur={() => setHoveredId((current) => current === node.id ? null : current)}
-                onClick={(event) => {
-                  event.stopPropagation()
-                  if (suppressClick.current) {
-                    suppressClick.current = false
-                    return
-                  }
-                  onSelect(node)
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' && event.key !== ' ') return
-                  event.preventDefault()
-                  onSelect(node)
-                }}
-              >
-                <title>{title}</title>
-                <SchematicOutline
-                  node={node}
-                  kind={kind}
-                  width={laidOutNode.width}
-                  height={laidOutNode.height}
-                  visual={visual}
-                  strokeWidth={strokeWidth}
-                />
-                <NodeContents
-                  node={node}
-                  kind={kind}
-                  width={laidOutNode.width}
-                  height={bodyHeight}
-                  name={name}
-                />
-                {showPins && (
-                  <PinLabels
-                    pins={pins}
-                    width={laidOutNode.width}
-                    height={bodyHeight}
-                  />
-                )}
-                {controls.length > 0 && (
-                  <ControlLabels
-                    node={node}
-                    width={laidOutNode.width}
-                    startY={bodyHeight}
-                    onSelect={onControlSelect}
-                  />
-                )}
-              </g>
-            )
-          })}
+          {graph.nodes.map((laidOutNode) => (
+            <SchematicNode
+              key={laidOutNode.id}
+              laidOutNode={laidOutNode}
+              rootId={rootId}
+              highlighted={highlight.has(laidOutNode.id)}
+              selected={laidOutNode.id === selectedId}
+              portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
+              drivingNet={metadata.drivingNet.get(laidOutNode.id)}
+              pins={metadata.pinsById.get(laidOutNode.id) ?? { incoming: [], outgoing: [] }}
+              interactive={interactive}
+              suppressClick={suppressClick}
+              onSelect={onSelect}
+              onControlSelect={onControlSelect}
+            />
+          ))}
         </g>
       </svg>
 

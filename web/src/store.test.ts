@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   analysisNeedsRefresh,
+  clearAutomaticQueuedSynthesis,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
@@ -79,24 +80,30 @@ describe('latest-only synthesis queue', () => {
     const running = input('A', 1)
     const newest = input('C', 3)
 
-    expect(queuedSynthesisForRequest(running.key, newest)).toBe(newest)
+    expect(queuedSynthesisForRequest(running.key, newest, 'automatic')).toEqual({
+      ...newest,
+      origin: 'automatic',
+    })
   })
 
   it('discards a queued edit when the current input reverts to the running input', () => {
     const running = input('A', 1)
     const obsolete = input('B', 2)
+    const queued = queuedSynthesisForRequest(running.key, obsolete, 'automatic')
 
-    expect(retainQueuedSynthesis(obsolete, running.revision)).toBeNull()
-    expect(retainQueuedSynthesis(obsolete, obsolete.revision)).toBe(obsolete)
-    expect(queuedSynthesisForRequest(running.key, running)).toBeNull()
+    expect(retainQueuedSynthesis(queued, running.revision)).toBeNull()
+    expect(retainQueuedSynthesis(queued, obsolete.revision)).toBe(queued)
+    expect(queuedSynthesisForRequest(running.key, running, 'automatic')).toBeNull()
   })
 
   it('discards a queued input when a newer edit is still inside the idle window', () => {
-    const queued = input('B', 2)
+    const inputB = input('B', 2)
     const current = input('C', 3)
+    const queued = queuedSynthesisForRequest('running', inputB, 'automatic')
+    const currentQueue = queuedSynthesisForRequest('running', current, 'automatic')
 
     expect(retainQueuedSynthesis(queued, current.revision)).toBeNull()
-    expect(retainQueuedSynthesis(current, current.revision)).toBe(current)
+    expect(retainQueuedSynthesis(currentQueue, current.revision)).toBe(currentQueue)
   })
 
   it('does not queue an exact revert to the running request', () => {
@@ -115,7 +122,26 @@ describe('latest-only synthesis queue', () => {
       3,
     )
 
-    expect(queuedSynthesisForRequest(running.key, reverted)).toBeNull()
+    expect(queuedSynthesisForRequest(running.key, reverted, 'automatic')).toBeNull()
+    expect(analysisNeedsRefresh(reverted.key, running.key, null)).toBe(false)
+  })
+
+  it('pausing clears an automatic queued request but preserves a manual one', () => {
+    const requested = input('B', 2)
+    const automatic = queuedSynthesisForRequest('running', requested, 'automatic')
+    const manual = queuedSynthesisForRequest('running', requested, 'manual')
+
+    expect(clearAutomaticQueuedSynthesis(automatic)).toBeNull()
+    expect(clearAutomaticQueuedSynthesis(manual)).toBe(manual)
+  })
+
+  it('does not let an automatic request downgrade the same manual queue entry', () => {
+    const requested = input('B', 2)
+    const manual = queuedSynthesisForRequest('running', requested, 'manual')
+
+    expect(
+      queuedSynthesisForRequest('running', requested, 'automatic', manual),
+    ).toBe(manual)
   })
 
   it('refreshes when an obsolete request is running even if the last design matches', () => {

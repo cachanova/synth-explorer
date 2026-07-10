@@ -217,6 +217,13 @@ export interface NodesResponse {
 export interface SourceMapResponse {
   files: string[] // filenames as submitted
   by_line: Record<string, number[]> // "file.sv:12" -> node ids
+  ranges: {
+    file: string
+    start_line: number
+    end_line: number
+    node_ids: number[]
+  }[]
+  truncated: boolean
 }
 
 // --- GET /api/examples ---

@@ -791,6 +791,9 @@ table.grid tr.expanded td {
   cursor: pointer;
   outline: none;
 }
+.g-node-body.noninteractive {
+  cursor: inherit;
+}
 .g-node-body:focus-visible .g-symbol-outline {
   filter: drop-shadow(0 0 3px var(--accent));
 }

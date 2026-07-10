@@ -12,12 +12,15 @@ import * as api from './api'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
   analysisNeedsRefresh,
+  clearAutomaticQueuedSynthesis,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
   synthesisInput,
+  type QueuedSynthesis,
   type SourceSelection,
   type SynthesisInput,
+  type SynthesisOrigin,
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
 import type { SrcSpan } from './lib/src'
@@ -238,7 +241,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [synthesizing, setSynthesizing] = useState(false)
   const [design, setDesign] = useState<SynthesizeResponse | null>(null)
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
-  const [autoSynthesize, setAutoSynthesize] = useState(true)
+  const [autoSynthesize, setAutoSynthesizeState] = useState(true)
   const [error, setError] = useState<Store['error']>(null)
 
   const [activeTab, setActiveTab] = useState<TabId>('overview')
@@ -282,7 +285,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const resolvedInputRef = useRef<SynthesisInput | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
-  const queuedInputRef = useRef<SynthesisInput | null>(null)
+  const queuedInputRef = useRef<QueuedSynthesis | null>(null)
 
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
@@ -469,7 +472,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [markInputChanged],
   )
 
-  const synthesize = useCallback(async () => {
+  const requestSynthesis = useCallback(async (origin: SynthesisOrigin) => {
     // Materializing the full request (and JSON-keying source content) happens
     // only on manual synthesis or after the idle debounce, never per keystroke.
     const requested = materializeCurrentInput()
@@ -479,13 +482,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queuedInputRef.current = queuedSynthesisForRequest(
         synthesisKeyRef.current,
         requested,
+        origin,
+        queuedInputRef.current,
       )
       return
     }
 
     synthesisRunningRef.current = true
     setSynthesizing(true)
-    let next: SynthesisInput | null = requested
+    let next: QueuedSynthesis | null = { ...requested, origin }
     try {
       while (next) {
         const running: SynthesisInput = next
@@ -515,7 +520,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // The ref may be replaced by another invocation while the request is
         // awaiting; TypeScript cannot observe that asynchronous mutation.
         const queued = retainQueuedSynthesis(
-          queuedInputRef.current as SynthesisInput | null,
+          queuedInputRef.current as QueuedSynthesis | null,
           inputRevisionRef.current,
         )
         queuedInputRef.current = queued
@@ -528,6 +533,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [materializeCurrentInput])
 
+  const synthesize = useCallback(
+    () => requestSynthesis('manual'),
+    [requestSynthesis],
+  )
+
+  const setAutoSynthesize = useCallback((enabled: boolean) => {
+    if (!enabled) {
+      queuedInputRef.current = clearAutomaticQueuedSynthesis(queuedInputRef.current)
+    }
+    setAutoSynthesizeState(enabled)
+  }, [])
+
   // Source/top/mode/argument/example changes make the prior analysis stale.
   // Cursor movement is deliberately absent from this dependency list.
   useEffect(() => {
@@ -535,21 +552,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queuedInputRef.current,
       inputRevision,
     )
-    if (!autoSynthesize) return
     const timer = window.setTimeout(() => {
       const current = materializeCurrentInput()
       if (
+        autoSynthesize &&
         analysisNeedsRefresh(
           current.key,
           designInputKeyRef.current,
           synthesisRunningRef.current ? synthesisKeyRef.current : null,
         )
       ) {
-        void synthesize()
+        void requestSynthesis('automatic')
       }
     }, AUTO_SYNTH_DELAY_MS)
     return () => window.clearTimeout(timer)
-  }, [autoSynthesize, inputRevision, materializeCurrentInput, synthesize])
+  }, [autoSynthesize, inputRevision, materializeCurrentInput, requestSynthesis])
 
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
     setGraphOptionsState((o) => ({ ...o, ...patch }))
@@ -673,17 +690,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const takeSnapshot = useCallback(
     async (slot: 'A' | 'B') => {
-      if (!design) return
+      if (analysisStateRef.current !== 'current') return
+      const currentDesign = designRef.current
+      if (!currentDesign) return
       try {
         const [paths, fanout] = await Promise.all([
-          api.getPaths(design.design_id, { limit: 10 }),
-          api.getFanout(design.design_id, 10),
+          api.getPaths(currentDesign.design_id, { limit: 10 }),
+          api.getFanout(currentDesign.design_id, 10),
         ])
+        if (
+          analysisStateRef.current !== 'current' ||
+          designRef.current?.design_id !== currentDesign.design_id
+        ) {
+          return
+        }
         const snap: Snapshot = {
-          design_id: design.design_id,
-          top: design.top,
-          mode: design.mode,
-          stats: design.stats,
+          design_id: currentDesign.design_id,
+          top: currentDesign.top,
+          mode: currentDesign.mode,
+          stats: currentDesign.stats,
           paths: paths.paths,
           fanout: fanout.drivers,
         }
@@ -694,7 +719,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setError({ message: err.message, log: err.log, status: err.status })
       }
     },
-    [design],
+    [],
   )
 
   const value = useMemo<Store>(
@@ -758,6 +783,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       design,
       analysisState,
       autoSynthesize,
+      setAutoSynthesize,
       error,
       synthesize,
       activeTab,
