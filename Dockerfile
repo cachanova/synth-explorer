@@ -7,7 +7,7 @@ RUN npm ci --ignore-scripts
 COPY web/ ./
 RUN npm run build
 
-FROM --platform=linux/amd64 rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS server-builder
+FROM --platform=linux/amd64 rust:1.97.0-bookworm@sha256:7d0723df719e7f213b69dc7c8c595985c3f4b060cfbee4f7bc0e347a86fe3b6a AS server-builder
 WORKDIR /build/server
 COPY server/Cargo.toml server/Cargo.lock ./
 COPY server/src ./src
