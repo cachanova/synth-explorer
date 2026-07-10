@@ -88,6 +88,13 @@ export function Graph() {
   )
   const rootId = coneReq?.netlist ? -1 : coneReq?.node ?? -1
 
+  // Net driven by the selected node (first outgoing edge) — lets the detail
+  // card show a readable identity for hidden-name cells.
+  const selectedNet = useMemo(() => {
+    if (!sub || !selected) return null
+    return sub.edges.find((e) => e.from === selected.id)?.net_name ?? null
+  }, [sub, selected])
+
   if (!design) return <div className="empty-state">No design yet.</div>
   if (!coneReq)
     return (
@@ -145,7 +152,13 @@ export function Graph() {
           )}
         </div>
 
-        {selected && <NodeCard node={selected} onClose={() => setSelected(null)} />}
+        {selected && (
+          <NodeCard
+            node={selected}
+            drivingNet={selectedNet}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
     </div>
   )

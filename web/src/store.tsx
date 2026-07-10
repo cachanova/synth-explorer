@@ -9,6 +9,7 @@ import {
 } from 'react'
 import * as api from './api'
 import { createLatestGuard } from './lib/latest'
+import { displayNodeName } from './lib/prettyType'
 import type { SrcSpan } from './lib/src'
 import type {
   DesignFile,
@@ -299,7 +300,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setConeReq({
       node: path.endpoint.id,
       dir: 'fanin',
-      label: `Path → ${path.endpoint.name} (depth ${path.depth})`,
+      label: `Path → ${displayNodeName(path.endpoint)} (depth ${path.depth})`,
       highlight: path.nodes.map((n) => n.id),
       netlist: false,
       nonce: nextNonce(),

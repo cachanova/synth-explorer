@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { getPaths } from '../../api'
 import { useDesignData } from '../../lib/useDesignData'
-import { prettyCellType } from '../../lib/prettyType'
+import { displayCellType, displayNodeName, nodeSublabel } from '../../lib/prettyType'
 import { useStore } from '../../store'
 import type { NodeRef, TimingPath } from '../../types'
 import { SrcLink } from '../SrcLink'
@@ -77,9 +77,9 @@ function PathRow({
         <td className="num">
           <span className="depth-chip">{p.depth}</span>
         </td>
-        <td className="mono">{p.startpoint.name}</td>
+        <td className="mono">{displayNodeName(p.startpoint)}</td>
         <td className="mono">
-          {p.endpoint.name}
+          {displayNodeName(p.endpoint)}
           <span className="faint"> ·{p.endpoint_port}</span>
         </td>
         <td>
@@ -110,16 +110,28 @@ function PathRow({
 
 function Hop({ n, last }: { n: NodeRef; last: boolean }) {
   const label =
-    n.kind === 'cell' ? prettyCellType(n.cell_type) : n.kind === 'port' ? 'PORT' : 'CONST'
+    n.kind === 'cell'
+      ? displayCellType(n.cell_type)
+      : n.kind === 'port'
+        ? 'PORT'
+        : 'CONST'
+  // Hidden names have nothing readable to add under the type; real names and
+  // src links keep the sublabel row.
+  const name = nodeSublabel(n)
   return (
     <>
-      <span className={`hop${n.seq ? ' seq' : ''}`}>
+      <span
+        className={`hop${n.seq ? ' seq' : ''}`}
+        title={n.cell_type ? `yosys type: ${n.cell_type}` : undefined}
+      >
         <span className="t">{label}</span>
-        <span className="n">
-          {n.name}
-          {n.src ? ' ' : ''}
-          {n.src ? <SrcLink src={n.src} /> : null}
-        </span>
+        {(name || n.src) && (
+          <span className="n">
+            {name}
+            {name && n.src ? ' ' : ''}
+            {n.src ? <SrcLink src={n.src} /> : null}
+          </span>
+        )}
       </span>
       {!last && <span className="arrow">→</span>}
     </>

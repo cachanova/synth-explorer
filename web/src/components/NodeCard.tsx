@@ -1,19 +1,22 @@
 import { parseSrc } from '../lib/src'
-import { nodeLabel } from '../lib/prettyType'
+import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { useStore } from '../store'
 import type { GraphNode } from '../types'
 import { SrcLink } from './SrcLink'
 
 export function NodeCard({
   node,
+  drivingNet,
   onClose,
 }: {
   node: GraphNode
+  drivingNet?: string | null
   onClose: () => void
 }) {
   const store = useStore()
   const params = node.params ? Object.entries(node.params) : []
   const spans = parseSrc(node.src)
+  const name = displayNodeName(node, drivingNet)
 
   return (
     <div className="node-card">
@@ -26,12 +29,12 @@ export function NodeCard({
         <span className="v">{node.kind}</span>
         {node.cell_type && (
           <>
-            <span className="k">type</span>
+            <span className="k">yosys type</span>
             <span className="v">{node.cell_type}</span>
           </>
         )}
         <span className="k">name</span>
-        <span className="v">{node.name}</span>
+        <span className="v">{name}</span>
         <span className="k">id</span>
         <span className="v">{node.id}</span>
         {node.depth != null && (
@@ -80,7 +83,7 @@ export function NodeCard({
       <div className="actions">
         <button
           onClick={() =>
-            store.openCone({ node: node.id, dir: 'fanin', label: `${node.name} (fanin)` })
+            store.openCone({ node: node.id, dir: 'fanin', label: `${name} (fanin)` })
           }
         >
           Fanin cone
@@ -90,7 +93,7 @@ export function NodeCard({
             store.openCone({
               node: node.id,
               dir: 'fanout',
-              label: `${node.name} (fanout)`,
+              label: `${name} (fanout)`,
             })
           }
         >

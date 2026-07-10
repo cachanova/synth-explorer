@@ -654,8 +654,8 @@ table.grid tr.expanded td {
   background-size: 22px 22px;
 }
 .graph-stage svg {
-  width: 100%;
-  height: 100%;
+  /* width/height are set as attributes from a ResizeObserver so the viewport
+     tracks container resizes; no CSS sizing here to avoid overriding them. */
   display: block;
   cursor: grab;
 }

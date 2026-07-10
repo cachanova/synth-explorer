@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { LaidOutGraph, LaidOutNode, Point } from '../lib/layout'
-import { nodeLabel, nodeSublabel } from '../lib/prettyType'
+import { nodeLabel, nodeSublabel, shortNetName } from '../lib/prettyType'
 import type { GraphNode } from '../types'
 
 interface Transform {
@@ -65,6 +65,10 @@ export function GraphView({
   const [t, setT] = useState<Transform>({ x: 0, y: 0, k: 1 })
   const [panning, setPanning] = useState(false)
   const panState = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null)
+  const [stageSize, setStageSize] = useState<{ w: number; h: number } | null>(null)
+  // Once the user pans/zooms manually, window resizes keep their view instead
+  // of re-fitting. Reset whenever a new graph arrives or Fit is pressed.
+  const userAdjusted = useRef(false)
 
   const nodeById = useMemo(() => {
     const m = new Map<number, LaidOutNode>()
@@ -97,9 +101,23 @@ export function GraphView({
   }, [graph])
 
   useLayoutEffect(() => {
+    userAdjusted.current = false
     fit()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [graph, fitNonce])
+
+  // Track the container size so the SVG viewport follows window/pane
+  // resizes; re-fit only while the user hasn't taken over pan/zoom.
+  useEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const ro = new ResizeObserver(() => {
+      setStageSize({ w: stage.clientWidth, h: stage.clientHeight })
+      if (!userAdjusted.current) fit()
+    })
+    ro.observe(stage)
+    return () => ro.disconnect()
+  }, [fit])
 
   const onWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault()
@@ -108,6 +126,7 @@ export function GraphView({
     const rect = stage.getBoundingClientRect()
     const mx = e.clientX - rect.left
     const my = e.clientY - rect.top
+    userAdjusted.current = true
     setT((prev) => {
       const factor = Math.exp(-e.deltaY * 0.0016)
       const k = Math.min(Math.max(prev.k * factor, 0.08), 4)
@@ -125,6 +144,7 @@ export function GraphView({
       if (e.button !== 0) return
       ;(e.target as Element).setPointerCapture?.(e.pointerId)
       panState.current = { x: e.clientX, y: e.clientY, tx: t.x, ty: t.y }
+      userAdjusted.current = true
       setPanning(true)
     },
     [t],
@@ -139,7 +159,8 @@ export function GraphView({
     setPanning(false)
   }, [])
 
-  const zoomBy = (factor: number) =>
+  const zoomBy = (factor: number) => {
+    userAdjusted.current = true
     setT((prev) => {
       const stage = stageRef.current
       const rect = stage?.getBoundingClientRect()
@@ -149,6 +170,7 @@ export function GraphView({
       const scale = k / prev.k
       return { k, x: cx - (cx - prev.x) * scale, y: cy - (cy - prev.y) * scale }
     })
+  }
 
   // prevent native wheel scroll
   useEffect(() => {
@@ -163,6 +185,8 @@ export function GraphView({
     <div className="graph-stage" ref={stageRef}>
       <svg
         className={panning ? 'panning' : ''}
+        width={stageSize?.w ?? '100%'}
+        height={stageSize?.h ?? '100%'}
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -218,7 +242,7 @@ export function GraphView({
                 markerEnd={`url(#${hl ? 'arrow-hl' : 'arrow'})`}
               >
                 <title>
-                  {e.edge.net_name} ({e.edge.bits.length} bit
+                  {shortNetName(e.edge.net_name)} ({e.edge.bits.length} bit
                   {e.edge.bits.length === 1 ? '' : 's'}): {e.edge.from_port}→
                   {e.edge.to_port}
                 </title>
@@ -283,7 +307,13 @@ export function GraphView({
         <button onClick={() => zoomBy(0.8)} title="Zoom out">
           −
         </button>
-        <button onClick={fit} title="Fit to view">
+        <button
+          onClick={() => {
+            userAdjusted.current = false
+            fit()
+          }}
+          title="Fit to view"
+        >
           ⤢
         </button>
       </div>

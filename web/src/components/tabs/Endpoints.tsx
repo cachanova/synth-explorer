@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
 import { fuzzyFilter } from '../../lib/fuzzy'
+import { displayCellType } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
 import { useStore } from '../../store'
 import type { EndpointBit, OutputEndpoint, RegisterEndpoint } from '../../types'
@@ -17,7 +18,8 @@ export function Endpoints() {
       fuzzyFilter(
         [...(data?.registers ?? [])].sort((a, b) => b.worst_depth - a.worst_depth),
         filter,
-        (r) => `${r.name} ${r.cell_type} ${r.clock ?? ''}`,
+        (r) =>
+          `${r.name} ${r.cell_type} ${displayCellType(r.cell_type)} ${r.clock ?? ''}`,
       ),
     [data, filter],
   )
@@ -180,7 +182,9 @@ function RegRow({ r, onOpen }: { r: RegisterEndpoint; onOpen: Opener }) {
         </td>
         <td className="num">{r.width}</td>
         <td>
-          <span className="tag">{r.cell_type}</span>
+          <span className="tag" title={r.cell_type}>
+            {displayCellType(r.cell_type)}
+          </span>
         </td>
         <td className="mono faint">{r.clock ?? '—'}</td>
         <td className="num">

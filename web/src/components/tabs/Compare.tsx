@@ -1,4 +1,9 @@
 import { diffCellsByType, totalCellDelta } from '../../lib/diff'
+import {
+  displayCellType,
+  displayNodeName,
+  shortNetName,
+} from '../../lib/prettyType'
 import { useStore } from '../../store'
 import type { Snapshot } from '../../store'
 
@@ -146,8 +151,8 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
           ) : (
             [...cd.added, ...cd.removed, ...cd.changed].map((r) => (
               <tr key={r.type}>
-                <td className="mono">
-                  {r.type}{' '}
+                <td className="mono" title={r.type}>
+                  {displayCellType(r.type)}{' '}
                   {r.a === 0 ? (
                     <span className="tag delta-add">new</span>
                   ) : r.b === 0 ? (
@@ -190,7 +195,9 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
                 <td className="num">
                   {pa && pb ? <Delta value={db - da} /> : '—'}
                 </td>
-                <td className="mono faint">{pb?.endpoint.name ?? '—'}</td>
+                <td className="mono faint">
+                  {pb ? displayNodeName(pb.endpoint) : '—'}
+                </td>
               </tr>
             )
           })}
@@ -220,7 +227,9 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
                 <td className="num">
                   {fa && fb ? <Delta value={fb.fanout - fa.fanout} lowerBetter /> : '—'}
                 </td>
-                <td className="mono faint">{fb?.net_name ?? '—'}</td>
+                <td className="mono faint">
+                  {fb ? shortNetName(fb.net_name) : '—'}
+                </td>
               </tr>
             )
           })}

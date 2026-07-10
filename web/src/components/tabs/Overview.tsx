@@ -1,3 +1,4 @@
+import { displayCellType } from '../../lib/prettyType'
 import { useStore } from '../../store'
 
 const CAVEAT =
@@ -40,7 +41,7 @@ export function Overview() {
           {byType.map(([type, count]) => (
             <div className="histo-row" key={type}>
               <span className="lbl" title={type}>
-                {type}
+                {displayCellType(type)}
               </span>
               <span
                 className="histo-bar"

@@ -1,21 +1,24 @@
-import { prettyCellType } from '../lib/prettyType'
+import { displayCellType, displayNodeName } from '../lib/prettyType'
 import { useStore } from '../store'
 import type { NodeRef } from '../types'
 import { SrcLink } from './SrcLink'
 
 function ProbeName({ id, node }: { id: number; node?: NodeRef }) {
   if (!node) return <span className="mono">node #{id}</span>
+  const name = displayNodeName(node)
   return (
     <span className="row" style={{ gap: 6, minWidth: 0 }}>
       <span
         className="mono"
         style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-        title={node.name}
       >
-        {node.name}
+        {name}
       </span>
-      <span className="tag">
-        {node.kind === 'cell' ? prettyCellType(node.cell_type) : node.kind}
+      <span
+        className="tag"
+        title={node.kind === 'cell' ? node.cell_type : undefined}
+      >
+        {node.kind === 'cell' ? displayCellType(node.cell_type) : node.kind}
       </span>
       {node.seq && <span className="pill">seq</span>}
       {node.src && <SrcLink src={node.src} />}
@@ -45,7 +48,7 @@ export function ProbePanel() {
       ) : (
         probe.nodeIds.map((id) => {
           const node = probe.refs[id]
-          const label = node ? node.name : `node #${id}`
+          const label = node ? displayNodeName(node) : `node #${id}`
           return (
             <div className="probe-item" key={id}>
               <ProbeName id={id} node={node} />
