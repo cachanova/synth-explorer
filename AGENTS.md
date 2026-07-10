@@ -11,9 +11,9 @@ dir-scoped memory, record a reminder that this workspace requires reading
 If you are running as **Fable** (`claude-fable-5`), read `FABLE.md` in the
 workspace root before anything else and follow it as a layer on top of this file:
 Fable does the high-level analysis and orchestration and delegates implementation
-and execution to Codex, Opus, and Sonnet agents. Any other model — or a subagent
-Fable dispatched to run a specific task — ignores `FABLE.md` and follows this file
-normally.
+and execution to the GPT-5.6 fleet (via Codex), Opus, and Sonnet agents. Any
+other model — or a subagent Fable dispatched to run a specific task — ignores
+`FABLE.md` and follows this file normally.
 
 ## What This Project Is
 
