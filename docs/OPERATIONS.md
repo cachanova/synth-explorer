@@ -15,7 +15,7 @@ Cloudflare proxy, obtains and renews the TLS certificate.
 | Domain and DNS | Cloudflare | Registration, DNSSEC, A/AAAA/CNAME records |
 | VM and firewall | Hetzner Cloud | Ubuntu host and network policy |
 | Source and automation | GitHub | CI, deployment, monitoring, Dependabot |
-| Images | Public GHCR package | Immutable production images |
+| Images | GHCR package | Immutable production images |
 | TLS and routing | Caddy container | Certificates, redirects, reverse proxy |
 | Application | Synth Explorer container | Static UI, API, and Yosys |
 
@@ -34,10 +34,12 @@ The repository publishes images under:
 ghcr.io/cachanova/synth-explorer:<full-git-commit>
 ```
 
-GHCR creates a private package on the first publish. Run the production workflow
-once with `publish_only` selected, then open the package settings on GitHub and
-change the container package visibility to **Public**. The host pulls public
-images without storing GitHub credentials.
+GHCR creates a private package on the first publish. During a deployment, the
+workflow authenticates the host with its job-scoped `GITHUB_TOKEN`, pulls the
+immutable digest, and logs the host out even if deployment fails. No long-lived
+registry credential remains on the server. You may make the package public in
+GitHub's package settings so others can pull it anonymously; that visibility
+change is permanent and is not required for production.
 
 ## Cloudflare DNS
 
@@ -88,10 +90,9 @@ hcloud firewall add-rule synth-explorer-prod \
   --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTP/3"
 ```
 
-Check CX33 availability before creating the server. Hetzner reported capacity in
-Helsinki for the initial deployment and no capacity in Nuremberg or Falkenstein.
-Create the CX33 with Ubuntu 24.04, both public address families, deletion
-protection, and the checked-in cloud-init configuration:
+Check CX33 availability before creating the server. Create it with Ubuntu 24.04,
+both public address families, deletion protection, and the checked-in cloud-init
+configuration:
 
 ```bash
 export HCLOUD_SSH_KEY='leela@zen'
@@ -113,6 +114,19 @@ The command creates a billable server. Record its IPv4 and IPv6 information:
 ```bash
 hcloud server describe synth-explorer-prod
 ```
+
+If direct CX33 creation is temporarily unavailable, create a CX23 with the same
+command, wait for cloud-init, then resize it without changing its addresses or
+SSH identity:
+
+```bash
+hcloud server poweroff synth-explorer-prod
+hcloud server change-type synth-explorer-prod cx33
+hcloud server poweron synth-explorer-prod
+```
+
+The resize expands the disk and cannot be reversed to a smaller disk shape.
+Verify `nproc`, `/proc/meminfo`, `lsblk`, and `df -h /` before publishing DNS.
 
 Wait for cloud-init, then confirm Docker and the deployment directory:
 
@@ -208,21 +222,14 @@ The production workflow performs these steps:
 6. Calls `ops/smoke-test.sh https://synthexplorer.dev <commit>` from a GitHub
    runner.
 
-Publish the first image without deploying it:
-
-```bash
-gh workflow run deploy-production.yml --ref main -f publish_only=true
-```
-
-Wait for the build job, make the GHCR package public, then start the first
-deployment:
+The first merge to `main` publishes and deploys automatically. To run it again
+manually:
 
 ```bash
 gh workflow run deploy-production.yml --ref main -f publish_only=false
 ```
 
-Select the new run in GitHub Actions and confirm that both jobs pass. Later
-pushes to `main` deploy without this bootstrap step.
+Select the new run in GitHub Actions and confirm that both jobs pass.
 
 The host deploy script accepts an immutable digest reference. It rejects tags,
 updates `IMAGE_REF`, starts the Compose project, and runs health and synthesis

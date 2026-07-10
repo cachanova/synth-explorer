@@ -117,6 +117,20 @@ jobs:
           chmod 0600 "$HOME/.ssh/production" "$HOME/.ssh/known_hosts"
           ssh-keygen -y -f "$HOME/.ssh/production" >/dev/null
 
+      - name: Authenticate host to GitHub Container Registry
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
+          : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
+          printf '%s' "$REGISTRY_TOKEN" | ssh -i "$HOME/.ssh/production" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            "docker login ghcr.io --username '${GITHUB_ACTOR}' --password-stdin >/dev/null"
+
       - name: Upload deployment bundle
         env:
           PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
@@ -152,3 +166,15 @@ jobs:
 
       - name: Verify production from outside the host
         run: ./ops/smoke-test.sh "$PRODUCTION_URL" "$GITHUB_SHA"
+
+      - name: Remove host registry credentials
+        if: always()
+        continue-on-error: true
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            'docker logout ghcr.io >/dev/null 2>&1 || true'
