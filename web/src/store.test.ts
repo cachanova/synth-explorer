@@ -7,6 +7,7 @@ import {
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
   shouldRunAutomaticRetry,
+  supersedeAutomaticRetryGeneration,
   synthesisInput,
 } from './lib/liveAnalysis'
 import { buildSynthesizeRequest } from './lib/synthesize'
@@ -177,29 +178,78 @@ describe('automatic synthesis retry', () => {
       failed,
       true,
       'older-design',
+      4,
+      4,
     )
 
-    expect(retry).toEqual({ input: failed, delayMs: 7_000 })
-    expect(shouldRunAutomaticRetry(retry!, failed, true, 'older-design')).toBe(true)
-    expect(automaticRetryForFailure(failed, 'manual', 503, 7_000, failed, true, null)).toBeNull()
-    expect(automaticRetryForFailure(failed, 'automatic', 500, 7_000, failed, true, null)).toBeNull()
+    expect(retry).toEqual({ input: failed, delayMs: 7_000, generation: 4 })
+    expect(shouldRunAutomaticRetry(retry!, failed, true, 'older-design', 4)).toBe(true)
+    expect(
+      automaticRetryForFailure(failed, 'manual', 503, 7_000, failed, true, null, 4, 4),
+    ).toBeNull()
+    expect(
+      automaticRetryForFailure(failed, 'automatic', 500, 7_000, failed, true, null, 4, 4),
+    ).toBeNull()
   })
 
   it('uses a conservative bounded fallback when Retry-After is absent', () => {
     const failed = input('A', 2)
     expect(
-      automaticRetryForFailure(failed, 'automatic', 503, undefined, failed, true, null)
+      automaticRetryForFailure(
+        failed,
+        'automatic',
+        503,
+        undefined,
+        failed,
+        true,
+        null,
+        0,
+        0,
+      )
         ?.delayMs,
     ).toBe(5_000)
   })
 
   it('rejects retries after edits, replacement, pause, or a current design', () => {
     const failed = input('A', 2)
-    const retry = { input: failed, delayMs: 5_000 }
+    const retry = { input: failed, delayMs: 5_000, generation: 2 }
 
-    expect(shouldRunAutomaticRetry(retry, input('B', 3), true, null)).toBe(false)
-    expect(shouldRunAutomaticRetry(retry, input('A', 3), true, null)).toBe(false)
-    expect(shouldRunAutomaticRetry(retry, failed, false, null)).toBe(false)
-    expect(shouldRunAutomaticRetry(retry, failed, true, failed.key)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, input('B', 3), true, null, 2)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, input('A', 3), true, null, 2)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, failed, false, null, 2)).toBe(false)
+    expect(shouldRunAutomaticRetry(retry, failed, true, failed.key, 2)).toBe(false)
+  })
+
+  it('a newer manual attempt permanently supersedes a pending automatic retry', () => {
+    const failed = input('A', 2)
+    const pending = automaticRetryForFailure(
+      failed,
+      'automatic',
+      503,
+      5_000,
+      failed,
+      true,
+      null,
+      8,
+      8,
+    )!
+
+    const manualGeneration = supersedeAutomaticRetryGeneration(8)
+    expect(shouldRunAutomaticRetry(pending, failed, true, null, manualGeneration)).toBe(false)
+    for (const terminalStatus of [400, 422, 500, 504, 507]) {
+      expect(
+        automaticRetryForFailure(
+          failed,
+          'manual',
+          terminalStatus,
+          undefined,
+          failed,
+          true,
+          null,
+          manualGeneration,
+          manualGeneration,
+        ),
+      ).toBeNull()
+    }
   })
 })

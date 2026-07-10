@@ -18,6 +18,7 @@ import {
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
   shouldRunAutomaticRetry,
+  supersedeAutomaticRetryGeneration,
   synthesisInput,
   type AutomaticSynthesisRetry,
   type QueuedSynthesis,
@@ -293,11 +294,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
+  const retryGenerationRef = useRef(0)
   const mountedRef = useRef(true)
+
+  const supersedeAutomaticRetry = useCallback(() => {
+    retryGenerationRef.current = supersedeAutomaticRetryGeneration(
+      retryGenerationRef.current,
+    )
+    setAutomaticRetry(null)
+  }, [])
 
   useEffect(() => {
     mountedRef.current = true
     return () => {
+      retryGenerationRef.current = supersedeAutomaticRetryGeneration(
+        retryGenerationRef.current,
+      )
       mountedRef.current = false
     }
   }, [])
@@ -327,9 +339,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const revision = inputRevisionRef.current + 1
     inputRevisionRef.current = revision
     queuedInputRef.current = null
-    setAutomaticRetry(null)
+    supersedeAutomaticRetry()
     setInputRevision(revision)
-  }, [])
+  }, [supersedeAutomaticRetry])
 
   const resolvedCurrentInput =
     resolvedInputIdentity?.revision === inputRevision
@@ -513,13 +525,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         next = null
         queuedInputRef.current = null
         synthesisKeyRef.current = running.key
+        const attemptGeneration = retryGenerationRef.current
         setError(null)
         try {
           const res = await api.synthesize(running.request)
           setDesign(res)
           setDesignInputKey(running.key)
           designInputKeyRef.current = running.key
-          setAutomaticRetry(null)
+          supersedeAutomaticRetry()
           // A source graph tracks the selected lines across synthesis. Other
           // explicit cones remain stable until the user asks to replace them.
           setConeReq((request) =>
@@ -543,6 +556,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               materializeCurrentInput(),
               autoSynthesizeRef.current,
               designInputKeyRef.current,
+              attemptGeneration,
+              retryGenerationRef.current,
             )
             if (retry) setAutomaticRetry(retry)
           }
@@ -564,11 +579,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [materializeCurrentInput])
+  }, [materializeCurrentInput, supersedeAutomaticRetry])
 
   const synthesize = useCallback(
-    () => requestSynthesis('manual'),
-    [requestSynthesis],
+    () => {
+      // This synchronous generation change wins even if React has not yet
+      // committed the state clear and an older timer callback is already queued.
+      supersedeAutomaticRetry()
+      return requestSynthesis('manual')
+    },
+    [requestSynthesis, supersedeAutomaticRetry],
   )
 
   useEffect(() => {
@@ -582,15 +602,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           current,
           autoSynthesizeRef.current,
           designInputKeyRef.current,
+          retryGenerationRef.current,
         )
       ) {
         setAutomaticRetry(null)
         return
       }
 
-      // A manual request for this exact input has priority. Keep one timer
-      // armed until it completes; success clears the retry, while failure
-      // leaves the original automatic retry eligible.
+      // Another exact-input automatic attempt already covers this timer. A
+      // manual attempt cannot reach this branch because it synchronously
+      // supersedes the retry generation before entering requestSynthesis.
       if (
         synthesisRunningRef.current &&
         synthesisKeyRef.current === automaticRetry.input.key
@@ -609,10 +630,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     autoSynthesizeRef.current = enabled
     if (!enabled) {
       queuedInputRef.current = clearAutomaticQueuedSynthesis(queuedInputRef.current)
-      setAutomaticRetry(null)
+      supersedeAutomaticRetry()
     }
     setAutoSynthesizeState(enabled)
-  }, [])
+  }, [supersedeAutomaticRetry])
 
   // Source/top/mode/argument/example changes make the prior analysis stale.
   // Cursor movement is deliberately absent from this dependency list.

@@ -23,6 +23,7 @@ export interface QueuedSynthesis extends SynthesisInput {
 export interface AutomaticSynthesisRetry {
   input: SynthesisInput
   delayMs: number
+  generation: number
 }
 
 // This identity is exact but O(total source bytes). Callers deliberately
@@ -92,13 +93,20 @@ export function shouldRunAutomaticRetry(
   current: SynthesisInput,
   autoEnabled: boolean,
   designKey: string | null,
+  currentGeneration: number,
 ): boolean {
   return (
     autoEnabled &&
+    retry.generation === currentGeneration &&
     retry.input.revision === current.revision &&
     retry.input.key === current.key &&
     designKey !== current.key
   )
+}
+
+/** Synchronously invalidates timers and in-flight automatic attempts from an older intent. */
+export function supersedeAutomaticRetryGeneration(generation: number): number {
+  return generation + 1
 }
 
 export function automaticRetryForFailure(
@@ -109,10 +117,22 @@ export function automaticRetryForFailure(
   current: SynthesisInput,
   autoEnabled: boolean,
   designKey: string | null,
+  attemptGeneration: number,
+  currentGeneration: number,
 ): AutomaticSynthesisRetry | null {
-  const retry = { input, delayMs: boundedRetryDelayMs(retryAfterMs) }
+  const retry = {
+    input,
+    delayMs: boundedRetryDelayMs(retryAfterMs),
+    generation: attemptGeneration,
+  }
   return origin === 'automatic' && status === 503 &&
-    shouldRunAutomaticRetry(retry, current, autoEnabled, designKey)
+    shouldRunAutomaticRetry(
+      retry,
+      current,
+      autoEnabled,
+      designKey,
+      currentGeneration,
+    )
     ? retry
     : null
 }
