@@ -390,7 +390,7 @@ fn resolve_drivers(
 }
 
 pub const CONTROL_PINS: &[&str] = &[
-    "CLK", "C", "E", "EN", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST",
+    "CLK", "C", "E", "EN", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST", "LSR", "SR",
 ];
 
 pub fn is_control_pin(port: &str) -> bool {
@@ -558,9 +558,10 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
         || upper.starts_with("$_SDFF")
         || upper.starts_with("$_ALDFF")
         || upper == "$_FF_"
-        || upper.starts_with("SB_DFF")
-        || upper == "TRELLIS_FF"
-        || is_xilinx_ff(&upper)
+        || matches!(
+            vendor_primitive_class(cell_type),
+            Some(VendorPrimitiveClass::Sequential)
+        )
 }
 
 pub fn is_blackbox_cell(
@@ -568,41 +569,49 @@ pub fn is_blackbox_cell(
     blackbox_modules: &HashSet<String>,
     module_names: &HashSet<&str>,
 ) -> bool {
-    if blackbox_modules.contains(&cell.cell_type) || attr_truthy(&cell.attributes, "blackbox") {
+    if attr_truthy(&cell.attributes, "blackbox") {
+        return true;
+    }
+    if vendor_primitive_class(&cell.cell_type).is_some() {
+        return false;
+    }
+    if blackbox_modules.contains(&cell.cell_type) {
         return true;
     }
     if module_names.contains(cell.cell_type.as_str()) {
         return false;
     }
-    !cell.cell_type.starts_with('$') && !is_known_hardware_primitive(&cell.cell_type)
+    !cell.cell_type.starts_with('$')
 }
 
-fn is_xilinx_ff(upper: &str) -> bool {
-    matches!(upper, "FDRE" | "FDSE" | "FDCE" | "FDPE")
-        || (upper.starts_with("FD") && upper.len() <= 5)
-}
-
-fn is_known_hardware_primitive(cell_type: &str) -> bool {
-    let upper = cell_type.to_ascii_uppercase();
-    if is_sequential_type(cell_type) {
-        return true;
+pub fn cell_depth_weight(cell_type: &str) -> u32 {
+    match vendor_primitive_class(cell_type) {
+        Some(VendorPrimitiveClass::Combinational { depth_weight }) => depth_weight,
+        Some(VendorPrimitiveClass::Sequential) | None => 1,
     }
-    matches!(
-        upper.as_str(),
-        "SB_LUT4"
-            | "SB_CARRY"
-            | "LUT1"
-            | "LUT2"
-            | "LUT3"
-            | "LUT4"
-            | "LUT5"
-            | "LUT6"
-            | "CCU2C"
-            | "CARRY4"
-            | "MUXF7"
-            | "MUXF8"
-            | "IBUF"
-            | "OBUF"
-            | "BUFG"
-    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VendorPrimitiveClass {
+    Combinational { depth_weight: u32 },
+    Sequential,
+}
+
+// Primitive classification shared by the Yosys Xilinx, iCE40, and ECP5 flows.
+// Anything not listed here remains a blackbox boundary when it is a non-$ cell.
+fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
+    let upper = cell_type.to_ascii_uppercase();
+    if upper.starts_with("SB_DFF") {
+        return Some(VendorPrimitiveClass::Sequential);
+    }
+    match upper.as_str() {
+        "FDRE" | "FDSE" | "FDCE" | "FDPE" | "FDR" | "FDS" | "FDC" | "FDP" | "TRELLIS_FF"
+        | "SRL16E" | "SRLC32E" => Some(VendorPrimitiveClass::Sequential),
+        "LUT1" | "LUT2" | "LUT3" | "LUT4" | "LUT5" | "LUT6" | "SB_LUT4" | "PFUMX" | "L6MUX21"
+        | "CCU2C" | "CARRY4" | "CARRY8" | "MUXF7" | "MUXF8" | "MUXF9" | "INV" | "SB_CARRY"
+        | "XORCY" | "MUXCY" => Some(VendorPrimitiveClass::Combinational { depth_weight: 1 }),
+        "IBUF" | "OBUF" | "OBUFT" | "IOBUF" | "BUFG" | "BUFGCE" | "BUFGCTRL" | "BUFH" | "SB_GB"
+        | "$_BUF_" => Some(VendorPrimitiveClass::Combinational { depth_weight: 0 }),
+        _ => None,
+    }
 }

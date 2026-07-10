@@ -1,4 +1,6 @@
-use crate::graph::{Edge, Graph, NodeId, NodeKind, is_data_pin, strip_bit_suffix};
+use crate::graph::{
+    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_data_pin, strip_bit_suffix,
+};
 use crate::netlist::PortDirection;
 use serde::Serialize;
 use std::cmp::Reverse;
@@ -609,6 +611,11 @@ fn compute_depths(
     let mut best_pred = vec![None; graph.nodes.len()];
 
     while let Some(id) = queue.pop_front() {
+        let weight = graph.nodes[id as usize]
+            .cell_type
+            .as_deref()
+            .map(cell_depth_weight)
+            .unwrap_or(1);
         let mut best: Option<(u32, usize)> = None;
         for edge_idx in &graph.incoming[id as usize] {
             let edge = &graph.edges[*edge_idx];
@@ -620,12 +627,12 @@ fn compute_depths(
             } else {
                 0
             };
-            let candidate = base + 1;
+            let candidate = base + weight;
             if best.is_none_or(|(current, _)| candidate > current) {
                 best = Some((candidate, *edge_idx));
             }
         }
-        let (node_depth, pred) = best.unwrap_or((1, usize::MAX));
+        let (node_depth, pred) = best.unwrap_or((weight, usize::MAX));
         depth[id as usize] = Some(node_depth);
         if pred != usize::MAX {
             best_pred[id as usize] = Some(pred);
