@@ -52,9 +52,10 @@ export function Toolbar() {
       </label>
 
       <label className="field grow">
-        <span>Extra yosys args</span>
+        <span>Synthesis flags</span>
         <input
-          placeholder="e.g. -noabc"
+          placeholder="mode-specific, e.g. -noabc"
+          title="Passed to the selected Yosys synthesis command; supported flags vary by mode."
           value={store.extraArgs}
           onChange={(e) => store.setExtraArgs(e.target.value)}
         />

@@ -1,0 +1,57 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - jq
+  - unattended-upgrades
+  - util-linux
+
+users:
+  - default
+  - name: deploy
+    gecos: Synth Explorer deploy user
+    groups:
+      - sudo
+    lock_passwd: true
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+
+write_files:
+  - path: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root:root
+    permissions: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+  - path: /etc/docker/daemon.json
+    owner: root:root
+    permissions: "0644"
+    content: |
+      {
+        "live-restore": true,
+        "log-driver": "local",
+        "log-opts": {
+          "max-size": "10m",
+          "max-file": "5"
+        }
+      }
+
+runcmd:
+  - [install, -m, "0755", -d, /etc/apt/keyrings]
+  - [bash, -c, "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor --yes -o /etc/apt/keyrings/docker.gpg"]
+  - [chmod, a+r, /etc/apt/keyrings/docker.gpg]
+  - [bash, -c, "echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable' > /etc/apt/sources.list.d/docker.list"]
+  - [apt-get, update]
+  - [apt-get, install, --yes, docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+  - [systemctl, enable, --now, docker]
+  - [usermod, --append, --groups, docker, deploy]
+  - [install, -d, -m, "0750", -o, deploy, -g, deploy, /opt/synth-explorer]
+  - [install, -d, -m, "0700", -o, deploy, -g, deploy, /home/deploy/.ssh]
+  - [bash, -c, "if test -s /root/.ssh/authorized_keys; then install -m 0600 -o deploy -g deploy /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys; elif test -s /home/ubuntu/.ssh/authorized_keys; then install -m 0600 -o deploy -g deploy /home/ubuntu/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys; else echo 'no provisioned SSH key found; leaving root SSH enabled' >&2; exit 1; fi"]
+  - [bash, -c, "printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' 'AllowUsers deploy' 'MaxAuthTries 3' 'LoginGraceTime 30' > /etc/ssh/sshd_config.d/60-synth-explorer.conf"]
+  - [systemctl, reload, ssh]
+
+final_message: "Synth Explorer host bootstrap completed in $UPTIME seconds"

@@ -1,0 +1,12 @@
+synthexplorer.dev {
+	encode zstd gzip
+	log {
+		output stdout
+		format json
+	}
+	reverse_proxy app:8787
+}
+
+www.synthexplorer.dev {
+	redir https://synthexplorer.dev{uri} permanent
+}
