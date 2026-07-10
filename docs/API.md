@@ -165,16 +165,20 @@ With `to`, only variants ending at that node are returned.
     startpoint: NodeRef;         // input port bit / FF cell (Q) / blackbox
     endpoint: NodeRef;           // FF cell (D) / output port bit / blackbox
     endpoint_port: string;       // "D", output port name, ...
-    nodes: NodeRef[];            // startpoint -> ... -> endpoint, in order
+    nodes: NodeRef[];            // startpoint -> ... -> endpoint, capped at 512
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
   truncated: boolean;            // response limit or bounded route sampling hit
 }
 ```
 
-To keep wide designs bounded, the server samples at most 64 deepest bit targets
-per logical endpoint and at most `min(limit * 16, 8000)` targets overall before
-grouping route variants. `truncated` makes any omitted variants explicit.
+To keep wide designs bounded, the server retains at most 64 deepest bit targets
+per logical endpoint and examines at most `min(limit * 16, 8000)` targets overall
+before grouping route variants. Candidates are assigned one per logical
+endpoint, deepest groups first, before additional bits are selected round-robin.
+A returned route contains at most 512 nodes while retaining its actual
+startpoint and endpoint.
+`truncated` is true when endpoint variants or route nodes were omitted.
 
 ## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
 
