@@ -5,15 +5,17 @@
   role="img"
   aria-labelledby="title"
 >
-  <title id="title">XOR gate</title>
+  <title id="title">XOR gate with output probe</title>
   <g stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
     <g stroke="#9aa4b2">
-      <path d="M1 6h8.5M1 18h8.5M25 12h19" />
+      <path d="M1 6h8.5M1 18h8.5" />
     </g>
     <g stroke="#58a6ff">
       <path d="M8 3c7 0 13 3 17 9-4 6-10 9-17 9 3.5-5.5 3.5-12.5 0-18Z" />
       <path d="M5 3c3.5 5.5 3.5 12.5 0 18" />
+      <path d="M25 12h15" />
     </g>
   </g>
-  <circle cx="45.5" cy="12" r="1.5" fill="#58a6ff" />
+  <circle cx="43" cy="12" r="3" stroke="#bc8cff" stroke-width="1.8" />
+  <circle cx="43" cy="12" r="1.1" fill="#bc8cff" />
 </svg>
