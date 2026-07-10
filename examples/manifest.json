@@ -1,0 +1,58 @@
+[
+  {
+    "name": "01_reg_mux",
+    "title": "Register behind a mux",
+    "description": "An 8-bit register driven by a 2:1 mux with sync reset, the simplest possible endpoint with a shallow one-level fanin cone.",
+    "top": "reg_mux",
+    "files": ["01_reg_mux.sv"]
+  },
+  {
+    "name": "02_priority_encoder",
+    "title": "Wide priority encoder",
+    "description": "A 32-bit priority encoder feeding a registered 5-bit index and valid bit, synthesizing to a deep priority comparison chain.",
+    "top": "priority_encoder",
+    "files": ["02_priority_encoder.sv"]
+  },
+  {
+    "name": "03_adder_chain",
+    "title": "Sequential adder chain",
+    "description": "A chain of four sequential 16-bit adds combined combinationally before a register, producing the deepest carry-propagation path in the example set.",
+    "top": "adder_chain",
+    "files": ["03_adder_chain.sv"]
+  },
+  {
+    "name": "04_high_fanout_enable",
+    "title": "High-fanout enable",
+    "description": "A single enable input gates writes to sixteen independent 8-bit registers, making the enable net the top entry in fanout ranking.",
+    "top": "high_fanout_enable",
+    "files": ["04_high_fanout_enable.sv"]
+  },
+  {
+    "name": "05_shared_logic",
+    "title": "Shared combinational cone",
+    "description": "One moderately complex combinational expression (a*3 via shift and add) feeds three different registers through different extra logic, sharing a common fanin cone.",
+    "top": "shared_logic",
+    "files": ["05_shared_logic.sv"]
+  },
+  {
+    "name": "06_comb_output",
+    "title": "Purely combinational output",
+    "description": "A clockless 16-bit comparator and mux driving a top-level output, demonstrating a design whose paths terminate at output ports rather than registers.",
+    "top": "comb_output",
+    "files": ["06_comb_output.sv"]
+  },
+  {
+    "name": "07_blackbox",
+    "title": "Blackbox boundary",
+    "description": "Instantiates an opaque blackbox core between combinational logic and a register, showing how timing paths break at a blackbox's input/output ports.",
+    "top": "blackbox_demo",
+    "files": ["07_blackbox.sv"]
+  },
+  {
+    "name": "08_fsm",
+    "title": "Small Moore FSM",
+    "description": "A five-state Moore finite state machine with a single state register, a combinational next-state cone, and state-only output logic.",
+    "top": "fsm",
+    "files": ["08_fsm.sv"]
+  }
+]
