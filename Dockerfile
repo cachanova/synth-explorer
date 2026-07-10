@@ -14,7 +14,7 @@ COPY server/src ./src
 RUN cargo build --locked --release --jobs 4 \
     && strip target/release/synth-explorer-server
 
-FROM --platform=linux/amd64 ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS yosys-builder
+FROM --platform=linux/amd64 ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e AS yosys-builder
 ARG DEBIAN_FRONTEND=noninteractive
 ARG YOSYS_VERSION=0.67
 ARG YOSYS_SHA256=608d758a6efc73c9f866b0a822aa2f788c2889fcb70dcdcc0e758009465049f6
@@ -62,7 +62,7 @@ RUN curl --fail --location --silent --show-error --retry 3 \
 WORKDIR /
 RUN /opt/yosys/bin/yosys-abc -c quit
 
-FROM --platform=linux/amd64 ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90 AS runtime
+FROM --platform=linux/amd64 ubuntu:26.04@sha256:b7f48194d4d8b763a478a621cdc81c27be222ba2206ca3ca6bc42b49685f3d9e AS runtime
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
