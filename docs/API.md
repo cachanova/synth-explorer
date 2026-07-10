@@ -8,6 +8,22 @@ All endpoints are JSON. Errors return HTTP 4xx/5xx with body
 `{ "error": string, "log"?: string }`. The server also serves the built SPA
 from `web/dist` at `/` (SPA fallback to `index.html` for non-`/api` routes).
 
+## GET `/healthz`
+
+Returns process and build metadata used by container health checks, deployments,
+and external monitoring:
+
+```ts
+{
+  status: "ok";
+  commit: string;        // full Git commit in production; "unknown" in local builds
+  version: string;       // server crate version
+  yosys_version: string; // captured by the required startup preflight
+}
+```
+
+The server does not start if the Yosys preflight fails.
+
 ## Shared shapes
 
 ```ts
@@ -84,7 +100,8 @@ Response `200`:
 ```
 
 `400` on yosys failure (body includes yosys `log`), `422` on validation
-failure, `504` on timeout.
+failure, `504` on timeout. The server runs one synthesis and queues at most two
+more; requests beyond that return `503` with `Retry-After: 5`.
 
 ## GET `/api/design/:id/endpoints`
 
