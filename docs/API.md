@@ -56,7 +56,7 @@ export interface GraphEdge {
 export interface Subgraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  truncated: boolean;   // hit max_nodes/max_depth; UI must say so
+  truncated: boolean;   // hit a node/depth/merged-edge/projection-work cap
 }
 ```
 
@@ -178,7 +178,9 @@ per logical endpoint and examines at most `min(limit * 16, 8000)` targets overal
 before grouping route variants. Candidates are assigned one per logical
 endpoint, deepest groups first, before additional bits are selected round-robin.
 A returned route contains at most 512 nodes while retaining its actual
-startpoint and endpoint.
+startpoint and endpoint. Reconstructing candidates has a shared 65,536-node
+work budget per request; deepest logical endpoint representatives consume that
+budget before additional bit variants.
 `truncated` is true when endpoint variants or route nodes were omitted.
 
 ## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
@@ -192,7 +194,10 @@ IO/clock buffers are collapsed into edges but remain present in implementation
 statistics. Addressable shift-register LUTs are mixed boundaries: their stored
 data input stops at the primitive, while address inputs traverse through the
 primitive to preserve the selected address-to-output route and depth.
-`max_nodes` is clamped server-side to 2000.
+`max_nodes` is clamped server-side to 2000. Every `Subgraph` response retains at
+most 10,000 merged edges. The same 10,000-item work budget bounds hidden
+infrastructure projection before rendering; `truncated` is true when a node,
+edge, or projection-work cap is reached.
 
 ## GET `/api/design/:id/fanout?limit=50`
 
@@ -254,7 +259,9 @@ resolved by exact flattened instance scope through the final LHS net aliases.
 This recovered attribution is also returned by `/nodes` for graph-to-source probing.
 Files containing conditional-preprocessor branches use only Yosys provenance
 to avoid attributing an inactive branch. If the LHS no longer exists, the span
-reports `optimized_or_absorbed`.
+reports `optimized_or_absorbed`. Source-range root collection retains at most
+2,001 deterministic node ids so exceeding the 2,000-node graph ceiling is
+reported through `graph.truncated` without constructing an unbounded root set.
 
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 

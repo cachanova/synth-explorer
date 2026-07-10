@@ -1,6 +1,7 @@
+use crate::analysis::SOURCE_ROOT_COLLECTION_CAP;
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::YosysModule;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Default)]
 pub(crate) struct SourceAliasProvenance {
@@ -23,6 +24,7 @@ pub(crate) fn continuous_assign_provenance(
     let roots_by_name = roots_by_signal_name(graph);
     let scopes_by_module = scopes_by_module(source_module, &graph.top);
     let mut provenance = SourceAliasProvenance::default();
+    let mut roots_by_line: BTreeMap<String, BTreeSet<NodeId>> = BTreeMap::new();
 
     for (file, source) in files {
         if has_conditional_preprocessor(&source) {
@@ -32,7 +34,7 @@ pub(crate) fn continuous_assign_provenance(
             let Some(scopes) = scopes_by_module.get(&assignment.module) else {
                 continue;
             };
-            let mut roots = Vec::new();
+            let mut roots = BTreeSet::new();
             for identifier in assignment.lhs_identifiers {
                 for scope in scopes {
                     let qualified = if scope.is_empty() {
@@ -41,30 +43,29 @@ pub(crate) fn continuous_assign_provenance(
                         format!("{scope}.{identifier}")
                     };
                     if let Some(ids) = roots_by_name.get(qualified.as_str()) {
-                        roots.extend(ids.iter().copied());
+                        for id in ids {
+                            insert_bounded_root(&mut roots, *id);
+                        }
                     }
                 }
             }
-            roots.sort_unstable();
-            roots.dedup();
             for line in assignment.start_line..=assignment.end_line {
                 let key = format!("{file}:{line}");
                 provenance.synthesizable_lines.insert(key.clone());
                 if !roots.is_empty() {
-                    provenance
-                        .roots_by_line
-                        .entry(key)
-                        .or_default()
-                        .extend(roots.iter().copied());
+                    let line_roots = roots_by_line.entry(key).or_default();
+                    for root in &roots {
+                        insert_bounded_root(line_roots, *root);
+                    }
                 }
             }
         }
     }
 
-    for ids in provenance.roots_by_line.values_mut() {
-        ids.sort_unstable();
-        ids.dedup();
-    }
+    provenance.roots_by_line = roots_by_line
+        .into_iter()
+        .map(|(line, roots)| (line, roots.into_iter().collect()))
+        .collect();
     provenance
 }
 
@@ -97,7 +98,7 @@ fn scopes_by_module(
 }
 
 fn roots_by_signal_name(graph: &Graph) -> HashMap<String, Vec<NodeId>> {
-    let mut roots: HashMap<String, HashSet<NodeId>> = HashMap::new();
+    let mut roots: HashMap<String, BTreeSet<NodeId>> = HashMap::new();
     for node in &graph.nodes {
         if node.kind != NodeKind::PortBit {
             continue;
@@ -108,14 +109,14 @@ fn roots_by_signal_name(graph: &Graph) -> HashMap<String, Vec<NodeId>> {
         insert_root_name(&mut roots, &node.name, node.id);
     }
 
-    let mut incident: HashMap<u32, HashSet<NodeId>> = HashMap::new();
+    let mut incident: HashMap<u32, BTreeSet<NodeId>> = HashMap::new();
     for edge in &graph.edges {
         let Some(bit) = edge.bit else {
             continue;
         };
         let nodes = incident.entry(bit).or_default();
-        nodes.insert(edge.from);
-        nodes.insert(edge.to);
+        insert_bounded_root(nodes, edge.from);
+        insert_bounded_root(nodes, edge.to);
     }
     for (bit, aliases) in &graph.net_aliases {
         let Some(nodes) = incident.get(bit) else {
@@ -138,13 +139,20 @@ fn roots_by_signal_name(graph: &Graph) -> HashMap<String, Vec<NodeId>> {
         .collect()
 }
 
-fn insert_root_name(roots: &mut HashMap<String, HashSet<NodeId>>, raw_name: &str, node: NodeId) {
+fn insert_root_name(roots: &mut HashMap<String, BTreeSet<NodeId>>, raw_name: &str, node: NodeId) {
     let name = normalize_name(raw_name);
-    roots.entry(name.clone()).or_default().insert(node);
-    roots
-        .entry(strip_bit_suffix(&name).to_owned())
-        .or_default()
-        .insert(node);
+    insert_bounded_root(roots.entry(name.clone()).or_default(), node);
+    insert_bounded_root(
+        roots.entry(strip_bit_suffix(&name).to_owned()).or_default(),
+        node,
+    );
+}
+
+fn insert_bounded_root(roots: &mut BTreeSet<NodeId>, node: NodeId) {
+    roots.insert(node);
+    if roots.len() > SOURCE_ROOT_COLLECTION_CAP {
+        roots.pop_last();
+    }
 }
 
 fn normalize_name(raw_name: &str) -> String {
@@ -463,5 +471,20 @@ endmodule
         assert!(has_conditional_preprocessor(
             "`ifdef FEATURE\nassign y = a;\n`endif"
         ));
+    }
+
+    #[test]
+    fn source_root_sets_keep_a_deterministic_cap_sentinel() {
+        let mut roots = BTreeSet::new();
+        for id in (0..(SOURCE_ROOT_COLLECTION_CAP as NodeId + 500)).rev() {
+            insert_bounded_root(&mut roots, id);
+        }
+
+        assert_eq!(roots.len(), SOURCE_ROOT_COLLECTION_CAP);
+        assert_eq!(roots.first(), Some(&0));
+        assert_eq!(
+            roots.last(),
+            Some(&(SOURCE_ROOT_COLLECTION_CAP as NodeId - 1))
+        );
     }
 }

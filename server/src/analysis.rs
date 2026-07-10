@@ -8,6 +8,10 @@ use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 const PATH_NODE_CAP: usize = 512;
+const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
+pub const MAX_SUBGRAPH_NODES: usize = 2_000;
+pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
+pub(crate) const SOURCE_ROOT_COLLECTION_CAP: usize = MAX_SUBGRAPH_NODES + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -356,7 +360,10 @@ impl Analysis {
     }
 
     pub fn extend_source_roots(&mut self, roots_by_line: BTreeMap<String, Vec<NodeId>>) {
-        for (line, roots) in roots_by_line {
+        for (line, mut roots) in roots_by_line {
+            roots.sort_unstable();
+            roots.dedup();
+            roots.truncate(SOURCE_ROOT_COLLECTION_CAP);
             for root in &roots {
                 self.synthetic_src
                     .entry(*root)
@@ -411,15 +418,18 @@ impl Analysis {
         if !self.source_map.files.iter().any(|name| name == file) {
             return None;
         }
-        let mut ids = Vec::new();
+        let mut ids = BTreeSet::new();
         for line in start_line..=end_line {
             if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
-                ids.extend(line_ids.iter().copied());
+                for id in line_ids {
+                    ids.insert(*id);
+                    if ids.len() == SOURCE_ROOT_COLLECTION_CAP {
+                        return Some(ids.into_iter().collect());
+                    }
+                }
             }
         }
-        ids.sort_unstable();
-        ids.dedup();
-        Some(ids)
+        Some(ids.into_iter().collect())
     }
 
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
@@ -491,10 +501,21 @@ impl Analysis {
             bit_index += 1;
         }
 
+        let alias_lookup = build_alias_lookup(&self.endpoints);
         let mut grouped: BTreeMap<PathGroupKey, PathEntry> = BTreeMap::new();
         let mut route_clipped = false;
+        let mut reconstruction_budget = PATH_RECONSTRUCTION_NODE_BUDGET;
+        let mut reconstructed_candidates = 0;
         for target in &candidates {
-            let (path, clipped) = self.path_for_target(graph, target);
+            if reconstruction_budget < 2 {
+                route_clipped = true;
+                break;
+            }
+            let per_path_cap = PATH_NODE_CAP.min(reconstruction_budget);
+            let (path, clipped, consumed_nodes) =
+                self.path_for_target(graph, target, per_path_cap, &alias_lookup);
+            reconstruction_budget = reconstruction_budget.saturating_sub(consumed_nodes);
+            reconstructed_candidates += 1;
             route_clipped |= clipped;
             let signature = path
                 .nodes
@@ -535,7 +556,10 @@ impl Analysis {
                 .iter()
                 .map(|id| graph.node_ref_name(*id))
                 .collect(),
-            truncated: route_clipped || candidates.len() < total_targets || grouped_count > limit,
+            truncated: route_clipped
+                || reconstructed_candidates < candidates.len()
+                || candidates.len() < total_targets
+                || grouped_count > limit,
         }
     }
 
@@ -575,7 +599,7 @@ impl Analysis {
             return None;
         }
 
-        let cap = options.max_nodes.clamp(1, 2000);
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
         let mut seen: HashSet<NodeId> = HashSet::new();
         let mut unique_roots: HashSet<NodeId> = HashSet::new();
         let mut included_root_ids = Vec::new();
@@ -724,7 +748,7 @@ impl Analysis {
         max_nodes: usize,
         show_infrastructure: bool,
     ) -> Subgraph {
-        let cap = max_nodes.clamp(1, 2000);
+        let cap = max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
         let mut seen = HashSet::new();
         for node in graph.nodes.iter().take(cap) {
             seen.insert(node.id);
@@ -803,14 +827,21 @@ impl Analysis {
         FanoutResponse { drivers }
     }
 
-    fn path_for_target(&self, graph: &Graph, target: &EndpointTarget) -> (PathEntry, bool) {
+    fn path_for_target(
+        &self,
+        graph: &Graph,
+        target: &EndpointTarget,
+        node_cap: usize,
+        alias_lookup: &RegisterAliasLookup<'_>,
+    ) -> (PathEntry, bool, usize) {
+        debug_assert!(node_cap >= 2);
         let mut node_ids = vec![target.endpoint];
         let mut clipped = false;
         if let Some(edge_idx) = target.edge {
             let mut downstream_edge = edge_idx;
             let mut current = graph.edges[edge_idx].from;
             loop {
-                if node_ids.len() >= PATH_NODE_CAP {
+                if node_ids.len() >= node_cap {
                     clipped = true;
                     break;
                 }
@@ -827,6 +858,7 @@ impl Analysis {
                 current = graph.edges[pred_edge].from;
             }
         }
+        let consumed_nodes = node_ids.len();
         if clipped && node_ids.last().copied() != Some(target.startpoint) {
             *node_ids
                 .last_mut()
@@ -848,13 +880,11 @@ impl Analysis {
         let startpoint = self.node_ref(graph, target.startpoint);
         let endpoint = self.node_ref(graph, target.endpoint);
         let class = classify_path(&startpoint, target.kind);
-        let output_aliases = self
-            .endpoints
-            .registers
-            .iter()
-            .find(|group| target.kind == EndpointKind::Register && group.name == target.group)
-            .map(|group| aliases_for_register_bit(&group.output_aliases, target.bit))
-            .unwrap_or_default();
+        let output_aliases = if target.kind == EndpointKind::Register {
+            aliases_for_register_bit(alias_lookup, &target.group, target.bit)
+        } else {
+            Vec::new()
+        };
         (
             PathEntry {
                 depth: target.depth,
@@ -869,6 +899,7 @@ impl Analysis {
                 nodes,
             },
             clipped,
+            consumed_nodes,
         )
     }
 
@@ -905,24 +936,19 @@ impl Analysis {
             .filter_map(|idx| graph.edges.get(*idx))
             .filter(|edge| seen.contains(&edge.from) && seen.contains(&edge.to))
             .collect();
-        edges.sort_by_key(|edge| {
-            (
-                edge.from,
-                edge.to,
-                edge.from_port.clone(),
-                edge.to_port.clone(),
-            )
-        });
+        edges.sort_by(|a, b| compare_raw_edges(a, b));
+        let (edges, edges_truncated) = merge_edges(edges);
         let subgraph = Subgraph {
             nodes,
-            edges: merge_edges(edges),
-            truncated: projection.truncated,
+            edges,
+            truncated: projection.truncated || edges_truncated,
         };
-        if projection.show_infrastructure {
+        let projected = if projection.show_infrastructure {
             subgraph
         } else {
             collapse_infrastructure(graph, subgraph)
-        }
+        };
+        cap_subgraph_edges(projected)
     }
 }
 
@@ -965,21 +991,49 @@ fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass
     }
 }
 
-fn aliases_for_register_bit(aliases: &[OutputAlias], register_bit: usize) -> Vec<OutputAlias> {
+type RegisterAliasLookup<'a> =
+    HashMap<(&'a str, usize), Vec<(&'a OutputAlias, &'a OutputAliasBit)>>;
+
+fn build_alias_lookup(endpoints: &EndpointsResponse) -> RegisterAliasLookup<'_> {
+    let mut lookup: RegisterAliasLookup<'_> = HashMap::new();
+    for group in &endpoints.registers {
+        for alias in &group.output_aliases {
+            for bit in &alias.bits {
+                lookup
+                    .entry((group.name.as_str(), bit.register_bit))
+                    .or_default()
+                    .push((alias, bit));
+            }
+        }
+    }
+    lookup
+}
+
+fn aliases_for_register_bit(
+    lookup: &RegisterAliasLookup<'_>,
+    register_group: &str,
+    register_bit: usize,
+) -> Vec<OutputAlias> {
+    let Some(entries) = lookup.get(&(register_group, register_bit)) else {
+        return Vec::new();
+    };
+    let mut aliases: BTreeMap<(&str, usize), Vec<OutputAliasBit>> = BTreeMap::new();
+    for (alias, bit) in entries {
+        aliases
+            .entry((alias.name.as_str(), alias.width))
+            .or_default()
+            .push((*bit).clone());
+    }
     aliases
-        .iter()
-        .filter_map(|alias| {
-            let bits: Vec<OutputAliasBit> = alias
-                .bits
-                .iter()
-                .filter(|bit| bit.register_bit == register_bit)
-                .cloned()
-                .collect();
-            (!bits.is_empty()).then(|| OutputAlias {
-                name: alias.name.clone(),
-                width: alias.width,
+        .into_iter()
+        .map(|((name, width), mut bits)| {
+            bits.sort_by_key(|bit| (bit.register_bit, bit.output_bit));
+            bits.dedup_by_key(|bit| (bit.register_bit, bit.output_bit));
+            OutputAlias {
+                name: name.to_owned(),
+                width,
                 bits,
-            })
+            }
         })
         .collect()
 }
@@ -1914,8 +1968,9 @@ fn has_visible_neighbor(
         .any(|idx| !should_hide_edge(graph, &graph.edges[*idx], hide_control, hide_const))
 }
 
-fn merge_edges(edges: Vec<&Edge>) -> Vec<GraphEdge> {
+fn merge_edges(edges: Vec<&Edge>) -> (Vec<GraphEdge>, bool) {
     let mut merged: BTreeMap<(NodeId, NodeId, String, String), GraphEdge> = BTreeMap::new();
+    let mut truncated = false;
     for edge in edges {
         let key = (
             edge.from,
@@ -1923,6 +1978,10 @@ fn merge_edges(edges: Vec<&Edge>) -> Vec<GraphEdge> {
             edge.from_port.clone(),
             edge.to_port.clone(),
         );
+        if !merged.contains_key(&key) && merged.len() == MAX_SUBGRAPH_EDGES {
+            truncated = true;
+            break;
+        }
         let entry = merged.entry(key).or_insert_with(|| GraphEdge {
             from: edge.from,
             to: edge.to,
@@ -1934,14 +1993,22 @@ fn merge_edges(edges: Vec<&Edge>) -> Vec<GraphEdge> {
         });
         if let Some(bit) = edge.bit {
             entry.bits.push(bit);
-            entry.bits.sort_unstable();
-            entry.bits.dedup();
         }
         if edge.control {
             entry.control = Some(true);
         }
     }
-    merged.into_values().collect()
+    (
+        merged
+            .into_values()
+            .map(|mut edge| {
+                edge.bits.sort_unstable();
+                edge.bits.dedup();
+                edge
+            })
+            .collect(),
+        truncated,
+    )
 }
 
 fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
@@ -1963,22 +2030,51 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
         outgoing.entry(edge.from).or_default().push(edge);
     }
 
-    let mut projected = Vec::new();
-    for edge in subgraph
+    let mut merged: BTreeMap<(NodeId, NodeId, String, String, String, bool), GraphEdge> =
+        BTreeMap::new();
+    let mut truncated = subgraph.truncated;
+    let mut projection_work = 0usize;
+    'sources: for edge in subgraph
         .edges
         .iter()
         .filter(|edge| !hidden.contains(&edge.from))
     {
+        projection_work += 1;
+        if projection_work > MAX_SUBGRAPH_EDGES {
+            truncated = true;
+            break;
+        }
         let mut queue = VecDeque::from([(edge.clone(), HashSet::new())]);
         while let Some((current, mut visited)) = queue.pop_front() {
             if !hidden.contains(&current.to) {
-                projected.push(current);
+                let key = (
+                    current.from,
+                    current.to,
+                    current.from_port.clone(),
+                    current.to_port.clone(),
+                    current.net_name.clone(),
+                    current.control == Some(true),
+                );
+                if !merged.contains_key(&key) && merged.len() == MAX_SUBGRAPH_EDGES {
+                    truncated = true;
+                    break 'sources;
+                }
+                let entry = merged.entry(key).or_insert_with(|| GraphEdge {
+                    bits: Vec::new(),
+                    ..current.clone()
+                });
+                entry.bits.extend(current.bits);
                 continue;
             }
             if !visited.insert(current.to) {
                 continue;
             }
             for next in outgoing.get(&current.to).into_iter().flatten() {
+                projection_work += 1;
+                if projection_work > MAX_SUBGRAPH_EDGES {
+                    truncated = true;
+                    break 'sources;
+                }
                 let mut combined = GraphEdge {
                     from: current.from,
                     to: next.to,
@@ -1997,35 +2093,73 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
         }
     }
 
-    let mut merged: BTreeMap<(NodeId, NodeId, String, String, String, bool), GraphEdge> =
-        BTreeMap::new();
-    for edge in projected {
-        let key = (
-            edge.from,
-            edge.to,
-            edge.from_port.clone(),
-            edge.to_port.clone(),
-            edge.net_name.clone(),
-            edge.control == Some(true),
-        );
-        let entry = merged.entry(key).or_insert_with(|| GraphEdge {
-            bits: Vec::new(),
-            ..edge.clone()
-        });
-        entry.bits.extend(edge.bits);
-        entry.bits.sort_unstable();
-        entry.bits.dedup();
-    }
-
     Subgraph {
         nodes: subgraph
             .nodes
             .into_iter()
             .filter(|node| !hidden.contains(&node.node.id))
             .collect(),
-        edges: merged.into_values().collect(),
-        truncated: subgraph.truncated,
+        edges: merged
+            .into_values()
+            .map(|mut edge| {
+                edge.bits.sort_unstable();
+                edge.bits.dedup();
+                edge
+            })
+            .collect(),
+        truncated,
     }
+}
+
+fn compare_raw_edges(a: &Edge, b: &Edge) -> Ordering {
+    (
+        a.from,
+        a.to,
+        a.from_port.as_str(),
+        a.to_port.as_str(),
+        a.net_name.as_str(),
+        a.control,
+        a.bit,
+    )
+        .cmp(&(
+            b.from,
+            b.to,
+            b.from_port.as_str(),
+            b.to_port.as_str(),
+            b.net_name.as_str(),
+            b.control,
+            b.bit,
+        ))
+}
+
+fn compare_graph_edges(a: &GraphEdge, b: &GraphEdge) -> Ordering {
+    (
+        a.from,
+        a.to,
+        a.from_port.as_str(),
+        a.to_port.as_str(),
+        a.net_name.as_str(),
+        a.control,
+        a.bits.as_slice(),
+    )
+        .cmp(&(
+            b.from,
+            b.to,
+            b.from_port.as_str(),
+            b.to_port.as_str(),
+            b.net_name.as_str(),
+            b.control,
+            b.bits.as_slice(),
+        ))
+}
+
+fn cap_subgraph_edges(mut subgraph: Subgraph) -> Subgraph {
+    subgraph.edges.sort_by(compare_graph_edges);
+    if subgraph.edges.len() > MAX_SUBGRAPH_EDGES {
+        subgraph.edges.truncate(MAX_SUBGRAPH_EDGES);
+        subgraph.truncated = true;
+    }
+    subgraph
 }
 
 fn build_stats(
@@ -2145,15 +2279,16 @@ fn build_source_map(graph: &Graph, files: Vec<String>) -> SourceMapResponse {
             continue;
         };
         insert_src_lines(src, |file, line| {
-            by_line
-                .entry(format!("{file}:{line}"))
-                .or_default()
-                .push(node.id);
+            let ids = by_line.entry(format!("{file}:{line}")).or_default();
+            if ids.len() < SOURCE_ROOT_COLLECTION_CAP && ids.last() != Some(&node.id) {
+                ids.push(node.id);
+            }
         });
     }
     for ids in by_line.values_mut() {
         ids.sort_unstable();
         ids.dedup();
+        ids.truncate(SOURCE_ROOT_COLLECTION_CAP);
     }
     SourceMapResponse { files, by_line }
 }
@@ -2222,6 +2357,16 @@ mod tests {
     use crate::graph::{CellInfo, Edge, Graph, Node, NodeKind};
     use crate::netlist::{PortDirection, YosysBit, parse_str, select_top};
     use std::time::Instant;
+
+    type EdgeSignature = (
+        NodeId,
+        NodeId,
+        String,
+        String,
+        String,
+        Vec<u32>,
+        Option<bool>,
+    );
 
     fn fixture(name: &str) -> (Graph, Analysis) {
         let json = std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap();
@@ -2336,6 +2481,104 @@ mod tests {
             analysis.endpoints.registers[0].bits[width - 1].bit,
             width - 1
         );
+    }
+
+    #[test]
+    fn wide_bus_edges_merge_once_and_remain_deterministic() {
+        let width = 20_000u32;
+        let edges: Vec<Edge> = (0..width)
+            .rev()
+            .map(|bit| Edge {
+                from: 0,
+                to: 1,
+                from_port: "Y".to_owned(),
+                to_port: "D".to_owned(),
+                bit: Some(bit),
+                net_name: "wide_bus".to_owned(),
+                control: false,
+            })
+            .collect();
+        let started = Instant::now();
+        let (merged, truncated) = merge_edges(edges.iter().collect());
+
+        assert!(started.elapsed().as_secs() < 5);
+        assert!(!truncated);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].bits.len(), width as usize);
+        assert_eq!(merged[0].bits.first(), Some(&0));
+        assert_eq!(merged[0].bits.last(), Some(&(width - 1)));
+    }
+
+    #[test]
+    fn dense_subgraphs_enforce_the_merged_edge_cap_deterministically() {
+        let graph = dense_dag_graph(150);
+        let analysis = Analysis::new(&graph, vec!["dense.sv".to_owned()]);
+
+        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true);
+        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true);
+
+        assert_eq!(first.edges.len(), MAX_SUBGRAPH_EDGES);
+        assert!(first.truncated);
+        assert_eq!(edge_signature(&first), edge_signature(&second));
+    }
+
+    #[test]
+    fn infrastructure_projection_caps_intermediate_work_and_output() {
+        let (graph, subgraph) = branching_infrastructure_subgraph(100, 101);
+
+        let first = cap_subgraph_edges(collapse_infrastructure(&graph, subgraph.clone()));
+        let second = cap_subgraph_edges(collapse_infrastructure(&graph, subgraph));
+
+        assert!(first.truncated);
+        assert!(first.edges.len() <= MAX_SUBGRAPH_EDGES);
+        assert_eq!(edge_signature(&first), edge_signature(&second));
+    }
+
+    #[test]
+    fn path_reconstruction_obeys_the_shared_node_budget() {
+        let graph = deep_register_bank_graph(400, 256);
+        let analysis = Analysis::new(&graph, vec!["deep_bank.sv".to_owned()]);
+
+        let paths = analysis.paths(&graph, 500, None);
+        let reconstructed_nodes: usize = paths.paths.iter().map(|path| path.nodes.len()).sum();
+        let groups: HashSet<_> = paths
+            .paths
+            .iter()
+            .map(|path| path.endpoint_group.as_str())
+            .collect();
+
+        assert!(paths.truncated);
+        assert!(paths.paths.len() < 400);
+        assert_eq!(groups.len(), paths.paths.len());
+        assert!(reconstructed_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
+    }
+
+    #[test]
+    fn source_range_roots_use_a_sentinel_and_propagate_truncation() {
+        let graph = sourced_node_graph(SOURCE_ROOT_COLLECTION_CAP + 500);
+        let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
+        let roots = analysis.source_nodes_range("source.sv", 1, 1).unwrap();
+
+        assert_eq!(roots.len(), SOURCE_ROOT_COLLECTION_CAP);
+        assert_eq!(roots.first(), Some(&0));
+        assert_eq!(roots.last(), Some(&(MAX_SUBGRAPH_NODES as NodeId)));
+
+        let envelope = analysis
+            .envelope(
+                &graph,
+                &roots,
+                ConeOptions {
+                    dir: ConeDir::Fanin,
+                    max_depth: 64,
+                    max_nodes: 400,
+                    hide_control: true,
+                    hide_const: true,
+                    show_infrastructure: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(envelope.nodes.len(), 400);
+        assert!(envelope.truncated);
     }
 
     fn deep_chain_graph(depth: usize) -> Graph {
@@ -2515,5 +2758,282 @@ mod tests {
             blackboxes: Vec::new(),
             signal_fanout: HashMap::new(),
         }
+    }
+
+    fn dense_dag_graph(node_count: usize) -> Graph {
+        let nodes = (0..node_count)
+            .map(|id| combinational_node(id as NodeId, "$and", None))
+            .collect();
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); node_count];
+        let mut incoming = vec![Vec::new(); node_count];
+        let mut from = 0;
+        while from < node_count {
+            let mut to = from + 1;
+            while to < node_count {
+                let edge_idx = edges.len();
+                edges.push(Edge {
+                    from: from as NodeId,
+                    to: to as NodeId,
+                    from_port: "Y".to_owned(),
+                    to_port: "A".to_owned(),
+                    bit: Some(edge_idx as u32),
+                    net_name: format!("n{from}_{to}"),
+                    control: false,
+                });
+                outgoing[from].push(edge_idx);
+                incoming[to].push(edge_idx);
+                to += 1;
+            }
+            from += 1;
+        }
+        graph_from_parts("dense", nodes, edges, outgoing, incoming)
+    }
+
+    fn branching_infrastructure_subgraph(
+        hidden_count: usize,
+        sink_count: usize,
+    ) -> (Graph, Subgraph) {
+        let node_count = 1 + hidden_count + sink_count;
+        let mut nodes = Vec::with_capacity(node_count);
+        nodes.push(combinational_node(0, "$and", None));
+        for id in 1..=hidden_count {
+            nodes.push(combinational_node(id as NodeId, "OBUF", None));
+        }
+        for id in (hidden_count + 1)..node_count {
+            nodes.push(combinational_node(id as NodeId, "$and", None));
+        }
+        let graph = graph_from_parts(
+            "projection",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        );
+        let projected_nodes = graph
+            .nodes
+            .iter()
+            .map(|node| GraphNode {
+                node: node_ref(&graph, node.id),
+                is_root: None,
+                is_boundary: None,
+                depth: None,
+                params: BTreeMap::new(),
+                controls: Vec::new(),
+            })
+            .collect();
+        let mut edges = Vec::new();
+        for hidden in 1..=hidden_count {
+            edges.push(GraphEdge {
+                from: 0,
+                to: hidden as NodeId,
+                from_port: "Y".to_owned(),
+                to_port: "I".to_owned(),
+                net_name: format!("to_hidden_{hidden}"),
+                bits: vec![hidden as u32],
+                control: None,
+            });
+            for sink in 0..sink_count {
+                let sink_id = (hidden_count + 1 + sink) as NodeId;
+                edges.push(GraphEdge {
+                    from: hidden as NodeId,
+                    to: sink_id,
+                    from_port: "O".to_owned(),
+                    to_port: "A".to_owned(),
+                    net_name: format!("h{hidden}_s{sink}"),
+                    bits: vec![(hidden * sink_count + sink) as u32],
+                    control: None,
+                });
+            }
+        }
+        (
+            graph,
+            Subgraph {
+                nodes: projected_nodes,
+                edges,
+                truncated: false,
+            },
+        )
+    }
+
+    fn deep_register_bank_graph(groups: usize, depth: usize) -> Graph {
+        let node_count = 1 + depth + groups;
+        let mut nodes = Vec::with_capacity(node_count);
+        nodes.push(Node {
+            id: 0,
+            kind: NodeKind::PortBit,
+            name: "in".to_owned(),
+            raw_name: "in".to_owned(),
+            cell_type: None,
+            seq: false,
+            blackbox: false,
+            src: None,
+            params: BTreeMap::new(),
+            port: Some("in".to_owned()),
+            port_bit: Some(0),
+            port_dir: Some(PortDirection::Input),
+            const_value: None,
+        });
+        for id in 1..=depth {
+            nodes.push(combinational_node(id as NodeId, "$and", None));
+        }
+        for group in 0..groups {
+            let id = (depth + 1 + group) as NodeId;
+            nodes.push(Node {
+                id,
+                kind: NodeKind::Cell,
+                name: format!("q{group}"),
+                raw_name: format!("q{group}"),
+                cell_type: Some("$dff".to_owned()),
+                seq: true,
+                blackbox: false,
+                src: None,
+                params: BTreeMap::new(),
+                port: None,
+                port_bit: None,
+                port_dir: None,
+                const_value: None,
+            });
+        }
+
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); node_count];
+        let mut incoming = vec![Vec::new(); node_count];
+        for step in 0..depth {
+            add_test_edge(
+                &mut edges,
+                &mut outgoing,
+                &mut incoming,
+                step as NodeId,
+                (step + 1) as NodeId,
+                step as u32,
+            );
+        }
+        let mut net_aliases = HashMap::new();
+        let mut cell_info = HashMap::new();
+        for group in 0..groups {
+            let id = (depth + 1 + group) as NodeId;
+            let data_net = depth.saturating_sub(1) as u32;
+            add_test_edge(
+                &mut edges,
+                &mut outgoing,
+                &mut incoming,
+                depth as NodeId,
+                id,
+                data_net,
+            );
+            let q_net = 1_000_000 + group as u32;
+            net_aliases.insert(q_net, vec![format!("q{group}[0]")]);
+            cell_info.insert(
+                id,
+                CellInfo {
+                    q_bits: vec![YosysBit::Net(q_net)],
+                    d_bits: vec![YosysBit::Net(data_net)],
+                    clock_net: None,
+                    output_ports: HashSet::from(["Q".to_owned()]),
+                    input_ports: HashSet::from(["D".to_owned()]),
+                },
+            );
+        }
+        let mut graph = graph_from_parts("deep_bank", nodes, edges, outgoing, incoming);
+        graph.net_aliases = net_aliases;
+        graph.cell_info = cell_info;
+        graph
+    }
+
+    fn sourced_node_graph(node_count: usize) -> Graph {
+        let nodes = (0..node_count)
+            .map(|id| combinational_node(id as NodeId, "$and", Some("source.sv:1")))
+            .collect();
+        graph_from_parts(
+            "sourced",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        )
+    }
+
+    fn combinational_node(id: NodeId, cell_type: &str, src: Option<&str>) -> Node {
+        Node {
+            id,
+            kind: NodeKind::Cell,
+            name: format!("n{id}"),
+            raw_name: format!("n{id}"),
+            cell_type: Some(cell_type.to_owned()),
+            seq: false,
+            blackbox: false,
+            src: src.map(str::to_owned),
+            params: BTreeMap::new(),
+            port: None,
+            port_bit: None,
+            port_dir: None,
+            const_value: None,
+        }
+    }
+
+    fn add_test_edge(
+        edges: &mut Vec<Edge>,
+        outgoing: &mut [Vec<usize>],
+        incoming: &mut [Vec<usize>],
+        from: NodeId,
+        to: NodeId,
+        bit: u32,
+    ) {
+        let edge_idx = edges.len();
+        edges.push(Edge {
+            from,
+            to,
+            from_port: "Y".to_owned(),
+            to_port: if to as usize + 1 == outgoing.len() {
+                "D".to_owned()
+            } else {
+                "A".to_owned()
+            },
+            bit: Some(bit),
+            net_name: format!("n{bit}"),
+            control: false,
+        });
+        outgoing[from as usize].push(edge_idx);
+        incoming[to as usize].push(edge_idx);
+    }
+
+    fn graph_from_parts(
+        top: &str,
+        nodes: Vec<Node>,
+        edges: Vec<Edge>,
+        outgoing: Vec<Vec<usize>>,
+        incoming: Vec<Vec<usize>>,
+    ) -> Graph {
+        Graph {
+            nodes,
+            edges,
+            outgoing,
+            incoming,
+            top: top.to_owned(),
+            net_names: HashMap::new(),
+            net_aliases: HashMap::new(),
+            cell_info: HashMap::new(),
+            blackboxes: Vec::new(),
+            signal_fanout: HashMap::new(),
+        }
+    }
+
+    fn edge_signature(subgraph: &Subgraph) -> Vec<EdgeSignature> {
+        subgraph
+            .edges
+            .iter()
+            .map(|edge| {
+                (
+                    edge.from,
+                    edge.to,
+                    edge.from_port.clone(),
+                    edge.to_port.clone(),
+                    edge.net_name.clone(),
+                    edge.bits.clone(),
+                    edge.control,
+                )
+            })
+            .collect()
     }
 }
