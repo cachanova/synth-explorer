@@ -805,7 +805,7 @@ const logos = [
     draw: () =>
       path('M26 12H13c-6 0-8 4-6 8s12 4 16 11-1 21-9 21H5', 'logic', 3.8) +
       path('M59 11H48c-12 0-19 9-19 21s7 21 19 21h11Z', 'secondary', 3.5) +
-      path('M59 15h4M59 32h4M59 49h4', 'wire', 3.2),
+      path('M59 15h2M59 32h2M59 49h2', 'wire', 3.2),
   },
   {
     id: 'E09',
@@ -924,7 +924,7 @@ const clearChoice = document.querySelector('#clear-choice')
 const toast = document.querySelector('#toast')
 
 const requestedFamily = new URLSearchParams(location.search).get('family')
-let activeFamily = requestedFamily && familyNames[requestedFamily] ? requestedFamily : 'all'
+let activeFamily = requestedFamily && Object.hasOwn(familyNames, requestedFamily) ? requestedFamily : 'all'
 let query = ''
 let selected = null
 let previewTheme = 'dark'

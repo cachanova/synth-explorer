@@ -35,8 +35,26 @@ const interactionHarness = [
   '    const doc = frame.contentDocument',
   "    check(doc.querySelectorAll('.logo-card').length === 63, 'initial card count')",
   "    check(doc.querySelector('#selection-id').textContent === 'N07', 'hash selection')",
+  "    const cardSvgs = Array.from(doc.querySelectorAll('.card-stage svg'))",
+  "    check(cardSvgs.length === 63, 'stage SVG count')",
+  '    for (const svg of cardSvgs) {',
+  "      const id = svg.closest('.logo-card').dataset.id",
+  '      const viewBox = svg.viewBox.baseVal',
+  "      check(viewBox.x === 0 && viewBox.y === 0 && viewBox.width === 64 && viewBox.height === 64, id + ' viewBox')",
+  "      const geometry = svg.querySelectorAll('path, circle, rect, line, polyline, polygon, ellipse')",
+  "      check(geometry.length > 0, id + ' geometry')",
+  '      const box = svg.getBBox()',
+  "      check([box.x, box.y, box.width, box.height].every(Number.isFinite), id + ' finite bounds')",
+  "      check(box.width > 0 && box.height > 0, id + ' nonempty bounds')",
+  "      check(box.x >= -2 && box.y >= -2 && box.x + box.width <= 66 && box.y + box.height <= 66, id + ' in-bounds geometry')",
+  "      for (const candidatePath of svg.querySelectorAll('path')) {",
+  '        const length = candidatePath.getTotalLength()',
+  "        check(Number.isFinite(length) && length > 0, id + ' valid path')",
+  '      }',
+  '    }',
   "    doc.querySelector('.filter[data-family=signal]').click()",
   "    check(doc.querySelectorAll('.logo-card').length === 9, 'signal filter')",
+  "    check(frame.contentWindow.location.search === '?family=signal', 'filter URL state')",
   "    const search = doc.querySelector('#search')",
   "    search.value = 'phase'",
   "    search.dispatchEvent(new Event('input', { bubbles: true }))",
@@ -45,11 +63,14 @@ const interactionHarness = [
   "    doc.querySelector('.theme-button[data-theme=light]').click()",
   "    check(doc.querySelector('#selected-stage').classList.contains('theme-light'), 'light theme')",
   "    doc.querySelector('.filter[data-family=all]').click()",
+  "    check(frame.contentWindow.location.search === '', 'clear filter URL state')",
   "    search.value = ''",
   "    search.dispatchEvent(new Event('input', { bubbles: true }))",
   "    doc.querySelector('input[value=M01]').click()",
   "    check(doc.querySelector('#selection-id').textContent === 'M01', 'radio selection')",
   "    check(doc.querySelector('input[value=M01]').checked, 'native radio state')",
+  "    check(frame.contentWindow.location.hash === '#m01', 'radio URL state')",
+  "    check(frame.contentWindow.localStorage.getItem('synth-explorer-logo-choice') === 'M01', 'radio storage state')",
   "    Object.defineProperty(frame.contentWindow.navigator, 'clipboard', { value: { writeText: () => Promise.reject(new Error('denied')) }, configurable: true })",
   '    doc.execCommand = () => false',
   "    doc.querySelector('#copy-choice').click()",
@@ -59,6 +80,7 @@ const interactionHarness = [
   '    await delay(100)',
   "    check(doc.querySelector('#selection-id').textContent === 'None', 'invalid hash clears selection')",
   "    check(frame.contentWindow.localStorage.getItem('synth-explorer-logo-choice') === null, 'invalid hash clears storage')",
+  "    check(frame.contentWindow.location.hash === '', 'invalid hash clears URL state')",
   "    result.textContent = 'PASS interactions'",
   '  } catch (error) {',
   "    result.textContent = 'FAIL ' + error.message",
@@ -201,6 +223,14 @@ try {
   )
   assert.match(invalidDom, /id="selection-id">None</, 'invalid hash must remain unselected')
   assert.doesNotMatch(invalidDom, /<img src="x"/, 'hash content must never become markup')
+
+  const invalidFamilyDom = await dumpDom(
+    browser,
+    origin + '/logo-lab/index.html?family=constructor',
+    invalidProfileDir,
+  )
+  assert.equal(countMatches(invalidFamilyDom, /class="logo-card/g), 63, 'invalid family must show all cards')
+  assert.match(invalidFamilyDom, /data-family="all" aria-pressed="true"/, 'invalid family must fall back to All')
 
   const seDom = await dumpDom(
     browser,
