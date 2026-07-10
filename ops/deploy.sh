@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly RELEASE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+readonly BASE_DIR="${SYNTH_EXPLORER_BASE_DIR:-${RELEASE_DIR}}"
+readonly STATE_DIR="${SYNTH_EXPLORER_STATE_DIR:-${BASE_DIR}/state}"
+readonly CURRENT_LINK="${SYNTH_EXPLORER_CURRENT_LINK:-${BASE_DIR}/current}"
+readonly COMPOSE_FILE="${RELEASE_DIR}/compose.prod.yml"
+readonly ENV_FILE="${STATE_DIR}/.env"
+readonly PREVIOUS_FILE="${STATE_DIR}/.previous-image"
+readonly PREVIOUS_RELEASE_FILE="${STATE_DIR}/.previous-release"
+readonly LOCK_FILE="${STATE_DIR}/.deploy.lock"
+readonly PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://synthexplorer.dev}"
+
+die() {
+  printf 'deploy: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+valid_image_ref() {
+  [[ "$1" =~ ^[a-zA-Z0-9._/-]+(:[a-zA-Z0-9._-]+)?@sha256:[a-f0-9]{64}$ ]]
+}
+
+read_current_ref() {
+  if [[ -f "${ENV_FILE}" ]]; then
+    awk -F= '$1 == "IMAGE_REF" { sub(/^IMAGE_REF=/, ""); print; exit }' "${ENV_FILE}"
+  fi
+}
+
+write_current_ref() {
+  local image_ref=$1
+  local temporary
+  temporary="$(mktemp "${STATE_DIR}/.env.XXXXXX")"
+  chmod 0600 "${temporary}"
+  printf 'IMAGE_REF=%s\n' "${image_ref}" >"${temporary}"
+  mv -- "${temporary}" "${ENV_FILE}"
+}
+
+current_release() {
+  if [[ -L "${CURRENT_LINK}" ]]; then
+    readlink -f -- "${CURRENT_LINK}"
+  fi
+}
+
+point_current_at() {
+  local release_dir=$1
+  [[ -d "${release_dir}" ]] || die "release directory does not exist: ${release_dir}"
+  if [[ -e "${CURRENT_LINK}" && ! -L "${CURRENT_LINK}" ]]; then
+    die "${CURRENT_LINK} exists but is not a symlink"
+  fi
+  ln -sfn -- "${release_dir}" "${CURRENT_LINK}"
+}
+
+compose_in_release() {
+  local release_dir=$1
+  shift
+  docker compose --project-directory "${release_dir}" \
+    --file "${release_dir}/compose.prod.yml" "$@"
+}
+
+compose() {
+  compose_in_release "${RELEASE_DIR}" "$@"
+}
+
+validate_caddy() {
+  local image_ref=$1
+  IMAGE_REF="${image_ref}" compose run --rm --no-deps --entrypoint caddy \
+    caddy validate --config /etc/caddy/Caddyfile
+}
+
+wait_for_app() {
+  local release_dir=$1
+  local image_ref=$2
+  local container_id status
+  local deadline=$((SECONDS + 120))
+
+  while (( SECONDS < deadline )); do
+    container_id="$(IMAGE_REF="${image_ref}" compose_in_release "${release_dir}" ps --quiet app 2>/dev/null || true)"
+    if [[ -n "${container_id}" ]]; then
+      status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}" 2>/dev/null || true)"
+      if [[ "${status}" == healthy ]]; then
+        return 0
+      fi
+      if [[ "${status}" == exited || "${status}" == dead ]]; then
+        docker logs --tail 100 "${container_id}" >&2 || true
+        return 1
+      fi
+    fi
+    sleep 2
+  done
+
+  if [[ -n "${container_id:-}" ]]; then
+    docker inspect --format '{{json .State}}' "${container_id}" >&2 || true
+    docker logs --tail 100 "${container_id}" >&2 || true
+  fi
+  return 1
+}
+
+rollback() {
+  local failed_ref=$1
+  local previous_ref=$2
+  local previous_release=$3
+  local previous_commit previous_smoke
+
+  printf 'deploy: deployment failed; rolling back\n' >&2
+  if valid_image_ref "${previous_ref}" && [[ -n "${previous_release}" && -d "${previous_release}" ]]; then
+    write_current_ref "${previous_ref}"
+    previous_commit="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${previous_ref}" 2>/dev/null || true)"
+    previous_smoke="${previous_release}/ops/smoke-test.sh"
+    [[ -x "${previous_smoke}" ]] || previous_smoke="${SCRIPT_DIR}/smoke-test.sh"
+    if [[ "${previous_commit}" =~ ^[a-f0-9]{40}$ ]] \
+      && IMAGE_REF="${previous_ref}" compose_in_release "${previous_release}" up --detach --remove-orphans --force-recreate \
+      && wait_for_app "${previous_release}" "${previous_ref}" \
+      && "${previous_smoke}" "${PUBLIC_BASE_URL}" "${previous_commit}"; then
+      point_current_at "${previous_release}"
+      printf 'deploy: restored %s from %s\n' "${previous_ref}" "${previous_release}" >&2
+      return 0
+    fi
+    printf 'deploy: rollback to %s from %s failed\n' "${previous_ref}" "${previous_release}" >&2
+    return 1
+  fi
+
+  IMAGE_REF="${failed_ref}" compose down >/dev/null 2>&1 || true
+  rm -f -- "${ENV_FILE}"
+  printf 'deploy: no previous image was available; stopped failed first deployment\n' >&2
+  return 0
+}
+
+main() {
+  [[ $# -eq 1 ]] || die "usage: $0 <image-ref@sha256:digest>"
+  local new_ref=$1
+  valid_image_ref "${new_ref}" || die "image reference must include a sha256 digest"
+
+  require_command docker
+  require_command curl
+  require_command flock
+  require_command jq
+  require_command readlink
+  require_command ln
+  install -d -m 0750 -- "${STATE_DIR}"
+  [[ -f "${COMPOSE_FILE}" ]] || die "missing ${COMPOSE_FILE}"
+  [[ -f "${RELEASE_DIR}/Caddyfile" ]] || die "missing ${RELEASE_DIR}/Caddyfile"
+  [[ -x "${SCRIPT_DIR}/smoke-test.sh" ]] || die "missing executable ${SCRIPT_DIR}/smoke-test.sh"
+  docker compose version >/dev/null
+
+  exec 9>"${LOCK_FILE}"
+  flock --nonblock 9 || die "another deployment is in progress"
+
+  local previous_ref previous_release expected_commit
+  previous_ref="$(read_current_ref)"
+  previous_release="$(current_release)"
+  if [[ -n "${previous_ref}" ]] && ! valid_image_ref "${previous_ref}"; then
+    die "existing IMAGE_REF is not an immutable digest"
+  fi
+  if [[ -n "${previous_ref}" && -z "${previous_release}" ]]; then
+    die "existing IMAGE_REF has no current release symlink"
+  fi
+
+  IMAGE_REF="${new_ref}" compose config --quiet
+  docker pull "${new_ref}"
+  validate_caddy "${new_ref}"
+  expected_commit="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${new_ref}")"
+  [[ "${expected_commit}" =~ ^[a-f0-9]{40}$ ]] \
+    || die "image revision label must be a full 40-character Git commit"
+
+  if [[ -n "${previous_ref}" && "${previous_ref}" != "${new_ref}" ]]; then
+    printf '%s\n' "${previous_ref}" >"${PREVIOUS_FILE}"
+  fi
+  if [[ -n "${previous_release}" ]]; then
+    printf '%s\n' "${previous_release}" >"${PREVIOUS_RELEASE_FILE}"
+  fi
+  write_current_ref "${new_ref}"
+
+  if ! IMAGE_REF="${new_ref}" compose up --detach --remove-orphans --force-recreate; then
+    rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
+    die "docker compose failed"
+  fi
+  if ! wait_for_app "${RELEASE_DIR}" "${new_ref}"; then
+    rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
+    die "application did not become healthy"
+  fi
+  if ! "${SCRIPT_DIR}/smoke-test.sh" "${PUBLIC_BASE_URL}" "${expected_commit}"; then
+    if valid_image_ref "${previous_ref}" && [[ -n "${previous_release}" ]]; then
+      rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
+      die "external smoke test failed"
+    fi
+    point_current_at "${RELEASE_DIR}"
+    die "external smoke test failed after first healthy deployment; stack left running for DNS/TLS retry"
+  fi
+
+  point_current_at "${RELEASE_DIR}"
+  printf 'deploy: deployed %s (%s) from %s\n' "${new_ref}" "${expected_commit}" "${RELEASE_DIR}"
+}
+
+main "$@"

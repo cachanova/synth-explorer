@@ -463,7 +463,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_rejects_traversal_and_shell_tokens() {
+    fn validation_rejects_traversal_filename() {
         let request = SynthRequest {
             files: vec![SourceFile {
                 name: "../bad.sv".to_owned(),
@@ -471,9 +471,45 @@ mod tests {
             }],
             top: None,
             mode: SynthMode::Rtl,
-            extra_args: Some("-abc9;rm".to_owned()),
+            extra_args: None,
         };
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_yosys_script_injection() {
+        let request = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            mode: SynthMode::Gates,
+            extra_args: Some("-noabc;rm".to_owned()),
+        };
+        let error = request.validate().unwrap_err();
+        assert_eq!(error.to_string(), "invalid extra_args token: -noabc;rm");
+    }
+
+    #[test]
+    fn synthesis_flags_are_normalized_and_appended_to_the_selected_pass() {
+        let input = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            mode: SynthMode::Gates,
+            extra_args: Some("  -nofsm   -noabc  ".to_owned()),
+        }
+        .validate()
+        .unwrap();
+
+        assert_eq!(input.extra_args, ["-nofsm", "-noabc"]);
+        assert_eq!(
+            build_script(&input),
+            "read_verilog -sv design.sv\nsynth -top top -flatten -nofsm -noabc\nwrite_json netlist.json\n"
+        );
     }
 
     #[test]

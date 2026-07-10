@@ -232,9 +232,16 @@ gh workflow run deploy-production.yml --ref main -f publish_only=false
 Select the new run in GitHub Actions and confirm that both jobs pass.
 
 The host deploy script accepts an immutable digest reference. It rejects tags,
-updates `IMAGE_REF`, starts the Compose project, and runs health and synthesis
-checks. If the new release fails, the script restores the prior image reference
-and checks the restored service before returning an error.
+unpacks each workflow run under `/opt/synth-explorer/releases/`, stores mutable
+state under `/opt/synth-explorer/state/`, starts the Compose project, and runs
+health and synthesis checks. For routine deploys, the `/opt/synth-explorer/current`
+symlink moves only after the public smoke test passes. If the new release fails,
+the script restores both the prior image reference and the prior release directory
+before returning an error.
+
+On the first deployment, a locally healthy stack is left running if only the
+public DNS/TLS smoke test fails. That lets Caddy keep serving ACME challenges and
+lets the external check be retried without taking the service back down.
 
 Verify the release from an administrator workstation:
 

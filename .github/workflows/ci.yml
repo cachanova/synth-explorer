@@ -100,6 +100,7 @@ jobs:
           tags: synth-explorer:ci
           build-args: |
             BUILD_COMMIT=${{ github.sha }}
+            YOSYS_BUILD_JOBS=4
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

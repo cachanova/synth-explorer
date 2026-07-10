@@ -28,7 +28,7 @@ almost immediately.
 
 ## Running it
 
-Requirements: `yosys` on PATH (tested with 0.64), Rust stable, Node 24.11.1
+Requirements: `yosys` on PATH (tested with 0.67), Rust stable, Node 24.11.1
 (npm 11.6.2).
 
 ```bash

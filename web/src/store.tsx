@@ -10,6 +10,7 @@ import {
 import * as api from './api'
 import { createLatestGuard } from './lib/latest'
 import type { SrcSpan } from './lib/src'
+import { buildSynthesizeRequest } from './lib/synthesize'
 import type {
   DesignFile,
   Example,
@@ -255,12 +256,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setSynthesizing(true)
     setError(null)
     try {
-      const res = await api.synthesize({
-        files,
-        top: top.trim() || undefined,
-        mode,
-        extra_args: extraArgs.trim() || undefined,
-      })
+      const res = await api.synthesize(
+        buildSynthesizeRequest(files, top, mode, extraArgs),
+      )
       if (!synthGuard.isCurrent(token)) return
       setDesign(res)
       setConeReq(null)

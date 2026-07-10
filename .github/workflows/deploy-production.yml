@@ -55,6 +55,7 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           build-args: |
             BUILD_COMMIT=${{ github.sha }}
+            YOSYS_BUILD_JOBS=4
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -139,7 +140,8 @@ jobs:
           : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
           : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
           tar -czf "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
-            compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh
+            compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh \
+            examples/05_shared_logic.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
@@ -157,12 +159,32 @@ jobs:
           ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
-            "set -eu; \
-             install -d -m 0755 /opt/synth-explorer; \
-             tar -xzf '/tmp/synth-explorer-${GITHUB_SHA}.tar.gz' -C /opt/synth-explorer; \
-             rm -f '/tmp/synth-explorer-${GITHUB_SHA}.tar.gz'; \
-             cd /opt/synth-explorer; \
-             ./ops/deploy.sh '${IMAGE_REF}'"
+            "IMAGE_REF='${IMAGE_REF}' COMMIT_SHA='${GITHUB_SHA}' RELEASE_ID='${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' bash -se" <<'REMOTE'
+          set -eu
+          base_dir=/opt/synth-explorer
+          releases_dir="${base_dir}/releases"
+          state_dir="${base_dir}/state"
+          release_dir="${releases_dir}/${RELEASE_ID}"
+          temporary_dir="${releases_dir}/.${RELEASE_ID}.tmp"
+          bundle="/tmp/synth-explorer-${COMMIT_SHA}.tar.gz"
+
+          case "${RELEASE_ID}" in
+            *[!a-f0-9-]* | "")
+              echo "invalid release id: ${RELEASE_ID}" >&2
+              exit 1
+              ;;
+          esac
+
+          install -d -m 0755 "${releases_dir}" "${state_dir}"
+          rm -rf -- "${temporary_dir}"
+          test ! -e "${release_dir}"
+          install -d -m 0755 "${temporary_dir}"
+          tar -xzf "${bundle}" -C "${temporary_dir}"
+          rm -f -- "${bundle}"
+          mv -- "${temporary_dir}" "${release_dir}"
+          cd "${release_dir}"
+          SYNTH_EXPLORER_BASE_DIR="${base_dir}" ./ops/deploy.sh "${IMAGE_REF}"
+          REMOTE
 
       - name: Verify production from outside the host
         run: ./ops/smoke-test.sh "$PRODUCTION_URL" "$GITHUB_SHA"

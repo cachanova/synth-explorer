@@ -73,10 +73,15 @@ Request:
   files: { name: string; content: string }[]; // name: bare filename, [A-Za-z0-9._-]+, .v/.sv
   top?: string;          // omitted -> yosys -auto-top
   mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx";
-  extra_args?: string;   // whitespace-separated tokens, each ^[A-Za-z0-9_+=.,:-]+$,
-                         // appended to the mode's synth command
+  extra_args?: string;   // flags for the selected synthesis pass; see below
 }
 ```
+
+`extra_args` is appended to the mode's `prep`, `synth`, or `synth_*` command;
+it does not accept global Yosys CLI flags or arbitrary script commands. Values
+are split on whitespace and every token must match
+`^[A-Za-z0-9_+=.,:-]+$`. Supported flags are mode-specific, and invalid or
+conflicting combinations return a synthesis error with the Yosys log.
 
 Response `200`:
 

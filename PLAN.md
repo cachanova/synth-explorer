@@ -32,12 +32,12 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   **elkjs** (layered layout, same engine netlistsvg uses) in a Web Worker for
   cone layout, custom SVG rendering with pan/zoom.
 - **Synthesis: Yosys** subprocess (`write_json` netlists). Verified against
-  Yosys 0.64. Vivado is future work behind the same `SynthBackend` seam (the
+  Yosys 0.67. Vivado is future work behind the same `SynthBackend` seam (the
   runner module is the only place that knows how a netlist gets produced).
 - No database. Designs live in an in-memory store keyed by a content hash of
   (sources, mode, args); re-synthesizing identical input is a cache hit.
 
-## Synthesis Modes (verified against Yosys 0.64)
+## Synthesis Modes (verified against Yosys 0.67)
 
 | Mode | Script core | Produces |
 | --- | --- | --- |
