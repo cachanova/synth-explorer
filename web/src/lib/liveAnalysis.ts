@@ -9,13 +9,17 @@ export interface SourceSelection {
 export interface SynthesisInput {
   request: SynthesizeRequest
   key: string
+  revision: number
 }
 
+// This identity is exact but O(total source bytes). Callers deliberately
+// materialize it only for a manual or debounced synthesis, never per edit.
 export function synthesisInput(
   files: DesignFile[],
   top: string,
   mode: Mode,
   extraArgs: string,
+  revision = 0,
 ): SynthesisInput {
   const request = {
     files,
@@ -23,7 +27,7 @@ export function synthesisInput(
     mode,
     extra_args: extraArgs.trim() || undefined,
   }
-  return { request, key: JSON.stringify(request) }
+  return { request, key: JSON.stringify(request), revision }
 }
 
 export function normalizeSourceSelection(
@@ -43,9 +47,9 @@ export function normalizeSourceSelection(
  */
 export function retainQueuedSynthesis(
   queued: SynthesisInput | null,
-  currentKey: string,
+  currentRevision: number,
 ): SynthesisInput | null {
-  return queued?.key === currentKey ? queued : null
+  return queued?.revision === currentRevision ? queued : null
 }
 
 /** The running request already covers a reverted input, so no follow-up is needed. */

@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { LaidOutGraph, LaidOutNode, Point } from '../lib/layout'
+import {
+  panViewport,
+  viewportTransformAttribute,
+  zoomViewportAt,
+  type LaidOutGraph,
+  type LaidOutNode,
+  type Point,
+  type ViewportTransform,
+} from '../lib/layout'
 import { nodeLabel, nodeSublabel, shortNetName } from '../lib/prettyType'
 import {
   arithGlyph,
@@ -17,12 +25,6 @@ import {
   type SymbolKind,
 } from '../lib/symbols'
 import type { GraphNode } from '../types'
-
-interface Transform {
-  x: number
-  y: number
-  k: number
-}
 
 interface Props {
   graph: LaidOutGraph
@@ -56,8 +58,7 @@ interface NodeVisual {
 interface PanState {
   x: number
   y: number
-  tx: number
-  ty: number
+  transform: ViewportTransform
   moved: boolean
 }
 
@@ -382,8 +383,9 @@ export function GraphView({
   fitNonce,
 }: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null)
-  const [transform, setTransform] = useState<Transform>({ x: 0, y: 0, k: 1 })
-  const [panning, setPanning] = useState(false)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const viewportRef = useRef<SVGGElement | null>(null)
+  const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
   const [hoveredId, setHoveredId] = useState<number | null>(null)
   const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
   const panState = useRef<PanState | null>(null)
@@ -433,6 +435,14 @@ export function GraphView({
     return { nodeById, drivingNet, pinsById, portDirection }
   }, [graph])
 
+  // The graph can contain thousands of SVG elements. Keep pointer-frequency
+  // pan/zoom updates outside React so moving the viewport only mutates this
+  // outer group instead of reconciling every edge and node.
+  const applyTransform = useCallback((next: ViewportTransform) => {
+    transformRef.current = next
+    viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
+  }, [])
+
   const fit = useCallback(() => {
     const stage = stageRef.current
     if (!stage || graph.nodes.length === 0) return
@@ -442,12 +452,12 @@ export function GraphView({
     const height = graph.height || 1
     const scale = Math.min((rect.width - pad) / width, (rect.height - pad) / height, 1.5)
     const safeScale = scale > 0 && Number.isFinite(scale) ? scale : 1
-    setTransform({
+    applyTransform({
       x: (rect.width - width * safeScale) / 2,
       y: (rect.height - height * safeScale) / 2,
       k: safeScale,
     })
-  }, [graph])
+  }, [applyTransform, graph])
 
   useLayoutEffect(() => {
     userAdjusted.current = false
@@ -478,25 +488,26 @@ export function GraphView({
     return () => observer.disconnect()
   }, [active, fit])
 
-  const onWheel = useCallback((event: React.WheelEvent) => {
-    event.preventDefault()
-    const stage = stageRef.current
-    if (!stage) return
-    const rect = stage.getBoundingClientRect()
-    const mouseX = event.clientX - rect.left
-    const mouseY = event.clientY - rect.top
-    userAdjusted.current = true
-    setTransform((previous) => {
-      const factor = Math.exp(-event.deltaY * 0.0016)
-      const scale = Math.min(Math.max(previous.k * factor, 0.08), 4)
-      const ratio = scale / previous.k
-      return {
-        k: scale,
-        x: mouseX - (mouseX - previous.x) * ratio,
-        y: mouseY - (mouseY - previous.y) * ratio,
-      }
-    })
-  }, [])
+  const onWheel = useCallback(
+    (event: React.WheelEvent) => {
+      event.preventDefault()
+      const stage = stageRef.current
+      if (!stage) return
+      const rect = stage.getBoundingClientRect()
+      const mouseX = event.clientX - rect.left
+      const mouseY = event.clientY - rect.top
+      userAdjusted.current = true
+      applyTransform(
+        zoomViewportAt(
+          transformRef.current,
+          mouseX,
+          mouseY,
+          Math.exp(-event.deltaY * 0.0016),
+        ),
+      )
+    },
+    [applyTransform],
+  )
 
   const onPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
@@ -505,28 +516,28 @@ export function GraphView({
       panState.current = {
         x: event.clientX,
         y: event.clientY,
-        tx: transform.x,
-        ty: transform.y,
+        transform: transformRef.current,
         moved: false,
       }
-      setPanning(true)
+      event.currentTarget.classList.add('panning')
     },
-    [transform],
+    [],
   )
 
-  const onPointerMove = useCallback((event: React.PointerEvent<SVGSVGElement>) => {
-    const pan = panState.current
-    if (!pan) return
-    const dx = event.clientX - pan.x
-    const dy = event.clientY - pan.y
-    if (!pan.moved && Math.hypot(dx, dy) >= 2) {
-      pan.moved = true
-      userAdjusted.current = true
-    }
-    if (pan.moved) {
-      setTransform((previous) => ({ ...previous, x: pan.tx + dx, y: pan.ty + dy }))
-    }
-  }, [])
+  const onPointerMove = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      const pan = panState.current
+      if (!pan) return
+      const dx = event.clientX - pan.x
+      const dy = event.clientY - pan.y
+      if (!pan.moved && Math.hypot(dx, dy) >= 2) {
+        pan.moved = true
+        userAdjusted.current = true
+      }
+      if (pan.moved) applyTransform(panViewport(pan.transform, dx, dy))
+    },
+    [applyTransform],
+  )
 
   const finishPan = useCallback(() => {
     const moved = Boolean(panState.current?.moved)
@@ -537,29 +548,30 @@ export function GraphView({
       }, 0)
     }
     panState.current = null
-    setPanning(false)
+    svgRef.current?.classList.remove('panning')
   }, [])
 
   const cancelPan = useCallback(() => {
     suppressClick.current = false
     panState.current = null
-    setPanning(false)
+    svgRef.current?.classList.remove('panning')
   }, [])
+
+  useEffect(() => {
+    if (active) return
+    panState.current = null
+    suppressClick.current = false
+    svgRef.current?.classList.remove('panning')
+  }, [active])
 
   const zoomBy = (factor: number) => {
     userAdjusted.current = true
-    setTransform((previous) => {
-      const rect = stageRef.current?.getBoundingClientRect()
-      const centerX = rect ? rect.width / 2 : 0
-      const centerY = rect ? rect.height / 2 : 0
-      const scale = Math.min(Math.max(previous.k * factor, 0.08), 4)
-      const ratio = scale / previous.k
-      return {
-        k: scale,
-        x: centerX - (centerX - previous.x) * ratio,
-        y: centerY - (centerY - previous.y) * ratio,
-      }
-    })
+    const rect = stageRef.current?.getBoundingClientRect()
+    const centerX = rect ? rect.width / 2 : 0
+    const centerY = rect ? rect.height / 2 : 0
+    applyTransform(
+      zoomViewportAt(transformRef.current, centerX, centerY, factor),
+    )
   }
 
   useEffect(() => {
@@ -573,7 +585,7 @@ export function GraphView({
   return (
     <div className="graph-stage" ref={stageRef}>
       <svg
-        className={panning ? 'panning' : ''}
+        ref={svgRef}
         width={stageSize?.width ?? '100%'}
         height={stageSize?.height ?? '100%'}
         onWheel={onWheel}
@@ -614,7 +626,7 @@ export function GraphView({
           </marker>
         </defs>
 
-        <g transform={`translate(${transform.x},${transform.y}) scale(${transform.k})`}>
+        <g ref={viewportRef}>
           {graph.edges.map((laidOutEdge, index) => {
             const highlighted = highlight.has(laidOutEdge.from) && highlight.has(laidOutEdge.to)
             let points = laidOutEdge.points

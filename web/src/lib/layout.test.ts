@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
-import { MAX_GRAPH_RENDER_NODES } from './graphLimits'
-import { layoutSubgraph, nodeDimensions, toElkGraph } from './layout'
+import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
+import {
+  layoutSubgraph,
+  nodeDimensions,
+  panViewport,
+  toElkGraph,
+  viewportTransformAttribute,
+  zoomViewportAt,
+} from './layout'
 
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({
   id,
@@ -84,5 +91,44 @@ describe('schematic layout sizing', () => {
     }
 
     await expect(layoutSubgraph(oversized)).rejects.toThrow('cone too large')
+  })
+
+  it('enforces the shared 10000 merged-edge cap before starting ELK', async () => {
+    expect(MAX_GRAPH_EDGES).toBe(10_000)
+    const edge = {
+      from: 1,
+      to: 2,
+      from_port: 'Y',
+      to_port: 'A',
+      net_name: 'dense',
+      bits: [1],
+    }
+    const oversized: Subgraph = {
+      nodes: [node(1, '$_BUF_'), node(2, '$_BUF_')],
+      edges: Array.from({ length: MAX_GRAPH_EDGES + 1 }, () => edge),
+      truncated: true,
+    }
+
+    await expect(layoutSubgraph(oversized)).rejects.toThrow(
+      '10001 merged edges; limit 10000',
+    )
+  })
+})
+
+describe('viewport transforms', () => {
+  it('pans without changing scale and emits the SVG transform', () => {
+    const moved = panViewport({ x: 10, y: 20, k: 2 }, 5, -7)
+    expect(moved).toEqual({ x: 15, y: 13, k: 2 })
+    expect(viewportTransformAttribute(moved)).toBe('translate(15,13) scale(2)')
+  })
+
+  it('zooms around a fixed screen-space anchor and clamps scale', () => {
+    const previous = { x: 10, y: 20, k: 1 }
+    const zoomed = zoomViewportAt(previous, 110, 70, 2)
+    expect(zoomed).toEqual({ x: -90, y: -30, k: 2 })
+    expect((110 - zoomed.x) / zoomed.k).toBe((110 - previous.x) / previous.k)
+    expect((70 - zoomed.y) / zoomed.k).toBe((70 - previous.y) / previous.k)
+    expect(zoomViewportAt(previous, 0, 0, 100).k).toBe(4)
+    expect(zoomViewportAt(previous, 0, 0, 0.001).k).toBe(0.08)
   })
 })

@@ -41,6 +41,16 @@ describe('synthesis input identity', () => {
       synthesisInput(files, 'top', 'gates', '-flatten').key,
     )
   })
+
+  it('keeps stable request identity separate from the cheap edit revision', () => {
+    const files = [{ name: 'top.sv', content: 'module top; endmodule' }]
+    const first = synthesisInput(files, 'top', 'gates', '', 2)
+    const reverted = synthesisInput(files, 'top', 'gates', '', 9)
+
+    expect(first.key).toBe(reverted.key)
+    expect(first.revision).toBe(2)
+    expect(reverted.revision).toBe(9)
+  })
 })
 
 describe('source selection normalization', () => {
@@ -62,35 +72,55 @@ describe('source selection normalization', () => {
 })
 
 describe('latest-only synthesis queue', () => {
-  const input = (content: string) =>
-    synthesisInput([{ name: 'top.sv', content }], 'top', 'gates', '')
+  const input = (content: string, revision: number) =>
+    synthesisInput([{ name: 'top.sv', content }], 'top', 'gates', '', revision)
 
   it('replaces the bounded slot with the latest requested input', () => {
-    const running = input('A')
-    const newest = input('C')
+    const running = input('A', 1)
+    const newest = input('C', 3)
 
     expect(queuedSynthesisForRequest(running.key, newest)).toBe(newest)
   })
 
   it('discards a queued edit when the current input reverts to the running input', () => {
-    const running = input('A')
-    const obsolete = input('B')
+    const running = input('A', 1)
+    const obsolete = input('B', 2)
 
-    expect(retainQueuedSynthesis(obsolete, running.key)).toBeNull()
+    expect(retainQueuedSynthesis(obsolete, running.revision)).toBeNull()
+    expect(retainQueuedSynthesis(obsolete, obsolete.revision)).toBe(obsolete)
     expect(queuedSynthesisForRequest(running.key, running)).toBeNull()
   })
 
   it('discards a queued input when a newer edit is still inside the idle window', () => {
-    const queued = input('B')
-    const current = input('C')
+    const queued = input('B', 2)
+    const current = input('C', 3)
 
-    expect(retainQueuedSynthesis(queued, current.key)).toBeNull()
-    expect(retainQueuedSynthesis(current, current.key)).toBe(current)
+    expect(retainQueuedSynthesis(queued, current.revision)).toBeNull()
+    expect(retainQueuedSynthesis(current, current.revision)).toBe(current)
+  })
+
+  it('does not queue an exact revert to the running request', () => {
+    const running = synthesisInput(
+      [{ name: 'top.sv', content: 'A' }],
+      'top',
+      'gates',
+      '',
+      1,
+    )
+    const reverted = synthesisInput(
+      [{ name: 'top.sv', content: 'A' }],
+      'top',
+      'gates',
+      '',
+      3,
+    )
+
+    expect(queuedSynthesisForRequest(running.key, reverted)).toBeNull()
   })
 
   it('refreshes when an obsolete request is running even if the last design matches', () => {
-    const current = input('A')
-    const obsoleteRunning = input('B')
+    const current = input('A', 3)
+    const obsoleteRunning = input('B', 2)
 
     expect(
       analysisNeedsRefresh(current.key, current.key, obsoleteRunning.key),

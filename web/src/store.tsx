@@ -93,6 +93,8 @@ export type AnalysisState =
   | 'refreshing'
   | 'error'
 
+type ResolvedInputIdentity = Pick<SynthesisInput, 'key' | 'revision'>
+
 const MAX_SOURCE_LINES = 200
 const AUTO_SYNTH_DELAY_MS = 3000
 
@@ -225,9 +227,12 @@ export function useStore(): Store {
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<DesignFile[]>([DEFAULT_FILE])
   const [activeFileName, setActiveFileNameState] = useState(DEFAULT_FILE.name)
-  const [top, setTop] = useState('')
-  const [mode, setMode] = useState<Mode>('gates')
-  const [extraArgs, setExtraArgs] = useState('')
+  const [top, setTopState] = useState('')
+  const [mode, setModeState] = useState<Mode>('gates')
+  const [extraArgs, setExtraArgsState] = useState('')
+  const [inputRevision, setInputRevision] = useState(0)
+  const [resolvedInputIdentity, setResolvedInputIdentity] =
+    useState<ResolvedInputIdentity | null>(null)
   const [examples, setExamples] = useState<Example[]>([])
 
   const [synthesizing, setSynthesizing] = useState(false)
@@ -264,16 +269,53 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   designInputKeyRef.current = designInputKey
   const designRef = useRef(design)
   designRef.current = design
-
-  const currentInput = useMemo(
-    () => synthesisInput(files, top, mode, extraArgs),
-    [files, top, mode, extraArgs],
-  )
-  const currentInputRef = useRef(currentInput)
-  currentInputRef.current = currentInput
+  const filesRef = useRef(files)
+  filesRef.current = files
+  const topRef = useRef(top)
+  topRef.current = top
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const extraArgsRef = useRef(extraArgs)
+  extraArgsRef.current = extraArgs
+  const inputRevisionRef = useRef(inputRevision)
+  inputRevisionRef.current = inputRevision
+  const resolvedInputRef = useRef<SynthesisInput | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<SynthesisInput | null>(null)
+
+  const materializeCurrentInput = useCallback((): SynthesisInput => {
+    const revision = inputRevisionRef.current
+    const cached = resolvedInputRef.current
+    if (cached?.revision === revision) return cached
+
+    const resolved = synthesisInput(
+      filesRef.current,
+      topRef.current,
+      modeRef.current,
+      extraArgsRef.current,
+      revision,
+    )
+    resolvedInputRef.current = resolved
+    setResolvedInputIdentity((current) =>
+      current?.revision === revision && current.key === resolved.key
+        ? current
+        : { revision, key: resolved.key },
+    )
+    return resolved
+  }, [])
+
+  const markInputChanged = useCallback(() => {
+    const revision = inputRevisionRef.current + 1
+    inputRevisionRef.current = revision
+    queuedInputRef.current = null
+    setInputRevision(revision)
+  }, [])
+
+  const resolvedCurrentInput =
+    resolvedInputIdentity?.revision === inputRevision
+      ? resolvedInputIdentity
+      : null
 
   const analysisState: AnalysisState = synthesizing
     ? 'refreshing'
@@ -281,7 +323,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       ? error
         ? 'error'
         : 'none'
-      : designInputKey === currentInput.key
+      : designInputKey === resolvedCurrentInput?.key
         ? 'current'
         : error
           ? 'error'
@@ -305,65 +347,132 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
   }
 
-  const updateFileContent = useCallback((name: string, content: string) => {
-    setFiles((fs) => fs.map((f) => (f.name === name ? { ...f, content } : f)))
-  }, [])
+  const updateFileContent = useCallback(
+    (name: string, content: string) => {
+      const current = filesRef.current
+      const existing = current.find((file) => file.name === name)
+      if (!existing || existing.content === content) return
+      const next = current.map((file) =>
+        file.name === name ? { ...file, content } : file,
+      )
+      filesRef.current = next
+      markInputChanged()
+      setFiles(next)
+    },
+    [markInputChanged],
+  )
 
   const addFile = useCallback(() => {
-    setFiles((fs) => {
-      let i = fs.length
-      let name = `file${i}.sv`
-      const names = new Set(fs.map((f) => f.name))
-      while (names.has(name)) {
-        i += 1
-        name = `file${i}.sv`
-      }
-      setActiveFileNameState(name)
-      setSourceSelectionState({ file: name, startLine: 1, endLine: 1 })
-      return [...fs, { name, content: '' }]
-    })
-  }, [])
+    const current = filesRef.current
+    let i = current.length
+    let name = `file${i}.sv`
+    const names = new Set(current.map((file) => file.name))
+    while (names.has(name)) {
+      i += 1
+      name = `file${i}.sv`
+    }
+    const next = [...current, { name, content: '' }]
+    filesRef.current = next
+    markInputChanged()
+    setFiles(next)
+    setActiveFileNameState(name)
+    setSourceSelectionState({ file: name, startLine: 1, endLine: 1 })
+  }, [markInputChanged])
 
   const renameFile = useCallback(
     (oldName: string, newName: string) => {
       const clean = newName.trim()
       if (!clean || !/^[A-Za-z0-9._-]+$/.test(clean)) return
-      setFiles((fs) => {
-        if (fs.some((f) => f.name === clean && f.name !== oldName)) return fs
-        return fs.map((f) => (f.name === oldName ? { ...f, name: clean } : f))
-      })
+      const current = filesRef.current
+      if (
+        clean === oldName ||
+        !current.some((file) => file.name === oldName) ||
+        current.some((file) => file.name === clean && file.name !== oldName)
+      ) {
+        return
+      }
+      const next = current.map((file) =>
+        file.name === oldName ? { ...file, name: clean } : file,
+      )
+      filesRef.current = next
+      markInputChanged()
+      setFiles(next)
       setActiveFileNameState((cur) => (cur === oldName ? clean : cur))
       setSourceSelectionState((cur) =>
         cur.file === oldName ? { ...cur, file: clean } : cur,
       )
     },
-    [],
+    [markInputChanged],
   )
 
-  const deleteFile = useCallback((name: string) => {
-    setFiles((fs) => {
-      if (fs.length <= 1) return fs
-      const next = fs.filter((f) => f.name !== name)
+  const deleteFile = useCallback(
+    (name: string) => {
+      const current = filesRef.current
+      if (current.length <= 1 || !current.some((file) => file.name === name)) return
+      const next = current.filter((file) => file.name !== name)
+      filesRef.current = next
+      markInputChanged()
+      setFiles(next)
       setActiveFileNameState((cur) => (cur === name ? next[0].name : cur))
       setSourceSelectionState((cur) =>
         cur.file === name
           ? { file: next[0].name, startLine: 1, endLine: 1 }
           : cur,
       )
-      return next
-    })
-  }, [])
+    },
+    [markInputChanged],
+  )
 
-  const loadExample = useCallback((ex: Example) => {
-    setFiles(ex.files.length ? ex.files : [DEFAULT_FILE])
-    const firstFile = ex.files[0]?.name ?? DEFAULT_FILE.name
-    setActiveFileNameState(firstFile)
-    setSourceSelectionState({ file: firstFile, startLine: 1, endLine: 1 })
-    setTop(ex.top ?? '')
-  }, [])
+  const setTop = useCallback(
+    (value: string) => {
+      if (topRef.current === value) return
+      topRef.current = value
+      markInputChanged()
+      setTopState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setMode = useCallback(
+    (value: Mode) => {
+      if (modeRef.current === value) return
+      modeRef.current = value
+      markInputChanged()
+      setModeState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setExtraArgs = useCallback(
+    (value: string) => {
+      if (extraArgsRef.current === value) return
+      extraArgsRef.current = value
+      markInputChanged()
+      setExtraArgsState(value)
+    },
+    [markInputChanged],
+  )
+
+  const loadExample = useCallback(
+    (ex: Example) => {
+      const nextFiles = ex.files.length ? ex.files : [DEFAULT_FILE]
+      const nextTop = ex.top ?? ''
+      filesRef.current = nextFiles
+      topRef.current = nextTop
+      markInputChanged()
+      setFiles(nextFiles)
+      const firstFile = ex.files[0]?.name ?? DEFAULT_FILE.name
+      setActiveFileNameState(firstFile)
+      setSourceSelectionState({ file: firstFile, startLine: 1, endLine: 1 })
+      setTopState(nextTop)
+    },
+    [markInputChanged],
+  )
 
   const synthesize = useCallback(async () => {
-    const requested = currentInputRef.current
+    // Materializing the full request (and JSON-keying source content) happens
+    // only on manual synthesis or after the idle debounce, never per keystroke.
+    const requested = materializeCurrentInput()
     if (synthesisRunningRef.current) {
       // One bounded slot, always replaced by the newest complete input. A
       // revert to the running input clears an obsolete queued edit.
@@ -407,7 +516,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // awaiting; TypeScript cannot observe that asynchronous mutation.
         const queued = retainQueuedSynthesis(
           queuedInputRef.current as SynthesisInput | null,
-          currentInputRef.current.key,
+          inputRevisionRef.current,
         )
         queuedInputRef.current = queued
         if (queued && queued.key !== running.key) next = queued
@@ -417,21 +526,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [])
+  }, [materializeCurrentInput])
 
   // Source/top/mode/argument/example changes make the prior analysis stale.
   // Cursor movement is deliberately absent from this dependency list.
   useEffect(() => {
     queuedInputRef.current = retainQueuedSynthesis(
       queuedInputRef.current,
-      currentInput.key,
+      inputRevision,
     )
     if (!autoSynthesize) return
     const timer = window.setTimeout(() => {
-      const key = currentInputRef.current.key
+      const current = materializeCurrentInput()
       if (
         analysisNeedsRefresh(
-          key,
+          current.key,
           designInputKeyRef.current,
           synthesisRunningRef.current ? synthesisKeyRef.current : null,
         )
@@ -440,7 +549,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     }, AUTO_SYNTH_DELAY_MS)
     return () => window.clearTimeout(timer)
-  }, [autoSynthesize, currentInput.key, synthesize])
+  }, [autoSynthesize, inputRevision, materializeCurrentInput, synthesize])
 
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
     setGraphOptionsState((o) => ({ ...o, ...patch }))
@@ -520,9 +629,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return
     }
     if (analysisStateRef.current !== 'current') return
-    const submittedNames = new Set(
-      currentInputRef.current.request.files.map((f) => f.name),
-    )
+    const submittedNames = new Set(filesRef.current.map((file) => file.name))
     const primary = spans.findIndex((span) => submittedNames.has(span.file))
     const primaryIndex = primary >= 0 ? primary : 0
     const primarySpan = spans[primaryIndex]
@@ -643,6 +750,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       addFile,
       renameFile,
       deleteFile,
+      setTop,
+      setMode,
+      setExtraArgs,
       loadExample,
       synthesizing,
       design,

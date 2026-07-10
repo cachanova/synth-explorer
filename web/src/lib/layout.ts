@@ -4,7 +4,7 @@
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
 import type { GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
-import { MAX_GRAPH_RENDER_NODES } from './graphLimits'
+import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import { nodeLabel } from './prettyType'
 import { controlLabel, controlsFor, symbolKind } from './symbols'
 
@@ -34,6 +34,45 @@ export interface LaidOutGraph {
   edges: LaidOutEdge[]
   width: number
   height: number
+}
+
+export interface ViewportTransform {
+  x: number
+  y: number
+  k: number
+}
+
+const MIN_VIEWPORT_SCALE = 0.08
+const MAX_VIEWPORT_SCALE = 4
+
+export function viewportTransformAttribute(transform: ViewportTransform): string {
+  return `translate(${transform.x},${transform.y}) scale(${transform.k})`
+}
+
+export function panViewport(
+  start: ViewportTransform,
+  deltaX: number,
+  deltaY: number,
+): ViewportTransform {
+  return { ...start, x: start.x + deltaX, y: start.y + deltaY }
+}
+
+export function zoomViewportAt(
+  previous: ViewportTransform,
+  anchorX: number,
+  anchorY: number,
+  factor: number,
+): ViewportTransform {
+  const scale = Math.min(
+    Math.max(previous.k * factor, MIN_VIEWPORT_SCALE),
+    MAX_VIEWPORT_SCALE,
+  )
+  const ratio = scale / previous.k
+  return {
+    k: scale,
+    x: anchorX - (anchorX - previous.x) * ratio,
+    y: anchorY - (anchorY - previous.y) * ratio,
+  }
 }
 
 const CHAR_WIDTH = 7.2
@@ -97,6 +136,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 
 /** Build the ELK graph description from a Subgraph. */
 export function toElkGraph(sub: Subgraph): ElkNode {
+  assertRenderableSubgraph(sub)
   const children: ElkNode[] = sub.nodes.map((n) => {
     const { width, height } = nodeDimensions(n)
     return { id: String(n.id), width, height }
@@ -122,6 +162,19 @@ export function toElkGraph(sub: Subgraph): ElkNode {
     },
     children,
     edges,
+  }
+}
+
+function assertRenderableSubgraph(sub: Subgraph): void {
+  if (sub.nodes.length > MAX_GRAPH_RENDER_NODES) {
+    throw new Error(
+      `cone too large (${sub.nodes.length} nodes) — reduce depth or pick a narrower signal`,
+    )
+  }
+  if (sub.edges.length > MAX_GRAPH_EDGES) {
+    throw new Error(
+      `cone too dense (${sub.edges.length} merged edges; limit ${MAX_GRAPH_EDGES}) — reduce depth or pick a narrower signal`,
+    )
   }
 }
 
@@ -214,19 +267,14 @@ function getWorker(): Worker {
   return w
 }
 
-/** Lay out a Subgraph in the worker. Rejects if node count exceeds the cap. */
+/** Lay out a Subgraph in the worker. Rejects before worker/SVG work at either cap. */
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
 ): Promise<LaidOutGraph> {
-  if (sub.nodes.length > MAX_GRAPH_RENDER_NODES) {
-    throw new Error(
-      `cone too large (${sub.nodes.length} nodes) — reduce depth or pick a narrower signal`,
-    )
-  }
+  const graph = toElkGraph(sub)
   const w = getWorker()
   const id = ++seq
-  const graph = toElkGraph(sub)
   const result = await new Promise<ElkNode>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
