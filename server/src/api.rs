@@ -4,6 +4,7 @@ use crate::analysis::{
 };
 use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
+use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
 use crate::yosys::{SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderValue, Method, StatusCode};
@@ -184,14 +185,26 @@ async fn synthesize(
             format!("failed to build analysis graph: {err}"),
         )
     })?;
-    let analysis = Analysis::new(&graph, validated.file_names());
+    let SourceAliasProvenance {
+        roots_by_line,
+        synthesizable_lines,
+    } = continuous_assign_provenance(
+        &graph,
+        validated
+            .files
+            .iter()
+            .map(|file| (file.name.clone(), file.content.clone())),
+    );
+    let mut analysis = Analysis::new(&graph, validated.file_names());
+    analysis.extend_source_roots(roots_by_line);
     let (_, source_module) = select_top(&source_parsed, None).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to resolve source-provenance top module: {err}"),
         )
     })?;
-    let source_index = SourceLineIndex::from_module(source_module, validated.file_names());
+    let mut source_index = SourceLineIndex::from_module(source_module, validated.file_names());
+    source_index.extend_lines(synthesizable_lines);
     let response = SynthesizeResponse {
         design_id: design_id.clone(),
         top: output.resolved_top,

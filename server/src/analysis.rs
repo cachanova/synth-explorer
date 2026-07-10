@@ -240,6 +240,10 @@ impl SourceLineIndex {
         }
         Some((start_line..=end_line).any(|line| self.lines.contains(&format!("{file}:{line}"))))
     }
+
+    pub fn extend_lines(&mut self, lines: impl IntoIterator<Item = String>) {
+        self.lines.extend(lines);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -339,6 +343,15 @@ impl Analysis {
 
     pub fn source_map(&self) -> SourceMapResponse {
         self.source_map.clone()
+    }
+
+    pub fn extend_source_roots(&mut self, roots_by_line: BTreeMap<String, Vec<NodeId>>) {
+        for (line, roots) in roots_by_line {
+            let ids = self.source_map.by_line.entry(line).or_default();
+            ids.extend(roots);
+            ids.sort_unstable();
+            ids.dedup();
+        }
     }
 
     pub fn source_nodes(&self, file: &str, line: usize) -> Option<&[NodeId]> {
@@ -1378,7 +1391,7 @@ fn is_labeled_control_edge(graph: &Graph, edge: &Edge) -> bool {
     }
     match control_role(&edge.to_port) {
         ControlRole::Clock | ControlRole::Reset | ControlRole::Set => true,
-        ControlRole::Enable => graph.outgoing[edge.from as usize].len() >= 8,
+        ControlRole::Enable => graph.signal_fanout(edge) >= 8,
         ControlRole::Other => false,
     }
 }
@@ -1391,18 +1404,15 @@ fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
             continue;
         }
         let role = control_role(&edge.to_port);
-        let net = edge.net_name.to_ascii_lowercase();
-        let active_low =
-            (matches!(
-                role,
-                ControlRole::Reset | ControlRole::Set | ControlRole::Enable
-            ) && (net.ends_with("_n") || net.ends_with("_b") || edge.to_port.ends_with('N')))
-            .then_some(true);
-        let generated =
-            (role == ControlRole::Clock).then(|| !is_simple_control_source(graph, edge.from));
-        let fanout = graph.outgoing[edge.from as usize].len();
-        let synchronous =
-            control_synchronous(graph.nodes[node_id as usize].cell_type.as_deref(), role);
+        let cell_type = graph.nodes[node_id as usize].cell_type.as_deref();
+        let active_low = control_active_low(cell_type, role, &edge.to_port, &edge.net_name);
+        let generated = matches!(
+            role,
+            ControlRole::Clock | ControlRole::Reset | ControlRole::Set
+        )
+        .then(|| !is_simple_control_source(graph, edge.from));
+        let fanout = graph.signal_fanout(edge);
+        let synchronous = control_synchronous(cell_type, role);
         controls.push(ControlRef {
             role,
             pin: edge.to_port.clone(),
@@ -1446,12 +1456,72 @@ fn control_synchronous(cell_type: Option<&str>, role: ControlRole) -> Option<boo
     {
         return Some(true);
     }
-    if upper.starts_with("$_DFF_") && upper.matches('_').count() >= 3
-        || matches!(upper.as_str(), "$ADFF" | "$ADFFE" | "FDCE" | "FDPE")
+    if upper.starts_with("$_DFF_")
+        || upper.starts_with("$_DFFE_")
+        || upper.starts_with("$_DFFSR_")
+        || upper.starts_with("$_DFFSRE_")
+        || upper.starts_with("$_ALDFF_")
+        || upper.starts_with("$_ALDFFE_")
+        || upper.starts_with("$_DLATCH")
+        || matches!(
+            upper.as_str(),
+            "$ADFF"
+                | "$ADFFE"
+                | "$ALDFF"
+                | "$ALDFFE"
+                | "$DFFSR"
+                | "$DFFSRE"
+                | "$ADLATCH"
+                | "$DLATCHSR"
+                | "FDCE"
+                | "FDPE"
+        )
     {
         return Some(false);
     }
     None
+}
+
+fn control_active_low(
+    cell_type: Option<&str>,
+    role: ControlRole,
+    pin: &str,
+    net_name: &str,
+) -> Option<bool> {
+    if matches!(role, ControlRole::Reset | ControlRole::Set)
+        && let Some(encoded) = hard_cell_control_active_low(cell_type?, role)
+    {
+        return Some(encoded);
+    }
+    let net = net_name.to_ascii_lowercase();
+    (matches!(
+        role,
+        ControlRole::Reset | ControlRole::Set | ControlRole::Enable
+    ) && (net.ends_with("_n") || net.ends_with("_b") || pin.to_ascii_uppercase().ends_with('N')))
+    .then_some(true)
+}
+
+fn hard_cell_control_active_low(cell_type: &str, role: ControlRole) -> Option<bool> {
+    let upper = cell_type.to_ascii_uppercase();
+    let inner = upper.strip_prefix("$_")?.strip_suffix('_')?;
+    let (family, flags) = inner.split_once('_')?;
+    let flags = flags.as_bytes();
+    let polarity = match (family, role) {
+        ("DFF", ControlRole::Reset)
+        | ("DFFE", ControlRole::Reset)
+        | ("SDFF", ControlRole::Reset)
+        | ("SDFFE", ControlRole::Reset)
+        | ("SDFFCE", ControlRole::Reset)
+        | ("DLATCH", ControlRole::Reset) => flags.get(1),
+        ("DFFSR" | "DFFSRE" | "DLATCHSR", ControlRole::Set) => flags.get(1),
+        ("DFFSR" | "DFFSRE" | "DLATCHSR", ControlRole::Reset) => flags.get(2),
+        _ => None,
+    }?;
+    match polarity {
+        b'N' => Some(true),
+        b'P' => Some(false),
+        _ => None,
+    }
 }
 
 fn is_simple_control_source(graph: &Graph, start: NodeId) -> bool {
@@ -1987,6 +2057,7 @@ mod tests {
             net_aliases: HashMap::new(),
             cell_info: HashMap::new(),
             blackboxes: Vec::new(),
+            signal_fanout: HashMap::new(),
         }
     }
 }

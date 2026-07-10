@@ -61,6 +61,7 @@ pub struct Graph {
     pub net_aliases: HashMap<u32, Vec<String>>,
     pub cell_info: HashMap<NodeId, CellInfo>,
     pub blackboxes: Vec<NodeId>,
+    pub(crate) signal_fanout: HashMap<(NodeId, String, Option<u32>), usize>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,11 +95,12 @@ impl Graph {
         let mut cell_nodes: HashMap<String, NodeId> = HashMap::new();
 
         for (port_name, port) in &module.ports {
-            for (idx, bit) in port.bits.iter().enumerate() {
-                let name = bit
-                    .net()
-                    .and_then(|net| builder.net_names.get(&net).cloned())
-                    .unwrap_or_else(|| bit_name(port_name, idx, port.bits.len()));
+            for (idx, _bit) in port.bits.iter().enumerate() {
+                // A port node represents the interface signal, even when Yosys
+                // aliases it directly to another port's bit (`assign y = a`).
+                // Using the canonical net name here would make output `y` appear
+                // as another node named `a` and erase the top-level identity.
+                let name = bit_name(port_name, idx, port.bits.len());
                 let id = builder.add_node(Node {
                     id: 0,
                     kind: NodeKind::PortBit,
@@ -282,6 +284,7 @@ impl Graph {
             }
         }
 
+        let signal_fanout = build_signal_fanout(&builder.edges);
         Ok(Self {
             nodes: builder.nodes,
             edges: builder.edges,
@@ -292,6 +295,7 @@ impl Graph {
             net_aliases,
             cell_info: builder.cell_info,
             blackboxes: builder.blackboxes,
+            signal_fanout,
         })
     }
 
@@ -313,6 +317,25 @@ impl Graph {
             .get(id as usize)
             .is_some_and(|node| matches!(node.kind, NodeKind::Cell) && !node.seq)
     }
+
+    /// Number of sink pins driven by this exact output port and net bit.
+    /// Keeping this precomputed avoids quadratic scans for high-fanout controls.
+    pub fn signal_fanout(&self, edge: &Edge) -> usize {
+        self.signal_fanout
+            .get(&(edge.from, edge.from_port.clone(), edge.bit))
+            .copied()
+            .unwrap_or(1)
+    }
+}
+
+fn build_signal_fanout(edges: &[Edge]) -> HashMap<(NodeId, String, Option<u32>), usize> {
+    let mut counts = HashMap::new();
+    for edge in edges {
+        *counts
+            .entry((edge.from, edge.from_port.clone(), edge.bit))
+            .or_default() += 1;
+    }
+    counts
 }
 
 struct GraphBuilder {
@@ -581,6 +604,17 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
             vendor_primitive_class(cell_type),
             Some(VendorPrimitiveClass::Sequential)
         )
+}
+
+/// True only for edge-triggered/latch storage whose output is a register value.
+/// Stateful memories and addressable shift-register LUTs remain traversal
+/// boundaries, but must not be presented as ordinary registers or registered
+/// top-level-output aliases.
+pub fn is_register_type(cell_type: &str) -> bool {
+    let upper = cell_type.to_ascii_uppercase();
+    is_sequential_type(cell_type)
+        && !cell_type.starts_with("$mem")
+        && !matches!(upper.as_str(), "SRL16E" | "SRLC32E")
 }
 
 pub fn is_blackbox_cell(

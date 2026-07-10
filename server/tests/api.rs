@@ -379,6 +379,16 @@ async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() 
     assert_eq!(optimized["status"], "optimized_or_absorbed");
     assert_eq!(optimized["graph"]["nodes"], json!([]));
 
+    let wire_only_assign = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=optimized.sv&start_line=7&end_line=7"),
+    )
+    .await;
+    assert_eq!(wire_only_assign["status"], "mapped");
+    let assign_nodes = wire_only_assign["graph"]["nodes"].as_array().unwrap();
+    assert!(assign_nodes.iter().any(|node| node["name"] == "a"));
+    assert!(assign_nodes.iter().any(|node| node["name"] == "y"));
+
     let declaration = get_json(
         &mut app,
         &format!("/api/design/{design_id}/line-cone?file=optimized.sv&start_line=1&end_line=1"),
