@@ -646,6 +646,7 @@ table.grid tr.expanded td {
 }
 .graph-stage {
   flex: 1 1 auto;
+  width: 100%;
   position: relative;
   min-height: 0;
   overflow: hidden;
@@ -654,8 +655,6 @@ table.grid tr.expanded td {
   background-size: 22px 22px;
 }
 .graph-stage svg {
-  width: 100%;
-  height: 100%;
   display: block;
   cursor: grab;
 }
@@ -780,6 +779,82 @@ table.grid tr.expanded td {
 }
 .g-node-body {
   cursor: pointer;
+  outline: none;
+}
+.g-node-body:focus-visible .g-symbol-outline {
+  filter: drop-shadow(0 0 3px var(--accent));
+}
+.g-symbol-outline {
+  transition: stroke 100ms ease, fill 100ms ease;
+}
+.g-symbol-detail {
+  stroke-width: 1;
+  pointer-events: none;
+}
+.g-lut-detail {
+  stroke-dasharray: 2 2;
+  opacity: 0.65;
+}
+.g-operator-glyph {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 600;
+  fill: var(--text);
+  pointer-events: none;
+}
+.g-boundary-badge {
+  font-family: var(--mono);
+  font-size: 7px;
+  letter-spacing: 0.7px;
+  fill: var(--text-faint);
+  pointer-events: none;
+}
+.g-pin-labels {
+  pointer-events: none;
+}
+.g-pin-labels line {
+  stroke: var(--accent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.g-pin-labels text {
+  font-family: var(--mono);
+  font-size: 7.5px;
+  font-weight: 600;
+  fill: var(--text);
+  paint-order: stroke;
+  stroke: var(--bg-2);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+.g-control-label rect {
+  fill: var(--bg-3);
+  stroke: var(--seq);
+  stroke-width: 0.75;
+  vector-effect: non-scaling-stroke;
+}
+.g-control-label text {
+  font-family: var(--mono);
+  font-size: 7.5px;
+  fill: var(--text-dim);
+  pointer-events: none;
+}
+.g-control-label.generated rect {
+  fill: rgba(210, 153, 34, 0.12);
+  stroke: var(--amber);
+  stroke-width: 1.2;
+}
+.g-control-label.generated text {
+  fill: var(--amber);
+  font-weight: 700;
+}
+.g-control-label.clickable {
+  cursor: pointer;
+}
+.g-control-label.clickable:hover rect,
+.g-control-label.clickable:focus-visible rect {
+  stroke: var(--accent);
+  stroke-width: 1.5;
 }
 
 /* ---- compare ---- */
