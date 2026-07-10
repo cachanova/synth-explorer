@@ -464,6 +464,134 @@ endmodule
     }));
 }
 
+#[tokio::test]
+async fn hard_flip_flop_encoding_drives_reset_polarity_metadata() {
+    let source = r#"
+module active_low_reset (
+    input  wire clk,
+    input  wire reset,
+    input  wire d,
+    output reg  q
+);
+  always @(posedge clk or negedge reset)
+    if (!reset) q <= 1'b0;
+    else q <= d;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "active_low_reset.sv", "content": source}],
+                        "top": "active_low_reset",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    let netlist = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=100"),
+    )
+    .await;
+    let reset = netlist["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|node| node["controls"].as_array().into_iter().flatten())
+        .find(|control| control["role"] == "reset")
+        .expect("hard flip-flop should expose a reset control label");
+    assert_eq!(reset["active_low"], true);
+    assert_eq!(reset["synchronous"], false);
+    assert_eq!(reset["generated"], false);
+}
+
+#[tokio::test]
+async fn enable_label_threshold_counts_only_the_driven_net_bit() {
+    let source = r#"
+(* blackbox *)
+module enabled_sink (
+    input  wire EN,
+    input  wire D,
+    output wire Q
+);
+endmodule
+
+module local_enable_vector (
+    input  wire       clk,
+    input  wire       d,
+    input  wire [7:0] next,
+    output wire       q,
+    output wire [7:0] mirror
+);
+  reg [7:0] controls;
+  always @(posedge clk) controls <= next;
+  enabled_sink sink (.EN(controls[0]), .D(d), .Q(q));
+  assign mirror = controls;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "local_enable_vector.sv", "content": source}],
+                        "top": "local_enable_vector",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    let netlist = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=100"),
+    )
+    .await;
+    let sink = netlist["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["cell_type"] == "enabled_sink")
+        .expect("enabled sink in netlist");
+    let sink_id = sink["id"].as_u64().unwrap();
+    assert!(
+        sink["controls"]
+            .as_array()
+            .is_none_or(|controls| controls.iter().all(|control| control["role"] != "enable"))
+    );
+    let edges = netlist["edges"].as_array().unwrap();
+    assert!(
+        edges.iter().any(|edge| {
+            edge["to"].as_u64() == Some(sink_id)
+                && matches!(edge["to_port"].as_str(), Some("EN" | "E" | "CE"))
+        }),
+        "local enable edge should remain wired: {edges:#?}"
+    );
+}
+
 async fn get_json(app: &mut axum::Router, uri: &str) -> serde_json::Value {
     let response = get_response(app, uri).await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -549,6 +677,14 @@ async fn blackbox_input_paths_contribute_to_stats_max_depth() {
         .max()
         .unwrap();
     assert_eq!(stats_max_depth, top_path_depth);
+    let boundary_path = paths["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|path| path["startpoint"]["cell_type"] == "mystery_core")
+        .expect("blackbox output should remain visible as a path boundary");
+    assert_eq!(boundary_path["class"], "other");
+    assert_eq!(boundary_path["startpoint"]["register"], false);
 }
 
 async fn get_response(app: &mut axum::Router, uri: &str) -> axum::response::Response {

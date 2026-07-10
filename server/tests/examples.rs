@@ -28,6 +28,26 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
     (graph, analysis)
 }
 
+async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) -> (Graph, Analysis) {
+    let request = SynthRequest {
+        files: vec![SourceFile {
+            name: name.to_owned(),
+            content: source.to_owned(),
+        }],
+        top: Some(top.to_owned()),
+        mode,
+        extra_args: None,
+    }
+    .validate()
+    .unwrap();
+    let output = run_yosys(&request).await.unwrap();
+    let netlist = parse_value(output.json).unwrap();
+    let (resolved_top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, resolved_top, module).unwrap();
+    let analysis = Analysis::new(&graph, request.file_names());
+    (graph, analysis)
+}
+
 fn is_lut_cell(cell_type: &str) -> bool {
     matches!(
         cell_type,
@@ -236,6 +256,58 @@ async fn xilinx_adder_depth_excludes_buffers() {
         "infrastructure should be collapsed from paths"
     );
     assert_eq!(path.depth as usize, weighted_comb_count);
+}
+
+#[tokio::test]
+async fn xilinx_shift_register_luts_are_stateful_boundaries_not_register_aliases() {
+    let source = r#"
+module shift_lut (
+    input  wire       clk,
+    input  wire       en,
+    input  wire       d,
+    input  wire [3:0] addr,
+    output wire       q
+);
+  reg [15:0] shift;
+  always @(posedge clk)
+    if (en) shift <= {shift[14:0], d};
+  assign q = shift[addr];
+endmodule
+"#;
+    let (graph, analysis) =
+        analyze_source("shift_lut.sv", source, "shift_lut", SynthMode::Xilinx).await;
+    let srl = graph
+        .nodes
+        .iter()
+        .find(|node| matches!(node.cell_type.as_deref(), Some("SRL16E" | "SRLC32E")))
+        .expect("Xilinx synthesis should infer a shift-register LUT");
+    assert!(srl.seq);
+    assert!(!srl.blackbox);
+
+    let endpoints = analysis.endpoints();
+    assert!(
+        endpoints
+            .registers
+            .iter()
+            .all(|register| register.bits.iter().all(|bit| bit.node_id != srl.id))
+    );
+    let q = endpoints
+        .outputs
+        .iter()
+        .find(|output| output.name == "q")
+        .expect("addressable SRL output must remain a top-level output endpoint");
+    assert_eq!(q.bits.len(), 1);
+
+    let paths = analysis.paths(&graph, 25, None);
+    assert!(paths.paths.iter().any(|path| {
+        path.endpoint_kind == synth_explorer_server::analysis::EndpointKind::Blackbox
+            && path.endpoint.id == srl.id
+            && path.endpoint_port.starts_with('A')
+    }));
+    assert!(paths.paths.iter().all(|path| {
+        path.endpoint.id != srl.id
+            || path.class == synth_explorer_server::analysis::PathClass::Other
+    }));
 }
 
 #[tokio::test]

@@ -20,6 +20,7 @@ export interface NodeRef {
   name: string;         // human name: cell name (cleaned), "a[3]" for port bits, "1'b0" for consts
   cell_type?: string;   // "$lut", "$_NAND_", "$add", "SB_LUT4", ... (kind === "cell")
   seq?: boolean;        // sequential cell (FF/memory/blackbox boundary)
+  register?: boolean;   // ordinary register/latch; false for memories/SRLs/blackboxes
   src?: string;         // yosys src attr, e.g. "design.sv:12.16-12.21" (may be absent)
 }
 
@@ -37,7 +38,7 @@ export interface GraphNode extends NodeRef {
     active_low?: boolean;
     synchronous?: boolean; // reset/set behavior when known from the primitive
     src?: string;          // control-driver source attribution when available
-    generated?: boolean; // clock is not a direct input/buffer-chain source
+    generated?: boolean; // clock/reset/set is not a direct input/buffer-chain source
   }[];                   // label-connected controls omitted from ordinary wiring
 }
 
@@ -87,7 +88,7 @@ Response `200`:
     num_register_groups: number;
     num_inputs: number;    // port bit counts
     num_outputs: number;
-    max_depth: number;     // worst comb depth (cells) across all endpoints
+    max_depth: number;     // worst weighted structural logic depth across all endpoints
     depths: {
       input_to_register: number | null;
       register_to_register: number | null;
@@ -243,6 +244,9 @@ edges are included and `control` is true.
 the range but no final object retained that attribution; it deliberately does
 not claim whether the logic was removed, folded, shared, or absorbed. `422` for
 an unknown file, invalid range, or a range longer than 200 lines.
+Wire-only continuous assignments, which Yosys JSON does not source-attribute,
+are indexed from their `assign` span and resolved through the final LHS net
+aliases. If the LHS no longer exists, the span reports `optimized_or_absorbed`.
 
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 

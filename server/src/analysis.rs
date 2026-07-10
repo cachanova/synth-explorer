@@ -1,5 +1,5 @@
 use crate::graph::{
-    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_infrastructure_cell,
+    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_infrastructure_cell, is_register_type,
     is_transparent_data_buffer, strip_bit_suffix,
 };
 use crate::netlist::{PortDirection, YosysModule};
@@ -26,6 +26,8 @@ pub struct NodeRef {
     pub cell_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seq: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub register: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub src: Option<String>,
 }
@@ -307,6 +309,8 @@ struct EndpointTarget {
     bit: usize,
 }
 
+type PathGroupKey = (String, EndpointKind, PathClass, u32, String, Vec<String>);
+
 impl Analysis {
     pub fn new(graph: &Graph, source_files: Vec<String>) -> Self {
         let comb_loops = find_comb_loops(graph);
@@ -461,8 +465,7 @@ impl Analysis {
             bit_index += 1;
         }
 
-        let mut grouped: BTreeMap<(String, EndpointKind, PathClass, u32, Vec<String>), PathEntry> =
-            BTreeMap::new();
+        let mut grouped: BTreeMap<PathGroupKey, PathEntry> = BTreeMap::new();
         let mut route_clipped = false;
         for target in &candidates {
             let (path, clipped) = self.path_for_target(graph, target);
@@ -477,6 +480,7 @@ impl Analysis {
                 path.endpoint_kind,
                 path.class,
                 path.depth,
+                path.endpoint_port.clone(),
                 signature,
             );
             if let Some(existing) = grouped.get_mut(&key) {
@@ -895,7 +899,7 @@ fn compare_target_rank(a: &EndpointTarget, b: &EndpointTarget) -> Ordering {
 }
 
 fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass {
-    let starts_at_register = startpoint.seq == Some(true) && startpoint.kind == ApiNodeKind::Cell;
+    let starts_at_register = startpoint.register == Some(true);
     let starts_at_input = startpoint.kind == ApiNodeKind::Port;
     match (starts_at_register, starts_at_input, endpoint_kind) {
         (true, _, EndpointKind::Register) => PathClass::RegisterToRegister,
@@ -997,8 +1001,16 @@ pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
         name: node.name.clone(),
         cell_type: node.cell_type.clone(),
         seq: (node.kind == NodeKind::Cell && node.seq).then_some(node.seq),
+        register: (node.kind == NodeKind::Cell && node.seq).then_some(is_register_node(node)),
         src: node.src.clone(),
     }
+}
+
+fn is_register_node(node: &crate::graph::Node) -> bool {
+    node.kind == NodeKind::Cell
+        && node.seq
+        && !node.blackbox
+        && node.cell_type.as_deref().is_some_and(is_register_type)
 }
 
 fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
@@ -1170,7 +1182,7 @@ fn discover_endpoints(
     let mut register_bits: HashMap<(NodeId, Option<u32>), (String, usize)> = HashMap::new();
 
     for node in &graph.nodes {
-        if node.kind != NodeKind::Cell || !node.seq || node.blackbox {
+        if !is_register_node(node) {
             continue;
         }
         let Some(info) = graph.cell_info.get(&node.id) else {
@@ -1330,7 +1342,7 @@ fn discover_endpoints(
     }
 
     for node in &graph.nodes {
-        if node.kind != NodeKind::Cell || !node.blackbox {
+        if node.kind != NodeKind::Cell || !node.seq || is_register_node(node) {
             continue;
         }
         for edge_idx in &graph.incoming[node.id as usize] {
@@ -1456,7 +1468,7 @@ fn direct_register_driver(graph: &Graph, output: NodeId) -> Option<(NodeId, Opti
         }
         let edge = &graph.edges[edge_idx];
         let driver = graph.nodes.get(edge.from as usize)?;
-        if driver.kind == NodeKind::Cell && driver.seq && !driver.blackbox {
+        if is_register_node(driver) {
             return Some((driver.id, edge.bit));
         }
         let transparent = driver
@@ -1815,7 +1827,7 @@ fn build_stats(
         if node.kind == NodeKind::Cell {
             let cell_type = node.cell_type.clone().unwrap_or_default();
             *cells_by_type.entry(cell_type.clone()).or_insert(0) += 1;
-            if node.seq && !node.blackbox {
+            if is_register_node(node) {
                 cell_categories.registers += 1;
             } else if is_infrastructure_cell(&cell_type) {
                 cell_categories.infrastructure += 1;
@@ -1888,6 +1900,8 @@ fn is_carry_or_special(cell_type: &str) -> bool {
             | "MUXF9"
             | "PFUMX"
             | "L6MUX21"
+            | "SRL16E"
+            | "SRLC32E"
     )
 }
 
@@ -2287,6 +2301,7 @@ mod tests {
             net_aliases,
             cell_info,
             blackboxes: Vec::new(),
+            signal_fanout: HashMap::new(),
         }
     }
 }
