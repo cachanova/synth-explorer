@@ -39,6 +39,15 @@ describe('schematic layout sizing', () => {
     })
 
     expect(nodeDimensions(controlledNode).height).toBe(58 + 4 * 13)
+
+    const controlledSrl = node(3, 'SRL16E', {
+      register: false,
+      seq: true,
+      controls: [
+        { role: 'clock', pin: 'CLK', net_name: 'clk', driver_id: 8, fanout: 2 },
+      ],
+    })
+    expect(nodeDimensions(controlledSrl).height).toBe(62 + 13)
   })
 
   it('passes per-symbol dimensions to bounded ELK layout', () => {

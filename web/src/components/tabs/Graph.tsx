@@ -26,6 +26,9 @@ export function Graph({ active }: { active: boolean }) {
   const laidOutSubgraph = useRef<Subgraph | null>(null)
 
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}`
+  const requestDesignMismatch = Boolean(
+    design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
+  )
 
   // A request can change while analysis is stale. Clear the previous source
   // classification immediately instead of showing it for the new selection.
@@ -47,6 +50,7 @@ export function Graph({ active }: { active: boolean }) {
       return
     }
     if (analysisState !== 'current') return
+    if (requestDesignMismatch) return
     const requestKey = `${design.design_id}|${coneReq.nonce}|${optsKey}`
     if (loadedRequestKey.current === requestKey) return
 
@@ -104,7 +108,10 @@ export function Graph({ active }: { active: boolean }) {
         setSourceControl(control)
         // An unmapped/absorbed selection is information about the source, not
         // a request to erase the user's last meaningful schematic.
-        if (status == null || status === 'mapped') setSub(graph)
+        if (status == null || status === 'mapped') {
+          setSub(graph)
+          if (status === 'mapped') setSelected(null)
+        }
         else setLoading(false)
       })
       .catch((e) => {
@@ -118,7 +125,7 @@ export function Graph({ active }: { active: boolean }) {
       })
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey])
+  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch])
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
@@ -157,11 +164,11 @@ export function Graph({ active }: { active: boolean }) {
     () =>
       new Set([
         ...(coneReq?.highlight ?? []),
-        ...(coneReq?.kind === 'source'
+        ...(coneReq?.kind === 'source' && sourceStatus === 'mapped'
           ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
           : []),
       ]),
-    [coneReq, sub],
+    [coneReq, sourceStatus, sub],
   )
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
@@ -196,14 +203,19 @@ export function Graph({ active }: { active: boolean }) {
             selectedId={selected?.id ?? null}
             onSelect={(node) => {
               setSelected(node)
-              store.highlightSources(parseSrc(node?.src))
+              if (analysisState === 'current' && !requestDesignMismatch) {
+                store.highlightSources(parseSrc(node?.src))
+              }
             }}
-            onControlSelect={(control) =>
-              store.openControlCone({
-                node: control.driver_id,
-                label: controlLabel(control),
-                generated: control.generated,
-              })
+            onControlSelect={
+              analysisState === 'current' && !requestDesignMismatch
+                ? (control) =>
+                    store.openControlCone({
+                      node: control.driver_id,
+                      label: controlLabel(control),
+                      generated: control.generated,
+                    })
+                : undefined
             }
             active={active}
             fitNonce={fitNonce}
@@ -238,6 +250,11 @@ export function Graph({ active }: { active: boolean }) {
           {analysisState === 'error' && (
             <span className="msg err">analysis is stale; the last synthesis failed</span>
           )}
+          {requestDesignMismatch && (
+            <span className="msg">
+              showing a cone from the previous synthesis — select a fresh endpoint or path
+            </span>
+          )}
           {sourceStatus === 'optimized_or_absorbed' && (
             <span className="msg">
               Logic for this selection was optimized away or absorbed during synthesis.
@@ -245,6 +262,9 @@ export function Graph({ active }: { active: boolean }) {
           )}
           {sourceStatus === 'unmapped' && (
             <span className="msg">No synthesizable logic maps to this selection.</span>
+          )}
+          {coneReq.kind === 'source' && sourceStatus != null && sourceStatus !== 'mapped' && laid && (
+            <span className="msg">showing the previous mapped selection</span>
           )}
           {sourceControl && (
             <span className="msg">
@@ -265,7 +285,7 @@ export function Graph({ active }: { active: boolean }) {
           )}
         </div>
 
-        {selected && (
+        {selected && analysisState === 'current' && !requestDesignMismatch && (
           <NodeCard
             node={selected}
             drivingNet={selectedNet}
@@ -279,7 +299,10 @@ export function Graph({ active }: { active: boolean }) {
 
 function GraphToolbar() {
   const store = useStore()
-  const { coneReq, graphOptions } = store
+  const { coneReq, design, graphOptions } = store
+  const requestDesignMismatch = Boolean(
+    design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
+  )
   const setOpt = store.setGraphOptions
 
   const reissue = (dir: 'fanin' | 'fanout') => {
@@ -299,12 +322,14 @@ function GraphToolbar() {
           <div className="stepper" title="Cone direction">
             <button
               className={coneReq.dir === 'fanin' ? 'primary' : ''}
+              disabled={requestDesignMismatch}
               onClick={() => reissue('fanin')}
             >
               fanin
             </button>
             <button
               className={coneReq.dir === 'fanout' ? 'primary' : ''}
+              disabled={requestDesignMismatch}
               onClick={() => reissue('fanout')}
             >
               fanout

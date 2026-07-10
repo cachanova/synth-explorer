@@ -21,7 +21,7 @@ export interface NodeRef {
   cell_type?: string;   // "$lut", "$_NAND_", "$add", "SB_LUT4", ... (kind === "cell")
   seq?: boolean;        // sequential cell (FF/memory/blackbox boundary)
   register?: boolean;   // ordinary register/latch; false for memories/SRLs/blackboxes
-  src?: string;         // yosys src attr, e.g. "design.sv:12.16-12.21" (may be absent)
+  src?: string;         // yosys or recovered alias provenance, separated by "|"
 }
 
 export interface GraphNode extends NodeRef {
@@ -189,7 +189,10 @@ clock/reset/set nets and high-fanout enables are represented by `controls`
 labels instead of edges; local enables remain wired data dependencies.
 `hide_const` drops const drivers. With `show_infrastructure=false`, zero-depth
 IO/clock buffers are collapsed into edges but remain present in implementation
-statistics. `max_nodes` is clamped server-side to 2000.
+statistics. Addressable shift-register LUTs are mixed boundaries: their stored
+data input stops at the primitive, while address inputs traverse through the
+primitive to preserve the selected address-to-output route and depth.
+`max_nodes` is clamped server-side to 2000.
 
 ## GET `/api/design/:id/fanout?limit=50`
 
@@ -245,8 +248,13 @@ the range but no final object retained that attribution; it deliberately does
 not claim whether the logic was removed, folded, shared, or absorbed. `422` for
 an unknown file, invalid range, or a range longer than 200 lines.
 Wire-only continuous assignments, which Yosys JSON does not source-attribute,
-are indexed from their `assign` span and resolved through the final LHS net
-aliases. If the LHS no longer exists, the span reports `optimized_or_absorbed`.
+are indexed from `assign` spans and declaration aliases such as
+`wire alias = value` in the selected top's live elaborated hierarchy, then
+resolved by exact flattened instance scope through the final LHS net aliases.
+This recovered attribution is also returned by `/nodes` for graph-to-source probing.
+Files containing conditional-preprocessor branches use only Yosys provenance
+to avoid attributing an inactive branch. If the LHS no longer exists, the span
+reports `optimized_or_absorbed`.
 
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 

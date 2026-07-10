@@ -173,8 +173,11 @@ impl Graph {
                 output_ports: output_ports.clone(),
                 input_ports: input_ports.clone(),
             };
-            for control_pin in CONTROL_PINS {
-                if let Some(bits) = cell.connections.get(*control_pin) {
+            // Endpoint metadata calls this field `clock`, but for latches it
+            // is the transparent gate. Never substitute an async reset/set
+            // merely because the primitive has no edge-triggered clock.
+            for control_pin in ["CLK", "C", "G", "E", "EN", "GE"] {
+                if let Some(bits) = cell.connections.get(control_pin) {
                     if !is_control_pin_for_cell(&cell.cell_type, control_pin) {
                         continue;
                     }
@@ -416,13 +419,14 @@ fn resolve_drivers(
 }
 
 pub const CONTROL_PINS: &[&str] = &[
-    "CLK", "C", "E", "EN", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST", "LSR", "SR", "T",
+    "CLK", "C", "G", "E", "EN", "GE", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST", "LSR",
+    "SR", "SET", "T",
 ];
 
 pub fn is_control_pin(port: &str) -> bool {
     matches!(
         port.to_ascii_uppercase().as_str(),
-        "CLK" | "EN" | "ARST" | "SRST" | "CLR" | "PRE" | "CE" | "RST" | "LSR" | "SR"
+        "CLK" | "EN" | "ARST" | "SRST" | "CLR" | "PRE" | "CE" | "RST" | "LSR" | "SR" | "SET"
     )
 }
 
@@ -433,6 +437,11 @@ pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
     let upper_port = port.to_ascii_uppercase();
     if matches!(upper_port.as_str(), "C" | "E" | "R" | "S") {
         return is_sequential_type(cell_type);
+    }
+    if matches!(upper_port.as_str(), "G" | "GE") {
+        let upper_type = cell_type.to_ascii_uppercase();
+        return upper_type.contains("LATCH")
+            || matches!(upper_type.as_str(), "LDCE" | "LDPE" | "LDCPE");
     }
     upper_port == "T"
         && matches!(
@@ -577,7 +586,11 @@ fn trim_params(params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let upper = key.to_ascii_uppercase();
         if upper == "LUT" {
             out.insert(key.clone(), value.clone());
-        } else if upper == "WIDTH" || upper.ends_with("_WIDTH") {
+        } else if upper == "WIDTH"
+            || upper.ends_with("_WIDTH")
+            || upper.ends_with("_POLARITY")
+            || (upper.starts_with("IS_") && upper.ends_with("_INVERTED"))
+        {
             let formatted = binary_string_to_u64(value)
                 .map(|num| num.to_string())
                 .unwrap_or_else(|| value.clone());
@@ -594,11 +607,16 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
         || cell_type.starts_with("$adff")
         || cell_type.starts_with("$aldff")
         || cell_type.starts_with("$dffe")
+        || cell_type.starts_with("$dlatch")
+        || cell_type.starts_with("$adlatch")
         || cell_type == "$ff"
+        || cell_type == "$sr"
         || cell_type.starts_with("$mem")
         || upper.starts_with("$_DFF")
         || upper.starts_with("$_SDFF")
         || upper.starts_with("$_ALDFF")
+        || upper.starts_with("$_DLATCH")
+        || upper.starts_with("$_SR_")
         || upper == "$_FF_"
         || matches!(
             vendor_primitive_class(cell_type),
@@ -611,10 +629,18 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
 /// boundaries, but must not be presented as ordinary registers or registered
 /// top-level-output aliases.
 pub fn is_register_type(cell_type: &str) -> bool {
-    let upper = cell_type.to_ascii_uppercase();
     is_sequential_type(cell_type)
         && !cell_type.starts_with("$mem")
-        && !matches!(upper.as_str(), "SRL16E" | "SRLC32E")
+        && !is_addressable_sequential_type(cell_type)
+}
+
+/// Stateful primitives whose output also has a combinational address path.
+/// SRL D is a storage input, while A0..A4 select the current Q value.
+pub fn is_addressable_sequential_type(cell_type: &str) -> bool {
+    matches!(
+        cell_type.to_ascii_uppercase().as_str(),
+        "SRL16E" | "SRLC32E"
+    )
 }
 
 pub fn is_blackbox_cell(
@@ -679,8 +705,9 @@ fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
         return Some(VendorPrimitiveClass::Sequential);
     }
     match upper.as_str() {
-        "FDRE" | "FDSE" | "FDCE" | "FDPE" | "FDR" | "FDS" | "FDC" | "FDP" | "TRELLIS_FF"
-        | "SRL16E" | "SRLC32E" => Some(VendorPrimitiveClass::Sequential),
+        "FDRE" | "FDRE_1" | "FDSE" | "FDSE_1" | "FDCE" | "FDCE_1" | "FDPE" | "FDPE_1" | "FDCPE"
+        | "FDR" | "FDS" | "FDC" | "FDP" | "LDCE" | "LDPE" | "LDCPE" | "TRELLIS_FF" | "SRL16E"
+        | "SRLC32E" => Some(VendorPrimitiveClass::Sequential),
         "LUT1" | "LUT2" | "LUT3" | "LUT4" | "LUT5" | "LUT6" | "SB_LUT4" | "PFUMX" | "L6MUX21"
         | "CCU2C" | "CARRY4" | "CARRY8" | "MUXF7" | "MUXF8" | "MUXF9" | "INV" | "SB_CARRY"
         | "XORCY" | "MUXCY" => Some(VendorPrimitiveClass::Combinational { depth_weight: 1 }),

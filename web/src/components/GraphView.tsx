@@ -77,7 +77,7 @@ function nodeVisual(
   } else if (kind === 'const') {
     fill = 'var(--bg-1)'
     stroke = 'var(--border)'
-  } else if (kind === 'reg') {
+  } else if (kind === 'reg' || kind === 'latch') {
     fill = 'rgba(210,168,255,0.08)'
     stroke = 'var(--seq)'
   } else if (kind === 'memory') {
@@ -307,10 +307,12 @@ function PinLabels({ pins, width, height }: { pins: NodePins; width: number; hei
 function ControlLabels({
   node,
   width,
+  startY,
   onSelect,
 }: {
   node: GraphNode
   width: number
+  startY: number
   onSelect?: (control: ControlNetRef, node: GraphNode) => void
 }) {
   const controls = controlsFor(node)
@@ -319,7 +321,7 @@ function ControlLabels({
   return (
     <g className="g-control-labels">
       {controls.map((control, index) => {
-        const y = 59 + index * 13
+        const y = startY + 1 + index * 13
         const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
         const details = [
           `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${shortNetName(control.net_name)}`,
@@ -653,6 +655,8 @@ export function GraphView({
             const hovered = node.id === hoveredId
             const name = nodeSublabel(node, metadata.drivingNet.get(node.id))
             const pins = metadata.pinsById.get(node.id) ?? { incoming: [], outgoing: [] }
+            const controls = controlsFor(node)
+            const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
             const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
             const showPins = (selected || hovered) && node.kind !== 'port'
             const title = name && name !== nodeLabel(node)
@@ -698,20 +702,21 @@ export function GraphView({
                   node={node}
                   kind={kind}
                   width={laidOutNode.width}
-                  height={laidOutNode.height}
+                  height={bodyHeight}
                   name={name}
                 />
                 {showPins && (
                   <PinLabels
                     pins={pins}
                     width={laidOutNode.width}
-                    height={kind === 'reg' ? Math.min(laidOutNode.height, 58) : laidOutNode.height}
+                    height={bodyHeight}
                   />
                 )}
-                {kind === 'reg' && (
+                {controls.length > 0 && (
                   <ControlLabels
                     node={node}
                     width={laidOutNode.width}
+                    startY={bodyHeight}
                     onSelect={onControlSelect}
                   />
                 )}

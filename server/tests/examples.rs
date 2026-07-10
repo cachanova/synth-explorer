@@ -1,6 +1,6 @@
 use synth_explorer_server::analysis::{Analysis, ConeDir, ConeOptions, FanoutResponse};
 use synth_explorer_server::graph::{
-    Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell,
+    Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell, is_sequential_type,
 };
 use synth_explorer_server::netlist::{parse_value, select_top};
 use synth_explorer_server::yosys::{SourceFile, SynthMode, SynthRequest, run_yosys};
@@ -297,17 +297,144 @@ endmodule
         .find(|output| output.name == "q")
         .expect("addressable SRL output must remain a top-level output endpoint");
     assert_eq!(q.bits.len(), 1);
+    assert!(
+        q.worst_depth >= 1,
+        "SRL address mux must contribute output depth"
+    );
 
     let paths = analysis.paths(&graph, 25, None);
     assert!(paths.paths.iter().any(|path| {
-        path.endpoint_kind == synth_explorer_server::analysis::EndpointKind::Blackbox
-            && path.endpoint.id == srl.id
-            && path.endpoint_port.starts_with('A')
+        path.endpoint_kind == synth_explorer_server::analysis::EndpointKind::Output
+            && path.endpoint_group == "q"
+            && path.class == synth_explorer_server::analysis::PathClass::InputToOutput
+            && path.nodes.iter().any(|node| node.id == srl.id)
     }));
-    assert!(paths.paths.iter().all(|path| {
-        path.endpoint.id != srl.id
-            || path.class == synth_explorer_server::analysis::PathClass::Other
+    assert!(paths.paths.iter().any(|path| {
+        path.endpoint.id == srl.id
+            && path.endpoint_port == "D"
+            && path.class == synth_explorer_server::analysis::PathClass::Other
     }));
+}
+
+#[tokio::test]
+async fn xilinx_srlc32e_vector_address_contributes_output_depth() {
+    let source = r#"
+module shift_lut32 (
+    input  wire       clk,
+    input  wire       en,
+    input  wire       d,
+    input  wire [4:0] addr,
+    output wire       q
+);
+  reg [31:0] shift;
+  always @(posedge clk)
+    if (en) shift <= {shift[30:0], d};
+  assign q = shift[addr];
+endmodule
+"#;
+    let (graph, analysis) =
+        analyze_source("shift_lut32.sv", source, "shift_lut32", SynthMode::Xilinx).await;
+    let srl = graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("SRLC32E"))
+        .expect("Xilinx synthesis should infer SRLC32E");
+    assert!(
+        graph.incoming[srl.id as usize]
+            .iter()
+            .any(|edge| graph.edges[*edge].to_port == "A")
+    );
+    assert!(analysis.paths(&graph, 25, None).paths.iter().any(|path| {
+        path.endpoint_group == "q"
+            && path.depth >= 1
+            && path.nodes.iter().any(|node| node.id == srl.id)
+    }));
+}
+
+#[test]
+fn word_level_set_reset_cells_are_state_boundaries() {
+    assert!(is_sequential_type("$sr"));
+}
+
+#[tokio::test]
+async fn latches_are_register_endpoints_in_rtl_and_xilinx_modes() {
+    let source = r#"
+module latch_demo (
+    input  wire gate,
+    input  wire clear,
+    input  wire d,
+    output reg  q
+);
+  always @* begin
+    if (clear) q = 1'b0;
+    else if (gate) q = d;
+  end
+endmodule
+"#;
+    for mode in [SynthMode::Rtl, SynthMode::Xilinx] {
+        let (graph, analysis) = analyze_source("latch_demo.sv", source, "latch_demo", mode).await;
+        let latch = graph
+            .nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    node.cell_type.as_deref(),
+                    Some("$dlatch" | "$adlatch" | "LDCE" | "LDPE")
+                )
+            })
+            .unwrap_or_else(|| panic!("{mode} should retain a latch primitive"));
+        assert!(latch.seq, "{mode} latch should be a state boundary");
+        assert!(
+            analysis
+                .endpoints()
+                .registers
+                .iter()
+                .any(|register| register.bits.iter().any(|bit| bit.node_id == latch.id)),
+            "{mode} latch should be a register endpoint"
+        );
+    }
+}
+
+#[tokio::test]
+async fn xilinx_negative_edge_flip_flops_remain_register_endpoints() {
+    let source = r#"
+module negedge_ff(input wire clk, input wire d, output reg q);
+  always @(negedge clk) q <= d;
+endmodule
+"#;
+    let (graph, analysis) =
+        analyze_source("negedge_ff.sv", source, "negedge_ff", SynthMode::Xilinx).await;
+    let ff = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                node.cell_type.as_deref(),
+                Some("FDRE_1" | "FDSE_1" | "FDCE_1" | "FDPE_1")
+            )
+        })
+        .expect("Xilinx synthesis should emit a negative-edge FF primitive");
+    assert!(ff.seq);
+    assert!(!ff.blackbox);
+    assert!(
+        analysis
+            .endpoints()
+            .registers
+            .iter()
+            .any(|register| register.bits.iter().any(|bit| bit.node_id == ff.id))
+    );
+    let clock = analysis
+        .full_netlist(&graph, 100, false)
+        .nodes
+        .into_iter()
+        .find(|node| node.node.id == ff.id)
+        .and_then(|node| {
+            node.controls
+                .into_iter()
+                .find(|control| control.role == synth_explorer_server::analysis::ControlRole::Clock)
+        })
+        .expect("negative-edge FF clock metadata");
+    assert_eq!(clock.active_low, Some(true));
 }
 
 #[tokio::test]

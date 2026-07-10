@@ -1,11 +1,11 @@
 use crate::graph::{
-    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_infrastructure_cell, is_register_type,
-    is_transparent_data_buffer, strip_bit_suffix,
+    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
+    is_infrastructure_cell, is_register_type, is_transparent_data_buffer, strip_bit_suffix,
 };
 use crate::netlist::{PortDirection, YosysModule};
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 const PATH_NODE_CAP: usize = 512;
 
@@ -293,6 +293,7 @@ pub struct Analysis {
     pub endpoints: EndpointsResponse,
     endpoint_targets: Vec<EndpointTarget>,
     source_map: SourceMapResponse,
+    synthetic_src: HashMap<NodeId, BTreeSet<String>>,
     stats: Stats,
     warnings: Vec<String>,
 }
@@ -332,6 +333,7 @@ impl Analysis {
             endpoints,
             endpoint_targets,
             source_map,
+            synthetic_src: HashMap::new(),
             stats,
             warnings,
         }
@@ -355,11 +357,35 @@ impl Analysis {
 
     pub fn extend_source_roots(&mut self, roots_by_line: BTreeMap<String, Vec<NodeId>>) {
         for (line, roots) in roots_by_line {
+            for root in &roots {
+                self.synthetic_src
+                    .entry(*root)
+                    .or_default()
+                    .insert(line.clone());
+            }
             let ids = self.source_map.by_line.entry(line).or_default();
             ids.extend(roots);
             ids.sort_unstable();
             ids.dedup();
         }
+    }
+
+    pub fn node_ref(&self, graph: &Graph, id: NodeId) -> NodeRef {
+        let mut reference = node_ref(graph, id);
+        let Some(synthetic) = self.synthetic_src.get(&id) else {
+            return reference;
+        };
+        let mut sources: BTreeSet<String> = reference
+            .src
+            .as_deref()
+            .into_iter()
+            .flat_map(|src| src.split('|'))
+            .map(str::to_owned)
+            .collect();
+        sources.extend(synthetic.iter().cloned());
+        reference.src =
+            (!sources.is_empty()).then(|| sources.into_iter().collect::<Vec<_>>().join("|"));
+        reference
     }
 
     pub fn source_nodes(&self, file: &str, line: usize) -> Option<&[NodeId]> {
@@ -591,7 +617,10 @@ impl Analysis {
                         let Some((id, depth)) = traversal.queue.pop_front() else {
                             break;
                         };
-                        if !included_roots.contains(&id) && graph.is_boundary(id) {
+                        if !included_roots.contains(&id)
+                            && graph.is_boundary(id)
+                            && !is_addressable_sequential_node(graph, id)
+                        {
                             boundary_nodes.insert(id);
                             continue;
                         }
@@ -629,6 +658,20 @@ impl Analysis {
                     if should_hide_edge(graph, edge, options.hide_control, options.hide_const) {
                         continue;
                     }
+                    if traversal.dir == ConeDir::Fanin
+                        && is_addressable_sequential_node(graph, frame.id)
+                        && !included_roots.contains(&frame.id)
+                        && !is_depth_input_edge(graph, edge)
+                    {
+                        continue;
+                    }
+                    if traversal.dir == ConeDir::Fanout
+                        && is_addressable_sequential_node(graph, frame.id)
+                        && !included_roots.contains(&frame.id)
+                        && !is_depth_output_edge(graph, edge)
+                    {
+                        continue;
+                    }
 
                     advanced = true;
                     let next = match traversal.dir {
@@ -642,7 +685,15 @@ impl Analysis {
                         }
                         seen.insert(next);
                     }
-                    if traversal.seen.insert(next) {
+                    let stop_at_state_input = traversal.dir == ConeDir::Fanout
+                        && is_addressable_sequential_node(graph, next)
+                        && !is_depth_input_edge(graph, edge);
+                    let stop_at_fixed_state_output = traversal.dir == ConeDir::Fanin
+                        && is_addressable_sequential_node(graph, next)
+                        && !is_depth_output_edge(graph, edge);
+                    if stop_at_state_input || stop_at_fixed_state_output {
+                        boundary_nodes.insert(next);
+                    } else if traversal.seen.insert(next) {
                         traversal.queue.push_back((next, frame.depth + 1));
                     }
                     edge_set.insert(edge_idx);
@@ -733,7 +784,7 @@ impl Analysis {
         let mut drivers: Vec<FanoutDriver> = groups
             .into_iter()
             .map(|((driver_id, port, net_name), acc)| FanoutDriver {
-                driver: node_ref(graph, driver_id),
+                driver: self.node_ref(graph, driver_id),
                 port,
                 net_name,
                 fanout: acc.fanout,
@@ -756,6 +807,7 @@ impl Analysis {
         let mut node_ids = vec![target.endpoint];
         let mut clipped = false;
         if let Some(edge_idx) = target.edge {
+            let mut downstream_edge = edge_idx;
             let mut current = graph.edges[edge_idx].from;
             loop {
                 if node_ids.len() >= PATH_NODE_CAP {
@@ -763,12 +815,15 @@ impl Analysis {
                     break;
                 }
                 node_ids.push(current);
-                if !graph.is_comb(current) {
+                if !is_depth_node(graph, current)
+                    || !is_depth_output_edge(graph, &graph.edges[downstream_edge])
+                {
                     break;
                 }
                 let Some(pred_edge) = self.best_pred[current as usize] else {
                     break;
                 };
+                downstream_edge = pred_edge;
                 current = graph.edges[pred_edge].from;
             }
         }
@@ -788,10 +843,10 @@ impl Analysis {
                         .as_deref()
                         .is_none_or(|cell_type| !is_infrastructure_cell(cell_type))
             })
-            .map(|id| node_ref(graph, *id))
+            .map(|id| self.node_ref(graph, *id))
             .collect();
-        let startpoint = node_ref(graph, target.startpoint);
-        let endpoint = node_ref(graph, target.endpoint);
+        let startpoint = self.node_ref(graph, target.startpoint);
+        let endpoint = self.node_ref(graph, target.endpoint);
         let class = classify_path(&startpoint, target.kind);
         let output_aliases = self
             .endpoints
@@ -833,7 +888,7 @@ impl Analysis {
                 let boundary =
                     !projection.roots.contains(&id) && projection.boundary_nodes.contains(&id);
                 GraphNode {
-                    node: node_ref(graph, id),
+                    node: self.node_ref(graph, id),
                     is_root: projection.roots.contains(&id).then_some(true),
                     is_boundary: boundary.then_some(true),
                     depth: graph
@@ -962,7 +1017,7 @@ struct TraversalFrame {
     next_edge: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConeDir {
     Fanin,
     Fanout,
@@ -1027,7 +1082,7 @@ fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
     let mut loops = HashSet::new();
 
     for start in &graph.nodes {
-        if !graph.is_comb(start.id) || indices[start.id as usize].is_some() {
+        if !is_depth_node(graph, start.id) || indices[start.id as usize].is_some() {
             continue;
         }
 
@@ -1047,7 +1102,10 @@ fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
                 let edge_idx = graph.outgoing[node as usize][frame.next_edge];
                 frame.next_edge += 1;
                 let next = graph.edges[edge_idx].to;
-                if !graph.is_comb(next) {
+                if !is_depth_node(graph, next)
+                    || !is_depth_output_edge(graph, &graph.edges[edge_idx])
+                    || !is_depth_input_edge(graph, &graph.edges[edge_idx])
+                {
                     continue;
                 }
                 if indices[next as usize].is_none() {
@@ -1080,7 +1138,12 @@ fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
                 let self_loop = component.len() == 1
                     && graph.outgoing[component[0] as usize]
                         .iter()
-                        .any(|edge_idx| graph.edges[*edge_idx].to == component[0]);
+                        .any(|edge_idx| {
+                            let edge = &graph.edges[*edge_idx];
+                            edge.to == component[0]
+                                && is_depth_output_edge(graph, edge)
+                                && is_depth_input_edge(graph, edge)
+                        });
                 if component.len() > 1 || self_loop {
                     loops.extend(component);
                 }
@@ -1099,8 +1162,10 @@ fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
 fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation {
     let mut indegree = vec![0usize; graph.nodes.len()];
     for edge in &graph.edges {
-        if graph.is_comb(edge.from)
-            && graph.is_comb(edge.to)
+        if is_depth_node(graph, edge.from)
+            && is_depth_node(graph, edge.to)
+            && is_depth_output_edge(graph, edge)
+            && is_depth_input_edge(graph, edge)
             && !loop_set.contains(&edge.from)
             && !loop_set.contains(&edge.to)
         {
@@ -1110,7 +1175,9 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
 
     let mut queue = VecDeque::new();
     for node in &graph.nodes {
-        if graph.is_comb(node.id) && !loop_set.contains(&node.id) && indegree[node.id as usize] == 0
+        if is_depth_node(graph, node.id)
+            && !loop_set.contains(&node.id)
+            && indegree[node.id as usize] == 0
         {
             queue.push_back(node.id);
         }
@@ -1129,16 +1196,18 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
         let mut best: Option<(u32, usize, NodeId)> = None;
         for edge_idx in &graph.incoming[id as usize] {
             let edge = &graph.edges[*edge_idx];
-            if loop_set.contains(&edge.from) {
+            if loop_set.contains(&edge.from) || !is_depth_input_edge(graph, edge) {
                 continue;
             }
-            let base = if graph.is_comb(edge.from) {
+            let follows_depth =
+                is_depth_node(graph, edge.from) && is_depth_output_edge(graph, edge);
+            let base = if follows_depth {
                 depth[edge.from as usize].unwrap_or(0)
             } else {
                 0
             };
             let candidate = base + weight;
-            let origin = if graph.is_comb(edge.from) {
+            let origin = if follows_depth {
                 startpoint[edge.from as usize].unwrap_or(edge.from)
             } else {
                 edge.from
@@ -1155,8 +1224,13 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
         }
 
         for edge_idx in &graph.outgoing[id as usize] {
-            let next = graph.edges[*edge_idx].to;
-            if graph.is_comb(next) && !loop_set.contains(&next) {
+            let edge = &graph.edges[*edge_idx];
+            let next = edge.to;
+            if is_depth_node(graph, next)
+                && is_depth_output_edge(graph, edge)
+                && is_depth_input_edge(graph, edge)
+                && !loop_set.contains(&next)
+            {
                 indegree[next as usize] = indegree[next as usize].saturating_sub(1);
                 if indegree[next as usize] == 0 {
                     queue.push_back(next);
@@ -1170,6 +1244,39 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
         best_pred,
         node_startpoint: startpoint,
     }
+}
+
+fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
+    graph.nodes.get(id as usize).is_some_and(|node| {
+        node.cell_type
+            .as_deref()
+            .is_some_and(is_addressable_sequential_type)
+    })
+}
+
+fn is_depth_node(graph: &Graph, id: NodeId) -> bool {
+    graph.is_comb(id) || is_addressable_sequential_node(graph, id)
+}
+
+fn is_depth_input_edge(graph: &Graph, edge: &Edge) -> bool {
+    if !is_addressable_sequential_node(graph, edge.to) {
+        return true;
+    }
+    edge.to_port
+        .strip_prefix('A')
+        .is_some_and(|suffix| suffix.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_depth_output_edge(graph: &Graph, edge: &Edge) -> bool {
+    if !is_addressable_sequential_node(graph, edge.from) {
+        return true;
+    }
+    let fixed_tap = graph.nodes[edge.from as usize]
+        .cell_type
+        .as_deref()
+        .is_some_and(|cell_type| cell_type.eq_ignore_ascii_case("SRLC32E"))
+        && edge.from_port.eq_ignore_ascii_case("Q31");
+    !fixed_tap
 }
 
 fn discover_endpoints(
@@ -1347,7 +1454,10 @@ fn discover_endpoints(
         }
         for edge_idx in &graph.incoming[node.id as usize] {
             let edge = &graph.edges[*edge_idx];
-            if !edge.control {
+            if !edge.control
+                && (!is_addressable_sequential_node(graph, node.id)
+                    || !is_depth_input_edge(graph, edge))
+            {
                 targets.push(EndpointTarget {
                     endpoint: node.id,
                     endpoint_port: edge.to_port.clone(),
@@ -1422,7 +1532,7 @@ fn endpoint_startpoint_id(
         return endpoint;
     };
     let current = graph.edges[edge_idx].from;
-    if graph.is_comb(current) {
+    if is_depth_node(graph, current) && is_depth_output_edge(graph, &graph.edges[edge_idx]) {
         node_startpoint[current as usize].unwrap_or(current)
     } else {
         current
@@ -1444,7 +1554,7 @@ fn best_endpoint_edge(
 
 fn edge_depth(graph: &Graph, node_depth: &[Option<u32>], edge_idx: usize) -> u32 {
     let pred = graph.edges[edge_idx].from;
-    if graph.is_comb(pred) {
+    if is_depth_node(graph, pred) && is_depth_output_edge(graph, &graph.edges[edge_idx]) {
         node_depth[pred as usize].unwrap_or(0)
     } else {
         0
@@ -1499,7 +1609,7 @@ fn control_role(pin: &str) -> ControlRole {
         "CLK" | "C" => ControlRole::Clock,
         "R" | "RST" | "ARST" | "SRST" | "CLR" | "LSR" => ControlRole::Reset,
         "S" | "SET" | "PRE" | "SR" => ControlRole::Set,
-        "E" | "EN" | "CE" => ControlRole::Enable,
+        "E" | "EN" | "CE" | "G" | "GE" => ControlRole::Enable,
         _ => ControlRole::Other,
     }
 }
@@ -1523,8 +1633,10 @@ fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
             continue;
         }
         let role = control_role(&edge.to_port);
-        let cell_type = graph.nodes[node_id as usize].cell_type.as_deref();
-        let active_low = control_active_low(cell_type, role, &edge.to_port, &edge.net_name);
+        let node = &graph.nodes[node_id as usize];
+        let cell_type = node.cell_type.as_deref();
+        let active_low =
+            control_active_low(cell_type, &node.params, role, &edge.to_port, &edge.net_name);
         let generated = matches!(
             role,
             ControlRole::Clock | ControlRole::Reset | ControlRole::Set
@@ -1570,7 +1682,7 @@ fn control_synchronous(cell_type: Option<&str>, role: ControlRole) -> Option<boo
     if upper.starts_with("$_SDFF")
         || matches!(
             upper.as_str(),
-            "$SDFF" | "$SDFFE" | "$SDFFCE" | "FDRE" | "FDSE"
+            "$SDFF" | "$SDFFE" | "$SDFFCE" | "FDRE" | "FDRE_1" | "FDSE" | "FDSE_1"
         )
     {
         return Some(true);
@@ -1593,7 +1705,13 @@ fn control_synchronous(cell_type: Option<&str>, role: ControlRole) -> Option<boo
                 | "$ADLATCH"
                 | "$DLATCHSR"
                 | "FDCE"
+                | "FDCE_1"
                 | "FDPE"
+                | "FDPE_1"
+                | "FDCPE"
+                | "LDCE"
+                | "LDPE"
+                | "LDCPE"
         )
     {
         return Some(false);
@@ -1603,14 +1721,21 @@ fn control_synchronous(cell_type: Option<&str>, role: ControlRole) -> Option<boo
 
 fn control_active_low(
     cell_type: Option<&str>,
+    params: &BTreeMap<String, String>,
     role: ControlRole,
     pin: &str,
     net_name: &str,
 ) -> Option<bool> {
-    if matches!(role, ControlRole::Reset | ControlRole::Set)
-        && let Some(encoded) = hard_cell_control_active_low(cell_type?, role)
+    if let Some(cell_type) = cell_type
+        && let Some(encoded) = hard_cell_control_active_low(cell_type, role)
     {
         return Some(encoded);
+    }
+    if let Some(polarity) = parameter_control_active_low(params, role, pin) {
+        return Some(polarity);
+    }
+    if let Some(polarity) = fixed_primitive_control_active_low(cell_type?, role, pin) {
+        return Some(polarity);
     }
     let net = net_name.to_ascii_lowercase();
     (matches!(
@@ -1620,12 +1745,95 @@ fn control_active_low(
     .then_some(true)
 }
 
+fn parameter_control_active_low(
+    params: &BTreeMap<String, String>,
+    role: ControlRole,
+    pin: &str,
+) -> Option<bool> {
+    let upper_pin = pin.to_ascii_uppercase();
+    let inverted_key = format!("IS_{upper_pin}_INVERTED");
+    if let Some(inverted) = binary_parameter_bool(params.get(&inverted_key)) {
+        return Some(inverted);
+    }
+    let key = match (role, upper_pin.as_str()) {
+        (ControlRole::Reset, "ARST") => "ARST_POLARITY",
+        (ControlRole::Reset, "SRST") => "SRST_POLARITY",
+        (ControlRole::Reset, "CLR") => "CLR_POLARITY",
+        (ControlRole::Set, "SET" | "PRE") => "SET_POLARITY",
+        (ControlRole::Enable, _) => "EN_POLARITY",
+        _ => return None,
+    };
+    binary_parameter_bool(params.get(key)).map(|active_high| !active_high)
+}
+
+fn binary_parameter_bool(value: Option<&String>) -> Option<bool> {
+    match value.map(String::as_str) {
+        Some("0") => Some(false),
+        Some("1") => Some(true),
+        _ => None,
+    }
+}
+
+fn fixed_primitive_control_active_low(
+    cell_type: &str,
+    role: ControlRole,
+    pin: &str,
+) -> Option<bool> {
+    let cell = cell_type.to_ascii_uppercase();
+    let pin = pin.to_ascii_uppercase();
+    if role == ControlRole::Clock && pin == "C" {
+        if matches!(cell.as_str(), "FDRE_1" | "FDSE_1" | "FDCE_1" | "FDPE_1") {
+            return Some(true);
+        }
+        if matches!(
+            cell.as_str(),
+            "FDRE" | "FDSE" | "FDCE" | "FDPE" | "FDCPE" | "FDR" | "FDS" | "FDC" | "FDP"
+        ) {
+            return Some(false);
+        }
+    }
+    let fixed_active_high = matches!(
+        (cell.as_str(), role, pin.as_str()),
+        (
+            "FDRE" | "FDRE_1" | "FDCE" | "FDCE_1" | "FDCPE" | "FDR" | "FDC",
+            ControlRole::Reset,
+            "R" | "CLR"
+        ) | (
+            "FDSE" | "FDSE_1" | "FDPE" | "FDPE_1" | "FDCPE" | "FDS" | "FDP",
+            ControlRole::Set,
+            "S" | "PRE"
+        ) | ("LDCE" | "LDCPE", ControlRole::Reset, "CLR")
+            | ("LDPE" | "LDCPE", ControlRole::Set, "PRE")
+            | (
+                "FDRE"
+                    | "FDRE_1"
+                    | "FDCE"
+                    | "FDCE_1"
+                    | "FDSE"
+                    | "FDSE_1"
+                    | "FDPE"
+                    | "FDPE_1"
+                    | "FDCPE"
+                    | "LDCE"
+                    | "LDPE"
+                    | "LDCPE",
+                ControlRole::Enable,
+                "CE" | "G" | "GE"
+            )
+    ) || (cell.starts_with("SB_DFF")
+        && ((matches!(role, ControlRole::Reset | ControlRole::Set)
+            && matches!(pin.as_str(), "R" | "S"))
+            || (role == ControlRole::Enable && pin == "E")));
+    fixed_active_high.then_some(false)
+}
+
 fn hard_cell_control_active_low(cell_type: &str, role: ControlRole) -> Option<bool> {
     let upper = cell_type.to_ascii_uppercase();
     let inner = upper.strip_prefix("$_")?.strip_suffix('_')?;
     let (family, flags) = inner.split_once('_')?;
     let flags = flags.as_bytes();
     let polarity = match (family, role) {
+        (_, ControlRole::Clock) => flags.first(),
         ("DFF", ControlRole::Reset)
         | ("DFFE", ControlRole::Reset)
         | ("SDFF", ControlRole::Reset)
@@ -1634,6 +1842,10 @@ fn hard_cell_control_active_low(cell_type: &str, role: ControlRole) -> Option<bo
         | ("DLATCH", ControlRole::Reset) => flags.get(1),
         ("DFFSR" | "DFFSRE" | "DLATCHSR", ControlRole::Set) => flags.get(1),
         ("DFFSR" | "DFFSRE" | "DLATCHSR", ControlRole::Reset) => flags.get(2),
+        ("DFFE", ControlRole::Enable) if flags.len() == 2 => flags.get(1),
+        ("DFFE", ControlRole::Enable) => flags.get(3),
+        ("SDFFE" | "SDFFCE" | "DFFSRE", ControlRole::Enable) => flags.last(),
+        ("DLATCH", ControlRole::Enable) => flags.first(),
         _ => None,
     }?;
     match polarity {

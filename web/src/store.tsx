@@ -40,6 +40,7 @@ export type TabId =
 
 export interface ConeGraphRequest {
   kind: 'cone'
+  designId: string
   node: number
   dir: 'fanin' | 'fanout'
   label: string // human description for the graph header
@@ -261,6 +262,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   sourceSelectionRef.current = sourceSelection
   const designInputKeyRef = useRef(designInputKey)
   designInputKeyRef.current = designInputKey
+  const designRef = useRef(design)
+  designRef.current = design
 
   const currentInput = useMemo(
     () => synthesisInput(files, top, mode, extraArgs),
@@ -283,6 +286,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         : error
           ? 'error'
           : 'stale'
+  const analysisStateRef = useRef<AnalysisState>(analysisState)
+  analysisStateRef.current = analysisState
+
+  useEffect(() => {
+    if (analysisState !== 'current') setEditorHighlight(null)
+  }, [analysisState])
 
   // Load examples once.
   const loadedExamples = useRef(false)
@@ -439,8 +448,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const openCone = useCallback(
     (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => {
+      if (analysisStateRef.current !== 'current') return
       setConeReq({
         kind: 'cone',
+        designId: designRef.current?.design_id ?? '',
         node: opts.node,
         dir: opts.dir,
         label: opts.label,
@@ -453,8 +464,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   )
 
   const showPathInGraph = useCallback((path: TimingPath) => {
+    if (analysisStateRef.current !== 'current') return
     setConeReq({
       kind: 'cone',
+      designId: designRef.current?.design_id ?? '',
       node: path.endpoint.id,
       dir: 'fanin',
       label: `Path → ${displayNodeName(path.endpoint)} (depth ${path.depth})`,
@@ -474,10 +487,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       label: string
       generated?: boolean
     }) => {
+      if (analysisStateRef.current !== 'current') return
       const dir = generated ? 'fanin' : 'fanout'
       setGraphOptionsState((options) => ({ ...options, hideControl: false }))
       setConeReq({
         kind: 'cone',
+        designId: designRef.current?.design_id ?? '',
         node,
         dir,
         label: `${label} (${generated ? 'generated control fanin' : 'control fanout'})`,
@@ -504,6 +519,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setEditorHighlight(null)
       return
     }
+    if (analysisStateRef.current !== 'current') return
     const submittedNames = new Set(
       currentInputRef.current.request.files.map((f) => f.name),
     )

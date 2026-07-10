@@ -1,6 +1,6 @@
 use crate::analysis::{
     Analysis, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef, PathsResponse,
-    SourceLineIndex, SourceMapResponse, Stats, Subgraph, node_ref,
+    SourceLineIndex, SourceMapResponse, Stats, Subgraph,
 };
 use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
@@ -185,11 +185,18 @@ async fn synthesize(
             format!("failed to build analysis graph: {err}"),
         )
     })?;
+    let (_, source_module) = select_top(&source_parsed, None).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to resolve source-provenance top module: {err}"),
+        )
+    })?;
     let SourceAliasProvenance {
         roots_by_line,
         synthesizable_lines,
     } = continuous_assign_provenance(
         &graph,
+        source_module,
         validated
             .files
             .iter()
@@ -197,12 +204,6 @@ async fn synthesize(
     );
     let mut analysis = Analysis::new(&graph, validated.file_names());
     analysis.extend_source_roots(roots_by_line);
-    let (_, source_module) = select_top(&source_parsed, None).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to resolve source-provenance top module: {err}"),
-        )
-    })?;
     let mut source_index = SourceLineIndex::from_module(source_module, validated.file_names());
     source_index.extend_lines(synthesizable_lines);
     let response = SynthesizeResponse {
@@ -471,7 +472,7 @@ async fn nodes(
     let nodes = ids
         .into_iter()
         .filter(|id| design.graph.nodes.get(*id as usize).is_some())
-        .map(|id| node_ref(&design.graph, id))
+        .map(|id| design.analysis.node_ref(&design.graph, id))
         .collect();
     Ok(Json(NodesResponse { nodes }))
 }

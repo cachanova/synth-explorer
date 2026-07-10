@@ -19,6 +19,7 @@ export type SymbolKind =
   | 'mux'
   | 'nmux'
   | 'reg'
+  | 'latch'
   | 'lut'
   | 'arith'
   | 'memory'
@@ -153,7 +154,8 @@ const ARITH_GLYPHS: Record<string, string> = {
 }
 
 const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAMB|URAM|DP16KD|SPRAM|SRL(?:16E|C32E))/i
-const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|DLATCH|SR|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|R|S|C|P)$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
+const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
+const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i
 
 /** Map a graph node to a schematic archetype. */
@@ -171,6 +173,7 @@ export function symbolKind(
   // Memory and unknown black-box boundaries can also carry seq=true. Keep
   // them as explicit boundaries rather than misrepresenting them as DFFs.
   if (MEMORY_HINT.test(token)) return 'memory'
+  if (node.register !== false && LATCH_HINT.test(token)) return 'latch'
   if (node.register === true || (node.register !== false && REGISTER_HINT.test(token))) {
     return 'reg'
   }

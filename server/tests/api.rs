@@ -387,7 +387,16 @@ async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() 
     assert_eq!(wire_only_assign["status"], "mapped");
     let assign_nodes = wire_only_assign["graph"]["nodes"].as_array().unwrap();
     assert!(assign_nodes.iter().any(|node| node["name"] == "a"));
-    assert!(assign_nodes.iter().any(|node| node["name"] == "y"));
+    let y = assign_nodes
+        .iter()
+        .find(|node| node["name"] == "y")
+        .expect("wire-only output root");
+    assert!(
+        y["src"]
+            .as_str()
+            .is_some_and(|src| src.contains("optimized.sv:7")),
+        "synthetic assign provenance must support graph-to-source probing"
+    );
 
     let declaration = get_json(
         &mut app,
@@ -395,6 +404,119 @@ async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() 
     )
     .await;
     assert_eq!(declaration["status"], "unmapped");
+}
+
+#[tokio::test]
+async fn wire_alias_provenance_is_scoped_to_the_selected_top() {
+    let source = "module helper(input wire a, output wire y);\n  assign y = a;\nendmodule\nmodule scoped(input wire a, output wire y);\n  wire alias = a;\n  assign y = alias;\nendmodule\n";
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "scoped.sv", "content": source}],
+                        "top": "scoped",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let helper = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=scoped.sv&start_line=2&end_line=2"),
+    )
+    .await;
+    assert_eq!(helper["status"], "unmapped");
+
+    let alias = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=scoped.sv&start_line=5&end_line=5"),
+    )
+    .await;
+    assert_ne!(alias["status"], "unmapped");
+
+    let top_assign = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=scoped.sv&start_line=6&end_line=6"),
+    )
+    .await;
+    assert_eq!(top_assign["status"], "mapped");
+}
+
+#[tokio::test]
+async fn wire_alias_provenance_tracks_reachable_child_instance_scopes() {
+    let source = "module leaf(input wire a, output wire y);\n  wire alias = a;\n  assign y = alias;\nendmodule\nmodule other(input wire a, output wire y);\n  wire alias = ~a;\n  assign y = alias;\nendmodule\nmodule unused(input wire a, output wire y);\n  wire alias = a;\n  assign y = alias;\nendmodule\nmodule scoped_children(input wire a, input wire b, output wire y0, output wire y1);\n  leaf u_leaf(.a(a), .y(y0));\n  other u_other(.a(b), .y(y1));\nendmodule\n";
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "children.sv", "content": source}],
+                        "top": "scoped_children",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let leaf_alias = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=children.sv&start_line=2&end_line=2"),
+    )
+    .await;
+    assert_eq!(leaf_alias["status"], "mapped");
+    let leaf_names: Vec<&str> = leaf_alias["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["name"].as_str())
+        .collect();
+    assert!(leaf_names.contains(&"y0"));
+    assert!(!leaf_names.contains(&"y1"));
+
+    let other_alias = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=children.sv&start_line=6&end_line=6"),
+    )
+    .await;
+    assert_eq!(other_alias["status"], "mapped");
+    assert!(
+        other_alias["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "y1")
+    );
+
+    let unused_alias = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=children.sv&start_line=10&end_line=10"),
+    )
+    .await;
+    assert_eq!(unused_alias["status"], "unmapped");
 }
 
 #[tokio::test]
@@ -516,6 +638,63 @@ endmodule
     assert_eq!(reset["active_low"], true);
     assert_eq!(reset["synchronous"], false);
     assert_eq!(reset["generated"], false);
+}
+
+#[tokio::test]
+async fn rtl_parameters_and_vendor_primitives_override_reset_name_heuristics() {
+    let rtl_source = r#"
+module rtl_reset(input wire clk, input wire reset, input wire d, output reg q);
+  always @(posedge clk or negedge reset)
+    if (!reset) q <= 1'b0; else q <= d;
+endmodule
+"#;
+    let vendor_source = r#"
+module vendor_reset(input wire clk, input wire rst_n, input wire d, output reg q);
+  always @(posedge clk)
+    if (rst_n) q <= 1'b0; else q <= d;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    for (name, source, mode, expected_active_low) in [
+        ("rtl_reset", rtl_source, "rtl", true),
+        ("vendor_reset", vendor_source, "xilinx", false),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "files": [{"name": format!("{name}.sv"), "content": source}],
+                            "top": name,
+                            "mode": mode
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let synth = body_json(response).await;
+        let design_id = synth["design_id"].as_str().unwrap();
+        let netlist = get_json(
+            &mut app,
+            &format!("/api/design/{design_id}/netlist?max_nodes=100"),
+        )
+        .await;
+        let reset = netlist["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|node| node["controls"].as_array().into_iter().flatten())
+            .find(|control| control["role"] == "reset")
+            .unwrap_or_else(|| panic!("{mode} reset label"));
+        assert_eq!(reset["active_low"], expected_active_low, "mode {mode}");
+    }
 }
 
 #[tokio::test]

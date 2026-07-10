@@ -42,6 +42,8 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('$dff', { seq: true }))).toBe('reg')
     expect(symbolKind(cell('$_SDFF_PP0_'))).toBe('reg')
     expect(symbolKind(cell('$aldffe'))).toBe('reg')
+    expect(symbolKind(cell('$dlatch', { register: true, seq: true }))).toBe('latch')
+    expect(symbolKind(cell('LDCE', { register: true, seq: true }))).toBe('latch')
     expect(symbolKind(cell('FDRE'))).toBe('reg')
     expect(symbolKind(cell('FDR'))).toBe('reg')
     expect(symbolKind(cell('SRL16E', { register: false, seq: true }))).toBe('memory')

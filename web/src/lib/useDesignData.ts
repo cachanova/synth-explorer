@@ -28,7 +28,10 @@ export function useDesignData<T>(
       return
     }
     let cancelled = false
-    setState((s) => ({ data: s.data, loading: true, error: null }))
+    // Design-local node ids cannot be carried across analyses. Clear the old
+    // payload before fetching so retained rows cannot issue a request against
+    // the replacement design with stale numeric ids.
+    setState({ data: null, loading: true, error: null })
     fetcher(id)
       .then((data) => {
         if (!cancelled) setState({ data, loading: false, error: null })
