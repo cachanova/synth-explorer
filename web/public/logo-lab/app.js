@@ -899,20 +899,33 @@ async function copySelection() {
   if (!selected) return
   const choice = 'Synth Explorer logo choice: ' + selected.id + ' — ' + selected.name + '\n' + location.href
 
+  let copied = false
+
   try {
     await navigator.clipboard.writeText(choice)
+    copied = true
   } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = choice
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.append(textarea)
-    textarea.select()
-    document.execCommand('copy')
-    textarea.remove()
+    let textarea = null
+    try {
+      textarea = document.createElement('textarea')
+      textarea.value = choice
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.append(textarea)
+      textarea.select()
+      copied = document.execCommand('copy')
+    } catch {
+      copied = false
+    } finally {
+      textarea?.remove()
+    }
   }
 
-  showToast('Copied ' + selected.id + ' — ' + selected.name)
+  showToast(
+    copied
+      ? 'Copied ' + selected.id + ' — ' + selected.name
+      : 'Copy failed — selection is ' + selected.id + ' — ' + selected.name,
+  )
 }
 
 filters.addEventListener('click', (event) => {
@@ -947,14 +960,22 @@ window.addEventListener('hashchange', () => {
   const id = location.hash.slice(1).toUpperCase()
   const match = logos.find((logo) => logo.id === id)
   if (match) selectLogo(match, false)
+  else clearSelection()
 })
 
 function initialSelection() {
   const hashId = location.hash.slice(1).toUpperCase()
   const storedId = readStoredChoice()
-  const id = hashId || storedId
-  const match = logos.find((logo) => logo.id === id)
-  if (match) selectLogo(match, false)
+
+  if (hashId) {
+    const hashMatch = logos.find((logo) => logo.id === hashId)
+    if (hashMatch) selectLogo(hashMatch, false)
+    else clearSelection()
+    return
+  }
+
+  const storedMatch = logos.find((logo) => logo.id === storedId)
+  if (storedMatch) selectLogo(storedMatch, true)
 }
 
 totalCount.textContent = logos.length
