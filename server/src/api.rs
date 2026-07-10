@@ -22,8 +22,8 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 const DESIGN_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
-const DESIGN_CACHE_NETLIST_MULTIPLIER: usize = 2;
 const YOSYS_CONCURRENCY_LIMIT: usize = 2;
+const MAX_IN_FLIGHT_DESIGNS: usize = 8;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -133,23 +133,29 @@ impl SynthesisFlights {
         }
     }
 
-    fn claim(self: &Arc<Self>, design_id: &str) -> FlightClaim {
+    fn claim(self: &Arc<Self>, design_id: &str) -> Result<FlightClaim, FlightClaimError> {
         let mut entries = self
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(flight) = entries.get(design_id) {
-            return FlightClaim::Follower(flight.result.subscribe());
+            return Ok(FlightClaim::Follower(flight.result.subscribe()));
+        }
+        if entries.len() >= MAX_IN_FLIGHT_DESIGNS {
+            return Err(FlightClaimError::AtCapacity);
         }
 
-        let (result, _initial_receiver) = watch::channel(None);
+        let (result, receiver) = watch::channel(None);
         let flight = Arc::new(SynthesisFlight { result });
         entries.insert(design_id.to_owned(), Arc::clone(&flight));
-        FlightClaim::Leader(FlightLeader {
-            registry: Arc::clone(self),
-            design_id: design_id.to_owned(),
-            flight,
-            completed: false,
+        Ok(FlightClaim::New {
+            receiver,
+            task: FlightTaskGuard {
+                registry: Arc::clone(self),
+                design_id: design_id.to_owned(),
+                flight,
+                completed: false,
+            },
         })
     }
 
@@ -168,34 +174,41 @@ impl SynthesisFlights {
 }
 
 enum FlightClaim {
-    Leader(FlightLeader),
     Follower(watch::Receiver<Option<FlightResult>>),
+    New {
+        receiver: watch::Receiver<Option<FlightResult>>,
+        task: FlightTaskGuard,
+    },
 }
 
-struct FlightLeader {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlightClaimError {
+    AtCapacity,
+}
+
+struct FlightTaskGuard {
     registry: Arc<SynthesisFlights>,
     design_id: String,
     flight: Arc<SynthesisFlight>,
     completed: bool,
 }
 
-impl FlightLeader {
-    fn complete(mut self, result: FlightResult) -> FlightResult {
-        self.flight.result.send_replace(Some(result.clone()));
+impl FlightTaskGuard {
+    fn complete(mut self, result: FlightResult) {
+        self.flight.result.send_replace(Some(result));
         self.registry.remove(&self.design_id, &self.flight);
         self.completed = true;
-        result
     }
 }
 
-impl Drop for FlightLeader {
+impl Drop for FlightTaskGuard {
     fn drop(&mut self) {
         if self.completed {
             return;
         }
         self.flight.result.send_replace(Some(Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "synthesis request was cancelled",
+            "shared synthesis task was cancelled",
         ))));
         self.registry.remove(&self.design_id, &self.flight);
     }
@@ -207,6 +220,17 @@ struct Design {
     graph: Graph,
     analysis: Analysis,
     source_index: SourceLineIndex,
+}
+
+impl Design {
+    /// Deterministic estimate of retained allocation, not allocator-exact RSS.
+    fn estimated_heap_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(synthesize_response_heap_bytes(&self.response))
+            .saturating_add(self.graph.estimated_heap_bytes())
+            .saturating_add(self.analysis.estimated_heap_bytes())
+            .saturating_add(self.source_index.estimated_heap_bytes())
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -307,20 +331,42 @@ async fn synthesize(
         return Ok(Json(design.response.clone()));
     }
 
-    let result = match state.flights.claim(&design_id) {
-        FlightClaim::Follower(receiver) => wait_for_flight(receiver).await,
-        FlightClaim::Leader(leader) => {
-            // A previous flight may have filled the cache after the optimistic
-            // lookup but before this request claimed the per-design key.
-            let result = if let Some(design) = cache_lookup(&state.cache, &design_id).await {
-                Ok(design)
-            } else {
-                synthesize_uncached(&state, &validated, &design_id).await
-            };
-            leader.complete(result)
+    let receiver = match state.flights.claim(&design_id) {
+        Ok(FlightClaim::Follower(receiver)) => {
+            // Followers need only the stable design id. Do not retain another
+            // complete source payload while the shared pipeline is running.
+            drop(validated);
+            receiver
+        }
+        Ok(FlightClaim::New { receiver, task }) => {
+            let task_state = state.clone();
+            let task_design_id = design_id.clone();
+            tokio::spawn(async move {
+                // A previous flight may have filled the cache after the
+                // optimistic lookup but before this key was claimed.
+                let result =
+                    if let Some(design) = cache_lookup(&task_state.cache, &task_design_id).await {
+                        Ok(design)
+                    } else {
+                        synthesize_uncached(&task_state, &validated, &task_design_id).await
+                    };
+                task.complete(result);
+            });
+            receiver
+        }
+        Err(FlightClaimError::AtCapacity) => {
+            // A task can publish its cache entry immediately before removing
+            // its flight. Close that race before rejecting a distinct key.
+            if let Some(design) = cache_lookup(&state.cache, &design_id).await {
+                return Ok(Json(design.response.clone()));
+            }
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many distinct syntheses are active or queued; retry later",
+            ));
         }
     };
-    let design = result?;
+    let design = wait_for_flight(receiver).await?;
     Ok(Json(design.response.clone()))
 }
 
@@ -356,8 +402,6 @@ async fn synthesize_uncached(
             )
         })?;
     let output = run_yosys(validated).await.map_err(map_yosys_error)?;
-    let json_bytes = output.json_bytes;
-    let source_json_bytes = output.source_json_bytes;
     let parsed = parse_value(output.json).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -389,8 +433,8 @@ async fn synthesize_uncached(
         )
     })?;
     let SourceAliasProvenance {
-        roots_by_line,
-        synthesizable_lines,
+        ranges,
+        truncated: source_ranges_truncated,
     } = continuous_assign_provenance(
         &graph,
         source_module,
@@ -400,9 +444,9 @@ async fn synthesize_uncached(
             .map(|file| (file.name.clone(), file.content.clone())),
     );
     let mut analysis = Analysis::new(&graph, validated.file_names());
-    analysis.extend_source_roots(roots_by_line);
     let mut source_index = SourceLineIndex::from_module(source_module, validated.file_names());
-    source_index.extend_lines(synthesizable_lines);
+    source_index.extend_ranges(&ranges);
+    analysis.extend_source_ranges(ranges, source_ranges_truncated);
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
@@ -411,19 +455,13 @@ async fn synthesize_uncached(
         warnings: analysis.warnings(),
         log: output.log,
     };
-    let cache_weight_bytes = design_cache_weight(
-        design_id,
-        json_bytes,
-        source_json_bytes,
-        validated,
-        &response,
-    );
     let design = Arc::new(Design {
         response: response.clone(),
         graph,
         analysis,
         source_index,
     });
+    let cache_weight_bytes = design_cache_weight(design_id, &design);
     let cached = state.cache.write().await.insert(
         design_id.to_owned(),
         Arc::clone(&design),
@@ -438,52 +476,44 @@ async fn synthesize_uncached(
     Ok(design)
 }
 
-fn design_cache_weight(
-    design_id: &str,
-    json_bytes: usize,
-    source_json_bytes: usize,
-    validated: &crate::yosys::ValidatedSynth,
-    response: &SynthesizeResponse,
-) -> usize {
-    // The graph, analysis indexes, and source index are all derived from these
-    // two serialized netlists. Their exact allocator footprint is not portable,
-    // so this is a conservative accounting estimate rather than an allocator
-    // measurement: charge twice the exact JSON byte counts, then add data
-    // retained independently by the response and cache keys.
-    let file_name_bytes = validated
-        .files
-        .iter()
-        .map(|file| file.name.len())
-        .sum::<usize>()
-        .saturating_mul(2);
-    let warning_bytes = response
-        .warnings
-        .iter()
-        .map(String::len)
-        .sum::<usize>()
-        .saturating_mul(2);
-    let stats_key_bytes = response
-        .stats
-        .cells_by_type
-        .keys()
-        .map(String::len)
-        .sum::<usize>()
-        .saturating_mul(2);
-    json_bytes
-        .saturating_add(source_json_bytes)
-        .saturating_mul(DESIGN_CACHE_NETLIST_MULTIPLIER)
-        .saturating_add(response.log.len())
-        .saturating_add(response.top.len())
-        .saturating_add(response.mode.len())
-        .saturating_add(warning_bytes)
-        .saturating_add(stats_key_bytes)
-        .saturating_add(design_id.len().saturating_mul(3))
-        .saturating_add(file_name_bytes)
-        .saturating_add(size_of::<Design>())
-        .saturating_add(size_of::<CacheEntry<Design>>())
-        .saturating_add(size_of::<SynthesizeResponse>())
-        .saturating_add(size_of::<Stats>().saturating_mul(2))
+fn design_cache_weight(design_id: &str, design: &Design) -> usize {
+    // The cache retains two owned id strings (hash-map key and FIFO key), one
+    // hash-map entry, and one VecDeque element in addition to the design.
+    design
+        .estimated_heap_bytes()
+        .saturating_add(size_of::<(String, CacheEntry<Design>)>())
+        .saturating_add(size_of::<String>())
+        .saturating_add(design_id.len().saturating_mul(2))
         .max(1)
+}
+
+fn synthesize_response_heap_bytes(response: &SynthesizeResponse) -> usize {
+    let mut bytes = response
+        .design_id
+        .capacity()
+        .saturating_add(response.top.capacity())
+        .saturating_add(response.mode.capacity())
+        .saturating_add(response.log.capacity())
+        .saturating_add(
+            response
+                .warnings
+                .capacity()
+                .saturating_mul(size_of::<String>()),
+        )
+        .saturating_add(
+            response
+                .stats
+                .cells_by_type
+                .len()
+                .saturating_mul(size_of::<(String, usize)>() + 3 * size_of::<usize>()),
+        );
+    for warning in &response.warnings {
+        bytes = bytes.saturating_add(warning.capacity());
+    }
+    for cell_type in response.stats.cells_by_type.keys() {
+        bytes = bytes.saturating_add(cell_type.capacity());
+    }
+    bytes
 }
 
 async fn design(
@@ -577,10 +607,11 @@ struct LineConeQuery {
     show_infrastructure: Option<bool>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum SourceEnvelopeStatus {
     Mapped,
+    MappingIncomplete,
     OptimizedOrAbsorbed,
     Unmapped,
 }
@@ -642,22 +673,36 @@ async fn line_cone(
             },
         )
         .expect("source map contains only valid graph node ids");
-    let status = if !roots.is_empty() {
-        SourceEnvelopeStatus::Mapped
-    } else if design
+    let mapping_incomplete = design
+        .analysis
+        .source_mapping_incomplete(&file, start_line as usize, end_line as usize)
+        .expect("final and provenance indexes contain the same source files");
+    let source_seen = design
         .source_index
         .contains_range(&file, start_line as usize, end_line as usize)
-        .expect("final and provenance indexes contain the same source files")
-    {
-        SourceEnvelopeStatus::OptimizedOrAbsorbed
-    } else {
-        SourceEnvelopeStatus::Unmapped
-    };
+        .expect("final and provenance indexes contain the same source files");
+    let status = source_envelope_status(!roots.is_empty(), mapping_incomplete, source_seen);
     Ok(Json(LineConeResponse {
         status,
         control,
         graph: subgraph,
     }))
+}
+
+fn source_envelope_status(
+    has_roots: bool,
+    mapping_incomplete: bool,
+    source_seen: bool,
+) -> SourceEnvelopeStatus {
+    if mapping_incomplete {
+        SourceEnvelopeStatus::MappingIncomplete
+    } else if has_roots {
+        SourceEnvelopeStatus::Mapped
+    } else if source_seen {
+        SourceEnvelopeStatus::OptimizedOrAbsorbed
+    } else {
+        SourceEnvelopeStatus::Unmapped
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -938,31 +983,58 @@ mod tests {
         assert_eq!(cache.weight_bytes, 8);
     }
 
+    #[test]
+    fn retained_design_capacity_increases_cache_weight() {
+        let small = empty_test_design("design");
+        let mut large = empty_test_design("design");
+        let mut retained_log = String::with_capacity(16 * 1024);
+        retained_log.push('x');
+        Arc::get_mut(&mut large).unwrap().response.log = retained_log;
+
+        assert!(
+            design_cache_weight("design", &large) > design_cache_weight("design", &small),
+            "retained buffer capacity must contribute to cache accounting"
+        );
+    }
+
+    #[test]
+    fn incomplete_source_mapping_is_never_reported_as_optimized() {
+        assert_eq!(
+            source_envelope_status(false, true, true),
+            SourceEnvelopeStatus::MappingIncomplete
+        );
+        assert_eq!(
+            source_envelope_status(true, true, true),
+            SourceEnvelopeStatus::MappingIncomplete
+        );
+    }
+
     #[tokio::test]
     async fn synthesis_flight_shares_failure_then_releases_the_key() {
         let registry = Arc::new(SynthesisFlights::new());
-        let leader = match registry.claim("same-design") {
-            FlightClaim::Leader(leader) => leader,
-            FlightClaim::Follower(_) => panic!("first claim must lead"),
+        let (initiator, task) = match registry.claim("same-design").unwrap() {
+            FlightClaim::New { receiver, task } => (receiver, task),
+            FlightClaim::Follower(_) => panic!("first claim must create a task"),
         };
-        let follower = match registry.claim("same-design") {
+        let follower = match registry.claim("same-design").unwrap() {
             FlightClaim::Follower(receiver) => receiver,
-            FlightClaim::Leader(_) => panic!("second claim must follow"),
+            FlightClaim::New { .. } => panic!("second claim must follow"),
         };
         assert_eq!(registry.entries.lock().unwrap().len(), 1);
 
-        let leader_result = leader.complete(Err(ApiError::new(
+        task.complete(Err(ApiError::new(
             StatusCode::BAD_REQUEST,
             "deterministic failure",
         )));
-        assert_eq!(leader_result.unwrap_err().status, StatusCode::BAD_REQUEST);
+        let initiator_error = wait_for_flight(initiator).await.unwrap_err();
+        assert_eq!(initiator_error.status, StatusCode::BAD_REQUEST);
         let follower_error = wait_for_flight(follower).await.unwrap_err();
         assert_eq!(follower_error.status, StatusCode::BAD_REQUEST);
         assert_eq!(follower_error.message, "deterministic failure");
         assert!(registry.entries.lock().unwrap().is_empty());
 
-        let retry = match registry.claim("same-design") {
-            FlightClaim::Leader(leader) => leader,
+        let retry = match registry.claim("same-design").unwrap() {
+            FlightClaim::New { task, .. } => task,
             FlightClaim::Follower(_) => panic!("failed flight must not poison retries"),
         };
         drop(retry);
@@ -972,42 +1044,92 @@ mod tests {
     #[tokio::test]
     async fn synthesis_flight_shares_one_success_with_all_followers() {
         let registry = Arc::new(SynthesisFlights::new());
-        let leader = match registry.claim("same-design") {
-            FlightClaim::Leader(leader) => leader,
-            FlightClaim::Follower(_) => panic!("first claim must lead"),
+        let (initiator, task) = match registry.claim("same-design").unwrap() {
+            FlightClaim::New { receiver, task } => (receiver, task),
+            FlightClaim::Follower(_) => panic!("first claim must create a task"),
         };
-        let follower = match registry.claim("same-design") {
+        let follower = match registry.claim("same-design").unwrap() {
             FlightClaim::Follower(receiver) => receiver,
-            FlightClaim::Leader(_) => panic!("second claim must follow"),
+            FlightClaim::New { .. } => panic!("second claim must follow"),
         };
         let expected = empty_test_design("same-design");
 
-        let leader_design = leader.complete(Ok(Arc::clone(&expected))).unwrap();
+        task.complete(Ok(Arc::clone(&expected)));
+        let initiator_design = wait_for_flight(initiator).await.unwrap();
         let follower_design = wait_for_flight(follower).await.unwrap();
-        assert!(Arc::ptr_eq(&leader_design, &expected));
+        assert!(Arc::ptr_eq(&initiator_design, &expected));
         assert!(Arc::ptr_eq(&follower_design, &expected));
         assert!(registry.entries.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn cancelled_synthesis_leader_notifies_followers_and_releases_the_key() {
+    async fn initiating_receiver_drop_does_not_cancel_shared_task() {
         let registry = Arc::new(SynthesisFlights::new());
-        let leader = match registry.claim("cancelled-design") {
-            FlightClaim::Leader(leader) => leader,
-            FlightClaim::Follower(_) => panic!("first claim must lead"),
+        let (initiator, task) = match registry.claim("shared-design").unwrap() {
+            FlightClaim::New { receiver, task } => (receiver, task),
+            FlightClaim::Follower(_) => panic!("first claim must create a task"),
         };
-        let follower = match registry.claim("cancelled-design") {
+        drop(initiator);
+        let follower = match registry.claim("shared-design").unwrap() {
             FlightClaim::Follower(receiver) => receiver,
-            FlightClaim::Leader(_) => panic!("second claim must follow"),
+            FlightClaim::New { .. } => panic!("task must outlive its initiating receiver"),
+        };
+        let expected = empty_test_design("shared-design");
+
+        task.complete(Ok(Arc::clone(&expected)));
+        let follower_design = wait_for_flight(follower).await.unwrap();
+        assert!(Arc::ptr_eq(&follower_design, &expected));
+        assert!(registry.entries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancelled_shared_task_notifies_followers_and_releases_the_key() {
+        let registry = Arc::new(SynthesisFlights::new());
+        let task = match registry.claim("cancelled-design").unwrap() {
+            FlightClaim::New { task, .. } => task,
+            FlightClaim::Follower(_) => panic!("first claim must create a task"),
+        };
+        let follower = match registry.claim("cancelled-design").unwrap() {
+            FlightClaim::Follower(receiver) => receiver,
+            FlightClaim::New { .. } => panic!("second claim must follow"),
         };
 
-        drop(leader);
+        drop(task);
         let error = wait_for_flight(follower).await.unwrap_err();
         assert_eq!(error.status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(error.message, "synthesis request was cancelled");
+        assert_eq!(error.message, "shared synthesis task was cancelled");
         assert!(registry.entries.lock().unwrap().is_empty());
-        let retry = registry.claim("cancelled-design");
-        assert!(matches!(retry, FlightClaim::Leader(_)));
+        assert!(matches!(
+            registry.claim("cancelled-design"),
+            Ok(FlightClaim::New { .. })
+        ));
+    }
+
+    #[test]
+    fn synthesis_flights_bound_distinct_keys_but_keep_existing_followers() {
+        let registry = Arc::new(SynthesisFlights::new());
+        let mut active = Vec::new();
+        for index in 0..MAX_IN_FLIGHT_DESIGNS {
+            match registry.claim(&format!("design-{index}")).unwrap() {
+                FlightClaim::New { receiver, task } => active.push((receiver, task)),
+                FlightClaim::Follower(_) => panic!("distinct key unexpectedly followed"),
+            }
+        }
+        assert_eq!(
+            registry.entries.lock().unwrap().len(),
+            MAX_IN_FLIGHT_DESIGNS
+        );
+        assert!(matches!(
+            registry.claim("ninth-design"),
+            Err(FlightClaimError::AtCapacity)
+        ));
+        assert!(matches!(
+            registry.claim("design-0"),
+            Ok(FlightClaim::Follower(_))
+        ));
+
+        drop(active);
+        assert!(registry.entries.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1015,9 +1137,9 @@ mod tests {
         let cache = RwLock::new(WeightedCache::new(10));
         assert!(cache_lookup(&cache, "design").await.is_none());
         let registry = Arc::new(SynthesisFlights::new());
-        let leader = match registry.claim("design") {
-            FlightClaim::Leader(leader) => leader,
-            FlightClaim::Follower(_) => panic!("first claim must lead"),
+        let task = match registry.claim("design").unwrap() {
+            FlightClaim::New { task, .. } => task,
+            FlightClaim::Follower(_) => panic!("first claim must create a task"),
         };
 
         // This models the race handled by the leader-side cache recheck: the
@@ -1028,7 +1150,7 @@ mod tests {
             .await
             .insert("design".to_owned(), Arc::new(7_u8), 4);
         assert_eq!(cache_lookup(&cache, "design").await.as_deref(), Some(&7));
-        drop(leader);
+        drop(task);
     }
 
     #[test]

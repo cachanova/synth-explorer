@@ -1,12 +1,26 @@
-use crate::analysis::SOURCE_ROOT_COLLECTION_CAP;
+use crate::analysis::{
+    SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_ROOT_COLLECTION_CAP, SourceRangeMapping,
+};
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::YosysModule;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Default)]
 pub(crate) struct SourceAliasProvenance {
-    pub roots_by_line: BTreeMap<String, Vec<NodeId>>,
-    pub synthesizable_lines: HashSet<String>,
+    pub ranges: Vec<SourceRangeMapping>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Default)]
+struct RangeProvenance {
+    roots: BTreeSet<NodeId>,
+    mapping_incomplete: bool,
+}
+
+#[derive(Debug, Default)]
+struct SignalRootIndex {
+    roots: HashMap<String, Vec<NodeId>>,
+    incomplete: HashSet<String>,
 }
 
 /// Recover source provenance that Yosys JSON cannot retain for wire-only
@@ -23,8 +37,8 @@ pub(crate) fn continuous_assign_provenance(
 ) -> SourceAliasProvenance {
     let roots_by_name = roots_by_signal_name(graph);
     let scopes_by_module = scopes_by_module(source_module, &graph.top);
-    let mut provenance = SourceAliasProvenance::default();
-    let mut roots_by_line: BTreeMap<String, BTreeSet<NodeId>> = BTreeMap::new();
+    let mut ranges: BTreeMap<(String, usize, usize), RangeProvenance> = BTreeMap::new();
+    let mut association_count = 0usize;
 
     for (file, source) in files {
         if has_conditional_preprocessor(&source) {
@@ -35,6 +49,7 @@ pub(crate) fn continuous_assign_provenance(
                 continue;
             };
             let mut roots = BTreeSet::new();
+            let mut mapping_incomplete = false;
             for identifier in assignment.lhs_identifiers {
                 for scope in scopes {
                     let qualified = if scope.is_empty() {
@@ -42,31 +57,55 @@ pub(crate) fn continuous_assign_provenance(
                     } else {
                         format!("{scope}.{identifier}")
                     };
-                    if let Some(ids) = roots_by_name.get(qualified.as_str()) {
+                    mapping_incomplete |= roots_by_name.incomplete.contains(&qualified);
+                    if let Some(ids) = roots_by_name.roots.get(qualified.as_str()) {
                         for id in ids {
-                            insert_bounded_root(&mut roots, *id);
+                            mapping_incomplete |= insert_bounded_root(&mut roots, *id);
                         }
                     }
                 }
             }
-            for line in assignment.start_line..=assignment.end_line {
-                let key = format!("{file}:{line}");
-                provenance.synthesizable_lines.insert(key.clone());
-                if !roots.is_empty() {
-                    let line_roots = roots_by_line.entry(key).or_default();
-                    for root in &roots {
-                        insert_bounded_root(line_roots, *root);
-                    }
-                }
-            }
+            let range = ranges
+                .entry((file.clone(), assignment.start_line, assignment.end_line))
+                .or_default();
+            merge_range_roots(range, roots, mapping_incomplete, &mut association_count);
         }
     }
 
-    provenance.roots_by_line = roots_by_line
+    let ranges = ranges
         .into_iter()
-        .map(|(line, roots)| (line, roots.into_iter().collect()))
-        .collect();
-    provenance
+        .map(|((file, start_line, end_line), range)| SourceRangeMapping {
+            file,
+            start_line,
+            end_line,
+            node_ids: range.roots.into_iter().collect(),
+            mapping_incomplete: range.mapping_incomplete,
+        })
+        .collect::<Vec<_>>();
+    let truncated = ranges.iter().any(|range| range.mapping_incomplete);
+    SourceAliasProvenance { ranges, truncated }
+}
+
+fn merge_range_roots(
+    range: &mut RangeProvenance,
+    roots: impl IntoIterator<Item = NodeId>,
+    mapping_incomplete: bool,
+    association_count: &mut usize,
+) {
+    range.mapping_incomplete |= mapping_incomplete;
+    for root in roots {
+        if range.roots.contains(&root) {
+            continue;
+        }
+        if range.roots.len() == SOURCE_ROOT_COLLECTION_CAP
+            || *association_count == SOURCE_RANGE_ASSOCIATION_CAP
+        {
+            range.mapping_incomplete = true;
+            continue;
+        }
+        range.roots.insert(root);
+        *association_count += 1;
+    }
 }
 
 fn scopes_by_module(
@@ -97,61 +136,84 @@ fn scopes_by_module(
     scopes
 }
 
-fn roots_by_signal_name(graph: &Graph) -> HashMap<String, Vec<NodeId>> {
+fn roots_by_signal_name(graph: &Graph) -> SignalRootIndex {
     let mut roots: HashMap<String, BTreeSet<NodeId>> = HashMap::new();
+    let mut incomplete = HashSet::new();
     for node in &graph.nodes {
         if node.kind != NodeKind::PortBit {
             continue;
         }
         if let Some(port) = &node.port {
-            insert_root_name(&mut roots, port, node.id);
+            insert_root_name(&mut roots, &mut incomplete, port, node.id);
         }
-        insert_root_name(&mut roots, &node.name, node.id);
+        insert_root_name(&mut roots, &mut incomplete, &node.name, node.id);
     }
 
     let mut incident: HashMap<u32, BTreeSet<NodeId>> = HashMap::new();
+    let mut incomplete_incident = HashSet::new();
     for edge in &graph.edges {
         let Some(bit) = edge.bit else {
             continue;
         };
         let nodes = incident.entry(bit).or_default();
-        insert_bounded_root(nodes, edge.from);
-        insert_bounded_root(nodes, edge.to);
+        if insert_bounded_root(nodes, edge.from) | insert_bounded_root(nodes, edge.to) {
+            incomplete_incident.insert(bit);
+        }
     }
     for (bit, aliases) in &graph.net_aliases {
         let Some(nodes) = incident.get(bit) else {
             continue;
         };
         for alias in aliases {
+            if incomplete_incident.contains(bit) {
+                mark_root_name_incomplete(&mut incomplete, alias);
+            }
             for node in nodes {
-                insert_root_name(&mut roots, alias, *node);
+                insert_root_name(&mut roots, &mut incomplete, alias, *node);
             }
         }
     }
 
-    roots
+    let roots = roots
         .into_iter()
         .map(|(name, ids)| {
             let mut ids: Vec<NodeId> = ids.into_iter().collect();
             ids.sort_unstable();
             (name, ids)
         })
-        .collect()
+        .collect();
+    SignalRootIndex { roots, incomplete }
 }
 
-fn insert_root_name(roots: &mut HashMap<String, BTreeSet<NodeId>>, raw_name: &str, node: NodeId) {
+fn insert_root_name(
+    roots: &mut HashMap<String, BTreeSet<NodeId>>,
+    incomplete: &mut HashSet<String>,
+    raw_name: &str,
+    node: NodeId,
+) {
     let name = normalize_name(raw_name);
-    insert_bounded_root(roots.entry(name.clone()).or_default(), node);
-    insert_bounded_root(
-        roots.entry(strip_bit_suffix(&name).to_owned()).or_default(),
-        node,
-    );
+    let base = strip_bit_suffix(&name).to_owned();
+    if insert_bounded_root(roots.entry(name.clone()).or_default(), node) {
+        incomplete.insert(name);
+    }
+    if insert_bounded_root(roots.entry(base.clone()).or_default(), node) {
+        incomplete.insert(base);
+    }
 }
 
-fn insert_bounded_root(roots: &mut BTreeSet<NodeId>, node: NodeId) {
+fn mark_root_name_incomplete(incomplete: &mut HashSet<String>, raw_name: &str) {
+    let name = normalize_name(raw_name);
+    incomplete.insert(name.clone());
+    incomplete.insert(strip_bit_suffix(&name).to_owned());
+}
+
+fn insert_bounded_root(roots: &mut BTreeSet<NodeId>, node: NodeId) -> bool {
     roots.insert(node);
     if roots.len() > SOURCE_ROOT_COLLECTION_CAP {
         roots.pop_last();
+        true
+    } else {
+        false
     }
 }
 
@@ -425,6 +487,8 @@ fn sanitize_verilog(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::netlist::{parse_value, select_top};
+    use serde_json::json;
 
     #[test]
     fn finds_multiline_and_concatenated_continuous_assignments_only() {
@@ -486,5 +550,69 @@ endmodule
             roots.last(),
             Some(&(SOURCE_ROOT_COLLECTION_CAP as NodeId - 1))
         );
+    }
+
+    #[test]
+    fn million_line_assignment_is_one_sparse_provenance_interval() {
+        let netlist = parse_value(json!({
+            "modules": {
+                "top": {
+                    "attributes": {"top": "1"},
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [2]}
+                    },
+                    "netnames": {
+                        "a": {"bits": [2]},
+                        "y": {"bits": [2]}
+                    }
+                }
+            }
+        }))
+        .unwrap();
+        let (top, module) = select_top(&netlist, None).unwrap();
+        let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+        let source = format!(
+            "module top(input a, output y);\nassign y =\n{}a;\nendmodule\n",
+            "\n".repeat(1_000_000)
+        );
+
+        let provenance =
+            continuous_assign_provenance(&graph, module, [("sparse.sv".to_owned(), source)]);
+
+        assert!(!provenance.truncated);
+        assert_eq!(provenance.ranges.len(), 1);
+        let range = &provenance.ranges[0];
+        assert_eq!(range.file, "sparse.sv");
+        assert_eq!(range.start_line, 2);
+        assert_eq!(range.end_line, 1_000_003);
+        assert!(!range.node_ids.is_empty());
+        assert!(!range.mapping_incomplete);
+    }
+
+    #[test]
+    fn recovered_associations_have_one_global_budget_and_mark_partial_ranges() {
+        let mut ranges = Vec::new();
+        let mut association_count = 0;
+        for range_index in 0..11 {
+            let mut range = RangeProvenance::default();
+            let first = range_index * SOURCE_ROOT_COLLECTION_CAP;
+            merge_range_roots(
+                &mut range,
+                (first..first + SOURCE_ROOT_COLLECTION_CAP).map(|id| id as NodeId),
+                false,
+                &mut association_count,
+            );
+            ranges.push(range);
+        }
+
+        assert_eq!(association_count, SOURCE_RANGE_ASSOCIATION_CAP);
+        assert_eq!(
+            ranges.iter().map(|range| range.roots.len()).sum::<usize>(),
+            SOURCE_RANGE_ASSOCIATION_CAP
+        );
+        assert!(ranges[..9].iter().all(|range| !range.mapping_incomplete));
+        assert!(ranges[9].mapping_incomplete);
+        assert!(ranges[10].mapping_incomplete);
     }
 }

@@ -6,12 +6,17 @@ use crate::netlist::{PortDirection, YosysModule};
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::mem::size_of;
 
 const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
 pub const MAX_SUBGRAPH_NODES: usize = 2_000;
 pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
 pub(crate) const SOURCE_ROOT_COLLECTION_CAP: usize = MAX_SUBGRAPH_NODES + 1;
+const SOURCE_LINE_RESPONSE_CAP: usize = 10_000;
+const SOURCE_LINE_RESPONSE_NODE_BUDGET: usize = 20_000;
+const SOURCE_RANGE_RESPONSE_CAP: usize = 10_000;
+pub(crate) const SOURCE_RANGE_ASSOCIATION_CAP: usize = 20_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -217,15 +222,91 @@ pub struct FanoutResponse {
 pub struct SourceMapResponse {
     pub files: Vec<String>,
     pub by_line: BTreeMap<String, Vec<u32>>,
+    pub ranges: Vec<SourceRangeMapping>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct SourceRangeMapping {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub node_ids: Vec<u32>,
+    pub mapping_incomplete: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct IntervalIndex {
+    intervals: Vec<(usize, usize)>,
+    prefix_max_end: Vec<usize>,
+}
+
+impl IntervalIndex {
+    fn rebuild(&mut self) {
+        self.intervals.sort_unstable();
+        self.intervals.dedup();
+        self.prefix_max_end.clear();
+        self.prefix_max_end.reserve(self.intervals.len());
+        let mut max_end = 0;
+        for (_, end) in &self.intervals {
+            max_end = max_end.max(*end);
+            self.prefix_max_end.push(max_end);
+        }
+    }
+
+    fn intersects(&self, start_line: usize, end_line: usize) -> bool {
+        let end = self
+            .intervals
+            .partition_point(|(start, _)| *start <= end_line);
+        let start = self.prefix_max_end[..end].partition_point(|max_end| *max_end < start_line);
+        self.intervals[start..end]
+            .iter()
+            .any(|(_, interval_end)| *interval_end >= start_line)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SourceLineIndex {
     files: HashSet<String>,
     lines: HashSet<String>,
+    recovered_ranges: BTreeMap<String, IntervalIndex>,
 }
 
 impl SourceLineIndex {
+    /// Deterministic retained-allocation estimate, not allocator-exact RSS.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let mut bytes = self.files.capacity().saturating_mul(size_of::<String>());
+        for file in &self.files {
+            bytes = bytes.saturating_add(file.capacity());
+        }
+        bytes = bytes.saturating_add(self.lines.capacity().saturating_mul(size_of::<String>()));
+        for line in &self.lines {
+            bytes = bytes.saturating_add(line.capacity());
+        }
+        bytes = bytes.saturating_add(
+            self.recovered_ranges
+                .len()
+                .saturating_mul(size_of::<(String, IntervalIndex)>() + 3 * size_of::<usize>()),
+        );
+        for (file, index) in &self.recovered_ranges {
+            bytes = bytes
+                .saturating_add(file.capacity())
+                .saturating_add(
+                    index
+                        .intervals
+                        .capacity()
+                        .saturating_mul(size_of::<(usize, usize)>()),
+                )
+                .saturating_add(
+                    index
+                        .prefix_max_end
+                        .capacity()
+                        .saturating_mul(size_of::<usize>()),
+                );
+        }
+        bytes
+    }
+
     pub fn from_module(module: &YosysModule, files: Vec<String>) -> Self {
         let mut lines = HashSet::new();
         for cell in module.cells.values() {
@@ -239,6 +320,7 @@ impl SourceLineIndex {
         Self {
             files: files.into_iter().collect(),
             lines,
+            recovered_ranges: BTreeMap::new(),
         }
     }
 
@@ -246,11 +328,26 @@ impl SourceLineIndex {
         if !self.files.contains(file) {
             return None;
         }
-        Some((start_line..=end_line).any(|line| self.lines.contains(&format!("{file}:{line}"))))
+        Some(
+            (start_line..=end_line).any(|line| self.lines.contains(&format!("{file}:{line}")))
+                || self
+                    .recovered_ranges
+                    .get(file)
+                    .is_some_and(|index| index.intersects(start_line, end_line)),
+        )
     }
 
-    pub fn extend_lines(&mut self, lines: impl IntoIterator<Item = String>) {
-        self.lines.extend(lines);
+    pub fn extend_ranges<'a>(&mut self, ranges: impl IntoIterator<Item = &'a SourceRangeMapping>) {
+        for range in ranges {
+            self.recovered_ranges
+                .entry(range.file.clone())
+                .or_default()
+                .intervals
+                .push((range.start_line, range.end_line));
+        }
+        for index in self.recovered_ranges.values_mut() {
+            index.rebuild();
+        }
     }
 }
 
@@ -297,6 +394,7 @@ pub struct Analysis {
     pub endpoints: EndpointsResponse,
     endpoint_targets: Vec<EndpointTarget>,
     source_map: SourceMapResponse,
+    source_ranges: BTreeMap<String, SourceRangeIndex>,
     synthetic_src: HashMap<NodeId, BTreeSet<String>>,
     stats: Stats,
     warnings: Vec<String>,
@@ -314,9 +412,113 @@ struct EndpointTarget {
     bit: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SourceRangeIndex {
+    ranges: Vec<SourceRangeMapping>,
+    prefix_max_end: Vec<usize>,
+}
+
+impl SourceRangeIndex {
+    fn rebuild(&mut self) {
+        self.ranges.sort();
+        self.ranges.dedup();
+        self.prefix_max_end.clear();
+        self.prefix_max_end.reserve(self.ranges.len());
+        let mut max_end = 0;
+        for range in &self.ranges {
+            max_end = max_end.max(range.end_line);
+            self.prefix_max_end.push(max_end);
+        }
+    }
+
+    fn overlapping(&self, start_line: usize, end_line: usize) -> &[SourceRangeMapping] {
+        let end = self
+            .ranges
+            .partition_point(|range| range.start_line <= end_line);
+        let start = self.prefix_max_end[..end].partition_point(|max_end| *max_end < start_line);
+        &self.ranges[start..end]
+    }
+}
+
 type PathGroupKey = (String, EndpointKind, PathClass, u32, String, Vec<String>);
 
 impl Analysis {
+    /// Deterministic estimate of heap allocation retained by analysis indexes.
+    /// Collection capacities and owned buffers are counted without cloning.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let mut bytes = self
+            .node_depth
+            .capacity()
+            .saturating_mul(size_of::<Option<u32>>())
+            .saturating_add(
+                self.best_pred
+                    .capacity()
+                    .saturating_mul(size_of::<Option<usize>>()),
+            )
+            .saturating_add(
+                self.comb_loops
+                    .capacity()
+                    .saturating_mul(size_of::<NodeId>()),
+            )
+            .saturating_add(endpoints_heap_bytes(&self.endpoints))
+            .saturating_add(
+                self.endpoint_targets
+                    .capacity()
+                    .saturating_mul(size_of::<EndpointTarget>()),
+            );
+        for target in &self.endpoint_targets {
+            bytes = bytes
+                .saturating_add(target.endpoint_port.capacity())
+                .saturating_add(target.group.capacity());
+        }
+        bytes = bytes.saturating_add(source_map_heap_bytes(&self.source_map));
+        bytes = bytes.saturating_add(
+            self.source_ranges
+                .len()
+                .saturating_mul(size_of::<(String, SourceRangeIndex)>() + 3 * size_of::<usize>()),
+        );
+        for (file, index) in &self.source_ranges {
+            bytes = bytes
+                .saturating_add(file.capacity())
+                .saturating_add(
+                    index
+                        .ranges
+                        .capacity()
+                        .saturating_mul(size_of::<SourceRangeMapping>()),
+                )
+                .saturating_add(
+                    index
+                        .prefix_max_end
+                        .capacity()
+                        .saturating_mul(size_of::<usize>()),
+                );
+            for range in &index.ranges {
+                bytes = bytes.saturating_add(source_range_heap_bytes(range));
+            }
+        }
+        bytes = bytes.saturating_add(
+            self.synthetic_src
+                .capacity()
+                .saturating_mul(size_of::<(NodeId, BTreeSet<String>)>()),
+        );
+        for sources in self.synthetic_src.values() {
+            bytes = bytes.saturating_add(
+                sources
+                    .len()
+                    .saturating_mul(size_of::<String>() + 3 * size_of::<usize>()),
+            );
+            for source in sources {
+                bytes = bytes.saturating_add(source.capacity());
+            }
+        }
+        bytes = bytes.saturating_add(stats_heap_bytes(&self.stats));
+        bytes = bytes.saturating_add(self.warnings.capacity().saturating_mul(size_of::<String>()));
+        for warning in &self.warnings {
+            bytes = bytes.saturating_add(warning.capacity());
+        }
+        bytes
+    }
+
     pub fn new(graph: &Graph, source_files: Vec<String>) -> Self {
         let comb_loops = find_comb_loops(graph);
         let loop_set: HashSet<NodeId> = comb_loops.iter().copied().collect();
@@ -337,6 +539,7 @@ impl Analysis {
             endpoints,
             endpoint_targets,
             source_map,
+            source_ranges: BTreeMap::new(),
             synthetic_src: HashMap::new(),
             stats,
             warnings,
@@ -356,25 +559,107 @@ impl Analysis {
     }
 
     pub fn source_map(&self) -> SourceMapResponse {
-        self.source_map.clone()
+        let mut response = SourceMapResponse {
+            files: self.source_map.files.clone(),
+            by_line: BTreeMap::new(),
+            ranges: Vec::new(),
+            truncated: self.source_map.truncated,
+        };
+        let mut line_node_budget = SOURCE_LINE_RESPONSE_NODE_BUDGET;
+        let mut lines = self.source_map.by_line.iter().peekable();
+        while let Some((location, ids)) = lines.next() {
+            if response.by_line.len() == SOURCE_LINE_RESPONSE_CAP {
+                response.truncated = true;
+                break;
+            }
+            if !ids.is_empty() && line_node_budget == 0 {
+                response.truncated = true;
+                break;
+            }
+            if ids.len() > line_node_budget {
+                response.by_line.insert(
+                    location.clone(),
+                    ids.iter().take(line_node_budget).copied().collect(),
+                );
+                response.truncated = true;
+                break;
+            }
+            line_node_budget -= ids.len();
+            response.by_line.insert(location.clone(), ids.clone());
+            if line_node_budget == 0 && lines.peek().is_some() {
+                response.truncated = true;
+                break;
+            }
+        }
+
+        let mut node_budget = SOURCE_RANGE_ASSOCIATION_CAP;
+        let mut ranges = self
+            .source_ranges
+            .values()
+            .flat_map(|index| index.ranges.iter())
+            .peekable();
+        while let Some(range) = ranges.next() {
+            if response.ranges.len() == SOURCE_RANGE_RESPONSE_CAP {
+                response.truncated = true;
+                break;
+            }
+            if !range.node_ids.is_empty() && node_budget == 0 {
+                response.truncated = true;
+                break;
+            }
+            let mut public_range = range.clone();
+            if public_range.node_ids.len() > node_budget {
+                public_range.node_ids.truncate(node_budget);
+                response.ranges.push(public_range);
+                response.truncated = true;
+                break;
+            }
+            node_budget -= public_range.node_ids.len();
+            response.ranges.push(public_range);
+            if node_budget == 0 && ranges.peek().is_some_and(|next| !next.node_ids.is_empty()) {
+                response.truncated = true;
+                break;
+            }
+        }
+        response
     }
 
-    pub fn extend_source_roots(&mut self, roots_by_line: BTreeMap<String, Vec<NodeId>>) {
-        for (line, mut roots) in roots_by_line {
-            roots.sort_unstable();
-            roots.dedup();
-            roots.truncate(SOURCE_ROOT_COLLECTION_CAP);
-            for root in &roots {
+    pub fn source_mapping_incomplete(
+        &self,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Option<bool> {
+        if !self.source_map.files.iter().any(|name| name == file) {
+            return None;
+        }
+        Some(self.source_ranges.get(file).is_some_and(|index| {
+            index
+                .overlapping(start_line, end_line)
+                .iter()
+                .any(|range| range.end_line >= start_line && range.mapping_incomplete)
+        }))
+    }
+
+    pub fn extend_source_ranges(&mut self, ranges: Vec<SourceRangeMapping>, truncated: bool) {
+        for range in ranges {
+            let source = format_source_range(&range);
+            for root in &range.node_ids {
                 self.synthetic_src
                     .entry(*root)
                     .or_default()
-                    .insert(line.clone());
+                    .insert(source.clone());
             }
-            let ids = self.source_map.by_line.entry(line).or_default();
-            ids.extend(roots);
-            ids.sort_unstable();
-            ids.dedup();
+            self.source_ranges
+                .entry(range.file.clone())
+                .or_default()
+                .ranges
+                .push(range);
         }
+        for index in self.source_ranges.values_mut() {
+            index.rebuild();
+        }
+        self.source_map.truncated |= truncated;
     }
 
     pub fn node_ref(&self, graph: &Graph, id: NodeId) -> NodeRef {
@@ -395,20 +680,6 @@ impl Analysis {
         reference
     }
 
-    pub fn source_nodes(&self, file: &str, line: usize) -> Option<&[NodeId]> {
-        if !self.source_map.files.iter().any(|name| name == file) {
-            return None;
-        }
-        let key = format!("{file}:{line}");
-        Some(
-            self.source_map
-                .by_line
-                .get(&key)
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-        )
-    }
-
     pub fn source_nodes_range(
         &self,
         file: &str,
@@ -422,8 +693,19 @@ impl Analysis {
         for line in start_line..=end_line {
             if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
                 for id in line_ids {
-                    ids.insert(*id);
-                    if ids.len() == SOURCE_ROOT_COLLECTION_CAP {
+                    if insert_bounded_node(&mut ids, *id) {
+                        return Some(ids.into_iter().collect());
+                    }
+                }
+            }
+        }
+        if let Some(index) = self.source_ranges.get(file) {
+            for range in index.overlapping(start_line, end_line) {
+                if range.end_line < start_line {
+                    continue;
+                }
+                for id in &range.node_ids {
+                    if insert_bounded_node(&mut ids, *id) {
                         return Some(ids.into_iter().collect());
                     }
                 }
@@ -501,7 +783,12 @@ impl Analysis {
             bit_index += 1;
         }
 
-        let alias_lookup = build_alias_lookup(&self.endpoints);
+        let candidate_alias_keys: HashSet<(&str, usize)> = candidates
+            .iter()
+            .filter(|target| target.kind == EndpointKind::Register)
+            .map(|target| (target.group.as_str(), target.bit))
+            .collect();
+        let alias_lookup = build_alias_lookup(&self.endpoints, &candidate_alias_keys);
         let mut grouped: BTreeMap<PathGroupKey, PathEntry> = BTreeMap::new();
         let mut route_clipped = false;
         let mut reconstruction_budget = PATH_RECONSTRUCTION_NODE_BUDGET;
@@ -952,6 +1239,117 @@ impl Analysis {
     }
 }
 
+fn endpoints_heap_bytes(endpoints: &EndpointsResponse) -> usize {
+    let mut bytes = endpoints
+        .registers
+        .capacity()
+        .saturating_mul(size_of::<RegisterGroup>())
+        .saturating_add(
+            endpoints
+                .outputs
+                .capacity()
+                .saturating_mul(size_of::<OutputGroup>()),
+        )
+        .saturating_add(
+            endpoints
+                .inputs
+                .capacity()
+                .saturating_mul(size_of::<InputGroup>()),
+        );
+    for group in &endpoints.registers {
+        bytes = bytes
+            .saturating_add(group.name.capacity())
+            .saturating_add(group.cell_type.capacity())
+            .saturating_add(group.clock.as_ref().map_or(0, String::capacity))
+            .saturating_add(group.src.as_ref().map_or(0, String::capacity))
+            .saturating_add(
+                group
+                    .bits
+                    .capacity()
+                    .saturating_mul(size_of::<EndpointBit>()),
+            )
+            .saturating_add(
+                group
+                    .output_aliases
+                    .capacity()
+                    .saturating_mul(size_of::<OutputAlias>()),
+            );
+        for alias in &group.output_aliases {
+            bytes = bytes.saturating_add(alias.name.capacity()).saturating_add(
+                alias
+                    .bits
+                    .capacity()
+                    .saturating_mul(size_of::<OutputAliasBit>()),
+            );
+        }
+    }
+    for group in &endpoints.outputs {
+        bytes = bytes.saturating_add(group.name.capacity()).saturating_add(
+            group
+                .bits
+                .capacity()
+                .saturating_mul(size_of::<EndpointBit>()),
+        );
+    }
+    for group in &endpoints.inputs {
+        bytes = bytes
+            .saturating_add(group.name.capacity())
+            .saturating_add(group.bits.capacity().saturating_mul(size_of::<InputBit>()));
+    }
+    bytes
+}
+
+fn source_range_heap_bytes(range: &SourceRangeMapping) -> usize {
+    range.file.capacity().saturating_add(
+        range
+            .node_ids
+            .capacity()
+            .saturating_mul(size_of::<NodeId>()),
+    )
+}
+
+fn source_map_heap_bytes(source_map: &SourceMapResponse) -> usize {
+    let mut bytes = source_map
+        .files
+        .capacity()
+        .saturating_mul(size_of::<String>())
+        .saturating_add(
+            source_map
+                .by_line
+                .len()
+                .saturating_mul(size_of::<(String, Vec<NodeId>)>() + 3 * size_of::<usize>()),
+        )
+        .saturating_add(
+            source_map
+                .ranges
+                .capacity()
+                .saturating_mul(size_of::<SourceRangeMapping>()),
+        );
+    for file in &source_map.files {
+        bytes = bytes.saturating_add(file.capacity());
+    }
+    for (location, ids) in &source_map.by_line {
+        bytes = bytes
+            .saturating_add(location.capacity())
+            .saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+    }
+    for range in &source_map.ranges {
+        bytes = bytes.saturating_add(source_range_heap_bytes(range));
+    }
+    bytes
+}
+
+fn stats_heap_bytes(stats: &Stats) -> usize {
+    let mut bytes = stats
+        .cells_by_type
+        .len()
+        .saturating_mul(size_of::<(String, usize)>() + 3 * size_of::<usize>());
+    for cell_type in stats.cells_by_type.keys() {
+        bytes = bytes.saturating_add(cell_type.capacity());
+    }
+    bytes
+}
+
 struct SubgraphProjection<'a> {
     roots: &'a HashSet<NodeId>,
     boundary_nodes: &'a HashSet<NodeId>,
@@ -994,11 +1392,27 @@ fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass
 type RegisterAliasLookup<'a> =
     HashMap<(&'a str, usize), Vec<(&'a OutputAlias, &'a OutputAliasBit)>>;
 
-fn build_alias_lookup(endpoints: &EndpointsResponse) -> RegisterAliasLookup<'_> {
+fn build_alias_lookup<'a>(
+    endpoints: &'a EndpointsResponse,
+    candidate_keys: &HashSet<(&str, usize)>,
+) -> RegisterAliasLookup<'a> {
     let mut lookup: RegisterAliasLookup<'_> = HashMap::new();
+    let mut candidate_bits_by_group: HashMap<&str, HashSet<usize>> = HashMap::new();
+    for (group, bit) in candidate_keys {
+        candidate_bits_by_group
+            .entry(*group)
+            .or_default()
+            .insert(*bit);
+    }
     for group in &endpoints.registers {
+        let Some(candidate_bits) = candidate_bits_by_group.get(group.name.as_str()) else {
+            continue;
+        };
         for alias in &group.output_aliases {
             for bit in &alias.bits {
+                if !candidate_bits.contains(&bit.register_bit) {
+                    continue;
+                }
                 lookup
                     .entry((group.name.as_str(), bit.register_bit))
                     .or_default()
@@ -2012,6 +2426,13 @@ fn merge_edges(edges: Vec<&Edge>) -> (Vec<GraphEdge>, bool) {
 }
 
 fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
+    #[derive(Clone, Copy)]
+    struct ProjectionFrame<'a> {
+        edge: &'a GraphEdge,
+        bits: &'a [u32],
+        control: bool,
+    }
+
     let hidden: HashSet<NodeId> = subgraph
         .nodes
         .iter()
@@ -2044,51 +2465,61 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
             truncated = true;
             break;
         }
-        let mut queue = VecDeque::from([(edge.clone(), HashSet::new())]);
-        while let Some((current, mut visited)) = queue.pop_front() {
-            if !hidden.contains(&current.to) {
+        let mut queue = VecDeque::from([ProjectionFrame {
+            edge,
+            bits: &edge.bits,
+            control: edge.control == Some(true),
+        }]);
+        let mut seen: HashSet<(NodeId, bool, usize, usize)> = HashSet::new();
+        while let Some(current) = queue.pop_front() {
+            if !hidden.contains(&current.edge.to) {
                 let key = (
-                    current.from,
-                    current.to,
-                    current.from_port.clone(),
-                    current.to_port.clone(),
-                    current.net_name.clone(),
-                    current.control == Some(true),
+                    edge.from,
+                    current.edge.to,
+                    edge.from_port.clone(),
+                    current.edge.to_port.clone(),
+                    current.edge.net_name.clone(),
+                    current.control,
                 );
                 if !merged.contains_key(&key) && merged.len() == MAX_SUBGRAPH_EDGES {
                     truncated = true;
                     break 'sources;
                 }
                 let entry = merged.entry(key).or_insert_with(|| GraphEdge {
+                    from: edge.from,
+                    to: current.edge.to,
+                    from_port: edge.from_port.clone(),
+                    to_port: current.edge.to_port.clone(),
+                    net_name: current.edge.net_name.clone(),
                     bits: Vec::new(),
-                    ..current.clone()
+                    control: current.control.then_some(true),
                 });
-                entry.bits.extend(current.bits);
+                entry.bits.extend_from_slice(current.bits);
                 continue;
             }
-            if !visited.insert(current.to) {
+            if !seen.insert((
+                current.edge.to,
+                current.control,
+                current.bits.as_ptr() as usize,
+                current.bits.len(),
+            )) {
                 continue;
             }
-            for next in outgoing.get(&current.to).into_iter().flatten() {
+            for next in outgoing.get(&current.edge.to).into_iter().flatten() {
                 projection_work += 1;
                 if projection_work > MAX_SUBGRAPH_EDGES {
                     truncated = true;
                     break 'sources;
                 }
-                let mut combined = GraphEdge {
-                    from: current.from,
-                    to: next.to,
-                    from_port: current.from_port.clone(),
-                    to_port: next.to_port.clone(),
-                    net_name: next.net_name.clone(),
-                    bits: next.bits.clone(),
-                    control: (current.control == Some(true) || next.control == Some(true))
-                        .then_some(true),
-                };
-                if combined.bits.is_empty() {
-                    combined.bits = current.bits.clone();
-                }
-                queue.push_back((combined, visited.clone()));
+                queue.push_back(ProjectionFrame {
+                    edge: next,
+                    bits: if next.bits.is_empty() {
+                        current.bits
+                    } else {
+                        &next.bits
+                    },
+                    control: current.control || next.control == Some(true),
+                });
             }
         }
     }
@@ -2274,14 +2705,20 @@ fn build_warnings(graph: &Graph, comb_loops: &[NodeId]) -> Vec<String> {
 
 fn build_source_map(graph: &Graph, files: Vec<String>) -> SourceMapResponse {
     let mut by_line: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+    let mut truncated = false;
     for node in &graph.nodes {
         let Some(src) = &node.src else {
             continue;
         };
         insert_src_lines(src, |file, line| {
             let ids = by_line.entry(format!("{file}:{line}")).or_default();
-            if ids.len() < SOURCE_ROOT_COLLECTION_CAP && ids.last() != Some(&node.id) {
+            if ids.last() == Some(&node.id) {
+                return;
+            }
+            if ids.len() < SOURCE_ROOT_COLLECTION_CAP {
                 ids.push(node.id);
+            } else {
+                truncated = true;
             }
         });
     }
@@ -2290,7 +2727,21 @@ fn build_source_map(graph: &Graph, files: Vec<String>) -> SourceMapResponse {
         ids.dedup();
         ids.truncate(SOURCE_ROOT_COLLECTION_CAP);
     }
-    SourceMapResponse { files, by_line }
+    SourceMapResponse {
+        files,
+        by_line,
+        ranges: Vec::new(),
+        truncated,
+    }
+}
+
+fn insert_bounded_node(ids: &mut BTreeSet<NodeId>, id: NodeId) -> bool {
+    ids.insert(id);
+    ids.len() >= SOURCE_ROOT_COLLECTION_CAP
+}
+
+fn format_source_range(range: &SourceRangeMapping) -> String {
+    format!("{}:{}-{}", range.file, range.start_line, range.end_line)
 }
 
 fn insert_src_lines(mut src: &str, mut insert: impl FnMut(&str, usize)) {
@@ -2355,7 +2806,7 @@ fn bit_index_from_name(name: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::graph::{CellInfo, Edge, Graph, Node, NodeKind};
-    use crate::netlist::{PortDirection, YosysBit, parse_str, select_top};
+    use crate::netlist::{PortDirection, YosysBit, YosysModule, parse_str, select_top};
     use std::time::Instant;
 
     type EdgeSignature = (
@@ -2535,6 +2986,74 @@ mod tests {
     }
 
     #[test]
+    fn infrastructure_projection_borrows_wide_bits_across_branching_queue() {
+        let branches = 4_500;
+        let (graph, subgraph) = wide_branching_infrastructure_subgraph(20_000, branches);
+        let started = Instant::now();
+
+        let projected = collapse_infrastructure(&graph, subgraph);
+
+        assert!(started.elapsed().as_secs() < 5);
+        assert!(!projected.truncated);
+        assert_eq!(projected.edges.len(), branches);
+        assert!(projected.edges.iter().all(|edge| edge.bits.len() == 1));
+    }
+
+    #[test]
+    fn infrastructure_projection_preserves_reconvergent_bit_sources() {
+        let nodes = (0..=5)
+            .map(|id| {
+                combinational_node(id, if matches!(id, 0 | 5) { "$and" } else { "OBUF" }, None)
+            })
+            .collect();
+        let graph = graph_from_parts(
+            "reconvergent_projection",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); 6],
+            vec![Vec::new(); 6],
+        );
+        let projected_nodes = graph
+            .nodes
+            .iter()
+            .map(|node| GraphNode {
+                node: node_ref(&graph, node.id),
+                is_root: None,
+                is_boundary: None,
+                depth: None,
+                params: BTreeMap::new(),
+                controls: Vec::new(),
+            })
+            .collect();
+        let edge = |from, to, bits: Vec<u32>| GraphEdge {
+            from,
+            to,
+            from_port: "O".to_owned(),
+            to_port: "I".to_owned(),
+            net_name: format!("n{from}_{to}"),
+            bits,
+            control: None,
+        };
+        let subgraph = Subgraph {
+            nodes: projected_nodes,
+            edges: vec![
+                edge(0, 1, vec![99]),
+                edge(1, 2, vec![1]),
+                edge(1, 3, vec![2]),
+                edge(2, 4, Vec::new()),
+                edge(3, 4, Vec::new()),
+                edge(4, 5, Vec::new()),
+            ],
+            truncated: false,
+        };
+
+        let projected = collapse_infrastructure(&graph, subgraph);
+
+        assert_eq!(projected.edges.len(), 1);
+        assert_eq!(projected.edges[0].bits, vec![1, 2]);
+    }
+
+    #[test]
     fn path_reconstruction_obeys_the_shared_node_budget() {
         let graph = deep_register_bank_graph(400, 256);
         let analysis = Analysis::new(&graph, vec!["deep_bank.sv".to_owned()]);
@@ -2579,6 +3098,102 @@ mod tests {
             .unwrap();
         assert_eq!(envelope.nodes.len(), 400);
         assert!(envelope.truncated);
+    }
+
+    #[test]
+    fn sparse_recovered_span_uses_one_interval_for_queries_and_source_probe() {
+        let graph = graph_from_parts(
+            "sparse",
+            vec![combinational_node(0, "$and", None)],
+            Vec::new(),
+            vec![Vec::new()],
+            vec![Vec::new()],
+        );
+        let range = SourceRangeMapping {
+            file: "sparse.sv".to_owned(),
+            start_line: 2,
+            end_line: 1_000_003,
+            node_ids: vec![0],
+            mapping_incomplete: false,
+        };
+        let mut analysis = Analysis::new(&graph, vec!["sparse.sv".to_owned()]);
+        analysis.extend_source_ranges(vec![range.clone()], false);
+
+        assert_eq!(
+            analysis.source_nodes_range("sparse.sv", 500_000, 500_000),
+            Some(vec![0])
+        );
+        assert!(analysis.source_map.by_line.is_empty());
+        assert_eq!(analysis.synthetic_src.len(), 1);
+        assert_eq!(analysis.synthetic_src[&0].len(), 1);
+        assert_eq!(
+            analysis.node_ref(&graph, 0).src.as_deref(),
+            Some("sparse.sv:2-1000003")
+        );
+        let public = analysis.source_map();
+        assert_eq!(public.ranges, vec![range.clone()]);
+        assert!(!public.truncated);
+
+        let module = YosysModule {
+            attributes: BTreeMap::new(),
+            ports: BTreeMap::new(),
+            cells: BTreeMap::new(),
+            netnames: BTreeMap::new(),
+        };
+        let mut source_index = SourceLineIndex::from_module(&module, vec!["sparse.sv".to_owned()]);
+        source_index.extend_ranges([&range]);
+        assert_eq!(
+            source_index.contains_range("sparse.sv", 500_000, 500_000),
+            Some(true)
+        );
+        assert_eq!(
+            source_index.contains_range("sparse.sv", 1_000_004, 1_000_004),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn public_source_ranges_are_bounded_and_report_truncation() {
+        let graph = graph_from_parts("bounded", Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut analysis = Analysis::new(&graph, vec!["bounded.sv".to_owned()]);
+        let ranges = (0..SOURCE_RANGE_RESPONSE_CAP + 5)
+            .map(|line| SourceRangeMapping {
+                file: "bounded.sv".to_owned(),
+                start_line: line + 1,
+                end_line: line + 1,
+                node_ids: Vec::new(),
+                mapping_incomplete: false,
+            })
+            .collect();
+        analysis.extend_source_ranges(ranges, false);
+
+        let public = analysis.source_map();
+        assert_eq!(public.ranges.len(), SOURCE_RANGE_RESPONSE_CAP);
+        assert!(public.truncated);
+    }
+
+    #[test]
+    fn public_source_lines_are_bounded_without_cloning_the_full_index() {
+        let node_count = SOURCE_LINE_RESPONSE_CAP + 5;
+        let nodes = (0..node_count)
+            .map(|id| {
+                let source = format!("bounded.sv:{}", id + 1);
+                combinational_node(id as NodeId, "$and", Some(&source))
+            })
+            .collect();
+        let graph = graph_from_parts(
+            "bounded_lines",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        );
+        let analysis = Analysis::new(&graph, vec!["bounded.sv".to_owned()]);
+        assert_eq!(analysis.source_map.by_line.len(), node_count);
+
+        let public = analysis.source_map();
+        assert_eq!(public.by_line.len(), SOURCE_LINE_RESPONSE_CAP);
+        assert!(public.truncated);
     }
 
     fn deep_chain_graph(depth: usize) -> Graph {
@@ -2845,6 +3460,75 @@ mod tests {
                     control: None,
                 });
             }
+        }
+        (
+            graph,
+            Subgraph {
+                nodes: projected_nodes,
+                edges,
+                truncated: false,
+            },
+        )
+    }
+
+    fn wide_branching_infrastructure_subgraph(width: usize, branches: usize) -> (Graph, Subgraph) {
+        let sink_id = (branches + 2) as NodeId;
+        let mut nodes = Vec::with_capacity(branches + 3);
+        nodes.push(combinational_node(0, "$and", None));
+        nodes.push(combinational_node(1, "OBUF", None));
+        for id in 0..branches {
+            nodes.push(combinational_node((id + 2) as NodeId, "OBUF", None));
+        }
+        nodes.push(combinational_node(sink_id, "$and", None));
+        let graph = graph_from_parts(
+            "wide_projection",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); branches + 3],
+            vec![Vec::new(); branches + 3],
+        );
+        let projected_nodes = graph
+            .nodes
+            .iter()
+            .map(|node| GraphNode {
+                node: node_ref(&graph, node.id),
+                is_root: None,
+                is_boundary: None,
+                depth: None,
+                params: BTreeMap::new(),
+                controls: Vec::new(),
+            })
+            .collect();
+        let mut edges = Vec::with_capacity(1 + 2 * branches);
+        edges.push(GraphEdge {
+            from: 0,
+            to: 1,
+            from_port: "Y".to_owned(),
+            to_port: "I".to_owned(),
+            net_name: "wide".to_owned(),
+            bits: (0..width as u32).collect(),
+            control: None,
+        });
+        for branch in 0..branches {
+            let branch_id = (branch + 2) as NodeId;
+            edges.push(GraphEdge {
+                from: 1,
+                to: branch_id,
+                from_port: "O".to_owned(),
+                to_port: "I".to_owned(),
+                net_name: format!("branch_{branch}"),
+                bits: Vec::new(),
+                control: None,
+            });
+            edges.push(GraphEdge {
+                from: branch_id,
+                to: sink_id,
+                from_port: "O".to_owned(),
+                to_port: "A".to_owned(),
+                net_name: format!("sink_{branch}"),
+                bits: vec![branch as u32],
+                control: None,
+            });
         }
         (
             graph,

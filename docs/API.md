@@ -108,13 +108,19 @@ Response `200`:
 ```
 
 Uncached synthesis is limited to two complete Yosys/parse/analysis pipelines at
-a time. Concurrent requests with the same `design_id` share one result. Parsed
-designs are retained in a 256 MiB byte-weighted FIFO cache; a synthesized design
-whose conservative cache weight exceeds that budget returns `507` rather than
-an id that subsequent analysis routes could not resolve.
+a time and eight distinct active-or-queued `design_id` keys. Concurrent requests
+with an existing in-flight key always subscribe to the same server-owned task,
+even when all eight slots are occupied; a client disconnect does not cancel that
+task. A ninth distinct uncached key returns `429` after one final cache recheck.
+Parsed designs are retained in a 256 MiB byte-weighted FIFO cache. Weight is a
+deterministic estimate of retained allocation from owned collection/string
+capacities plus cache key/entry overhead, not an exact RSS measurement. A
+synthesized design whose estimated weight exceeds that budget returns `507`
+rather than an id that subsequent analysis routes could not resolve.
 
 `400` on yosys failure (body includes yosys `log`), `422` on validation
-failure, `504` on timeout, and `507` when one design exceeds the cache budget.
+failure, `429` when eight other distinct keys are active or queued, `504` on
+timeout, and `507` when one design exceeds the cache budget.
 
 ## GET `/api/design/:id/endpoints`
 
@@ -231,9 +237,29 @@ wires. Used by the optional full-schematic view.
 ```ts
 {
   files: string[];                       // filenames as submitted
-  by_line: Record<string, number[]>;     // "file.sv:12" -> node ids
+  by_line: Record<string, number[]>;     // exact Yosys cell src only: "file.sv:12" -> node ids
+  ranges: {
+    file: string;
+    start_line: number;
+    end_line: number;
+    node_ids: number[];
+    mapping_incomplete: boolean;          // retained roots were capped for this interval
+  }[];                                   // recovered assign/declaration-alias intervals
+  truncated: boolean;
 }
 ```
+
+Recovered ranges are stored and queried as sparse intervals; a multiline span
+does not create one entry per line. The public response returns at most 10,000
+`by_line` entries with 20,000 total exact associations, plus at most 10,000
+ranges with 20,000 total recovered associations. The internal recovered index
+also retains at most 20,000 range-to-node associations globally.
+`mapping_incomplete` marks each interval affected by that global bound or its
+per-range root bound. `truncated` is true when either public response bound or
+an internal per-line/per-range/global root collection bound was hit.
+Internal line-cone and optimized/absorbed queries retain the complete sparse
+interval index and its per-interval completeness independently of this bounded
+response projection.
 
 ## GET `/api/design/:id/line-cone?file=<name>&start_line=<n>&end_line=<n>&max_nodes=400&hide_control=true&hide_const=true&show_infrastructure=false`
 
@@ -248,21 +274,27 @@ edges are included and `control` is true.
 
 ```ts
 {
-  status: "mapped" | "optimized_or_absorbed" | "unmapped";
+  status: "mapped" | "mapping_incomplete" |
+          "optimized_or_absorbed" | "unmapped";
   control: boolean;
   graph: Subgraph;
 }
 ```
 
+`mapping_incomplete` means a selected recovered interval exceeded provenance
+association bounds. The graph contains any retained roots, but is partial; this
+status takes priority over `mapped` and `optimized_or_absorbed` so capped
+provenance is never presented as logic proven to have been optimized away.
 `optimized_or_absorbed` means a pre-mapping synthesis object was attributed to
 the range but no final object retained that attribution; it deliberately does
 not claim whether the logic was removed, folded, shared, or absorbed. `422` for
 an unknown file, invalid range, or a range longer than 200 lines.
 Wire-only continuous assignments, which Yosys JSON does not source-attribute,
-are indexed from `assign` spans and declaration aliases such as
+are indexed as inclusive `assign` spans and declaration aliases such as
 `wire alias = value` in the selected top's live elaborated hierarchy, then
 resolved by exact flattened instance scope through the final LHS net aliases.
-This recovered attribution is also returned by `/nodes` for graph-to-source probing.
+This recovered attribution is also returned by `/nodes` for graph-to-source
+probing as one `file:start-end` source span rather than one alias per line.
 Files containing conditional-preprocessor branches use only Yosys provenance
 to avoid attributing an inactive branch. If the LHS no longer exists, the span
 reports `optimized_or_absorbed`. Source-range root collection retains at most

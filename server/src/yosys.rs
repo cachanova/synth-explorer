@@ -69,8 +69,6 @@ pub struct ValidatedSynth {
 pub struct YosysOutput {
     pub json: Value,
     pub source_json: Value,
-    pub json_bytes: usize,
-    pub source_json_bytes: usize,
     pub log: String,
     pub resolved_top: String,
 }
@@ -184,16 +182,13 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
         return Err(YosysError::Yosys { log });
     }
 
-    let (json, json_bytes) = read_json_limited(&json_path, "yosys json").await?;
-    let (source_json, source_json_bytes) =
-        read_json_limited(&source_json_path, "yosys source json").await?;
+    let json = read_json_limited(&json_path, "yosys json").await?;
+    let source_json = read_json_limited(&source_json_path, "yosys source json").await?;
     let parsed = parse_value(json.clone())?;
     let (top, _) = select_top(&parsed, None)?;
     Ok(YosysOutput {
         json,
         source_json,
-        json_bytes,
-        source_json_bytes,
         log,
         resolved_top: top.to_owned(),
     })
@@ -267,7 +262,7 @@ fn push_read_verilog(script: &mut String, input: &ValidatedSynth) {
     script.push('\n');
 }
 
-async fn read_json_limited(path: &Path, label: &str) -> Result<(Value, usize), YosysError> {
+async fn read_json_limited(path: &Path, label: &str) -> Result<Value, YosysError> {
     let metadata = fs::metadata(path).await?;
     if metadata.len() > JSON_SIZE_LIMIT {
         return Err(YosysError::Validation(format!(
@@ -275,8 +270,7 @@ async fn read_json_limited(path: &Path, label: &str) -> Result<(Value, usize), Y
         )));
     }
     let bytes = fs::read(path).await?;
-    let size = bytes.len();
-    Ok((serde_json::from_slice(&bytes)?, size))
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 fn top_args(top: Option<&str>) -> String {

@@ -3,6 +3,7 @@ use crate::netlist::{
     binary_string_to_u64, module_blackboxes,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::mem::size_of;
 
 pub type NodeId = u32;
 
@@ -71,6 +72,87 @@ pub enum GraphError {
 }
 
 impl Graph {
+    /// Deterministic estimate of heap allocation retained by this graph.
+    /// Counts collection capacities and owned string buffers, but is not an
+    /// allocator-exact RSS measurement.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let mut bytes = self.nodes.capacity().saturating_mul(size_of::<Node>());
+        for node in &self.nodes {
+            bytes = bytes
+                .saturating_add(node.name.capacity())
+                .saturating_add(node.raw_name.capacity())
+                .saturating_add(option_string_bytes(&node.cell_type))
+                .saturating_add(option_string_bytes(&node.src))
+                .saturating_add(btree_string_map_bytes(&node.params))
+                .saturating_add(option_string_bytes(&node.port))
+                .saturating_add(option_string_bytes(&node.const_value));
+        }
+        bytes = bytes.saturating_add(self.edges.capacity().saturating_mul(size_of::<Edge>()));
+        for edge in &self.edges {
+            bytes = bytes
+                .saturating_add(edge.from_port.capacity())
+                .saturating_add(edge.to_port.capacity())
+                .saturating_add(edge.net_name.capacity());
+        }
+        bytes = bytes
+            .saturating_add(nested_usize_vec_bytes(
+                &self.outgoing,
+                self.outgoing.capacity(),
+            ))
+            .saturating_add(nested_usize_vec_bytes(
+                &self.incoming,
+                self.incoming.capacity(),
+            ))
+            .saturating_add(self.top.capacity())
+            .saturating_add(
+                self.net_names
+                    .capacity()
+                    .saturating_mul(size_of::<(u32, String)>()),
+            );
+        for name in self.net_names.values() {
+            bytes = bytes.saturating_add(name.capacity());
+        }
+        bytes = bytes.saturating_add(
+            self.net_aliases
+                .capacity()
+                .saturating_mul(size_of::<(u32, Vec<String>)>()),
+        );
+        for aliases in self.net_aliases.values() {
+            bytes = bytes.saturating_add(aliases.capacity().saturating_mul(size_of::<String>()));
+            for alias in aliases {
+                bytes = bytes.saturating_add(alias.capacity());
+            }
+        }
+        bytes = bytes.saturating_add(
+            self.cell_info
+                .capacity()
+                .saturating_mul(size_of::<(NodeId, CellInfo)>()),
+        );
+        for info in self.cell_info.values() {
+            bytes = bytes
+                .saturating_add(yosys_bits_bytes(&info.q_bits, info.q_bits.capacity()))
+                .saturating_add(yosys_bits_bytes(&info.d_bits, info.d_bits.capacity()))
+                .saturating_add(option_string_bytes(&info.clock_net))
+                .saturating_add(string_set_bytes(&info.output_ports))
+                .saturating_add(string_set_bytes(&info.input_ports));
+        }
+        bytes = bytes
+            .saturating_add(
+                self.blackboxes
+                    .capacity()
+                    .saturating_mul(size_of::<NodeId>()),
+            )
+            .saturating_add(
+                self.signal_fanout
+                    .capacity()
+                    .saturating_mul(size_of::<((NodeId, String, Option<u32>), usize)>()),
+            );
+        for (_, port, _) in self.signal_fanout.keys() {
+            bytes = bytes.saturating_add(port.capacity());
+        }
+        bytes
+    }
+
     pub fn from_netlist(
         netlist: &YosysNetlist,
         top_name: &str,
@@ -329,6 +411,45 @@ impl Graph {
             .copied()
             .unwrap_or(1)
     }
+}
+
+fn option_string_bytes(value: &Option<String>) -> usize {
+    value.as_ref().map_or(0, String::capacity)
+}
+
+fn btree_string_map_bytes(map: &BTreeMap<String, String>) -> usize {
+    let node_storage = map
+        .len()
+        .saturating_mul(size_of::<(String, String)>() + 3 * size_of::<usize>());
+    map.iter().fold(node_storage, |bytes, (key, value)| {
+        bytes
+            .saturating_add(key.capacity())
+            .saturating_add(value.capacity())
+    })
+}
+
+fn nested_usize_vec_bytes(values: &[Vec<usize>], outer_capacity: usize) -> usize {
+    values.iter().fold(
+        outer_capacity.saturating_mul(size_of::<Vec<usize>>()),
+        |bytes, value| bytes.saturating_add(value.capacity().saturating_mul(size_of::<usize>())),
+    )
+}
+
+fn yosys_bits_bytes(bits: &[YosysBit], capacity: usize) -> usize {
+    bits.iter().fold(
+        capacity.saturating_mul(size_of::<YosysBit>()),
+        |bytes, bit| match bit {
+            YosysBit::Net(_) => bytes,
+            YosysBit::Const(value) => bytes.saturating_add(value.capacity()),
+        },
+    )
+}
+
+fn string_set_bytes(values: &HashSet<String>) -> usize {
+    values.iter().fold(
+        values.capacity().saturating_mul(size_of::<String>()),
+        |bytes, value| bytes.saturating_add(value.capacity()),
+    )
 }
 
 fn build_signal_fanout(edges: &[Edge]) -> HashMap<(NodeId, String, Option<u32>), usize> {

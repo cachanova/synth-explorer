@@ -11,6 +11,35 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+fn source_map_roots(
+    source_map: &serde_json::Value,
+    file: &str,
+    start_line: usize,
+    end_line: usize,
+) -> BTreeSet<u64> {
+    let mut roots = BTreeSet::new();
+    for line in start_line..=end_line {
+        if let Some(ids) = source_map["by_line"][format!("{file}:{line}")].as_array() {
+            roots.extend(ids.iter().filter_map(serde_json::Value::as_u64));
+        }
+    }
+    for range in source_map["ranges"].as_array().into_iter().flatten() {
+        let overlaps = range["file"] == file
+            && range["start_line"].as_u64().unwrap() <= end_line as u64
+            && range["end_line"].as_u64().unwrap() >= start_line as u64;
+        if overlaps {
+            roots.extend(
+                range["node_ids"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_u64),
+            );
+        }
+    }
+    roots
+}
+
 #[tokio::test]
 async fn synthesize_then_walk_analysis_routes() {
     let source = r#"
@@ -141,6 +170,8 @@ endmodule
             .iter()
             .any(|file| file.as_str() == Some("01_reg_mux.sv"))
     );
+    assert!(source_map["ranges"].is_array());
+    assert!(source_map["truncated"].is_boolean());
 }
 
 #[tokio::test]
@@ -169,12 +200,7 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
     let design_id = synth["design_id"].as_str().unwrap();
 
     let source_map = get_json(&mut app, &format!("/api/design/{design_id}/source-map")).await;
-    let mapped_roots: BTreeSet<_> = source_map["by_line"]["03_adder_chain.sv:17"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|id| id.as_u64().unwrap())
-        .collect();
+    let mapped_roots = source_map_roots(&source_map, "03_adder_chain.sv", 17, 17);
     assert!(!mapped_roots.is_empty());
 
     let envelope = get_json(
@@ -210,12 +236,7 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
     );
     assert_eq!(graph["truncated"], false);
 
-    let mut range_roots = BTreeSet::new();
-    for line in 17..=21 {
-        if let Some(ids) = source_map["by_line"][format!("03_adder_chain.sv:{line}")].as_array() {
-            range_roots.extend(ids.iter().map(|id| id.as_u64().unwrap()));
-        }
-    }
+    let range_roots = source_map_roots(&source_map, "03_adder_chain.sv", 17, 21);
     let range = get_json(
         &mut app,
         &format!(
@@ -308,6 +329,7 @@ endmodule
     assert_eq!(response.status(), StatusCode::OK);
     let synth = body_json(response).await;
     let design_id = synth["design_id"].as_str().unwrap();
+
     assert_eq!(synth["stats"]["num_outputs"], 3);
     assert_eq!(synth["stats"]["depths"]["input_to_register"], 1);
     assert_eq!(synth["stats"]["depths"]["register_to_register"], 1);
@@ -371,6 +393,22 @@ async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() 
     let synth = body_json(response).await;
     let design_id = synth["design_id"].as_str().unwrap();
 
+    let source_map = get_json(&mut app, &format!("/api/design/{design_id}/source-map")).await;
+    assert!(source_map["by_line"]["optimized.sv:7"].is_null());
+    assert!(
+        source_map["ranges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|range| {
+                range["file"] == "optimized.sv"
+                    && range["start_line"] == 7
+                    && range["end_line"] == 7
+                    && !range["node_ids"].as_array().unwrap().is_empty()
+            })
+    );
+    assert_eq!(source_map["truncated"], false);
+
     let optimized = get_json(
         &mut app,
         &format!("/api/design/{design_id}/line-cone?file=optimized.sv&start_line=6&end_line=6"),
@@ -394,7 +432,7 @@ async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() 
     assert!(
         y["src"]
             .as_str()
-            .is_some_and(|src| src.contains("optimized.sv:7")),
+            .is_some_and(|src| src.contains("optimized.sv:7-7")),
         "synthetic assign provenance must support graph-to-source probing"
     );
 
