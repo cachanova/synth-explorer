@@ -7,6 +7,7 @@ import {
   retainQueuedSynthesis,
   synthesisInput,
 } from './lib/liveAnalysis'
+import { buildSynthesizeRequest } from './lib/synthesize'
 
 describe('synthesis input identity', () => {
   it('changes for every value sent to synthesis', () => {
@@ -38,7 +39,12 @@ describe('synthesis input identity', () => {
 
   it('uses the normalized request as the identity', () => {
     const files = [{ name: 'top.sv', content: 'module top; endmodule' }]
-    expect(synthesisInput(files, '  top  ', 'gates', '  -flatten ').key).toBe(
+    const input = synthesisInput(files, '  top  ', 'gates', '  -flatten ')
+
+    expect(input.request).toEqual(
+      buildSynthesizeRequest(files, '  top  ', 'gates', '  -flatten '),
+    )
+    expect(input.key).toBe(
       synthesisInput(files, 'top', 'gates', '-flatten').key,
     )
   })

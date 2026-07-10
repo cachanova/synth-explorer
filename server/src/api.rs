@@ -7,7 +7,8 @@ use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
 use crate::yosys::{SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderValue, Method, StatusCode};
+use axum::http::{HeaderValue, Method, Request, StatusCode, header};
+use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -17,101 +18,184 @@ use std::env;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore, watch};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-const DESIGN_CACHE_BUDGET_BYTES: usize = 256 * 1024 * 1024;
-const YOSYS_CONCURRENCY_LIMIT: usize = 2;
-const MAX_IN_FLIGHT_DESIGNS: usize = 8;
+const DESIGN_CACHE_BUDGET_BYTES: usize = 128 * 1024 * 1024;
+const DESIGN_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
+const DESIGN_CACHE_MIN_ENTRY_BYTES: usize = 64 * 1024;
+const MAX_IN_FLIGHT_DESIGNS: usize = 3;
+const MAX_RUNNING_SYNTHESES: usize = 1;
+const SYNTHESIS_RETRY_AFTER_SECONDS: u64 = 5;
 
 #[derive(Clone)]
 pub struct AppState {
     cache: Arc<RwLock<DesignCache>>,
     flights: Arc<SynthesisFlights>,
-    yosys_slots: Arc<Semaphore>,
+    running: Arc<Semaphore>,
+    metadata: Arc<BuildMetadata>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::with_limits(DESIGN_CACHE_BUDGET_BYTES, YOSYS_CONCURRENCY_LIMIT)
+        Self::new("unknown")
     }
 }
 
 impl AppState {
-    fn with_limits(cache_budget_bytes: usize, yosys_concurrency: usize) -> Self {
-        assert!(yosys_concurrency > 0, "yosys concurrency must be positive");
+    pub fn new(yosys_version: impl Into<String>) -> Self {
+        Self::with_cache_config(yosys_version, DESIGN_CACHE_BUDGET_BYTES, DESIGN_CACHE_TTL)
+    }
+
+    fn with_cache_config(
+        yosys_version: impl Into<String>,
+        cache_budget_bytes: usize,
+        cache_ttl: Duration,
+    ) -> Self {
         Self {
-            cache: Arc::new(RwLock::new(DesignCache::new(cache_budget_bytes))),
+            cache: Arc::new(RwLock::new(DesignCache::new(cache_budget_bytes, cache_ttl))),
             flights: Arc::new(SynthesisFlights::new()),
-            yosys_slots: Arc::new(Semaphore::new(yosys_concurrency)),
+            running: Arc::new(Semaphore::new(MAX_RUNNING_SYNTHESES)),
+            metadata: Arc::new(BuildMetadata {
+                status: "ok",
+                commit: env::var("BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_owned()),
+                version: env!("CARGO_PKG_VERSION"),
+                yosys_version: yosys_version.into(),
+            }),
         }
     }
 }
 
-#[derive(Debug)]
-struct CacheEntry<T> {
-    value: Arc<T>,
-    weight_bytes: usize,
+#[derive(Clone, Debug, Serialize)]
+struct BuildMetadata {
+    status: &'static str,
+    commit: String,
+    version: &'static str,
+    yosys_version: String,
 }
 
 #[derive(Debug)]
-struct WeightedCache<T> {
-    entries: HashMap<String, CacheEntry<T>>,
-    order: VecDeque<String>,
-    weight_bytes: usize,
+struct DesignCache {
+    designs: HashMap<String, CachedDesign>,
+    order: VecDeque<(String, Instant)>,
+    total_bytes: usize,
     budget_bytes: usize,
+    ttl: Duration,
 }
 
-type DesignCache = WeightedCache<Design>;
+#[derive(Debug)]
+struct CachedDesign {
+    design: Arc<Design>,
+    weight_bytes: usize,
+    inserted_at: Instant,
+}
 
-impl<T> WeightedCache<T> {
-    fn new(budget_bytes: usize) -> Self {
+impl DesignCache {
+    fn new(budget_bytes: usize, ttl: Duration) -> Self {
         Self {
-            entries: HashMap::new(),
+            designs: HashMap::new(),
             order: VecDeque::new(),
-            weight_bytes: 0,
+            total_bytes: 0,
             budget_bytes,
+            ttl,
         }
     }
 
-    fn get(&self, id: &str) -> Option<Arc<T>> {
-        self.entries.get(id).map(|entry| Arc::clone(&entry.value))
+    fn get(&mut self, id: &str) -> Option<Arc<Design>> {
+        self.get_at(id, Instant::now())
     }
 
-    fn insert(&mut self, id: String, value: Arc<T>, weight_bytes: usize) -> bool {
+    fn get_at(&mut self, id: &str, now: Instant) -> Option<Arc<Design>> {
+        self.evict_expired(now);
+        self.designs.get(id).map(|entry| Arc::clone(&entry.design))
+    }
+
+    fn insert(&mut self, id: String, design: Arc<Design>, weight_bytes: usize) -> bool {
+        self.insert_at(id, design, weight_bytes, Instant::now())
+    }
+
+    fn insert_at(
+        &mut self,
+        id: String,
+        design: Arc<Design>,
+        weight_bytes: usize,
+        now: Instant,
+    ) -> bool {
+        let weight_bytes = weight_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
+        self.evict_expired(now);
         if weight_bytes > self.budget_bytes {
             return false;
         }
-
-        if let Some(existing) = self.entries.remove(&id) {
-            self.weight_bytes = self.weight_bytes.saturating_sub(existing.weight_bytes);
-            self.order.retain(|entry_id| entry_id != &id);
-        }
-        while self.weight_bytes.saturating_add(weight_bytes) > self.budget_bytes {
-            let Some(oldest) = self.order.pop_front() else {
+        self.remove(&id);
+        while self.total_bytes.saturating_add(weight_bytes) > self.budget_bytes {
+            if !self.evict_oldest() {
                 break;
-            };
-            if let Some(evicted) = self.entries.remove(&oldest) {
-                self.weight_bytes = self.weight_bytes.saturating_sub(evicted.weight_bytes);
             }
         }
-
-        self.weight_bytes = self.weight_bytes.saturating_add(weight_bytes);
-        self.order.push_back(id.clone());
-        self.entries.insert(
+        // FIFO eviction keeps cache bookkeeping cheap; cache hits do not refresh order.
+        self.order.push_back((id.clone(), now));
+        self.total_bytes += weight_bytes;
+        self.designs.insert(
             id,
-            CacheEntry {
-                value,
+            CachedDesign {
+                design,
                 weight_bytes,
+                inserted_at: now,
             },
         );
         true
     }
+
+    fn remove(&mut self, id: &str) {
+        if let Some(entry) = self.designs.remove(id) {
+            self.total_bytes = self.total_bytes.saturating_sub(entry.weight_bytes);
+        }
+    }
+
+    fn evict_oldest(&mut self) -> bool {
+        while let Some((id, inserted_at)) = self.order.pop_front() {
+            let is_current = self
+                .designs
+                .get(&id)
+                .is_some_and(|entry| entry.inserted_at == inserted_at);
+            if is_current {
+                self.remove(&id);
+                return true;
+            }
+        }
+        false
+    }
+
+    fn evict_expired(&mut self, now: Instant) {
+        loop {
+            let Some((id, inserted_at)) = self.order.front() else {
+                return;
+            };
+            let is_current = self
+                .designs
+                .get(id)
+                .is_some_and(|entry| entry.inserted_at == *inserted_at);
+            if !is_current {
+                self.order.pop_front();
+                continue;
+            }
+            let expired = now
+                .checked_duration_since(*inserted_at)
+                .is_some_and(|age| age >= self.ttl);
+            if !expired {
+                return;
+            }
+            let id = id.clone();
+            self.order.pop_front();
+            self.remove(&id);
+        }
+    }
 }
 
-async fn cache_lookup<T>(cache: &RwLock<WeightedCache<T>>, id: &str) -> Option<Arc<T>> {
-    cache.read().await.get(id)
+async fn cache_lookup(cache: &RwLock<DesignCache>, id: &str) -> Option<Arc<Design>> {
+    cache.write().await.get(id)
 }
 
 type FlightResult = Result<Arc<Design>, ApiError>;
@@ -255,6 +339,7 @@ struct ApiError {
     status: StatusCode,
     message: String,
     log: Option<String>,
+    retry_after_seconds: Option<u64>,
 }
 
 impl ApiError {
@@ -263,6 +348,7 @@ impl ApiError {
             status,
             message: message.into(),
             log: None,
+            retry_after_seconds: None,
         }
     }
 
@@ -271,24 +357,41 @@ impl ApiError {
             status,
             message: message.into(),
             log: Some(log),
+            retry_after_seconds: None,
+        }
+    }
+
+    fn busy() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: "synthesis queue is full".to_owned(),
+            log: None,
+            retry_after_seconds: Some(SYNTHESIS_RETRY_AFTER_SECONDS),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorBody {
                 error: self.message,
                 log: self.log,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = self.retry_after_seconds
+            && let Ok(value) = HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        response
     }
 }
 
 pub fn app(state: AppState) -> Router {
+    let health_state = state.clone();
     let api = Router::new()
         .route("/synthesize", post(synthesize))
         .route("/examples", get(examples))
@@ -316,9 +419,31 @@ pub fn app(state: AppState) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/healthz", get(health))
         .nest("/api", api)
         .fallback_service(static_service)
+        .with_state(health_state)
+        .layer(from_fn(trace_request))
         .layer(cors)
+}
+
+async fn health(State(state): State<AppState>) -> Json<BuildMetadata> {
+    Json((*state.metadata).clone())
+}
+
+async fn trace_request(request: Request<axum::body::Body>, next: Next) -> Response {
+    let method = request.method().clone();
+    let uri = request.uri().clone();
+    let started = Instant::now();
+    let response = next.run(request).await;
+    tracing::info!(
+        method = %method,
+        uri = %uri,
+        status = response.status().as_u16(),
+        latency_ms = started.elapsed().as_millis() as u64,
+        "http_request"
+    );
+    response
 }
 
 async fn synthesize(
@@ -327,7 +452,9 @@ async fn synthesize(
 ) -> Result<Json<SynthesizeResponse>, ApiError> {
     let validated = request.validate().map_err(map_yosys_error)?;
     let design_id = validated.design_id();
+    let mode = mode_string(validated.mode);
     if let Some(design) = cache_lookup(&state.cache, &design_id).await {
+        tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
         return Ok(Json(design.response.clone()));
     }
 
@@ -342,10 +469,17 @@ async fn synthesize(
             let task_state = state.clone();
             let task_design_id = design_id.clone();
             tokio::spawn(async move {
+                let task_mode = mode_string(validated.mode);
                 // A previous flight may have filled the cache after the
                 // optimistic lookup but before this key was claimed.
                 let result =
                     if let Some(design) = cache_lookup(&task_state.cache, &task_design_id).await {
+                        tracing::info!(
+                            design_id = task_design_id,
+                            mode = task_mode,
+                            cache_hit = true,
+                            "synthesis_complete"
+                        );
                         Ok(design)
                     } else {
                         synthesize_uncached(&task_state, &validated, &task_design_id).await
@@ -358,12 +492,10 @@ async fn synthesize(
             // A task can publish its cache entry immediately before removing
             // its flight. Close that race before rejecting a distinct key.
             if let Some(design) = cache_lookup(&state.cache, &design_id).await {
+                tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
                 return Ok(Json(design.response.clone()));
             }
-            return Err(ApiError::new(
-                StatusCode::TOO_MANY_REQUESTS,
-                "too many distinct syntheses are active or queued; retry later",
-            ));
+            return Err(ApiError::busy());
         }
     };
     let design = wait_for_flight(receiver).await?;
@@ -389,19 +521,28 @@ async fn synthesize_uncached(
     validated: &crate::yosys::ValidatedSynth,
     design_id: &str,
 ) -> FlightResult {
-    // Keep the resource permit until the parsed graph is safely cached. Large
-    // JSON values and their derived indexes otherwise overlap with additional
-    // Yosys processes and defeat the intended temporary-memory bound.
-    let _permit = Arc::clone(&state.yosys_slots)
+    // Keep the sole running permit until the parsed graph is safely cached.
+    // The flight registry separately bounds this task plus two queued leaders.
+    let _running = Arc::clone(&state.running)
         .acquire_owned()
         .await
-        .map_err(|_| {
-            ApiError::new(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "synthesis capacity is unavailable",
-            )
-        })?;
-    let output = run_yosys(validated).await.map_err(map_yosys_error)?;
+        .expect("synthesis semaphore is never closed");
+    let mode = mode_string(validated.mode);
+    if let Some(design) = cache_lookup(&state.cache, design_id).await {
+        tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+        return Ok(design);
+    }
+    let started = Instant::now();
+    let output = run_yosys(validated).await.map_err(|err| {
+        tracing::warn!(
+            design_id,
+            mode,
+            latency_ms = started.elapsed().as_millis() as u64,
+            error = %err,
+            "synthesis_failed"
+        );
+        map_yosys_error(err)
+    })?;
     let parsed = parse_value(output.json).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -450,7 +591,7 @@ async fn synthesize_uncached(
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
-        mode: mode_string(validated.mode),
+        mode: mode.clone(),
         stats: analysis.stats(),
         warnings: analysis.warnings(),
         log: output.log,
@@ -461,18 +602,36 @@ async fn synthesize_uncached(
         analysis,
         source_index,
     });
-    let cache_weight_bytes = design_cache_weight(design_id, &design);
+    let cache_estimated_bytes = design_cache_weight(design_id, &design);
+    let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
     let cached = state.cache.write().await.insert(
         design_id.to_owned(),
         Arc::clone(&design),
-        cache_weight_bytes,
+        cache_charge_bytes,
     );
     if !cached {
+        tracing::warn!(
+            design_id,
+            mode,
+            latency_ms = started.elapsed().as_millis() as u64,
+            cache_estimated_bytes,
+            cache_charge_bytes,
+            "synthesis_cache_rejected"
+        );
         return Err(ApiError::new(
             StatusCode::INSUFFICIENT_STORAGE,
             "synthesized design exceeds the server cache budget",
         ));
     }
+    tracing::info!(
+        design_id,
+        mode,
+        cache_hit = false,
+        latency_ms = started.elapsed().as_millis() as u64,
+        cache_estimated_bytes,
+        cache_charge_bytes,
+        "synthesis_complete"
+    );
     Ok(design)
 }
 
@@ -481,8 +640,8 @@ fn design_cache_weight(design_id: &str, design: &Design) -> usize {
     // hash-map entry, and one VecDeque element in addition to the design.
     design
         .estimated_heap_bytes()
-        .saturating_add(size_of::<(String, CacheEntry<Design>)>())
-        .saturating_add(size_of::<String>())
+        .saturating_add(size_of::<(String, CachedDesign)>())
+        .saturating_add(size_of::<(String, Instant)>())
         .saturating_add(design_id.len().saturating_mul(2))
         .max(1)
 }
@@ -915,6 +1074,9 @@ fn parse_node_ids(ids: &str) -> Result<Vec<u32>, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
 
     fn empty_test_design(design_id: &str) -> Arc<Design> {
         let netlist = parse_value(serde_json::json!({
@@ -944,43 +1106,49 @@ mod tests {
 
     #[test]
     fn weighted_cache_evicts_fifo_entries_to_stay_within_budget() {
-        let mut cache = WeightedCache::new(10);
-        assert!(cache.insert("a".to_owned(), Arc::new(1_u8), 6));
-        assert!(cache.insert("b".to_owned(), Arc::new(2_u8), 4));
-        assert_eq!(cache.weight_bytes, 10);
+        let unit = DESIGN_CACHE_MIN_ENTRY_BYTES;
+        let mut cache = DesignCache::new(10 * unit, Duration::from_secs(60));
+        assert!(cache.insert("a".to_owned(), empty_test_design("a"), 6 * unit));
+        assert!(cache.insert("b".to_owned(), empty_test_design("b"), 4 * unit));
+        assert_eq!(cache.total_bytes, 10 * unit);
 
-        assert!(!cache.insert("a".to_owned(), Arc::new(9_u8), 11));
-        assert_eq!(cache.get("a").as_deref(), Some(&1));
-        assert_eq!(cache.weight_bytes, 10);
+        assert!(!cache.insert("a".to_owned(), empty_test_design("replacement"), 11 * unit));
+        assert_eq!(cache.get("a").unwrap().response.design_id, "a");
+        assert_eq!(cache.total_bytes, 10 * unit);
 
-        assert!(cache.insert("c".to_owned(), Arc::new(3_u8), 5));
+        assert!(cache.insert("c".to_owned(), empty_test_design("c"), 5 * unit));
         assert!(cache.get("a").is_none());
-        assert_eq!(cache.get("b").as_deref(), Some(&2));
-        assert_eq!(cache.get("c").as_deref(), Some(&3));
-        assert_eq!(cache.weight_bytes, 9);
+        assert_eq!(cache.get("b").unwrap().response.design_id, "b");
+        assert_eq!(cache.get("c").unwrap().response.design_id, "c");
+        assert_eq!(cache.total_bytes, 9 * unit);
 
-        assert!(!cache.insert("oversized".to_owned(), Arc::new(4_u8), 11));
-        assert_eq!(cache.weight_bytes, 9);
+        assert!(!cache.insert(
+            "oversized".to_owned(),
+            empty_test_design("oversized"),
+            11 * unit,
+        ));
+        assert_eq!(cache.total_bytes, 9 * unit);
         assert!(cache.get("b").is_some());
         assert!(cache.get("c").is_some());
     }
 
     #[test]
     fn weighted_cache_replacement_updates_accounting_once() {
-        let mut cache = WeightedCache::new(10);
-        assert!(cache.insert("a".to_owned(), Arc::new(1_u8), 6));
-        assert!(cache.insert("b".to_owned(), Arc::new(2_u8), 4));
+        let unit = DESIGN_CACHE_MIN_ENTRY_BYTES;
+        let mut cache = DesignCache::new(10 * unit, Duration::from_secs(60));
+        assert!(cache.insert("a".to_owned(), empty_test_design("a-old"), 6 * unit));
+        assert!(cache.insert("b".to_owned(), empty_test_design("b"), 4 * unit));
 
-        assert!(cache.insert("a".to_owned(), Arc::new(3_u8), 3));
-        assert_eq!(cache.weight_bytes, 7);
-        assert_eq!(cache.entries.len(), 2);
-        assert_eq!(cache.get("a").as_deref(), Some(&3));
+        assert!(cache.insert("a".to_owned(), empty_test_design("a-new"), 3 * unit));
+        assert_eq!(cache.total_bytes, 7 * unit);
+        assert_eq!(cache.designs.len(), 2);
+        assert_eq!(cache.get("a").unwrap().response.design_id, "a-new");
 
-        assert!(cache.insert("c".to_owned(), Arc::new(4_u8), 5));
+        assert!(cache.insert("c".to_owned(), empty_test_design("c"), 5 * unit));
         assert!(cache.get("b").is_none());
-        assert_eq!(cache.get("a").as_deref(), Some(&3));
-        assert_eq!(cache.get("c").as_deref(), Some(&4));
-        assert_eq!(cache.weight_bytes, 8);
+        assert_eq!(cache.get("a").unwrap().response.design_id, "a-new");
+        assert_eq!(cache.get("c").unwrap().response.design_id, "c");
+        assert_eq!(cache.total_bytes, 8 * unit);
     }
 
     #[test]
@@ -1120,7 +1288,7 @@ mod tests {
             MAX_IN_FLIGHT_DESIGNS
         );
         assert!(matches!(
-            registry.claim("ninth-design"),
+            registry.claim("overflow-design"),
             Err(FlightClaimError::AtCapacity)
         ));
         assert!(matches!(
@@ -1134,7 +1302,10 @@ mod tests {
 
     #[tokio::test]
     async fn cache_recheck_after_claim_observes_a_completed_insert() {
-        let cache = RwLock::new(WeightedCache::new(10));
+        let cache = RwLock::new(DesignCache::new(
+            2 * DESIGN_CACHE_MIN_ENTRY_BYTES,
+            Duration::from_secs(60),
+        ));
         assert!(cache_lookup(&cache, "design").await.is_none());
         let registry = Arc::new(SynthesisFlights::new());
         let task = match registry.claim("design").unwrap() {
@@ -1145,22 +1316,192 @@ mod tests {
         // This models the race handled by the leader-side cache recheck: the
         // optimistic lookup missed, then another completed request inserted the
         // value before the newly claimed leader starts expensive work.
-        cache
-            .write()
-            .await
-            .insert("design".to_owned(), Arc::new(7_u8), 4);
-        assert_eq!(cache_lookup(&cache, "design").await.as_deref(), Some(&7));
+        let expected = empty_test_design("design");
+        assert!(cache.write().await.insert(
+            "design".to_owned(),
+            Arc::clone(&expected),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        ));
+        let cached = cache_lookup(&cache, "design").await.unwrap();
+        assert!(Arc::ptr_eq(&cached, &expected));
         drop(task);
     }
 
     #[test]
-    fn yosys_slots_enforce_the_configured_global_limit() {
-        let state = AppState::with_limits(1024, 2);
-        let first = Arc::clone(&state.yosys_slots).try_acquire_owned().unwrap();
-        let _second = Arc::clone(&state.yosys_slots).try_acquire_owned().unwrap();
-        assert!(Arc::clone(&state.yosys_slots).try_acquire_owned().is_err());
+    fn running_semaphore_allows_exactly_one_pipeline() {
+        let state = AppState::default();
+        let first = Arc::clone(&state.running).try_acquire_owned().unwrap();
+        assert!(Arc::clone(&state.running).try_acquire_owned().is_err());
 
         drop(first);
-        assert!(Arc::clone(&state.yosys_slots).try_acquire_owned().is_ok());
+        assert!(Arc::clone(&state.running).try_acquire_owned().is_ok());
+    }
+
+    #[tokio::test]
+    async fn health_reports_static_build_and_yosys_metadata() {
+        let response = app(AppState::new("Yosys test-version"))
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(body["yosys_version"], "Yosys test-version");
+        assert!(
+            body["commit"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+
+    #[tokio::test]
+    async fn capacity_error_returns_retry_after() {
+        let error = ApiError::busy().into_response();
+        assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            error.headers().get(header::RETRY_AFTER).unwrap(),
+            SYNTHESIS_RETRY_AFTER_SECONDS.to_string().as_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn saturated_flight_registry_rejects_before_starting_yosys() {
+        let state = AppState::default();
+        let mut active = Vec::new();
+        for index in 0..MAX_IN_FLIGHT_DESIGNS {
+            match state.flights.claim(&format!("active-{index}")).unwrap() {
+                FlightClaim::New { receiver, task } => active.push((receiver, task)),
+                FlightClaim::Follower(_) => panic!("distinct key unexpectedly followed"),
+            }
+        }
+        let request = serde_json::json!({
+            "files": [{"name": "top.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "mode": "rtl"
+        });
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER).unwrap(),
+            SYNTHESIS_RETRY_AFTER_SECONDS.to_string().as_str()
+        );
+        drop(active);
+    }
+
+    #[tokio::test]
+    async fn synthesized_design_that_cannot_be_retained_returns_507() {
+        let state = AppState::with_cache_config(
+            "Yosys test-version",
+            DESIGN_CACHE_MIN_ENTRY_BYTES - 1,
+            Duration::from_secs(60),
+        );
+        let request = serde_json::json!({
+            "files": [{
+                "name": "top.sv",
+                "content": "module top(input logic a, output logic y); assign y = a; endmodule"
+            }],
+            "top": "top",
+            "mode": "rtl"
+        });
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
+        assert!(state.cache.write().await.designs.is_empty());
+        assert!(state.flights.entries.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cache_expires_entries_at_ttl_without_refreshing_on_hit() {
+        let ttl = Duration::from_secs(10);
+        let mut cache = DesignCache::new(2 * DESIGN_CACHE_MIN_ENTRY_BYTES, ttl);
+        let now = Instant::now();
+        cache.insert_at(
+            "a".to_owned(),
+            empty_test_design("a"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+            now,
+        );
+        assert!(
+            cache
+                .get_at("a", now + ttl - Duration::from_nanos(1))
+                .is_some()
+        );
+        cache.insert_at(
+            "b".to_owned(),
+            empty_test_design("b"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+            now + Duration::from_secs(5),
+        );
+        assert!(cache.get_at("b", now + ttl).is_some());
+        assert!(cache.get_at("a", now + ttl).is_none());
+        assert_eq!(cache.total_bytes, DESIGN_CACHE_MIN_ENTRY_BYTES);
+    }
+
+    #[test]
+    fn cache_evicts_fifo_to_stay_within_byte_budget() {
+        let mut cache = DesignCache::new(2 * DESIGN_CACHE_MIN_ENTRY_BYTES, Duration::from_secs(60));
+        let now = Instant::now();
+        cache.insert_at(
+            "a".to_owned(),
+            empty_test_design("a"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+            now,
+        );
+        cache.insert_at(
+            "b".to_owned(),
+            empty_test_design("b"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+            now + Duration::from_secs(1),
+        );
+        assert!(cache.get_at("a", now + Duration::from_secs(2)).is_some());
+        cache.insert_at(
+            "c".to_owned(),
+            empty_test_design("c"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+            now + Duration::from_secs(3),
+        );
+        assert!(cache.get_at("a", now + Duration::from_secs(4)).is_none());
+        assert!(cache.get_at("b", now + Duration::from_secs(4)).is_some());
+        assert!(cache.get_at("c", now + Duration::from_secs(4)).is_some());
+        assert_eq!(cache.total_bytes, 2 * DESIGN_CACHE_MIN_ENTRY_BYTES);
+    }
+
+    #[test]
+    fn cache_does_not_retain_an_entry_larger_than_its_budget() {
+        let mut cache = DesignCache::new(DESIGN_CACHE_MIN_ENTRY_BYTES, Duration::from_secs(60));
+        assert!(!cache.insert(
+            "large".to_owned(),
+            empty_test_design("large"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES + 1,
+        ));
+        assert!(cache.get("large").is_none());
+        assert_eq!(cache.total_bytes, 0);
     }
 }

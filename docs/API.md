@@ -8,6 +8,22 @@ All endpoints are JSON. Errors return HTTP 4xx/5xx with body
 `{ "error": string, "log"?: string }`. The server also serves the built SPA
 from `web/dist` at `/` (SPA fallback to `index.html` for non-`/api` routes).
 
+## GET `/healthz`
+
+Returns process and build metadata used by container health checks, deployments,
+and external monitoring:
+
+```ts
+{
+  status: "ok";
+  commit: string;        // full Git commit in production; "unknown" in local builds
+  version: string;       // server crate version
+  yosys_version: string; // captured by the required startup preflight
+}
+```
+
+The server does not start if the Yosys preflight fails.
+
 ## Shared shapes
 
 ```ts
@@ -69,10 +85,15 @@ Request:
   files: { name: string; content: string }[]; // name: bare filename, [A-Za-z0-9._-]+, .v/.sv
   top?: string;          // omitted -> yosys -auto-top
   mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx";
-  extra_args?: string;   // whitespace-separated tokens, each ^[A-Za-z0-9_+=.,:-]+$,
-                         // appended to the mode's synth command
+  extra_args?: string;   // flags for the selected synthesis pass; see below
 }
 ```
+
+`extra_args` is appended to the mode's `prep`, `synth`, or `synth_*` command;
+it does not accept global Yosys CLI flags or arbitrary script commands. Values
+are split on whitespace and every token must match
+`^[A-Za-z0-9_+=.,:-]+$`. Supported flags are mode-specific, and invalid or
+conflicting combinations return a synthesis error with the Yosys log.
 
 Response `200`:
 
@@ -107,20 +128,23 @@ Response `200`:
 }
 ```
 
-Uncached synthesis is limited to two complete Yosys/parse/analysis pipelines at
-a time and eight distinct active-or-queued `design_id` keys. Concurrent requests
-with an existing in-flight key always subscribe to the same server-owned task,
-even when all eight slots are occupied; a client disconnect does not cancel that
-task. A ninth distinct uncached key returns `429` after one final cache recheck.
-Parsed designs are retained in a 256 MiB byte-weighted FIFO cache. Weight is a
-deterministic estimate of retained allocation from owned collection/string
-capacities plus cache key/entry overhead, not an exact RSS measurement. A
-synthesized design whose estimated weight exceeds that budget returns `507`
-rather than an id that subsequent analysis routes could not resolve.
+At most three distinct uncached `design_id` leaders are admitted: one complete
+Yosys/parse/analysis/cache pipeline runs while two wait. Concurrent requests for
+an existing in-flight id always subscribe to its server-owned task without
+consuming another slot, and an initiating client disconnect does not cancel the
+task. When all three distinct slots are occupied, a new distinct request gets
+one final TTL-aware cache lookup and then returns `503` with `Retry-After: 5`.
 
-`400` on yosys failure (body includes yosys `log`), `422` on validation
-failure, `429` when eight other distinct keys are active or queued, `504` on
-timeout, and `507` when one design exceeds the cache budget.
+Parsed designs are retained for 30 minutes from insertion in a 128 MiB
+byte-weighted FIFO cache. Each entry is charged at least 64 KiB; otherwise its
+weight is a deterministic estimate of retained allocation from owned
+collection/string capacities plus cache key/entry overhead, not exact RSS. A
+synthesized design whose charge exceeds the cache budget returns `507` rather
+than an id that subsequent analysis routes could not resolve.
+
+`400` on Yosys failure (body includes the Yosys `log`), `422` on validation
+failure, `503` when three distinct leaders are active or waiting, `504` on
+timeout, and `507` when one design cannot be retained in the cache.
 
 ## GET `/api/design/:id/endpoints`
 

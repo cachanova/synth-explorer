@@ -1,0 +1,236 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish_only:
+        description: Publish the image without deploying it (first GHCR setup only)
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  PRODUCTION_URL: https://synthexplorer.dev
+
+jobs:
+  build:
+    name: Build and publish image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      image_ref: ${{ steps.digest.outputs.image_ref }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Test deployment state transitions
+        run: ./ops/tests/deploy-test.sh
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build production image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          build-args: |
+            BUILD_COMMIT=${{ github.sha }}
+            YOSYS_BUILD_JOBS=4
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start production image
+        run: |
+          docker run --detach --name synth-explorer-release \
+            --publish 127.0.0.1:8787:8787 \
+            "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      - name: Smoke-test production image
+        run: ./ops/smoke-test.sh http://127.0.0.1:8787 "${GITHUB_SHA}"
+
+      - name: Install browser smoke dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Smoke-test production webpage
+        working-directory: web
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:8787
+        run: npm run test:e2e
+
+      - name: Show application logs on failure
+        if: failure()
+        run: docker logs synth-explorer-release || true
+
+      - name: Stop production image
+        if: always()
+        run: docker rm --force synth-explorer-release >/dev/null 2>&1 || true
+
+      - name: Publish commit tag
+        run: docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+
+      - name: Resolve immutable image digest
+        id: digest
+        shell: bash
+        run: |
+          digest="$({ docker buildx imagetools inspect \
+            "${IMAGE_NAME}:${GITHUB_SHA}" \
+            --format '{{json .Manifest.Digest}}'; } | tr -d '"')"
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid image digest: $digest" >&2
+            exit 1
+          fi
+          image_ref="${IMAGE_NAME}@${digest}"
+          echo "image_ref=$image_ref" >> "$GITHUB_OUTPUT"
+          echo "Published $image_ref"
+
+  deploy:
+    name: Deploy to Hetzner
+    if: github.event_name != 'workflow_dispatch' || inputs.publish_only == false
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://synthexplorer.dev
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/production"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/production" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/production" >/dev/null
+
+      - name: Authenticate host to GitHub Container Registry
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
+          : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
+          printf '%s' "$REGISTRY_TOKEN" | ssh -i "$HOME/.ssh/production" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            "docker login ghcr.io --username '${GITHUB_ACTOR}' --password-stdin >/dev/null"
+
+      - name: Upload deployment bundle
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
+          : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
+          tar -czf "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
+            compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
+            examples/05_shared_logic.sv
+          scp -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}:/tmp/synth-explorer-${GITHUB_SHA}.tar.gz"
+
+      - name: Install bundle and deploy digest
+        env:
+          IMAGE_REF: ${{ needs.build.outputs.image_ref }}
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          : "${IMAGE_REF:?Build job did not return an image digest}"
+          : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
+          : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
+          ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            "IMAGE_REF='${IMAGE_REF}' COMMIT_SHA='${GITHUB_SHA}' RELEASE_ID='${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' bash -se" <<'REMOTE'
+          set -eu
+          base_dir=/opt/synth-explorer
+          releases_dir="${base_dir}/releases"
+          state_dir="${base_dir}/state"
+          release_dir="${releases_dir}/${RELEASE_ID}"
+          temporary_dir="${releases_dir}/.${RELEASE_ID}.tmp"
+          bundle="/tmp/synth-explorer-${COMMIT_SHA}.tar.gz"
+
+          case "${RELEASE_ID}" in
+            *[!a-f0-9-]* | "")
+              echo "invalid release id: ${RELEASE_ID}" >&2
+              exit 1
+              ;;
+          esac
+
+          install -d -m 0755 "${releases_dir}" "${state_dir}"
+          rm -rf -- "${temporary_dir}"
+          test ! -e "${release_dir}"
+          install -d -m 0755 "${temporary_dir}"
+          tar -xzf "${bundle}" -C "${temporary_dir}"
+          rm -f -- "${bundle}"
+          mv -- "${temporary_dir}" "${release_dir}"
+          cd "${release_dir}"
+          SYNTH_EXPLORER_BASE_DIR="${base_dir}" ./ops/deploy.sh "${IMAGE_REF}"
+          REMOTE
+
+      - name: Verify production from outside the host
+        id: external_verify
+        run: ./ops/edge-smoke.sh "$GITHUB_SHA"
+
+      - name: Roll back failed external verification
+        if: ${{ failure() && steps.external_verify.outcome == 'failure' }}
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            'SYNTH_EXPLORER_BASE_DIR=/opt/synth-explorer /opt/synth-explorer/current/ops/deploy.sh --rollback'
+
+      - name: Remove host registry credentials
+        if: always()
+        continue-on-error: true
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            'docker logout ghcr.io >/dev/null 2>&1 || true'

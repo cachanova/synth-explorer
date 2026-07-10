@@ -1,4 +1,5 @@
 import type { DesignFile, Mode, SynthesizeRequest } from '../types'
+import { buildSynthesizeRequest } from './synthesize'
 
 export interface SourceSelection {
   file: string
@@ -27,12 +28,7 @@ export function synthesisInput(
   extraArgs: string,
   revision = 0,
 ): SynthesisInput {
-  const request = {
-    files,
-    top: top.trim() || undefined,
-    mode,
-    extra_args: extraArgs.trim() || undefined,
-  }
+  const request = buildSynthesizeRequest(files, top, mode, extraArgs)
   return { request, key: JSON.stringify(request), revision }
 }
 
