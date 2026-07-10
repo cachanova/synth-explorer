@@ -33,7 +33,7 @@ const interactionHarness = [
   "frame.addEventListener('load', async () => {",
   '  try {',
   '    const doc = frame.contentDocument',
-  "    check(doc.querySelectorAll('.logo-card').length === 48, 'initial card count')",
+  "    check(doc.querySelectorAll('.logo-card').length === 63, 'initial card count')",
   "    check(doc.querySelector('#selection-id').textContent === 'N07', 'hash selection')",
   "    doc.querySelector('.filter[data-family=signal]').click()",
   "    check(doc.querySelectorAll('.logo-card').length === 9, 'signal filter')",
@@ -163,8 +163,8 @@ async function dumpDom(browser, url, profileDir) {
 
 const source = await readFile(galleryScript, 'utf8')
 const ids = Array.from(source.matchAll(/id: '([A-Z][0-9]{2})'/g), (match) => match[1])
-assert.equal(ids.length, 48, 'catalog must contain 48 logo IDs')
-assert.equal(new Set(ids).size, 48, 'catalog logo IDs must be unique')
+assert.equal(ids.length, 63, 'catalog must contain 63 logo IDs')
+assert.equal(new Set(ids).size, 63, 'catalog logo IDs must be unique')
 
 const browser = await findChromium()
 const server = createStaticServer()
@@ -172,6 +172,7 @@ const origin = await listen(server)
 const profileDir = await mkdtemp(join(tmpdir(), 'synth-logo-lab-'))
 const invalidProfileDir = await mkdtemp(join(tmpdir(), 'synth-logo-lab-invalid-'))
 const interactionProfileDir = await mkdtemp(join(tmpdir(), 'synth-logo-lab-interaction-'))
+const seProfileDir = await mkdtemp(join(tmpdir(), 'synth-logo-lab-se-'))
 
 try {
   const selectedDom = await dumpDom(
@@ -179,8 +180,8 @@ try {
     origin + '/logo-lab/index.html#m01',
     profileDir,
   )
-  assert.equal(countMatches(selectedDom, /class="logo-card/g), 48, 'must render 48 cards')
-  assert.equal(countMatches(selectedDom, /class="logo-radio"/g), 48, 'must render 48 radios')
+  assert.equal(countMatches(selectedDom, /class="logo-card/g), 63, 'must render 63 cards')
+  assert.equal(countMatches(selectedDom, /class="logo-radio"/g), 63, 'must render 63 radios')
   assert.match(selectedDom, /id="selection-id">M01</, 'hash must select M01')
   assert.match(selectedDom, /id="decision-title">Circuit S</, 'selected name must render')
   assert.doesNotMatch(selectedDom, /stroke-width="[^"]*\/>/, 'SVG attributes must be well formed')
@@ -201,6 +202,15 @@ try {
   assert.match(invalidDom, /id="selection-id">None</, 'invalid hash must remain unselected')
   assert.doesNotMatch(invalidDom, /<img src="x"/, 'hash content must never become markup')
 
+  const seDom = await dumpDom(
+    browser,
+    origin + '/logo-lab/index.html?family=se#e13',
+    seProfileDir,
+  )
+  assert.equal(countMatches(seDom, /class="logo-card/g), 15, 'SE filter must render 15 cards')
+  assert.match(seDom, /id="selection-id">E13</, 'SE deep link must select E13')
+  assert.match(seDom, /data-family="se" aria-pressed="true"/, 'SE filter must be active')
+
   const interactionDom = await dumpDom(
     browser,
     origin + '/__logo_lab_test__.html',
@@ -208,12 +218,13 @@ try {
   )
   assert.match(interactionDom, /id="result">PASS interactions</, 'gallery interactions must pass')
 
-  process.stdout.write('Logo lab verified: 48 unique options, valid SVG DOM, filters, search, themes, radios, persistence, copy feedback, and hash handling.\n')
+  process.stdout.write('Logo lab verified: 63 unique options, valid SVG DOM, filters, search, themes, radios, persistence, copy feedback, and hash handling.\n')
 } finally {
   await new Promise((resolveClose) => server.close(resolveClose))
   await Promise.all([
     rm(profileDir, { recursive: true, force: true }),
     rm(invalidProfileDir, { recursive: true, force: true }),
     rm(interactionProfileDir, { recursive: true, force: true }),
+    rm(seProfileDir, { recursive: true, force: true }),
   ])
 }

@@ -100,6 +100,21 @@ function inverter(tone = 'logic', width = 3.2) {
   return path('M16 15v34l30-17Z', tone, width) + ring(50, 32, tone, 3, width)
 }
 
+function opposedGateS(topTone = 'logic', bottomTone = 'logic', connectorTone = 'wire') {
+  return (
+    group(orCore(topTone, 4), 'translate(-3 -3) scale(.58)') +
+    group(orCore(bottomTone, 4), 'translate(34 67) scale(-.58 -.58)') +
+    path('M26 16c7 1 8 9 2 13l-13 6c-6 3-5 11 1 13', connectorTone, 2.7)
+  )
+}
+
+function threePinGateE(bodyTone = 'secondary', railTone = bodyTone) {
+  return (
+    path('M57 12H48c-11 0-18 8-18 20s7 20 18 20h9Z', bodyTone, 3.2) +
+    path('M57 16h5M57 32h5M57 48h5', railTone, 3.2)
+  )
+}
+
 function svgMarkup(logo) {
   return (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" aria-hidden="true" focusable="false">' +
@@ -691,6 +706,192 @@ const logos = [
       dot(54, 12, 'secondary', 2.8) +
       dot(54, 52, 'secondary', 2.8),
   },
+
+  {
+    id: 'E01',
+    family: 'se',
+    name: 'Gatefold SE',
+    note: 'Opposing OR gates form the S; a three-pin gate forms the E.',
+    tags: 'letters se or gate three input ligature',
+    draw: () => opposedGateS() + threePinGateE(),
+  },
+  {
+    id: 'E02',
+    family: 'se',
+    name: 'XOR Rail SE',
+    note: 'XOR offset arcs sharpen the S while blue rails clarify the E.',
+    tags: 'letters se xor rails offset arc',
+    draw: () =>
+      opposedGateS('logic', 'secondary', 'wire') +
+      group(path('M11 14c7 11 7 25 0 36', 'secondary', 3.2), 'translate(-3 -3) scale(.58)') +
+      group(path('M11 14c7 11 7 25 0 36', 'logic', 3.2), 'translate(34 67) scale(-.58 -.58)') +
+      threePinGateE('wire', 'logic'),
+  },
+  {
+    id: 'E03',
+    family: 'se',
+    name: 'Gatewritten SE',
+    note: 'A continuous S trace hands directly into a curved gate E.',
+    tags: 'letters se continuous monoline gate',
+    draw: () =>
+      path('M28 11H15c-7 0-10 4-8 9s14 5 18 11-1 21-10 21H6', 'logic', 3.8) +
+      path('M25 31h7', 'wire', 3) +
+      threePinGateE('secondary', 'secondary'),
+  },
+  {
+    id: 'E04',
+    family: 'se',
+    name: 'Pinrail SE',
+    note: 'A gate-built S resolves into a spare three-rail circuit E.',
+    tags: 'letters se pins rails minimal',
+    draw: () =>
+      opposedGateS('logic', 'logic', 'wire') +
+      path('M37 12v40M37 13h21M37 32h18M37 51h21', 'secondary', 3.5) +
+      dot(58, 13, 'secondary', 2.7) +
+      dot(55, 32, 'secondary', 2.7) +
+      dot(58, 51, 'secondary', 2.7),
+  },
+  {
+    id: 'E05',
+    family: 'se',
+    name: 'Fanout SE',
+    note: 'The S gate output becomes the E spine and three explored paths.',
+    tags: 'letters se fanout paths branch gate',
+    draw: () =>
+      opposedGateS('logic', 'logic', 'wire') +
+      path('M27 32h8M35 15v34M35 15h21M35 32h18M35 49h21', 'secondary', 3.3) +
+      dot(57, 15, 'secondary', 2.8) +
+      dot(54, 32, 'secondary', 2.8) +
+      dot(57, 49, 'secondary', 2.8),
+  },
+  {
+    id: 'E06',
+    family: 'se',
+    name: 'Solid Gate SE',
+    note: 'Filled opposing gate bowls make a bolder favicon-scale S.',
+    tags: 'letters se solid filled favicon gate',
+    draw: () =>
+      group(
+        filledPath('M15 14c14 0 26 6 35 18-9 12-21 18-35 18 7-11 7-25 0-36Z'),
+        'translate(-3 -3) scale(.58)',
+      ) +
+      group(
+        filledPath(
+          'M15 14c14 0 26 6 35 18-9 12-21 18-35 18 7-11 7-25 0-36Z',
+          'secondary',
+        ),
+        'translate(34 67) scale(-.58 -.58)',
+      ) +
+      path('M26 16c7 1 8 9 2 13l-13 6c-6 3-5 11 1 13', 'canvas', 3.2) +
+      threePinGateE('wire', 'secondary'),
+  },
+  {
+    id: 'E07',
+    family: 'se',
+    name: 'Split Gate SE',
+    note: 'Blue and purple gate halves separate Synth from Explorer.',
+    tags: 'letters se split color gate pair',
+    draw: () =>
+      opposedGateS('logic', 'secondary', 'wire') +
+      threePinGateE('logic', 'secondary') +
+      dot(30, 32, 'secondary', 3.2),
+  },
+  {
+    id: 'E08',
+    family: 'se',
+    name: 'Three-Input SE',
+    note: 'A compact S sits beside a literal three-input left-facing gate E.',
+    tags: 'letters se three input gate compact',
+    draw: () =>
+      path('M26 12H13c-6 0-8 4-6 8s12 4 16 11-1 21-9 21H5', 'logic', 3.8) +
+      path('M59 11H48c-12 0-19 9-19 21s7 21 19 21h11Z', 'secondary', 3.5) +
+      path('M59 15h4M59 32h4M59 49h4', 'wire', 3.2),
+  },
+  {
+    id: 'E09',
+    family: 'se',
+    name: 'SE Aperture',
+    note: 'Inspection corners contain the gate-derived initials as one mark.',
+    tags: 'letters se inspect corners compact badge',
+    draw: () =>
+      path('M8 20V8h12M44 8h12v12M56 44v12H44M20 56H8V44', 'wire-dim', 2.8) +
+      group(opposedGateS('logic', 'logic', 'wire') + threePinGateE('secondary'), 'translate(9 9) scale(.72)'),
+  },
+  {
+    id: 'E10',
+    family: 'se',
+    name: 'SE Junction',
+    note: 'Both gate letters share one highlighted handoff node.',
+    tags: 'letters se junction node handoff gate',
+    draw: () =>
+      opposedGateS('logic', 'logic', 'wire') +
+      threePinGateE('wire', 'secondary') +
+      dot(30, 32, 'secondary', 4),
+  },
+  {
+    id: 'E11',
+    family: 'se',
+    name: 'XOR Cascade SE',
+    note: 'Two compact XOR cells curl into an S before a three-rail E.',
+    tags: 'letters se xor cascade cells rails',
+    draw: () =>
+      group(xorCore('logic', 'logic'), 'translate(-3 -2) scale(.42)') +
+      group(xorCore('secondary', 'secondary'), 'translate(30 42) scale(-.42 -.42)') +
+      path('M19 12h7v18H15v20h12', 'wire', 2.6) +
+      path('M36 13v38M36 14h22M36 32h18M36 50h22', 'logic', 3.2) +
+      dot(59, 14, 'secondary', 2.6) +
+      dot(59, 50, 'secondary', 2.6),
+  },
+  {
+    id: 'E12',
+    family: 'se',
+    name: 'SE Gate Badge',
+    note: 'A restrained hexagonal frame turns the initials into an app icon.',
+    tags: 'letters se badge hexagon app icon',
+    draw: () =>
+      path('M20 6h24l14 26-14 26H20L6 32Z', 'wire-dim', 2.6) +
+      group(
+        path('M28 11H15c-7 0-10 4-8 9s14 5 18 11-1 21-10 21H6', 'logic', 3.8) +
+          path('M37 12v40M37 13h21M37 32h18M37 51h21', 'secondary', 3.5),
+        'translate(9 9) scale(.72)',
+      ),
+  },
+  {
+    id: 'E13',
+    family: 'se',
+    name: 'XOR-Arc SE',
+    note: 'A deliberate S replaces the XOR arc; its output becomes an E fanout.',
+    tags: 'letters se xor arc fanout selected top pick',
+    draw: () =>
+      orCore('logic', 3.8) +
+      path('M11 10C2 17 3 26 14 30c11 4 10 16-4 24', 'secondary', 3.8) +
+      path('M50 32h2M52 14v36M52 14h9M52 32h9M52 50h9', 'wire', 3.4),
+  },
+  {
+    id: 'E14',
+    family: 'se',
+    name: 'S-Bus Gate Comb',
+    note: 'An S-shaped source bus feeds three solid cells that read as an E.',
+    tags: 'letters se bus comb gates filled top pick',
+    draw: () =>
+      path('M25 7H11v18h14v14H9v18h16', 'logic', 4) +
+      filledPath('M25 6h8c8 0 13 3 13 8s-5 8-13 8h-8Z') +
+      filledPath('M25 24c9 0 17 3 22 8-5 5-13 8-22 8 4-5 4-11 0-16Z', 'secondary') +
+      filledPath('M25 42h8c8 0 13 3 13 8s-5 8-13 8h-8Z') +
+      path('M46 14h13M47 32h12M46 50h13', 'wire', 3.2),
+  },
+  {
+    id: 'E15',
+    family: 'se',
+    name: 'Solid XOR SE',
+    note: 'SE initials are knocked out of one bold XOR silhouette.',
+    tags: 'letters se solid xor knockout favicon top pick',
+    draw: () =>
+      filledPath('M13 7c18 0 34 8 44 25-10 17-26 25-44 25 9-15 9-35 0-50Z') +
+      path('M6 7c9 15 9 35 0 50', 'secondary', 3.8) +
+      path('M30 15H20c-5 0-7 3-5 6s12 3 14 9-1 17-8 17h-8', 'canvas', 4.5) +
+      path('M38 16v32M38 16h12M38 32h10M38 48h12', 'canvas', 4.2),
+  },
 ]
 
 const familyNames = {
@@ -699,12 +900,14 @@ const familyNames = {
   signal: 'Signal',
   netlist: 'Netlist',
   monogram: 'Monogram',
+  se: 'SE Gates',
 }
 
 const grid = document.querySelector('#logo-grid')
 const noResults = document.querySelector('#no-results')
 const resultCount = document.querySelector('#result-count')
 const totalCount = document.querySelector('#total-count')
+const familyCount = document.querySelector('#family-count')
 const search = document.querySelector('#search')
 const filters = document.querySelector('#filters')
 const selectedStage = document.querySelector('#selected-stage')
@@ -720,7 +923,8 @@ const copyChoice = document.querySelector('#copy-choice')
 const clearChoice = document.querySelector('#clear-choice')
 const toast = document.querySelector('#toast')
 
-let activeFamily = 'all'
+const requestedFamily = new URLSearchParams(location.search).get('family')
+let activeFamily = requestedFamily && familyNames[requestedFamily] ? requestedFamily : 'all'
 let query = ''
 let selected = null
 let previewTheme = 'dark'
@@ -828,6 +1032,21 @@ function renderGrid() {
   noResults.hidden = visible.length !== 0
 }
 
+function syncFamilyFilter() {
+  filters.querySelectorAll('.filter').forEach((filter) => {
+    const active = filter.dataset.family === activeFamily
+    filter.classList.toggle('active', active)
+    filter.setAttribute('aria-pressed', active ? 'true' : 'false')
+  })
+}
+
+function updateFamilyUrl() {
+  const url = new URL(location.href)
+  if (activeFamily === 'all') url.searchParams.delete('family')
+  else url.searchParams.set('family', activeFamily)
+  history.replaceState(null, '', url.pathname + url.search + url.hash)
+}
+
 function updateThemeClasses() {
   const dark = previewTheme === 'dark'
   selectedStage.classList.toggle('theme-dark', dark)
@@ -932,12 +1151,8 @@ filters.addEventListener('click', (event) => {
   const button = event.target.closest('.filter')
   if (!button) return
   activeFamily = button.dataset.family
-
-  filters.querySelectorAll('.filter').forEach((filter) => {
-    const active = filter === button
-    filter.classList.toggle('active', active)
-    filter.setAttribute('aria-pressed', active ? 'true' : 'false')
-  })
+  syncFamilyFilter()
+  updateFamilyUrl()
   renderGrid()
 })
 
@@ -979,6 +1194,8 @@ function initialSelection() {
 }
 
 totalCount.textContent = logos.length
+familyCount.textContent = Object.keys(familyNames).length
+syncFamilyFilter()
 renderGrid()
 updateThemeClasses()
 initialSelection()
