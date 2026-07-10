@@ -28,7 +28,10 @@ function App() {
     <div className="app">
       <header className="app-header">
         <span className="logo">
-          Synth<span className="accent"> Explorer</span>
+          <img className="brand-mark" src="/brand-mark.svg" alt="" aria-hidden="true" />
+          <span>
+            Synth <span className="accent">Explorer</span>
+          </span>
         </span>
         <span className="tagline">Compiler Explorer for RTL — synthesize & explore the netlist</span>
       </header>

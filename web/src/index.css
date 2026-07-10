@@ -128,8 +128,18 @@ a:hover {
   flex: 0 0 auto;
 }
 .app-header .logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-weight: 700;
   letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.app-header .brand-mark {
+  display: block;
+  width: 36px;
+  height: 18px;
+  flex: 0 0 auto;
 }
 .app-header .logo .accent {
   color: var(--accent);
