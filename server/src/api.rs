@@ -1,6 +1,6 @@
 use crate::analysis::{
     Analysis, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef, PathsResponse,
-    SourceMapResponse, Stats, Subgraph, node_ref,
+    SourceLineIndex, SourceMapResponse, Stats, Subgraph, node_ref,
 };
 use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
@@ -58,6 +58,7 @@ struct Design {
     response: SynthesizeResponse,
     graph: Graph,
     analysis: Analysis,
+    source_index: SourceLineIndex,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,6 +166,12 @@ async fn synthesize(
             format!("failed to parse yosys netlist: {err}"),
         )
     })?;
+    let source_parsed = parse_value(output.source_json).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to parse source-provenance netlist: {err}"),
+        )
+    })?;
     let (top, module) = select_top(&parsed, None).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -178,6 +185,13 @@ async fn synthesize(
         )
     })?;
     let analysis = Analysis::new(&graph, validated.file_names());
+    let (_, source_module) = select_top(&source_parsed, None).map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to resolve source-provenance top module: {err}"),
+        )
+    })?;
+    let source_index = SourceLineIndex::from_module(source_module, validated.file_names());
     let response = SynthesizeResponse {
         design_id: design_id.clone(),
         top: output.resolved_top,
@@ -190,6 +204,7 @@ async fn synthesize(
         response: response.clone(),
         graph,
         analysis,
+        source_index,
     });
     state.cache.write().await.insert(design_id, design);
     Ok(Json(response))
@@ -234,6 +249,7 @@ struct ConeQuery {
     max_nodes: Option<usize>,
     hide_control: Option<bool>,
     hide_const: Option<bool>,
+    show_infrastructure: Option<bool>,
 }
 
 async fn cone(
@@ -267,6 +283,7 @@ async fn cone(
                 max_nodes: query.max_nodes.unwrap_or(300),
                 hide_control: query.hide_control.unwrap_or(true),
                 hide_const: query.hide_const.unwrap_or(true),
+                show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
         )
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown node"))?;
@@ -276,49 +293,95 @@ async fn cone(
 #[derive(Debug, Deserialize)]
 struct LineConeQuery {
     file: Option<String>,
-    line: Option<isize>,
+    start_line: Option<isize>,
+    end_line: Option<isize>,
     max_nodes: Option<usize>,
     hide_control: Option<bool>,
     hide_const: Option<bool>,
+    show_infrastructure: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SourceEnvelopeStatus {
+    Mapped,
+    OptimizedOrAbsorbed,
+    Unmapped,
+}
+
+#[derive(Debug, Serialize)]
+struct LineConeResponse {
+    status: SourceEnvelopeStatus,
+    control: bool,
+    graph: Subgraph,
 }
 
 async fn line_cone(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<LineConeQuery>,
-) -> Result<Json<Subgraph>, ApiError> {
+) -> Result<Json<LineConeResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
     let file = query
         .file
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "file is required"))?;
-    let line = query
-        .line
-        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "line is required"))?;
-    if line < 1 {
+    let start_line = query
+        .start_line
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "start_line is required"))?;
+    let end_line = query.end_line.unwrap_or(start_line);
+    if start_line < 1 || end_line < start_line {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
-            "line must be at least 1",
+            "line range must satisfy 1 <= start_line <= end_line",
+        ));
+    }
+    if end_line - start_line >= 200 {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "at most 200 source lines may be selected",
         ));
     }
     let roots = design
         .analysis
-        .source_nodes(&file, line as usize)
+        .source_nodes_range(&file, start_line as usize, end_line as usize)
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
+    let control = roots.iter().any(|root| {
+        design.graph.outgoing[*root as usize]
+            .iter()
+            .any(|edge_idx| design.graph.edges[*edge_idx].control)
+    });
+    let hide_control = query.hide_control.unwrap_or(true) && !control;
     let subgraph = design
         .analysis
         .envelope(
             &design.graph,
-            roots,
+            &roots,
             ConeOptions {
                 dir: ConeDir::Fanin,
                 max_depth: 64,
                 max_nodes: query.max_nodes.unwrap_or(400),
-                hide_control: query.hide_control.unwrap_or(true),
+                hide_control,
                 hide_const: query.hide_const.unwrap_or(true),
+                show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
         )
         .expect("source map contains only valid graph node ids");
-    Ok(Json(subgraph))
+    let status = if !roots.is_empty() {
+        SourceEnvelopeStatus::Mapped
+    } else if design
+        .source_index
+        .contains_range(&file, start_line as usize, end_line as usize)
+        .expect("final and provenance indexes contain the same source files")
+    {
+        SourceEnvelopeStatus::OptimizedOrAbsorbed
+    } else {
+        SourceEnvelopeStatus::Unmapped
+    };
+    Ok(Json(LineConeResponse {
+        status,
+        control,
+        graph: subgraph,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -342,6 +405,7 @@ async fn fanout(
 #[derive(Debug, Deserialize)]
 struct NetlistQuery {
     max_nodes: Option<usize>,
+    show_infrastructure: Option<bool>,
 }
 
 async fn netlist(
@@ -353,6 +417,7 @@ async fn netlist(
     Ok(Json(design.analysis.full_netlist(
         &design.graph,
         query.max_nodes.unwrap_or(1500),
+        query.show_infrastructure.unwrap_or(false),
     )))
 }
 

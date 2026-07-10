@@ -1,12 +1,13 @@
 use crate::graph::{
-    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_data_pin, strip_bit_suffix,
+    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_data_pin, is_infrastructure_cell,
+    is_transparent_data_buffer, strip_bit_suffix,
 };
-use crate::netlist::PortDirection;
+use crate::netlist::{PortDirection, YosysModule};
 use serde::Serialize;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiNodeKind {
     Cell,
@@ -39,6 +40,30 @@ pub struct GraphNode {
     pub depth: Option<u32>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ControlRole {
+    Clock,
+    Reset,
+    Set,
+    Enable,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ControlRef {
+    pub role: ControlRole,
+    pub pin: String,
+    pub net_name: String,
+    pub driver_id: NodeId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_low: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -83,6 +108,20 @@ pub struct RegisterGroup {
     pub src: Option<String>,
     pub worst_depth: u32,
     pub bits: Vec<EndpointBit>,
+    pub output_aliases: Vec<OutputAlias>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputAliasBit {
+    pub output_bit: usize,
+    pub register_bit: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct OutputAlias {
+    pub name: String,
+    pub width: usize,
+    pub bits: Vec<OutputAliasBit>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,10 +149,33 @@ pub struct EndpointsResponse {
 #[derive(Debug, Clone, Serialize)]
 pub struct PathEntry {
     pub depth: u32,
+    pub class: PathClass,
+    pub endpoint_group: String,
+    pub endpoint_kind: EndpointKind,
+    pub bits: Vec<usize>,
+    pub output_aliases: Vec<OutputAlias>,
     pub startpoint: NodeRef,
     pub endpoint: NodeRef,
     pub endpoint_port: String,
     pub nodes: Vec<NodeRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointKind {
+    Register,
+    Output,
+    Blackbox,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PathClass {
+    InputToRegister,
+    RegisterToRegister,
+    RegisterToOutput,
+    InputToOutput,
+    Other,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -143,6 +205,37 @@ pub struct SourceMapResponse {
     pub by_line: BTreeMap<String, Vec<u32>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SourceLineIndex {
+    files: HashSet<String>,
+    lines: HashSet<String>,
+}
+
+impl SourceLineIndex {
+    pub fn from_module(module: &YosysModule, files: Vec<String>) -> Self {
+        let mut lines = HashSet::new();
+        for cell in module.cells.values() {
+            let Some(src) = cell.attributes.get("src") else {
+                continue;
+            };
+            insert_src_lines(src, |file, line| {
+                lines.insert(format!("{file}:{line}"));
+            });
+        }
+        Self {
+            files: files.into_iter().collect(),
+            lines,
+        }
+    }
+
+    pub fn contains_range(&self, file: &str, start_line: usize, end_line: usize) -> Option<bool> {
+        if !self.files.contains(file) {
+            return None;
+        }
+        Some((start_line..=end_line).any(|line| self.lines.contains(&format!("{file}:{line}"))))
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Stats {
     pub num_cells: usize,
@@ -152,6 +245,24 @@ pub struct Stats {
     pub num_inputs: usize,
     pub num_outputs: usize,
     pub max_depth: u32,
+    pub depths: DepthSummary,
+    pub cell_categories: CellCategoryCounts,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DepthSummary {
+    pub input_to_register: Option<u32>,
+    pub register_to_register: Option<u32>,
+    pub register_to_output: Option<u32>,
+    pub input_to_output: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CellCategoryCounts {
+    pub logic: usize,
+    pub registers: usize,
+    pub carry_special: usize,
+    pub infrastructure: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +283,9 @@ struct EndpointTarget {
     endpoint_port: String,
     edge: Option<usize>,
     depth: u32,
+    group: String,
+    kind: EndpointKind,
+    bit: usize,
 }
 
 impl Analysis {
@@ -181,7 +295,7 @@ impl Analysis {
         let (node_depth, best_pred) = compute_depths(graph, &loop_set);
         let (endpoints, endpoint_targets) = discover_endpoints(graph, &node_depth);
         let source_map = build_source_map(graph, source_files);
-        let stats = build_stats(graph, &endpoints, &endpoint_targets);
+        let stats = build_stats(graph, &endpoints, &endpoint_targets, &best_pred);
         let warnings = build_warnings(graph, &comb_loops);
         Self {
             node_depth,
@@ -225,24 +339,66 @@ impl Analysis {
         )
     }
 
+    pub fn source_nodes_range(
+        &self,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Option<Vec<NodeId>> {
+        if !self.source_map.files.iter().any(|name| name == file) {
+            return None;
+        }
+        let mut ids = Vec::new();
+        for line in start_line..=end_line {
+            if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
+                ids.extend(line_ids.iter().copied());
+            }
+        }
+        ids.sort_unstable();
+        ids.dedup();
+        Some(ids)
+    }
+
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
-        let mut targets: Vec<&EndpointTarget> = self
+        let targets: Vec<&EndpointTarget> = self
             .endpoint_targets
             .iter()
             .filter(|target| to.is_none_or(|id| target.endpoint == id))
             .collect();
-        targets.sort_by_key(|target| {
+        let mut grouped: BTreeMap<(String, EndpointKind, PathClass, u32, Vec<String>), PathEntry> =
+            BTreeMap::new();
+        for target in targets {
+            let path = self.path_for_target(graph, target);
+            let signature = path
+                .nodes
+                .iter()
+                .map(path_node_signature)
+                .collect::<Vec<_>>();
+            let key = (
+                path.endpoint_group.clone(),
+                path.endpoint_kind,
+                path.class,
+                path.depth,
+                signature,
+            );
+            if let Some(existing) = grouped.get_mut(&key) {
+                existing.bits.extend(path.bits);
+                existing.bits.sort_unstable();
+                existing.bits.dedup();
+                merge_output_aliases(&mut existing.output_aliases, path.output_aliases);
+            } else {
+                grouped.insert(key, path);
+            }
+        }
+        let mut paths: Vec<PathEntry> = grouped.into_values().collect();
+        paths.sort_by_key(|path| {
             (
-                Reverse(target.depth),
-                target.endpoint,
-                target.endpoint_port.clone(),
+                Reverse(path.depth),
+                path.endpoint_group.clone(),
+                path.bits.first().copied().unwrap_or_default(),
             )
         });
-        targets.truncate(limit);
-        let paths = targets
-            .into_iter()
-            .map(|target| self.path_for_target(graph, target))
-            .collect();
+        paths.truncate(limit);
         PathsResponse {
             paths,
             comb_loops: self
@@ -398,13 +554,21 @@ impl Analysis {
             graph,
             &seen,
             &edge_set,
-            &included_roots,
-            &boundary_nodes,
-            truncated,
+            SubgraphProjection {
+                roots: &included_roots,
+                boundary_nodes: &boundary_nodes,
+                truncated,
+                show_infrastructure: options.show_infrastructure,
+            },
         ))
     }
 
-    pub fn full_netlist(&self, graph: &Graph, max_nodes: usize) -> Subgraph {
+    pub fn full_netlist(
+        &self,
+        graph: &Graph,
+        max_nodes: usize,
+        show_infrastructure: bool,
+    ) -> Subgraph {
         let cap = max_nodes.clamp(1, 2000);
         let mut seen = HashSet::new();
         for node in graph.nodes.iter().take(cap) {
@@ -417,13 +581,17 @@ impl Analysis {
             .filter(|(_, edge)| seen.contains(&edge.from) && seen.contains(&edge.to))
             .map(|(idx, _)| idx)
             .collect();
+        let empty = HashSet::new();
         self.subgraph_from_sets(
             graph,
             &seen,
             &edge_set,
-            &HashSet::new(),
-            &HashSet::new(),
-            graph.nodes.len() > cap,
+            SubgraphProjection {
+                roots: &empty,
+                boundary_nodes: &empty,
+                truncated: graph.nodes.len() > cap,
+                show_infrastructure,
+            },
         )
     }
 
@@ -491,14 +659,36 @@ impl Analysis {
             }
         }
         node_ids.reverse();
-        let nodes: Vec<NodeRef> = node_ids.iter().map(|id| node_ref(graph, *id)).collect();
+        let nodes: Vec<NodeRef> = node_ids
+            .iter()
+            .filter(|id| {
+                graph.nodes[**id as usize]
+                    .cell_type
+                    .as_deref()
+                    .is_none_or(|cell_type| !is_infrastructure_cell(cell_type))
+            })
+            .map(|id| node_ref(graph, *id))
+            .collect();
         let startpoint = nodes
             .first()
             .cloned()
             .unwrap_or_else(|| node_ref(graph, target.endpoint));
         let endpoint = node_ref(graph, target.endpoint);
+        let class = classify_path(&startpoint, target.kind);
+        let output_aliases = self
+            .endpoints
+            .registers
+            .iter()
+            .find(|group| target.kind == EndpointKind::Register && group.name == target.group)
+            .map(|group| aliases_for_register_bit(&group.output_aliases, target.bit))
+            .unwrap_or_default();
         PathEntry {
             depth: target.depth,
+            class,
+            endpoint_group: target.group.clone(),
+            endpoint_kind: target.kind,
+            bits: vec![target.bit],
+            output_aliases,
             startpoint,
             endpoint,
             endpoint_port: target.endpoint_port.clone(),
@@ -511,9 +701,7 @@ impl Analysis {
         graph: &Graph,
         seen: &HashSet<NodeId>,
         edge_set: &HashSet<usize>,
-        roots: &HashSet<NodeId>,
-        boundary_nodes: &HashSet<NodeId>,
-        truncated: bool,
+        projection: SubgraphProjection<'_>,
     ) -> Subgraph {
         let mut node_ids: Vec<NodeId> = seen.iter().copied().collect();
         node_ids.sort_unstable();
@@ -521,16 +709,18 @@ impl Analysis {
             .into_iter()
             .map(|id| {
                 let node = &graph.nodes[id as usize];
-                let boundary = !roots.contains(&id) && boundary_nodes.contains(&id);
+                let boundary =
+                    !projection.roots.contains(&id) && projection.boundary_nodes.contains(&id);
                 GraphNode {
                     node: node_ref(graph, id),
-                    is_root: roots.contains(&id).then_some(true),
+                    is_root: projection.roots.contains(&id).then_some(true),
                     is_boundary: boundary.then_some(true),
                     depth: graph
                         .is_comb(id)
                         .then(|| self.node_depth[id as usize])
                         .flatten(),
                     params: node.params.clone(),
+                    controls: node_controls(graph, id),
                 }
             })
             .collect();
@@ -547,12 +737,87 @@ impl Analysis {
                 edge.to_port.clone(),
             )
         });
-        Subgraph {
+        let subgraph = Subgraph {
             nodes,
             edges: merge_edges(edges),
-            truncated,
+            truncated: projection.truncated,
+        };
+        if projection.show_infrastructure {
+            subgraph
+        } else {
+            collapse_infrastructure(graph, subgraph)
         }
     }
+}
+
+struct SubgraphProjection<'a> {
+    roots: &'a HashSet<NodeId>,
+    boundary_nodes: &'a HashSet<NodeId>,
+    truncated: bool,
+    show_infrastructure: bool,
+}
+
+fn path_node_signature(node: &NodeRef) -> String {
+    match node.kind {
+        ApiNodeKind::Cell => format!(
+            "cell:{}:{}",
+            node.cell_type.as_deref().unwrap_or("?"),
+            node.seq == Some(true)
+        ),
+        ApiNodeKind::Port => "port".to_owned(),
+        ApiNodeKind::Const => "const".to_owned(),
+    }
+}
+
+fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass {
+    let starts_at_register = startpoint.seq == Some(true) && startpoint.kind == ApiNodeKind::Cell;
+    let starts_at_input = startpoint.kind == ApiNodeKind::Port;
+    match (starts_at_register, starts_at_input, endpoint_kind) {
+        (true, _, EndpointKind::Register) => PathClass::RegisterToRegister,
+        (_, true, EndpointKind::Register) => PathClass::InputToRegister,
+        (true, _, EndpointKind::Output) => PathClass::RegisterToOutput,
+        (_, true, EndpointKind::Output) => PathClass::InputToOutput,
+        _ => PathClass::Other,
+    }
+}
+
+fn aliases_for_register_bit(aliases: &[OutputAlias], register_bit: usize) -> Vec<OutputAlias> {
+    aliases
+        .iter()
+        .filter_map(|alias| {
+            let bits: Vec<OutputAliasBit> = alias
+                .bits
+                .iter()
+                .filter(|bit| bit.register_bit == register_bit)
+                .cloned()
+                .collect();
+            (!bits.is_empty()).then(|| OutputAlias {
+                name: alias.name.clone(),
+                width: alias.width,
+                bits,
+            })
+        })
+        .collect()
+}
+
+fn merge_output_aliases(existing: &mut Vec<OutputAlias>, incoming: Vec<OutputAlias>) {
+    for alias in incoming {
+        if let Some(current) = existing
+            .iter_mut()
+            .find(|current| current.name == alias.name)
+        {
+            current.bits.extend(alias.bits);
+            current
+                .bits
+                .sort_by_key(|bit| (bit.register_bit, bit.output_bit));
+            current
+                .bits
+                .dedup_by_key(|bit| (bit.register_bit, bit.output_bit));
+        } else {
+            existing.push(alias);
+        }
+    }
+    existing.sort_by(|a, b| a.name.cmp(&b.name));
 }
 
 struct Traversal {
@@ -581,6 +846,7 @@ pub struct ConeOptions {
     pub max_nodes: usize,
     pub hide_control: bool,
     pub hide_const: bool,
+    pub show_infrastructure: bool,
 }
 
 impl ConeDir {
@@ -767,6 +1033,7 @@ fn discover_endpoints(
 ) -> (EndpointsResponse, Vec<EndpointTarget>) {
     let mut targets = Vec::new();
     let mut register_map: BTreeMap<String, RegisterGroup> = BTreeMap::new();
+    let mut register_bits: HashMap<(NodeId, Option<u32>), (String, usize)> = HashMap::new();
 
     for node in &graph.nodes {
         if node.kind != NodeKind::Cell || !node.seq || node.blackbox {
@@ -804,11 +1071,18 @@ fn discover_endpoints(
                 node_id: node.id,
                 depth,
             });
+            register_bits.insert(
+                (node.id, info.q_bits.get(bit_idx).and_then(|bit| bit.net())),
+                (group_name.clone(), display_bit),
+            );
             targets.push(EndpointTarget {
                 endpoint: node.id,
                 endpoint_port: "D".to_owned(),
                 edge,
                 depth,
+                group: group_name.clone(),
+                kind: EndpointKind::Register,
+                bit: display_bit,
             });
         }
         let entry = register_map
@@ -821,6 +1095,7 @@ fn discover_endpoints(
                 src: node.src.clone(),
                 worst_depth: 0,
                 bits: Vec::new(),
+                output_aliases: Vec::new(),
             });
         entry.width += bits.len();
         entry.worst_depth = entry
@@ -832,6 +1107,8 @@ fn discover_endpoints(
 
     let mut outputs = Vec::new();
     let mut inputs = Vec::new();
+    let mut output_aliases: BTreeMap<(String, String, usize), Vec<OutputAliasBit>> =
+        BTreeMap::new();
     let mut port_groups: BTreeMap<String, Vec<&crate::graph::Node>> = BTreeMap::new();
     for node in &graph.nodes {
         if node.kind == NodeKind::PortBit
@@ -859,30 +1136,62 @@ fn discover_endpoints(
             });
         }
         if matches!(dir, PortDirection::Output | PortDirection::Inout) {
-            let bits: Vec<EndpointBit> = nodes
-                .iter()
-                .map(|node| {
-                    let edge = best_endpoint_edge(graph, node_depth, node.id, None);
-                    let depth = edge.map_or(0, |idx| edge_depth(graph, node_depth, idx));
-                    targets.push(EndpointTarget {
-                        endpoint: node.id,
-                        endpoint_port: name.clone(),
-                        edge,
-                        depth,
-                    });
-                    EndpointBit {
-                        bit: node.port_bit.unwrap_or_default(),
-                        node_id: node.id,
-                        depth,
-                    }
-                })
-                .collect();
-            outputs.push(OutputGroup {
-                name,
-                width: bits.len(),
-                worst_depth: bits.iter().map(|bit| bit.depth).max().unwrap_or_default(),
+            let output_width = nodes.len();
+            let mut bits = Vec::new();
+            for node in nodes {
+                let output_bit = node.port_bit.unwrap_or_default();
+                if let Some((register_node, register_net)) = direct_register_driver(graph, node.id)
+                    && let Some((group_name, register_bit)) = register_bits
+                        .get(&(register_node, register_net))
+                        .or_else(|| register_bits.get(&(register_node, None)))
+                {
+                    output_aliases
+                        .entry((group_name.clone(), name.clone(), output_width))
+                        .or_default()
+                        .push(OutputAliasBit {
+                            output_bit,
+                            register_bit: *register_bit,
+                        });
+                    continue;
+                }
+
+                let edge = best_endpoint_edge(graph, node_depth, node.id, None);
+                let depth = edge.map_or(0, |idx| edge_depth(graph, node_depth, idx));
+                targets.push(EndpointTarget {
+                    endpoint: node.id,
+                    endpoint_port: name.clone(),
+                    edge,
+                    depth,
+                    group: name.clone(),
+                    kind: EndpointKind::Output,
+                    bit: output_bit,
+                });
+                bits.push(EndpointBit {
+                    bit: output_bit,
+                    node_id: node.id,
+                    depth,
+                });
+            }
+            if !bits.is_empty() {
+                outputs.push(OutputGroup {
+                    name,
+                    width: output_width,
+                    worst_depth: bits.iter().map(|bit| bit.depth).max().unwrap_or_default(),
+                    bits,
+                });
+            }
+        }
+    }
+
+    for ((register_name, output_name, width), mut bits) in output_aliases {
+        bits.sort_by_key(|bit| (bit.register_bit, bit.output_bit));
+        if let Some(register) = register_map.get_mut(&register_name) {
+            register.output_aliases.push(OutputAlias {
+                name: output_name,
+                width,
                 bits,
             });
+            register.output_aliases.sort_by(|a, b| a.name.cmp(&b.name));
         }
     }
 
@@ -898,6 +1207,9 @@ fn discover_endpoints(
                     endpoint_port: edge.to_port.clone(),
                     edge: Some(*edge_idx),
                     depth: edge_depth(graph, node_depth, *edge_idx),
+                    group: node.name.clone(),
+                    kind: EndpointKind::Blackbox,
+                    bit: 0,
                 });
             }
         }
@@ -958,6 +1270,38 @@ fn edge_depth(graph: &Graph, node_depth: &[Option<u32>], edge_idx: usize) -> u32
     }
 }
 
+/// Follow a top-level output backwards through unconditional, zero-depth data
+/// buffers. Returns the driving register and the register-side net bit only
+/// when there is exactly one data predecessor at every step.
+fn direct_register_driver(graph: &Graph, output: NodeId) -> Option<(NodeId, Option<u32>)> {
+    let mut current = output;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        let mut incoming = graph.incoming[current as usize]
+            .iter()
+            .copied()
+            .filter(|idx| !graph.edges[*idx].control);
+        let edge_idx = incoming.next()?;
+        if incoming.next().is_some() {
+            return None;
+        }
+        let edge = &graph.edges[edge_idx];
+        let driver = graph.nodes.get(edge.from as usize)?;
+        if driver.kind == NodeKind::Cell && driver.seq && !driver.blackbox {
+            return Some((driver.id, edge.bit));
+        }
+        let transparent = driver
+            .cell_type
+            .as_deref()
+            .is_some_and(is_transparent_data_buffer);
+        if driver.kind != NodeKind::Cell || !transparent {
+            return None;
+        }
+        current = driver.id;
+    }
+    None
+}
+
 fn is_direct_endpoint(graph: &Graph, node_id: NodeId) -> bool {
     graph.nodes.get(node_id as usize).is_some_and(|node| {
         node.seq
@@ -969,8 +1313,116 @@ fn is_direct_endpoint(graph: &Graph, node_id: NodeId) -> bool {
     })
 }
 
+fn control_role(pin: &str) -> ControlRole {
+    match pin.to_ascii_uppercase().as_str() {
+        "CLK" | "C" => ControlRole::Clock,
+        "R" | "RST" | "ARST" | "SRST" | "CLR" | "LSR" => ControlRole::Reset,
+        "S" | "SET" | "PRE" | "SR" => ControlRole::Set,
+        "E" | "EN" | "CE" => ControlRole::Enable,
+        _ => ControlRole::Other,
+    }
+}
+
+fn is_labeled_control_edge(graph: &Graph, edge: &Edge) -> bool {
+    if !edge.control {
+        return false;
+    }
+    match control_role(&edge.to_port) {
+        ControlRole::Clock | ControlRole::Reset | ControlRole::Set => true,
+        ControlRole::Enable => {
+            graph.outgoing[edge.from as usize]
+                .iter()
+                .filter(|idx| {
+                    let candidate = &graph.edges[**idx];
+                    candidate.control && control_role(&candidate.to_port) == ControlRole::Enable
+                })
+                .count()
+                >= 8
+        }
+        ControlRole::Other => false,
+    }
+}
+
+fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
+    let mut controls = Vec::new();
+    for edge_idx in &graph.incoming[node_id as usize] {
+        let edge = &graph.edges[*edge_idx];
+        if !is_labeled_control_edge(graph, edge) {
+            continue;
+        }
+        let role = control_role(&edge.to_port);
+        let net = edge.net_name.to_ascii_lowercase();
+        let active_low =
+            (matches!(
+                role,
+                ControlRole::Reset | ControlRole::Set | ControlRole::Enable
+            ) && (net.ends_with("_n") || net.ends_with("_b") || edge.to_port.ends_with('N')))
+            .then_some(true);
+        let generated =
+            (role == ControlRole::Clock).then(|| !is_simple_control_source(graph, edge.from));
+        controls.push(ControlRef {
+            role,
+            pin: edge.to_port.clone(),
+            net_name: edge.net_name.clone(),
+            driver_id: edge.from,
+            active_low,
+            generated,
+        });
+    }
+    controls.sort_by_key(|control| {
+        (
+            match control.role {
+                ControlRole::Clock => 0,
+                ControlRole::Reset => 1,
+                ControlRole::Set => 2,
+                ControlRole::Enable => 3,
+                ControlRole::Other => 4,
+            },
+            control.net_name.clone(),
+        )
+    });
+    controls.dedup_by(|a, b| {
+        a.role == b.role && a.net_name == b.net_name && a.driver_id == b.driver_id
+    });
+    controls
+}
+
+fn is_simple_control_source(graph: &Graph, start: NodeId) -> bool {
+    let mut current = start;
+    let mut visited = HashSet::new();
+    while visited.insert(current) {
+        let node = &graph.nodes[current as usize];
+        if node.kind == NodeKind::PortBit
+            && matches!(
+                node.port_dir,
+                Some(PortDirection::Input | PortDirection::Inout)
+            )
+        {
+            return true;
+        }
+        let transparent = node
+            .cell_type
+            .as_deref()
+            .is_some_and(is_infrastructure_cell);
+        if node.kind != NodeKind::Cell || !transparent {
+            return false;
+        }
+        let mut incoming = graph.incoming[current as usize]
+            .iter()
+            .map(|idx| graph.edges[*idx].from);
+        let Some(next) = incoming.next() else {
+            return false;
+        };
+        if incoming.next().is_some() {
+            return false;
+        }
+        current = next;
+    }
+    false
+}
+
 fn should_hide_edge(graph: &Graph, edge: &Edge, hide_control: bool, hide_const: bool) -> bool {
-    (hide_control && edge.control)
+    (hide_control && is_labeled_control_edge(graph, edge))
         || (hide_const
             && graph
                 .nodes
@@ -1024,27 +1476,144 @@ fn merge_edges(edges: Vec<&Edge>) -> Vec<GraphEdge> {
     merged.into_values().collect()
 }
 
+fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
+    let hidden: HashSet<NodeId> = subgraph
+        .nodes
+        .iter()
+        .filter(|node| node.is_root != Some(true))
+        .filter_map(|node| {
+            let cell_type = graph.nodes[node.node.id as usize].cell_type.as_deref()?;
+            is_infrastructure_cell(cell_type).then_some(node.node.id)
+        })
+        .collect();
+    if hidden.is_empty() {
+        return subgraph;
+    }
+
+    let mut outgoing: HashMap<NodeId, Vec<&GraphEdge>> = HashMap::new();
+    for edge in &subgraph.edges {
+        outgoing.entry(edge.from).or_default().push(edge);
+    }
+
+    let mut projected = Vec::new();
+    for edge in subgraph
+        .edges
+        .iter()
+        .filter(|edge| !hidden.contains(&edge.from))
+    {
+        let mut queue = VecDeque::from([(edge.clone(), HashSet::new())]);
+        while let Some((current, mut visited)) = queue.pop_front() {
+            if !hidden.contains(&current.to) {
+                projected.push(current);
+                continue;
+            }
+            if !visited.insert(current.to) {
+                continue;
+            }
+            for next in outgoing.get(&current.to).into_iter().flatten() {
+                let mut combined = GraphEdge {
+                    from: current.from,
+                    to: next.to,
+                    from_port: current.from_port.clone(),
+                    to_port: next.to_port.clone(),
+                    net_name: next.net_name.clone(),
+                    bits: next.bits.clone(),
+                    control: (current.control == Some(true) || next.control == Some(true))
+                        .then_some(true),
+                };
+                if combined.bits.is_empty() {
+                    combined.bits = current.bits.clone();
+                }
+                queue.push_back((combined, visited.clone()));
+            }
+        }
+    }
+
+    let mut merged: BTreeMap<(NodeId, NodeId, String, String, String, bool), GraphEdge> =
+        BTreeMap::new();
+    for edge in projected {
+        let key = (
+            edge.from,
+            edge.to,
+            edge.from_port.clone(),
+            edge.to_port.clone(),
+            edge.net_name.clone(),
+            edge.control == Some(true),
+        );
+        let entry = merged.entry(key).or_insert_with(|| GraphEdge {
+            bits: Vec::new(),
+            ..edge.clone()
+        });
+        entry.bits.extend(edge.bits);
+        entry.bits.sort_unstable();
+        entry.bits.dedup();
+    }
+
+    Subgraph {
+        nodes: subgraph
+            .nodes
+            .into_iter()
+            .filter(|node| !hidden.contains(&node.node.id))
+            .collect(),
+        edges: merged.into_values().collect(),
+        truncated: subgraph.truncated,
+    }
+}
+
 fn build_stats(
     graph: &Graph,
     endpoints: &EndpointsResponse,
     endpoint_targets: &[EndpointTarget],
+    best_pred: &[Option<usize>],
 ) -> Stats {
     let mut cells_by_type = BTreeMap::new();
+    let mut cell_categories = CellCategoryCounts::default();
     for node in &graph.nodes {
         if node.kind == NodeKind::Cell {
-            *cells_by_type
-                .entry(node.cell_type.clone().unwrap_or_default())
-                .or_insert(0) += 1;
+            let cell_type = node.cell_type.clone().unwrap_or_default();
+            *cells_by_type.entry(cell_type.clone()).or_insert(0) += 1;
+            if node.seq && !node.blackbox {
+                cell_categories.registers += 1;
+            } else if is_infrastructure_cell(&cell_type) {
+                cell_categories.infrastructure += 1;
+            } else if is_carry_or_special(&cell_type) {
+                cell_categories.carry_special += 1;
+            } else {
+                cell_categories.logic += 1;
+            }
         }
     }
     let num_register_bits = endpoints.registers.iter().map(|group| group.width).sum();
     let num_inputs = endpoints.inputs.iter().map(|group| group.width).sum();
-    let num_outputs = endpoints.outputs.iter().map(|group| group.width).sum();
+    let num_outputs = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == NodeKind::PortBit
+                && matches!(
+                    node.port_dir,
+                    Some(PortDirection::Output | PortDirection::Inout)
+                )
+        })
+        .count();
     let max_depth = endpoint_targets
         .iter()
         .map(|target| target.depth)
         .max()
         .unwrap_or_default();
+    let mut depths = DepthSummary::default();
+    for target in endpoint_targets {
+        let startpoint = node_ref(graph, target_startpoint_id(graph, best_pred, target));
+        match classify_path(&startpoint, target.kind) {
+            PathClass::InputToRegister => update_max(&mut depths.input_to_register, target.depth),
+            PathClass::RegisterToRegister => {
+                update_max(&mut depths.register_to_register, target.depth)
+            }
+            PathClass::RegisterToOutput => update_max(&mut depths.register_to_output, target.depth),
+            PathClass::InputToOutput => update_max(&mut depths.input_to_output, target.depth),
+            PathClass::Other => {}
+        }
+    }
     Stats {
         num_cells: cells_by_type.values().sum(),
         cells_by_type,
@@ -1053,7 +1622,48 @@ fn build_stats(
         num_inputs,
         num_outputs,
         max_depth,
+        depths,
+        cell_categories,
     }
+}
+
+fn target_startpoint_id(
+    graph: &Graph,
+    best_pred: &[Option<usize>],
+    target: &EndpointTarget,
+) -> NodeId {
+    let Some(edge_idx) = target.edge else {
+        return target.endpoint;
+    };
+    let mut current = graph.edges[edge_idx].from;
+    while graph.is_comb(current) {
+        let Some(pred_edge) = best_pred[current as usize] else {
+            break;
+        };
+        current = graph.edges[pred_edge].from;
+    }
+    current
+}
+
+fn update_max(slot: &mut Option<u32>, value: u32) {
+    *slot = Some(slot.map_or(value, |current| current.max(value)));
+}
+
+fn is_carry_or_special(cell_type: &str) -> bool {
+    matches!(
+        cell_type.to_ascii_uppercase().as_str(),
+        "CCU2C"
+            | "CARRY4"
+            | "CARRY8"
+            | "SB_CARRY"
+            | "XORCY"
+            | "MUXCY"
+            | "MUXF7"
+            | "MUXF8"
+            | "MUXF9"
+            | "PFUMX"
+            | "L6MUX21"
+    )
 }
 
 fn build_warnings(graph: &Graph, comb_loops: &[NodeId]) -> Vec<String> {
@@ -1083,23 +1693,32 @@ fn build_source_map(graph: &Graph, files: Vec<String>) -> SourceMapResponse {
         let Some(src) = &node.src else {
             continue;
         };
-        for loc in src.split('|') {
-            if let Some((file, start, end)) = parse_src_loc(loc) {
-                let capped_end = end.min(start + 199);
-                for line in start..=capped_end {
-                    by_line
-                        .entry(format!("{file}:{line}"))
-                        .or_default()
-                        .push(node.id);
-                }
-            }
-        }
+        insert_src_lines(src, |file, line| {
+            by_line
+                .entry(format!("{file}:{line}"))
+                .or_default()
+                .push(node.id);
+        });
     }
     for ids in by_line.values_mut() {
         ids.sort_unstable();
         ids.dedup();
     }
     SourceMapResponse { files, by_line }
+}
+
+fn insert_src_lines(mut src: &str, mut insert: impl FnMut(&str, usize)) {
+    while !src.is_empty() {
+        let (loc, rest) = src
+            .split_once('|')
+            .map_or((src, ""), |(loc, rest)| (loc, rest));
+        if let Some((file, start, end)) = parse_src_loc(loc) {
+            for line in start..=end.min(start + 199) {
+                insert(&file, line);
+            }
+        }
+        src = rest;
+    }
 }
 
 fn parse_src_loc(loc: &str) -> Option<(String, usize, usize)> {
@@ -1177,6 +1796,20 @@ mod tests {
             .unwrap();
         assert_eq!(q.width, 8);
         assert_eq!(q.worst_depth, 1);
+        let alias = q
+            .output_aliases
+            .iter()
+            .find(|alias| alias.name == "q")
+            .expect("direct top-level registered output should be grouped with q");
+        assert_eq!(alias.bits.len(), 8);
+        assert!(
+            analysis
+                .endpoints
+                .outputs
+                .iter()
+                .all(|output| output.name != "q")
+        );
+        assert_eq!(analysis.stats.depths.input_to_register, Some(1));
     }
 
     #[test]

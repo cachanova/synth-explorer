@@ -45,6 +45,7 @@ fn cone_stops_at_boundary_nodes() {
                 max_nodes: 300,
                 hide_control: true,
                 hide_const: true,
+                show_infrastructure: false,
             },
         )
         .unwrap();
@@ -73,6 +74,7 @@ fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
         max_nodes: 20,
         hide_control: false,
         hide_const: true,
+        show_infrastructure: false,
     };
     let envelope = analysis.envelope(&graph, &roots, options).unwrap();
     assert!(!envelope.truncated);
@@ -132,7 +134,7 @@ fn fanout_counts_direct_sinks() {
 #[test]
 fn full_netlist_caps_nodes() {
     let (graph, analysis) = fixture("and_chain_rtl.json");
-    let subgraph = analysis.full_netlist(&graph, 2);
+    let subgraph = analysis.full_netlist(&graph, 2, false);
     assert_eq!(subgraph.nodes.len(), 2);
     assert!(subgraph.truncated);
 }

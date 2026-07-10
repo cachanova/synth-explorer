@@ -180,11 +180,13 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
     let envelope = get_json(
         &mut app,
         &format!(
-            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&line=17&max_nodes=400&hide_control=true&hide_const=true"
+            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=17&end_line=17&max_nodes=400&hide_control=true&hide_const=true"
         ),
     )
     .await;
-    let nodes = envelope["nodes"].as_array().unwrap();
+    assert_eq!(envelope["status"], "mapped");
+    let graph = &envelope["graph"];
+    let nodes = graph["nodes"].as_array().unwrap();
     let returned_roots: BTreeSet<_> = nodes
         .iter()
         .filter(|node| node["is_root"].as_bool() == Some(true))
@@ -200,26 +202,54 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
         node["seq"].as_bool() == Some(true) && node["is_boundary"].as_bool() == Some(true)
     }));
     assert!(
-        envelope["edges"]
+        graph["edges"]
             .as_array()
             .unwrap()
             .iter()
             .any(|edge| mapped_roots.contains(&edge["from"].as_u64().unwrap()))
     );
-    assert_eq!(envelope["truncated"], false);
+    assert_eq!(graph["truncated"], false);
+
+    let mut range_roots = BTreeSet::new();
+    for line in 17..=21 {
+        if let Some(ids) = source_map["by_line"][format!("03_adder_chain.sv:{line}")].as_array() {
+            range_roots.extend(ids.iter().map(|id| id.as_u64().unwrap()));
+        }
+    }
+    let range = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=17&end_line=21"
+        ),
+    )
+    .await;
+    let returned_range_roots: BTreeSet<_> = range["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["is_root"].as_bool() == Some(true))
+        .map(|node| node["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(returned_range_roots, range_roots);
 
     let comment_line = get_json(
         &mut app,
-        &format!("/api/design/{design_id}/line-cone?file=03_adder_chain.sv&line=2"),
+        &format!(
+            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=2&end_line=2"
+        ),
     )
     .await;
-    assert_eq!(comment_line["nodes"], json!([]));
-    assert_eq!(comment_line["edges"], json!([]));
-    assert_eq!(comment_line["truncated"], false);
+    assert_eq!(comment_line["status"], "unmapped");
+    assert_eq!(comment_line["graph"]["nodes"], json!([]));
+    assert_eq!(comment_line["graph"]["edges"], json!([]));
+    assert_eq!(comment_line["graph"]["truncated"], false);
 
     for uri in [
-        format!("/api/design/{design_id}/line-cone?file=unknown.sv&line=17"),
-        format!("/api/design/{design_id}/line-cone?file=03_adder_chain.sv&line=0"),
+        format!("/api/design/{design_id}/line-cone?file=unknown.sv&start_line=17&end_line=17"),
+        format!("/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=0&end_line=1"),
+        format!(
+            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=1&end_line=201"
+        ),
     ] {
         let response = get_response(&mut app, &uri).await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -227,10 +257,134 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
 
     let response = get_response(
         &mut app,
-        "/api/design/unknown/line-cone?file=03_adder_chain.sv&line=17",
+        "/api/design/unknown/line-cone?file=03_adder_chain.sv&start_line=17&end_line=17",
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn depth_classes_and_registered_output_aliases_are_reported_once() {
+    let source = r#"
+module depth_classes (
+    input logic clk,
+    input logic a,
+    input logic b,
+    output logic direct,
+    output logic from_reg,
+    output logic comb
+);
+  logic r0;
+  logic r1;
+  always_ff @(posedge clk) begin
+    r0 <= a & b;
+    r1 <= ~r0;
+  end
+  assign direct = r1;
+  assign from_reg = ~r1;
+  assign comb = a ^ b;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "depth_classes.sv", "content": source}],
+                        "top": "depth_classes",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    assert_eq!(synth["stats"]["num_outputs"], 3);
+    assert_eq!(synth["stats"]["depths"]["input_to_register"], 1);
+    assert_eq!(synth["stats"]["depths"]["register_to_register"], 1);
+    assert_eq!(synth["stats"]["depths"]["register_to_output"], 1);
+    assert_eq!(synth["stats"]["depths"]["input_to_output"], 1);
+
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let r1 = endpoints["registers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["name"] == "r1")
+        .expect("expected r1 endpoint group");
+    assert_eq!(r1["output_aliases"][0]["name"], "direct");
+    assert!(
+        endpoints["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|output| output["name"] != "direct")
+    );
+
+    let paths = get_json(&mut app, &format!("/api/design/{design_id}/paths?limit=25")).await;
+    let direct_path_groups = paths["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|path| {
+            path["output_aliases"]
+                .as_array()
+                .is_some_and(|aliases| aliases.iter().any(|alias| alias["name"] == "direct"))
+        })
+        .count();
+    assert_eq!(direct_path_groups, 1);
+}
+
+#[tokio::test]
+async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() {
+    let source = "module optimized(\n  input logic a,\n  input logic b,\n  output logic y\n);\n  wire unused = a & b;\n  assign y = a;\nendmodule\n";
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "optimized.sv", "content": source}],
+                        "top": "optimized",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let optimized = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=optimized.sv&start_line=6&end_line=6"),
+    )
+    .await;
+    assert_eq!(optimized["status"], "optimized_or_absorbed");
+    assert_eq!(optimized["graph"]["nodes"], json!([]));
+
+    let declaration = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=optimized.sv&start_line=1&end_line=1"),
+    )
+    .await;
+    assert_eq!(declaration["status"], "unmapped");
 }
 
 async fn get_json(app: &mut axum::Router, uri: &str) -> serde_json::Value {

@@ -68,6 +68,7 @@ pub struct ValidatedSynth {
 #[derive(Debug, Clone)]
 pub struct YosysOutput {
     pub json: Value,
+    pub source_json: Value,
     pub log: String,
     pub resolved_top: String,
 }
@@ -153,6 +154,7 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
     let script_path = temp.path().join("script.ys");
     let log_path = temp.path().join("log.txt");
     let json_path = temp.path().join("netlist.json");
+    let source_json_path = temp.path().join("source-netlist.json");
     fs::write(&script_path, script).await?;
 
     let mut child = Command::new("yosys")
@@ -180,19 +182,13 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
         return Err(YosysError::Yosys { log });
     }
 
-    let metadata = fs::metadata(&json_path).await?;
-    if metadata.len() > JSON_SIZE_LIMIT {
-        return Err(YosysError::Validation(format!(
-            "yosys json exceeded {} bytes",
-            JSON_SIZE_LIMIT
-        )));
-    }
-    let bytes = fs::read(&json_path).await?;
-    let json: Value = serde_json::from_slice(&bytes)?;
+    let json = read_json_limited(&json_path, "yosys json").await?;
+    let source_json = read_json_limited(&source_json_path, "yosys source json").await?;
     let parsed = parse_value(json.clone())?;
     let (top, _) = select_top(&parsed, None)?;
     Ok(YosysOutput {
         json,
+        source_json,
         log,
         resolved_top: top.to_owned(),
     })
@@ -200,12 +196,12 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
 
 fn build_script(input: &ValidatedSynth) -> String {
     let mut script = String::new();
-    script.push_str("read_verilog -sv");
-    for file in &input.files {
-        script.push(' ');
-        script.push_str(&file.name);
-    }
-    script.push('\n');
+    push_read_verilog(&mut script, input);
+    script.push_str(&format!(
+        "hierarchy {}\nproc\nflatten\nwrite_json source-netlist.json\ndesign -reset\n",
+        top_args(input.top.as_deref())
+    ));
+    push_read_verilog(&mut script, input);
     let top_args = top_args(input.top.as_deref());
     let extra = if input.extra_args.is_empty() {
         String::new()
@@ -255,6 +251,26 @@ fn build_script(input: &ValidatedSynth) -> String {
     }
     script.push_str("write_json netlist.json\n");
     script
+}
+
+fn push_read_verilog(script: &mut String, input: &ValidatedSynth) {
+    script.push_str("read_verilog -sv");
+    for file in &input.files {
+        script.push(' ');
+        script.push_str(&file.name);
+    }
+    script.push('\n');
+}
+
+async fn read_json_limited(path: &Path, label: &str) -> Result<Value, YosysError> {
+    let metadata = fs::metadata(path).await?;
+    if metadata.len() > JSON_SIZE_LIMIT {
+        return Err(YosysError::Validation(format!(
+            "{label} exceeded {JSON_SIZE_LIMIT} bytes"
+        )));
+    }
+    let bytes = fs::read(path).await?;
+    Ok(serde_json::from_slice(&bytes)?)
 }
 
 fn top_args(top: Option<&str>) -> String {

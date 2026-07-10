@@ -95,19 +95,29 @@ async fn blackbox_is_seq_like_boundary() {
 
 #[tokio::test]
 async fn reg_mux_endpoints_include_q_width_8() {
-    let (_graph, analysis) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
+    let (graph, analysis) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
     let endpoints = analysis.endpoints();
-    assert!(
-        endpoints
-            .registers
-            .iter()
-            .any(|group| group.name == "q" && group.width == 8)
-    );
+    let q = endpoints
+        .registers
+        .iter()
+        .find(|group| group.name == "q" && group.width == 8)
+        .expect("expected q register group");
+    assert_eq!(q.output_aliases.len(), 1);
+    assert_eq!(q.output_aliases[0].name, "q");
+    assert_eq!(q.output_aliases[0].bits.len(), 8);
+    assert!(endpoints.outputs.iter().all(|output| output.name != "q"));
+
+    let paths = analysis.paths(&graph, 25, None);
+    assert!(paths.paths.iter().any(|path| {
+        path.endpoint_group == "q"
+            && path.output_aliases.iter().any(|alias| alias.name == "q")
+            && !path.bits.is_empty()
+    }));
 }
 
 #[tokio::test]
 async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
-    for (mode, expected_lut, expected_buffer) in [
+    for (mode, expected_lut, collapsed_buffer) in [
         (SynthMode::Xilinx, None, Some("OBUF")),
         (SynthMode::Ice40, Some("SB_LUT4"), None),
         (SynthMode::Ecp5, Some("LUT4"), None),
@@ -135,6 +145,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                     max_nodes: 300,
                     hide_control: true,
                     hide_const: true,
+                    show_infrastructure: false,
                 },
             )
             .expect("valid output node should have a fanin cone");
@@ -150,8 +161,34 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
         if let Some(expected) = expected_lut {
             assert!(cell_types.contains(&expected));
         }
-        if let Some(expected) = expected_buffer {
-            assert!(cell_types.contains(&expected));
+        if let Some(expected) = collapsed_buffer {
+            assert!(
+                !cell_types.contains(&expected),
+                "{expected} should be collapsed from the default analysis cone"
+            );
+            let implementation_cone = analysis
+                .cone(
+                    &graph,
+                    valid.bits[0].node_id,
+                    ConeOptions {
+                        show_infrastructure: true,
+                        ..ConeOptions {
+                            dir: ConeDir::Fanin,
+                            max_depth: 64,
+                            max_nodes: 300,
+                            hide_control: true,
+                            hide_const: true,
+                            show_infrastructure: false,
+                        }
+                    },
+                )
+                .unwrap();
+            assert!(
+                implementation_cone
+                    .nodes
+                    .iter()
+                    .any(|node| { node.node.cell_type.as_deref() == Some(expected) })
+            );
         }
     }
 }
@@ -181,13 +218,9 @@ async fn xilinx_adder_depth_excludes_buffers() {
         .count();
 
     assert!(analysis.stats().max_depth >= 2);
-    assert!(
-        buffer_count >= 1,
-        "critical path did not exercise a buffer: {:?}",
-        path.nodes
-            .iter()
-            .filter_map(|node| node.cell_type.as_deref())
-            .collect::<Vec<_>>()
+    assert_eq!(
+        buffer_count, 0,
+        "infrastructure should be collapsed from paths"
     );
     assert_eq!(path.depth as usize, weighted_comb_count);
 }

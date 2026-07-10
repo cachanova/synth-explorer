@@ -591,6 +591,27 @@ pub fn cell_depth_weight(cell_type: &str) -> u32 {
     }
 }
 
+/// Cells that are useful implementation accounting detail but add no logical
+/// depth. Analysis views may collapse these into the net they buffer while the
+/// raw implementation statistics continue to count them.
+pub fn is_infrastructure_cell(cell_type: &str) -> bool {
+    matches!(
+        vendor_primitive_class(cell_type),
+        Some(VendorPrimitiveClass::Combinational { depth_weight: 0 })
+    )
+}
+
+/// Unconditional one-input buffers that preserve a data bit exactly. This is
+/// deliberately narrower than `is_infrastructure_cell`: tri-state and
+/// bidirectional IO primitives must not make an output look like a direct
+/// register alias.
+pub fn is_transparent_data_buffer(cell_type: &str) -> bool {
+    matches!(
+        cell_type.to_ascii_uppercase().as_str(),
+        "IBUF" | "OBUF" | "BUFG" | "BUFH" | "SB_GB" | "$_BUF_"
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VendorPrimitiveClass {
     Combinational { depth_weight: u32 },
