@@ -8,6 +8,7 @@ use std::time::Duration;
 use tempfile::TempDir;
 use thiserror::Error;
 use tokio::fs;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -265,9 +266,13 @@ fn top_only(top: Option<&str>) -> String {
 }
 
 async fn read_log_tail(path: &Path) -> std::io::Result<String> {
-    let bytes = fs::read(path).await?;
-    let start = bytes.len().saturating_sub(LOG_TAIL_LIMIT);
-    Ok(String::from_utf8_lossy(&bytes[start..]).into_owned())
+    let mut file = fs::File::open(path).await?;
+    let len = file.metadata().await?.len();
+    let start = len.saturating_sub(LOG_TAIL_LIMIT as u64);
+    file.seek(std::io::SeekFrom::Start(start)).await?;
+    let mut bytes = Vec::with_capacity((len - start) as usize);
+    file.read_to_end(&mut bytes).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn validate_filename(name: &str) -> Result<(), YosysError> {

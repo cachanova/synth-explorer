@@ -6,22 +6,51 @@ use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
 use crate::yosys::{SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone, Default)]
 pub struct AppState {
-    designs: Arc<RwLock<HashMap<String, Arc<Design>>>>,
+    cache: Arc<RwLock<DesignCache>>,
+}
+
+const DESIGN_CACHE_CAP: usize = 32;
+
+#[derive(Debug, Default)]
+struct DesignCache {
+    designs: HashMap<String, Arc<Design>>,
+    order: VecDeque<String>,
+}
+
+impl DesignCache {
+    fn get(&self, id: &str) -> Option<Arc<Design>> {
+        self.designs.get(id).cloned()
+    }
+
+    fn insert(&mut self, id: String, design: Arc<Design>) {
+        if let Some(existing) = self.designs.get_mut(&id) {
+            *existing = design;
+            return;
+        }
+        if self.designs.len() == DESIGN_CACHE_CAP
+            && let Some(oldest) = self.order.pop_front()
+        {
+            self.designs.remove(&oldest);
+        }
+        // FIFO eviction keeps cache bookkeeping cheap; cache hits do not refresh order.
+        self.order.push_back(id.clone());
+        self.designs.insert(id, design);
+    }
 }
 
 #[derive(Debug)]
@@ -105,7 +134,10 @@ pub fn app(state: AppState) -> Router {
     let index = PathBuf::from(&static_dir).join("index.html");
     let static_service = ServeDir::new(static_dir).not_found_service(ServeFile::new(index));
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::list([
+            HeaderValue::from_static("http://localhost:5173"),
+            HeaderValue::from_static("http://127.0.0.1:5173"),
+        ]))
         .allow_methods([Method::GET, Method::POST])
         .allow_headers(Any);
 
@@ -121,7 +153,7 @@ async fn synthesize(
 ) -> Result<Json<SynthesizeResponse>, ApiError> {
     let validated = request.validate().map_err(map_yosys_error)?;
     let design_id = validated.design_id();
-    if let Some(design) = state.designs.read().await.get(&design_id) {
+    if let Some(design) = state.cache.read().await.get(&design_id) {
         return Ok(Json(design.response.clone()));
     }
 
@@ -158,7 +190,7 @@ async fn synthesize(
         graph,
         analysis,
     });
-    state.designs.write().await.insert(design_id, design);
+    state.cache.write().await.insert(design_id, design);
     Ok(Json(response))
 }
 
@@ -397,11 +429,10 @@ async fn examples() -> Result<Json<ExamplesResponse>, ApiError> {
 
 async fn get_design(state: &AppState, id: &str) -> Result<Arc<Design>, ApiError> {
     state
-        .designs
+        .cache
         .read()
         .await
         .get(id)
-        .cloned()
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown design"))
 }
 

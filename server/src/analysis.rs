@@ -500,74 +500,84 @@ pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
 }
 
 fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
-    struct Tarjan<'a> {
-        graph: &'a Graph,
-        index: usize,
-        indices: Vec<Option<usize>>,
-        lowlink: Vec<usize>,
-        stack: Vec<NodeId>,
-        on_stack: Vec<bool>,
-        loops: HashSet<NodeId>,
+    struct Frame {
+        node: NodeId,
+        next_edge: usize,
     }
 
-    impl<'a> Tarjan<'a> {
-        fn strongconnect(&mut self, node: NodeId) {
-            self.indices[node as usize] = Some(self.index);
-            self.lowlink[node as usize] = self.index;
-            self.index += 1;
-            self.stack.push(node);
-            self.on_stack[node as usize] = true;
+    let mut index = 0;
+    let mut indices = vec![None; graph.nodes.len()];
+    let mut lowlink = vec![0; graph.nodes.len()];
+    let mut stack = Vec::new();
+    let mut on_stack = vec![false; graph.nodes.len()];
+    let mut loops = HashSet::new();
 
-            for edge_idx in &self.graph.outgoing[node as usize] {
-                let next = self.graph.edges[*edge_idx].to;
-                if !self.graph.is_comb(next) {
+    for start in &graph.nodes {
+        if !graph.is_comb(start.id) || indices[start.id as usize].is_some() {
+            continue;
+        }
+
+        indices[start.id as usize] = Some(index);
+        lowlink[start.id as usize] = index;
+        index += 1;
+        stack.push(start.id);
+        on_stack[start.id as usize] = true;
+        let mut frames = vec![Frame {
+            node: start.id,
+            next_edge: 0,
+        }];
+
+        while let Some(frame) = frames.last_mut() {
+            let node = frame.node;
+            if frame.next_edge < graph.outgoing[node as usize].len() {
+                let edge_idx = graph.outgoing[node as usize][frame.next_edge];
+                frame.next_edge += 1;
+                let next = graph.edges[edge_idx].to;
+                if !graph.is_comb(next) {
                     continue;
                 }
-                if self.indices[next as usize].is_none() {
-                    self.strongconnect(next);
-                    self.lowlink[node as usize] =
-                        self.lowlink[node as usize].min(self.lowlink[next as usize]);
-                } else if self.on_stack[next as usize] {
-                    self.lowlink[node as usize] =
-                        self.lowlink[node as usize].min(self.indices[next as usize].unwrap_or(0));
+                if indices[next as usize].is_none() {
+                    indices[next as usize] = Some(index);
+                    lowlink[next as usize] = index;
+                    index += 1;
+                    stack.push(next);
+                    on_stack[next as usize] = true;
+                    frames.push(Frame {
+                        node: next,
+                        next_edge: 0,
+                    });
+                } else if on_stack[next as usize] {
+                    lowlink[node as usize] =
+                        lowlink[node as usize].min(indices[next as usize].unwrap_or(0));
                 }
+                continue;
             }
 
-            if self.lowlink[node as usize] == self.indices[node as usize].unwrap_or(usize::MAX) {
+            let node = frames.pop().map(|frame| frame.node).unwrap_or(node);
+            if lowlink[node as usize] == indices[node as usize].unwrap_or(usize::MAX) {
                 let mut component = Vec::new();
-                while let Some(member) = self.stack.pop() {
-                    self.on_stack[member as usize] = false;
+                while let Some(member) = stack.pop() {
+                    on_stack[member as usize] = false;
                     component.push(member);
                     if member == node {
                         break;
                     }
                 }
                 let self_loop = component.len() == 1
-                    && self.graph.outgoing[component[0] as usize]
+                    && graph.outgoing[component[0] as usize]
                         .iter()
-                        .any(|edge_idx| self.graph.edges[*edge_idx].to == component[0]);
+                        .any(|edge_idx| graph.edges[*edge_idx].to == component[0]);
                 if component.len() > 1 || self_loop {
-                    self.loops.extend(component);
+                    loops.extend(component);
                 }
+            }
+            if let Some(parent) = frames.last() {
+                lowlink[parent.node as usize] =
+                    lowlink[parent.node as usize].min(lowlink[node as usize]);
             }
         }
     }
-
-    let mut tarjan = Tarjan {
-        graph,
-        index: 0,
-        indices: vec![None; graph.nodes.len()],
-        lowlink: vec![0; graph.nodes.len()],
-        stack: Vec::new(),
-        on_stack: vec![false; graph.nodes.len()],
-        loops: HashSet::new(),
-    };
-    for node in &graph.nodes {
-        if graph.is_comb(node.id) && tarjan.indices[node.id as usize].is_none() {
-            tarjan.strongconnect(node.id);
-        }
-    }
-    let mut loops: Vec<NodeId> = tarjan.loops.into_iter().collect();
+    let mut loops: Vec<NodeId> = loops.into_iter().collect();
     loops.sort_unstable();
     loops
 }
@@ -1019,8 +1029,9 @@ fn bit_index_from_name(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Graph;
-    use crate::netlist::{parse_str, select_top};
+    use crate::graph::{Edge, Graph, Node, NodeKind};
+    use crate::netlist::{PortDirection, parse_str, select_top};
+    use std::time::Instant;
 
     fn fixture(name: &str) -> (Graph, Analysis) {
         let json = std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap();
@@ -1062,5 +1073,102 @@ mod tests {
             .map(|id| graph.node_ref_name(*id))
             .collect();
         assert!(names.iter().any(|name| name.contains("$not")));
+    }
+
+    #[test]
+    fn analysis_handles_deep_comb_chain_without_recursive_scc_stack() {
+        let depth = 200_000usize;
+        let graph = deep_chain_graph(depth);
+        let started = Instant::now();
+        let analysis = Analysis::new(&graph, vec!["deep_chain.sv".to_owned()]);
+        assert!(started.elapsed().as_secs() < 10);
+        assert!(analysis.comb_loops.is_empty());
+        assert_eq!(analysis.stats.max_depth, depth as u32);
+    }
+
+    fn deep_chain_graph(depth: usize) -> Graph {
+        let node_count = depth + 2;
+        let mut nodes = Vec::with_capacity(node_count);
+        nodes.push(Node {
+            id: 0,
+            kind: NodeKind::PortBit,
+            name: "in".to_owned(),
+            raw_name: "in".to_owned(),
+            cell_type: None,
+            seq: false,
+            blackbox: false,
+            src: None,
+            params: BTreeMap::new(),
+            port: Some("in".to_owned()),
+            port_bit: Some(0),
+            port_dir: Some(PortDirection::Input),
+            const_value: None,
+        });
+        for idx in 0..depth {
+            let id = (idx + 1) as NodeId;
+            nodes.push(Node {
+                id,
+                kind: NodeKind::Cell,
+                name: format!("buf_{idx}"),
+                raw_name: format!("buf_{idx}"),
+                cell_type: Some("$buf".to_owned()),
+                seq: false,
+                blackbox: false,
+                src: None,
+                params: BTreeMap::new(),
+                port: None,
+                port_bit: None,
+                port_dir: None,
+                const_value: None,
+            });
+        }
+        let output_id = (depth + 1) as NodeId;
+        nodes.push(Node {
+            id: output_id,
+            kind: NodeKind::PortBit,
+            name: "out".to_owned(),
+            raw_name: "out".to_owned(),
+            cell_type: None,
+            seq: false,
+            blackbox: false,
+            src: None,
+            params: BTreeMap::new(),
+            port: Some("out".to_owned()),
+            port_bit: Some(0),
+            port_dir: Some(PortDirection::Output),
+            const_value: None,
+        });
+
+        let mut edges = Vec::with_capacity(depth + 1);
+        let mut outgoing = vec![Vec::new(); node_count];
+        let mut incoming = vec![Vec::new(); node_count];
+        for idx in 0..=depth {
+            let from = idx as NodeId;
+            let to = (idx + 1) as NodeId;
+            let edge_idx = edges.len();
+            edges.push(Edge {
+                from,
+                to,
+                from_port: if idx == 0 { "in" } else { "Y" }.to_owned(),
+                to_port: if idx == depth { "out" } else { "A" }.to_owned(),
+                bit: Some(idx as u32),
+                net_name: format!("n{idx}"),
+                control: false,
+            });
+            outgoing[from as usize].push(edge_idx);
+            incoming[to as usize].push(edge_idx);
+        }
+
+        Graph {
+            nodes,
+            edges,
+            outgoing,
+            incoming,
+            top: "deep_chain".to_owned(),
+            net_names: HashMap::new(),
+            net_aliases: HashMap::new(),
+            cell_info: HashMap::new(),
+            blackboxes: Vec::new(),
+        }
     }
 }
