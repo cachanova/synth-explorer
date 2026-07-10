@@ -2,13 +2,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useRef,
   useState,
   type ReactNode,
 } from 'react'
 import * as api from './api'
-import { createLatestGuard } from './lib/latest'
 import type { SrcSpan } from './lib/src'
 import type {
   DesignFile,
@@ -28,16 +28,38 @@ export type TabId =
   | 'graph'
   | 'compare'
 
-export interface ConeRequest {
+export interface ConeGraphRequest {
+  kind: 'cone'
   node: number
   dir: 'fanin' | 'fanout'
   label: string // human description for the graph header
   // node ids to highlight (e.g. a path); empty for plain cones
   highlight: number[]
-  // request the full netlist instead of a cone
-  netlist: boolean
   nonce: number // force re-render even if identical request
 }
+
+export interface NetlistGraphRequest {
+  kind: 'netlist'
+  label: string
+  highlight: number[]
+  nonce: number
+}
+
+export interface SourceGraphRequest {
+  kind: 'source'
+  file: string
+  startLine: number
+  endLine: number
+  selectionTruncated: boolean
+  label: string
+  highlight: number[]
+  nonce: number
+}
+
+export type GraphRequest =
+  | ConeGraphRequest
+  | NetlistGraphRequest
+  | SourceGraphRequest
 
 export interface GraphOptions {
   maxDepth: number
@@ -47,9 +69,31 @@ export interface GraphOptions {
 }
 
 export interface EditorHighlight {
-  span: SrcSpan
+  spans: SrcSpan[]
+  primary: number
   nonce: number
 }
+
+export interface SourceSelection {
+  file: string
+  startLine: number
+  endLine: number
+}
+
+export type AnalysisState =
+  | 'none'
+  | 'current'
+  | 'stale'
+  | 'refreshing'
+  | 'error'
+
+interface SynthesisInput {
+  request: import('./types').SynthesizeRequest
+  key: string
+}
+
+const MAX_SOURCE_LINES = 200
+const AUTO_SYNTH_DELAY_MS = 3000
 
 export interface Snapshot {
   design_id: string
@@ -95,6 +139,55 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideConst: true,
 }
 
+export function synthesisInput(
+  files: DesignFile[],
+  top: string,
+  mode: Mode,
+  extraArgs: string,
+): SynthesisInput {
+  const request = {
+    files,
+    top: top.trim() || undefined,
+    mode,
+    extra_args: extraArgs.trim() || undefined,
+  }
+  return { request, key: JSON.stringify(request) }
+}
+
+export function normalizeSourceSelection(
+  file: string,
+  startLine: number,
+  endLine: number,
+): SourceSelection {
+  const start = Math.max(1, Math.min(startLine, endLine))
+  const end = Math.max(start, Math.max(startLine, endLine))
+  return { file, startLine: start, endLine: end }
+}
+
+function sourceGraphRequest(
+  selection: SourceSelection,
+  nonce: number,
+): SourceGraphRequest {
+  const endLine = Math.min(
+    selection.endLine,
+    selection.startLine + MAX_SOURCE_LINES - 1,
+  )
+  const lineLabel =
+    selection.startLine === endLine
+      ? `line ${selection.startLine}`
+      : `lines ${selection.startLine}–${endLine}`
+  return {
+    kind: 'source',
+    file: selection.file,
+    startLine: selection.startLine,
+    endLine,
+    selectionTruncated: endLine !== selection.endLine,
+    label: `${selection.file}:${lineLabel}`,
+    highlight: [],
+    nonce,
+  }
+}
+
 export interface Store {
   // editor / inputs
   files: DesignFile[]
@@ -117,6 +210,9 @@ export interface Store {
   // synthesis
   synthesizing: boolean
   design: SynthesizeResponse | null
+  analysisState: AnalysisState
+  autoSynthesize: boolean
+  setAutoSynthesize: (enabled: boolean) => void
   error: { message: string; log?: string; status?: number } | null
   synthesize: () => Promise<void>
 
@@ -125,7 +221,7 @@ export interface Store {
   setActiveTab: (t: TabId) => void
 
   // graph
-  coneReq: ConeRequest | null
+  coneReq: GraphRequest | null
   graphOptions: GraphOptions
   setGraphOptions: (patch: Partial<GraphOptions>) => void
   openCone: (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => void
@@ -135,10 +231,13 @@ export interface Store {
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
   highlightSrc: (span: SrcSpan) => void
+  highlightSources: (spans: SrcSpan[]) => void
 
   // cross-probe: editor -> graph nodes
   cursor: { file: string; line: number }
   setCursor: (file: string, line: number) => void
+  sourceSelection: SourceSelection
+  setSourceSelection: (file: string, startLine: number, endLine: number) => void
   probe: ProbeState | null
   runProbe: () => Promise<void>
   clearProbe: () => void
@@ -159,7 +258,7 @@ export function useStore(): Store {
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<DesignFile[]>([DEFAULT_FILE])
-  const [activeFileName, setActiveFileName] = useState(DEFAULT_FILE.name)
+  const [activeFileName, setActiveFileNameState] = useState(DEFAULT_FILE.name)
   const [top, setTop] = useState('')
   const [mode, setMode] = useState<Mode>('gates')
   const [extraArgs, setExtraArgs] = useState('')
@@ -167,11 +266,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const [synthesizing, setSynthesizing] = useState(false)
   const [design, setDesign] = useState<SynthesizeResponse | null>(null)
+  const [designInputKey, setDesignInputKey] = useState<string | null>(null)
+  const [autoSynthesize, setAutoSynthesize] = useState(true)
   const [error, setError] = useState<Store['error']>(null)
 
   const [activeTab, setActiveTab] = useState<TabId>('overview')
 
-  const [coneReq, setConeReq] = useState<ConeRequest | null>(null)
+  const [coneReq, setConeReq] = useState<GraphRequest | null>(null)
   const [graphOptions, setGraphOptionsState] = useState<GraphOptions>(
     DEFAULT_GRAPH_OPTIONS,
   )
@@ -179,7 +280,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [editorHighlight, setEditorHighlight] = useState<EditorHighlight | null>(
     null,
   )
-  const [cursor, setCursorState] = useState({ file: DEFAULT_FILE.name, line: 1 })
+  const [sourceSelection, setSourceSelectionState] = useState<SourceSelection>({
+    file: DEFAULT_FILE.name,
+    startLine: 1,
+    endLine: 1,
+  })
   const [probe, setProbe] = useState<ProbeState | null>(null)
 
   const [snapshotA, setSnapshotA] = useState<Snapshot | null>(null)
@@ -187,7 +292,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const nonceRef = useRef(0)
   const nextNonce = () => ++nonceRef.current
-  const synthGuard = useRef(createLatestGuard()).current
+  const activeTabRef = useRef(activeTab)
+  activeTabRef.current = activeTab
+  const sourceSelectionRef = useRef(sourceSelection)
+  sourceSelectionRef.current = sourceSelection
+  const designInputKeyRef = useRef(designInputKey)
+  designInputKeyRef.current = designInputKey
+
+  const currentInput = useMemo(
+    () => synthesisInput(files, top, mode, extraArgs),
+    [files, top, mode, extraArgs],
+  )
+  const currentInputRef = useRef(currentInput)
+  currentInputRef.current = currentInput
+  const synthesisRunningRef = useRef(false)
+  const synthesisKeyRef = useRef<string | null>(null)
+  const queuedInputRef = useRef<SynthesisInput | null>(null)
+
+  const analysisState: AnalysisState = synthesizing
+    ? 'refreshing'
+    : design == null
+      ? error
+        ? 'error'
+        : 'none'
+      : designInputKey === currentInput.key
+        ? 'current'
+        : error
+          ? 'error'
+          : 'stale'
 
   // Load examples once.
   const loadedExamples = useRef(false)
@@ -214,7 +346,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         i += 1
         name = `file${i}.sv`
       }
-      setActiveFileName(name)
+      setActiveFileNameState(name)
+      setSourceSelectionState({ file: name, startLine: 1, endLine: 1 })
       return [...fs, { name, content: '' }]
     })
   }, [])
@@ -227,7 +360,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (fs.some((f) => f.name === clean && f.name !== oldName)) return fs
         return fs.map((f) => (f.name === oldName ? { ...f, name: clean } : f))
       })
-      setActiveFileName((cur) => (cur === oldName ? clean : cur))
+      setActiveFileNameState((cur) => (cur === oldName ? clean : cur))
+      setSourceSelectionState((cur) =>
+        cur.file === oldName ? { ...cur, file: clean } : cur,
+      )
     },
     [],
   )
@@ -236,45 +372,88 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setFiles((fs) => {
       if (fs.length <= 1) return fs
       const next = fs.filter((f) => f.name !== name)
-      setActiveFileName((cur) => (cur === name ? next[0].name : cur))
+      setActiveFileNameState((cur) => (cur === name ? next[0].name : cur))
+      setSourceSelectionState((cur) =>
+        cur.file === name
+          ? { file: next[0].name, startLine: 1, endLine: 1 }
+          : cur,
+      )
       return next
     })
   }, [])
 
   const loadExample = useCallback((ex: Example) => {
     setFiles(ex.files.length ? ex.files : [DEFAULT_FILE])
-    setActiveFileName(ex.files[0]?.name ?? DEFAULT_FILE.name)
+    const firstFile = ex.files[0]?.name ?? DEFAULT_FILE.name
+    setActiveFileNameState(firstFile)
+    setSourceSelectionState({ file: firstFile, startLine: 1, endLine: 1 })
     setTop(ex.top ?? '')
   }, [])
 
   const synthesize = useCallback(async () => {
-    // Only the most recent request may commit state or clear the spinner:
-    // a slower earlier request must not overwrite a newer design, and its
-    // completion must not stop the spinner while the newer one is in flight.
-    const token = synthGuard.begin()
-    setSynthesizing(true)
-    setError(null)
-    try {
-      const res = await api.synthesize({
-        files,
-        top: top.trim() || undefined,
-        mode,
-        extra_args: extraArgs.trim() || undefined,
-      })
-      if (!synthGuard.isCurrent(token)) return
-      setDesign(res)
-      setConeReq(null)
-      setProbe(null)
-      setActiveTab('overview')
-    } catch (e) {
-      if (!synthGuard.isCurrent(token)) return
-      const err = e as api.ApiRequestError
-      setError({ message: err.message, log: err.log, status: err.status })
-      setDesign(null)
-    } finally {
-      if (synthGuard.isCurrent(token)) setSynthesizing(false)
+    const requested = currentInputRef.current
+    if (synthesisRunningRef.current) {
+      if (synthesisKeyRef.current !== requested.key) {
+        // One bounded slot, always replaced by the newest complete input.
+        queuedInputRef.current = requested
+      }
+      return
     }
-  }, [files, top, mode, extraArgs, synthGuard])
+
+    synthesisRunningRef.current = true
+    setSynthesizing(true)
+    let next: SynthesisInput | null = requested
+    try {
+      while (next) {
+        const running: SynthesisInput = next
+        next = null
+        queuedInputRef.current = null
+        synthesisKeyRef.current = running.key
+        setError(null)
+        try {
+          const res = await api.synthesize(running.request)
+          setDesign(res)
+          setDesignInputKey(running.key)
+          designInputKeyRef.current = running.key
+          setProbe(null)
+
+          // A source graph tracks the selected lines across synthesis. Other
+          // explicit cones remain stable until the user asks to replace them.
+          setConeReq((request) =>
+            request?.kind === 'source'
+              ? sourceGraphRequest(sourceSelectionRef.current, nextNonce())
+              : request,
+          )
+        } catch (e) {
+          const err = e as api.ApiRequestError
+          setError({ message: err.message, log: err.log, status: err.status })
+          // Preserve the last valid design and graph. Their input key remains
+          // unchanged, so source cross-probing stays disabled while stale.
+        }
+
+        // The ref may be replaced by another invocation while the request is
+        // awaiting; TypeScript cannot observe that asynchronous mutation.
+        const queued = queuedInputRef.current as SynthesisInput | null
+        if (queued && queued.key !== running.key) next = queued
+      }
+    } finally {
+      synthesisKeyRef.current = null
+      synthesisRunningRef.current = false
+      setSynthesizing(false)
+    }
+  }, [])
+
+  // Source/top/mode/argument/example changes make the prior analysis stale.
+  // Cursor movement is deliberately absent from this dependency list.
+  useEffect(() => {
+    if (!autoSynthesize) return
+    const timer = window.setTimeout(() => {
+      if (designInputKeyRef.current !== currentInputRef.current.key) {
+        void synthesize()
+      }
+    }, AUTO_SYNTH_DELAY_MS)
+    return () => window.clearTimeout(timer)
+  }, [autoSynthesize, currentInput.key, synthesize])
 
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
     setGraphOptionsState((o) => ({ ...o, ...patch }))
@@ -283,11 +462,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const openCone = useCallback(
     (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => {
       setConeReq({
+        kind: 'cone',
         node: opts.node,
         dir: opts.dir,
         label: opts.label,
         highlight: [],
-        netlist: false,
         nonce: nextNonce(),
       })
       setActiveTab('graph')
@@ -297,11 +476,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const showPathInGraph = useCallback((path: TimingPath) => {
     setConeReq({
+      kind: 'cone',
       node: path.endpoint.id,
       dir: 'fanin',
       label: `Path → ${path.endpoint.name} (depth ${path.depth})`,
       highlight: path.nodes.map((n) => n.id),
-      netlist: false,
       nonce: nextNonce(),
     })
     setActiveTab('graph')
@@ -309,24 +488,71 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const openNetlist = useCallback(() => {
     setConeReq({
-      node: -1,
-      dir: 'fanin',
+      kind: 'netlist',
       label: 'Full netlist',
       highlight: [],
-      netlist: true,
       nonce: nextNonce(),
     })
     setActiveTab('graph')
   }, [])
 
-  const highlightSrc = useCallback((span: SrcSpan) => {
-    setActiveFileName((cur) => (span.file ? span.file : cur))
-    setEditorHighlight({ span, nonce: nextNonce() })
+  const highlightSources = useCallback((spans: SrcSpan[]) => {
+    if (spans.length === 0) {
+      setEditorHighlight(null)
+      return
+    }
+    const submittedNames = new Set(
+      currentInputRef.current.request.files.map((f) => f.name),
+    )
+    const primary = spans.findIndex((span) => submittedNames.has(span.file))
+    const primaryIndex = primary >= 0 ? primary : 0
+    const primarySpan = spans[primaryIndex]
+    setActiveFileNameState((cur) => (primarySpan.file ? primarySpan.file : cur))
+    setEditorHighlight({ spans, primary: primaryIndex, nonce: nextNonce() })
   }, [])
 
-  const setCursor = useCallback((file: string, line: number) => {
-    setCursorState({ file, line })
+  const highlightSrc = useCallback(
+    (span: SrcSpan) => highlightSources([span]),
+    [highlightSources],
+  )
+
+  const setSourceSelection = useCallback(
+    (file: string, startLine: number, endLine: number) => {
+      const selection = normalizeSourceSelection(file, startLine, endLine)
+      sourceSelectionRef.current = selection
+      setSourceSelectionState(selection)
+      if (activeTabRef.current === 'graph') {
+        setConeReq(sourceGraphRequest(selection, nextNonce()))
+      }
+    },
+    [],
+  )
+
+  const setActiveFileName = useCallback(
+    (name: string) => {
+      setActiveFileNameState(name)
+      setSourceSelection(name, 1, 1)
+    },
+    [setSourceSelection],
+  )
+
+  const setCursor = useCallback(
+    (file: string, line: number) => setSourceSelection(file, line, line),
+    [setSourceSelection],
+  )
+
+  const setActiveTabForUser = useCallback((tab: TabId) => {
+    setActiveTab(tab)
+    activeTabRef.current = tab
+    if (tab === 'graph') {
+      setConeReq(sourceGraphRequest(sourceSelectionRef.current, nextNonce()))
+    }
   }, [])
+
+  const cursor = useMemo(
+    () => ({ file: sourceSelection.file, line: sourceSelection.endLine }),
+    [sourceSelection],
+  )
 
   const runProbe = useCallback(async () => {
     if (!design) return
@@ -399,10 +625,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       loadExample,
       synthesizing,
       design,
+      analysisState,
+      autoSynthesize,
+      setAutoSynthesize,
       error,
       synthesize,
       activeTab,
-      setActiveTab,
+      setActiveTab: setActiveTabForUser,
       coneReq,
       graphOptions,
       setGraphOptions,
@@ -411,8 +640,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       openNetlist,
       editorHighlight,
       highlightSrc,
+      highlightSources,
       cursor,
       setCursor,
+      sourceSelection,
+      setSourceSelection,
       probe,
       runProbe,
       clearProbe,
@@ -427,6 +659,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mode,
       extraArgs,
       examples,
+      setActiveFileName,
       updateFileContent,
       addFile,
       renameFile,
@@ -434,9 +667,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       loadExample,
       synthesizing,
       design,
+      analysisState,
+      autoSynthesize,
       error,
       synthesize,
       activeTab,
+      setActiveTabForUser,
       coneReq,
       graphOptions,
       setGraphOptions,
@@ -445,8 +681,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       openNetlist,
       editorHighlight,
       highlightSrc,
+      highlightSources,
       cursor,
       setCursor,
+      sourceSelection,
+      setSourceSelection,
       probe,
       runProbe,
       clearProbe,

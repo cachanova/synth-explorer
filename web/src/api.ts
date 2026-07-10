@@ -4,6 +4,7 @@ import type {
   EndpointsResponse,
   ExamplesResponse,
   FanoutResponse,
+  LineConeResponse,
   Mode,
   NodesResponse,
   PathsResponse,
@@ -96,6 +97,31 @@ export function getCone(id: string, opts: ConeOptions): Promise<Subgraph> {
   return getJson<Subgraph>(`/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`)
 }
 
+export interface LineConeOptions {
+  file: string
+  start_line: number
+  end_line: number
+  max_nodes?: number
+  hide_control?: boolean
+  hide_const?: boolean
+}
+
+export function getLineCone(
+  id: string,
+  opts: LineConeOptions,
+): Promise<LineConeResponse> {
+  const p = new URLSearchParams()
+  p.set('file', opts.file)
+  p.set('start_line', String(opts.start_line))
+  p.set('end_line', String(opts.end_line))
+  if (opts.max_nodes != null) p.set('max_nodes', String(opts.max_nodes))
+  if (opts.hide_control != null) p.set('hide_control', String(opts.hide_control))
+  if (opts.hide_const != null) p.set('hide_const', String(opts.hide_const))
+  return getJson<LineConeResponse>(
+    `/api/design/${encodeURIComponent(id)}/line-cone?${p.toString()}`,
+  )
+}
+
 export function getFanout(id: string, limit = 50): Promise<FanoutResponse> {
   return getJson<FanoutResponse>(
     `/api/design/${encodeURIComponent(id)}/fanout?limit=${limit}`,
@@ -127,8 +153,8 @@ export function getExamples(): Promise<ExamplesResponse> {
 export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'rtl', label: 'RTL (word-level)' },
   { value: 'gates', label: 'Generic gates' },
-  { value: 'lut4', label: 'LUT4 (FPGA)' },
-  { value: 'lut6', label: 'LUT6 (FPGA)' },
+  { value: 'lut4', label: 'Generic LUT4 metric' },
+  { value: 'lut6', label: 'Generic LUT6 metric' },
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
   { value: 'xilinx', label: 'Xilinx' },
