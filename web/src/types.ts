@@ -48,7 +48,7 @@ export interface SynthesizeRequest {
   files: DesignFile[]
   top?: string // omitted -> yosys -auto-top
   mode: Mode
-  extra_args?: string // whitespace-separated tokens, each ^[A-Za-z0-9_+=.,:-]+$
+  extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
 }
 
 export interface Stats {

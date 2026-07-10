@@ -1,0 +1,57 @@
+name: Monitor production
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-monitor
+  cancel-in-progress: true
+
+env:
+  PRODUCTION_URL: https://synthexplorer.dev
+
+jobs:
+  health:
+    name: Check health
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check production health
+        run: |
+          response="$(curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --retry 2 --retry-delay 2 \
+            "$PRODUCTION_URL/healthz")"
+          jq --exit-status \
+            '.status == "ok" and (.commit | length > 0) and (.yosys_version | length > 0)' \
+            <<< "$response"
+
+  synthesis:
+    name: Check synthesis flow
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '17 */6 * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Read deployed commit
+        id: health
+        run: |
+          commit="$(curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            "$PRODUCTION_URL/healthz" | jq --raw-output --exit-status '.commit')"
+          if [[ -z "$commit" || "$commit" == "null" ]]; then
+            echo "Production health response omitted commit" >&2
+            exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Run synthesis smoke test
+        run: ./ops/smoke-test.sh "$PRODUCTION_URL" "${{ steps.health.outputs.commit }}"

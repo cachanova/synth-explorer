@@ -8,6 +8,22 @@ All endpoints are JSON. Errors return HTTP 4xx/5xx with body
 `{ "error": string, "log"?: string }`. The server also serves the built SPA
 from `web/dist` at `/` (SPA fallback to `index.html` for non-`/api` routes).
 
+## GET `/healthz`
+
+Returns process and build metadata used by container health checks, deployments,
+and external monitoring:
+
+```ts
+{
+  status: "ok";
+  commit: string;        // full Git commit in production; "unknown" in local builds
+  version: string;       // server crate version
+  yosys_version: string; // captured by the required startup preflight
+}
+```
+
+The server does not start if the Yosys preflight fails.
+
 ## Shared shapes
 
 ```ts
@@ -57,10 +73,15 @@ Request:
   files: { name: string; content: string }[]; // name: bare filename, [A-Za-z0-9._-]+, .v/.sv
   top?: string;          // omitted -> yosys -auto-top
   mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx";
-  extra_args?: string;   // whitespace-separated tokens, each ^[A-Za-z0-9_+=.,:-]+$,
-                         // appended to the mode's synth command
+  extra_args?: string;   // flags for the selected synthesis pass; see below
 }
 ```
+
+`extra_args` is appended to the mode's `prep`, `synth`, or `synth_*` command;
+it does not accept global Yosys CLI flags or arbitrary script commands. Values
+are split on whitespace and every token must match
+`^[A-Za-z0-9_+=.,:-]+$`. Supported flags are mode-specific, and invalid or
+conflicting combinations return a synthesis error with the Yosys log.
 
 Response `200`:
 
@@ -84,7 +105,8 @@ Response `200`:
 ```
 
 `400` on yosys failure (body includes yosys `log`), `422` on validation
-failure, `504` on timeout.
+failure, `504` on timeout. The server runs one synthesis and queues at most two
+more; requests beyond that return `503` with `Retry-After: 5`.
 
 ## GET `/api/design/:id/endpoints`
 

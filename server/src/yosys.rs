@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fmt;
+#[cfg(target_os = "linux")]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -15,6 +17,15 @@ use tokio::time::timeout;
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const JSON_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
 const YOSYS_TIMEOUT: Duration = Duration::from_secs(60);
+const YOSYS_PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "linux")]
+const CHILD_ADDRESS_SPACE_LIMIT: libc::rlim_t = 2 * 1024 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const CHILD_FILE_SIZE_LIMIT: libc::rlim_t = 128 * 1024 * 1024;
+#[cfg(target_os = "linux")]
+const CHILD_OPEN_FILES_LIMIT: libc::rlim_t = 128;
+#[cfg(target_os = "linux")]
+const CHILD_CPU_SECONDS_LIMIT: libc::rlim_t = 65;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
@@ -68,6 +79,7 @@ pub struct ValidatedSynth {
 #[derive(Debug, Clone)]
 pub struct YosysOutput {
     pub json: Value,
+    pub json_size: usize,
     pub log: String,
     pub resolved_top: String,
 }
@@ -143,6 +155,36 @@ impl ValidatedSynth {
     }
 }
 
+/// Verify the production runtime can execute Yosys and capture its version once.
+///
+/// Routers do not perform this check so unit tests and in-process callers remain cheap.
+pub async fn preflight_yosys() -> Result<String, YosysError> {
+    let output = timeout(
+        YOSYS_PREFLIGHT_TIMEOUT,
+        Command::new("yosys").arg("-V").output(),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "yosys version check timed out",
+        )
+    })??;
+    if !output.status.success() {
+        return Err(YosysError::Yosys {
+            log: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if version.is_empty() {
+        return Err(YosysError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "yosys returned an empty version",
+        )));
+    }
+    Ok(version)
+}
+
 pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError> {
     let temp = TempDir::new()?;
     for file in &input.files {
@@ -155,7 +197,8 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
     let json_path = temp.path().join("netlist.json");
     fs::write(&script_path, script).await?;
 
-    let mut child = Command::new("yosys")
+    let mut command = Command::new("yosys");
+    command
         .arg("-q")
         .arg("-T")
         .arg("-l")
@@ -163,13 +206,23 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
         .arg("-s")
         .arg(&script_path)
         .current_dir(temp.path())
-        .kill_on_drop(true)
-        .spawn()?;
+        .kill_on_drop(true);
+    configure_child(&mut command);
+    let mut child = command.spawn()?;
+    let mut process_group = ProcessGroupGuard::new(&child);
 
     let status = match timeout(YOSYS_TIMEOUT, child.wait()).await {
-        Ok(status) => status?,
+        Ok(status) => {
+            let status = status?;
+            process_group.disarm();
+            status
+        }
         Err(_) => {
+            process_group.kill();
+            #[cfg(not(target_os = "linux"))]
             let _ = child.kill().await;
+            let _ = child.wait().await;
+            process_group.disarm();
             let log = read_log_tail(&log_path).await.unwrap_or_default();
             return Err(YosysError::Timeout { log });
         }
@@ -193,9 +246,85 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
     let (top, _) = select_top(&parsed, None)?;
     Ok(YosysOutput {
         json,
+        json_size: bytes.len(),
         log,
         resolved_top: top.to_owned(),
     })
+}
+
+#[cfg(target_os = "linux")]
+fn configure_child(command: &mut Command) {
+    command.as_std_mut().process_group(0);
+    // SAFETY: the callback only invokes async-signal-safe setrlimit calls between
+    // fork and exec. The limits are inherited by Yosys and every ABC descendant.
+    unsafe {
+        command.as_std_mut().pre_exec(apply_child_limits);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_child(_command: &mut Command) {}
+
+#[cfg(target_os = "linux")]
+fn apply_child_limits() -> std::io::Result<()> {
+    set_limit(libc::RLIMIT_AS, CHILD_ADDRESS_SPACE_LIMIT)?;
+    set_limit(libc::RLIMIT_CPU, CHILD_CPU_SECONDS_LIMIT)?;
+    set_limit(libc::RLIMIT_FSIZE, CHILD_FILE_SIZE_LIMIT)?;
+    set_limit(libc::RLIMIT_NOFILE, CHILD_OPEN_FILES_LIMIT)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn set_limit(resource: libc::__rlimit_resource_t, value: libc::rlim_t) -> std::io::Result<()> {
+    let limit = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    // SAFETY: `limit` is a valid pointer for the duration of this call and the
+    // resource constants above are valid on Linux.
+    if unsafe { libc::setrlimit(resource, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+struct ProcessGroupGuard {
+    #[cfg(target_os = "linux")]
+    pgid: Option<i32>,
+}
+
+impl ProcessGroupGuard {
+    fn new(child: &tokio::process::Child) -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            pgid: child.id().and_then(|id| i32::try_from(id).ok()),
+        }
+    }
+
+    fn kill(&self) {
+        #[cfg(target_os = "linux")]
+        if let Some(pgid) = self.pgid {
+            // SAFETY: a negative PID targets the isolated process group created
+            // for this child. SIGKILL is used so timeout cleanup cannot hang.
+            unsafe {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+        }
+    }
+
+    fn disarm(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            self.pgid = None;
+        }
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 fn build_script(input: &ValidatedSynth) -> String {
@@ -334,7 +463,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validation_rejects_traversal_and_shell_tokens() {
+    fn validation_rejects_traversal_filename() {
         let request = SynthRequest {
             files: vec![SourceFile {
                 name: "../bad.sv".to_owned(),
@@ -342,9 +471,45 @@ mod tests {
             }],
             top: None,
             mode: SynthMode::Rtl,
-            extra_args: Some("-abc9;rm".to_owned()),
+            extra_args: None,
         };
         assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn validation_rejects_yosys_script_injection() {
+        let request = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            mode: SynthMode::Gates,
+            extra_args: Some("-noabc;rm".to_owned()),
+        };
+        let error = request.validate().unwrap_err();
+        assert_eq!(error.to_string(), "invalid extra_args token: -noabc;rm");
+    }
+
+    #[test]
+    fn synthesis_flags_are_normalized_and_appended_to_the_selected_pass() {
+        let input = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            mode: SynthMode::Gates,
+            extra_args: Some("  -nofsm   -noabc  ".to_owned()),
+        }
+        .validate()
+        .unwrap();
+
+        assert_eq!(input.extra_args, ["-nofsm", "-noabc"]);
+        assert_eq!(
+            build_script(&input),
+            "read_verilog -sv design.sv\nsynth -top top -flatten -nofsm -noabc\nwrite_json netlist.json\n"
+        );
     }
 
     #[test]
