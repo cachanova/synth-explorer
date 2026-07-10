@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   fanoutDriverLabel,
   isHiddenName,
+  nodeSublabel,
   prettyCellType,
   shortNetName,
 } from './prettyType'
@@ -77,5 +78,51 @@ describe('fanoutDriverLabel', () => {
   it('keeps port drivers as-is', () => {
     const port: NodeRef = { id: 2, kind: 'port', name: 'clk' }
     expect(fanoutDriverLabel(port, 'clk')).toBe('clk')
+  })
+})
+
+describe('nodeSublabel', () => {
+  const cell = (name: string): NodeRef => ({
+    id: 1,
+    kind: 'cell',
+    name,
+    cell_type: '$_NAND_',
+  })
+
+  it('keeps real cell names', () => {
+    expect(nodeSublabel(cell('my_adder'), '$abc$240$new_n27')).toBe('my_adder')
+  })
+
+  it('replaces hidden names with the shortened driving net', () => {
+    expect(
+      nodeSublabel(
+        cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'),
+        '$abc$240$new_n27',
+      ),
+    ).toBe('new_n27')
+  })
+
+  it('never returns a blifparse path', () => {
+    const sub = nodeSublabel(
+      cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'),
+      '$abc$240$new_n5',
+    )
+    expect(sub).not.toContain('blifparse')
+  })
+
+  it('suppresses hidden names when no driving net is known', () => {
+    expect(
+      nodeSublabel(cell('$abc$240$auto$blifparse.cc:397:parse_blif$242')),
+    ).toBeNull()
+    expect(
+      nodeSublabel(cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'), null),
+    ).toBeNull()
+  })
+
+  it('returns null for ports and consts', () => {
+    const port: NodeRef = { id: 2, kind: 'port', name: 'clk' }
+    const konst: NodeRef = { id: 3, kind: 'const', name: "1'b0" }
+    expect(nodeSublabel(port, 'clk')).toBeNull()
+    expect(nodeSublabel(konst)).toBeNull()
   })
 })

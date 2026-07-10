@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { LaidOutGraph, LaidOutNode, Point } from '../lib/layout'
-import { nodeLabel } from '../lib/prettyType'
+import { nodeLabel, nodeSublabel } from '../lib/prettyType'
 import type { GraphNode } from '../types'
 
 interface Transform {
@@ -69,6 +69,16 @@ export function GraphView({
   const nodeById = useMemo(() => {
     const m = new Map<number, LaidOutNode>()
     for (const n of graph.nodes) m.set(n.id, n)
+    return m
+  }, [graph])
+
+  // Driving net per node (first outgoing edge) — used to give hidden-name
+  // cells a readable sublabel like "new_n27".
+  const drivingNet = useMemo(() => {
+    const m = new Map<number, string>()
+    for (const e of graph.edges) {
+      if (!m.has(e.from) && e.edge.net_name) m.set(e.from, e.edge.net_name)
+    }
     return m
   }, [graph])
 
@@ -221,8 +231,8 @@ export function GraphView({
             const v = nodeVisual(n, rootId, highlighted)
             const selected = n.id === selectedId
             const label = nodeLabel(n)
-            const showName =
-              n.kind === 'cell' && n.name && n.name !== label ? n.name : null
+            const sub = nodeSublabel(n, drivingNet.get(n.id))
+            const showName = sub && sub !== label ? sub : null
             return (
               <g
                 key={n.id}

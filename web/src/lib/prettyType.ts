@@ -102,3 +102,21 @@ export function fanoutDriverLabel(driver: NodeRef, netName: string): string {
   }
   return driver.name
 }
+
+/**
+ * Secondary label shown under a cell's type label in the graph view. Real
+ * names pass through; hidden yosys/ABC names are replaced by the shortened
+ * driving-net name (e.g. "new_n27") or suppressed when no net is known.
+ */
+export function nodeSublabel(
+  node: NodeRef,
+  drivingNet?: string | null,
+): string | null {
+  if (node.kind !== 'cell' || !node.name) return null
+  if (!isHiddenName(node.name)) return node.name
+  if (drivingNet) {
+    const short = shortNetName(drivingNet)
+    return short || null
+  }
+  return null
+}
