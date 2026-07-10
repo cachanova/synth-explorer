@@ -2,7 +2,7 @@ use crate::analysis::{
     SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_ROOT_COLLECTION_CAP, SourceRangeMapping,
 };
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
-use crate::netlist::YosysModule;
+use crate::netlist::YosysNetlist;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Debug, Default)]
@@ -32,11 +32,11 @@ struct SignalRootIndex {
 /// inactive source.
 pub(crate) fn continuous_assign_provenance(
     graph: &Graph,
-    source_module: &YosysModule,
+    source_netlist: &YosysNetlist,
     files: impl IntoIterator<Item = (String, String)>,
 ) -> SourceAliasProvenance {
     let roots_by_name = roots_by_signal_name(graph);
-    let scopes_by_module = scopes_by_module(source_module, &graph.top);
+    let scopes_by_module = scopes_by_module(source_netlist, &graph.top);
     let mut ranges: BTreeMap<(String, usize, usize), RangeProvenance> = BTreeMap::new();
     let mut association_count = 0usize;
 
@@ -109,25 +109,40 @@ fn merge_range_roots(
 }
 
 fn scopes_by_module(
-    source_module: &YosysModule,
+    source_netlist: &YosysNetlist,
     selected_top: &str,
 ) -> HashMap<String, Vec<String>> {
     let mut scopes = HashMap::<String, Vec<String>>::new();
-    scopes
-        .entry(normalize_name(selected_top))
-        .or_default()
-        .push(String::new());
-    for (cell_name, cell) in &source_module.cells {
-        if cell.cell_type != "$scopeinfo" {
+    let mut pending = vec![(selected_top.to_owned(), String::new())];
+    let mut seen = HashSet::new();
+    while let Some((module_name, scope)) = pending.pop() {
+        if !seen.insert((module_name.clone(), scope.clone())) {
             continue;
         }
-        let Some(module) = cell.attributes.get("module") else {
+        let Some(module) = source_netlist.modules.get(&module_name) else {
             continue;
         };
+        let source_module_name = module
+            .attributes
+            .get("hdlname")
+            .map_or_else(|| normalize_name(&module_name), |name| normalize_name(name));
         scopes
-            .entry(normalize_name(module))
+            .entry(source_module_name)
             .or_default()
-            .push(normalize_name(cell_name));
+            .push(scope.clone());
+        for (cell_name, cell) in &module.cells {
+            let Some((child_name, _)) = source_netlist.modules.get_key_value(&cell.cell_type)
+            else {
+                continue;
+            };
+            let cell_name = normalize_name(cell_name);
+            let child_scope = if scope.is_empty() {
+                cell_name
+            } else {
+                format!("{scope}.{cell_name}")
+            };
+            pending.push((child_name.clone(), child_scope));
+        }
     }
     for prefixes in scopes.values_mut() {
         prefixes.sort();
@@ -487,7 +502,7 @@ fn sanitize_verilog(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::netlist::{parse_value, select_top};
+    use crate::netlist::{parse_str, parse_value, select_top};
     use serde_json::json;
 
     #[test]
@@ -538,6 +553,21 @@ endmodule
     }
 
     #[test]
+    fn preflatten_module_graph_recovers_only_reachable_instance_scopes() {
+        let netlist = parse_str(include_str!("../tests/fixtures/preflatten_scopes.json")).unwrap();
+
+        let scopes = scopes_by_module(&netlist, "scoped_children");
+
+        assert_eq!(scopes["scoped_children"], [""]);
+        assert_eq!(scopes["leaf"], ["u_leaf", "u_wrapper.inner_leaf"]);
+        assert_eq!(scopes["other"], ["u_other"]);
+        assert_eq!(scopes["parameter_leaf"], ["u_parameter"]);
+        assert_eq!(scopes["wrapper"], ["u_wrapper"]);
+        assert!(!scopes.keys().any(|name| name.starts_with("$paramod")));
+        assert!(!scopes.contains_key("unused"));
+    }
+
+    #[test]
     fn source_root_sets_keep_a_deterministic_cap_sentinel() {
         let mut roots = BTreeSet::new();
         for id in (0..(SOURCE_ROOT_COLLECTION_CAP as NodeId + 500)).rev() {
@@ -578,7 +608,7 @@ endmodule
         );
 
         let provenance =
-            continuous_assign_provenance(&graph, module, [("sparse.sv".to_owned(), source)]);
+            continuous_assign_provenance(&graph, &netlist, [("sparse.sv".to_owned(), source)]);
 
         assert!(!provenance.truncated);
         assert_eq!(provenance.ranges.len(), 1);

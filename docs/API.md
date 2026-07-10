@@ -316,7 +316,10 @@ an unknown file, invalid range, or a range longer than 200 lines.
 Wire-only continuous assignments, which Yosys JSON does not source-attribute,
 are indexed as inclusive `assign` spans and declaration aliases such as
 `wire alias = value` in the selected top's live elaborated hierarchy, then
-resolved by exact flattened instance scope through the final LHS net aliases.
+resolved through the final LHS net aliases. Exact flattened instance scopes are
+derived from the reachable pre-flatten module-instance graph, so unreachable
+sibling modules cannot contribute aliases even on Yosys versions without
+post-flatten scope metadata.
 This recovered attribution is also returned by `/nodes` for graph-to-source
 probing as one `file:start-end` source span rather than one alias per line.
 Files containing conditional-preprocessor branches use only Yosys provenance

@@ -495,7 +495,7 @@ async fn wire_alias_provenance_is_scoped_to_the_selected_top() {
 
 #[tokio::test]
 async fn wire_alias_provenance_tracks_reachable_child_instance_scopes() {
-    let source = "module leaf(input wire a, output wire y);\n  wire alias = a;\n  assign y = alias;\nendmodule\nmodule other(input wire a, output wire y);\n  wire alias = ~a;\n  assign y = alias;\nendmodule\nmodule unused(input wire a, output wire y);\n  wire alias = a;\n  assign y = alias;\nendmodule\nmodule scoped_children(input wire a, input wire b, output wire y0, output wire y1);\n  leaf u_leaf(.a(a), .y(y0));\n  other u_other(.a(b), .y(y1));\nendmodule\n";
+    let source = std::fs::read_to_string("tests/fixtures/children_scope.sv").unwrap();
     let mut app = app(AppState::default());
     let response = app
         .clone()

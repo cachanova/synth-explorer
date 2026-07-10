@@ -325,7 +325,7 @@ fn build_script(input: &ValidatedSynth) -> String {
     let mut script = String::new();
     push_read_verilog(&mut script, input);
     script.push_str(&format!(
-        "hierarchy {}\nproc\nflatten\nwrite_json source-netlist.json\ndesign -reset\n",
+        "hierarchy {}\nproc\nwrite_json source-netlist.json\ndesign -reset\n",
         top_args(input.top.as_deref())
     ));
     push_read_verilog(&mut script, input);
@@ -522,7 +522,7 @@ mod tests {
         assert_eq!(input.extra_args, ["-nofsm", "-noabc"]);
         assert_eq!(
             build_script(&input),
-            "read_verilog -sv design.sv\nhierarchy -top top\nproc\nflatten\nwrite_json source-netlist.json\ndesign -reset\nread_verilog -sv design.sv\nsynth -top top -flatten -nofsm -noabc\nwrite_json netlist.json\n"
+            "read_verilog -sv design.sv\nhierarchy -top top\nproc\nwrite_json source-netlist.json\ndesign -reset\nread_verilog -sv design.sv\nsynth -top top -flatten -nofsm -noabc\nwrite_json netlist.json\n"
         );
     }
 

@@ -2,7 +2,7 @@ use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
     is_infrastructure_cell, is_register_type, is_transparent_data_buffer, strip_bit_suffix,
 };
-use crate::netlist::{PortDirection, YosysModule};
+use crate::netlist::{PortDirection, YosysModule, YosysNetlist};
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -308,14 +308,45 @@ impl SourceLineIndex {
     }
 
     pub fn from_module(module: &YosysModule, files: Vec<String>) -> Self {
-        let mut lines = HashSet::new();
-        for cell in module.cells.values() {
-            let Some(src) = cell.attributes.get("src") else {
+        Self::from_modules([module], files)
+    }
+
+    pub fn from_netlist(netlist: &YosysNetlist, top: &str, files: Vec<String>) -> Self {
+        let mut reachable = HashSet::new();
+        let mut pending = vec![top];
+        while let Some(module_name) = pending.pop() {
+            if !reachable.insert(module_name) {
+                continue;
+            }
+            let Some(module) = netlist.modules.get(module_name) else {
                 continue;
             };
-            insert_src_lines(src, |file, line| {
-                lines.insert(format!("{file}:{line}"));
-            });
+            for cell in module.cells.values() {
+                if let Some((child_name, _)) = netlist.modules.get_key_value(&cell.cell_type) {
+                    pending.push(child_name);
+                }
+            }
+        }
+        let modules = reachable
+            .into_iter()
+            .filter_map(|name| netlist.modules.get(name));
+        Self::from_modules(modules, files)
+    }
+
+    fn from_modules<'a>(
+        modules: impl IntoIterator<Item = &'a YosysModule>,
+        files: Vec<String>,
+    ) -> Self {
+        let mut lines = HashSet::new();
+        for module in modules {
+            for cell in module.cells.values() {
+                let Some(src) = cell.attributes.get("src") else {
+                    continue;
+                };
+                insert_src_lines(src, |file, line| {
+                    lines.insert(format!("{file}:{line}"));
+                });
+            }
         }
         Self {
             files: files.into_iter().collect(),
@@ -3150,6 +3181,21 @@ mod tests {
             source_index.contains_range("sparse.sv", 1_000_004, 1_000_004),
             Some(false)
         );
+    }
+
+    #[test]
+    fn source_line_index_uses_only_reachable_preflatten_modules() {
+        let netlist = parse_str(include_str!("../tests/fixtures/preflatten_scopes.json")).unwrap();
+
+        let index = SourceLineIndex::from_netlist(
+            &netlist,
+            "scoped_children",
+            vec!["children.sv".to_owned()],
+        );
+
+        assert_eq!(index.contains_range("children.sv", 2, 2), Some(true));
+        assert_eq!(index.contains_range("children.sv", 6, 6), Some(true));
+        assert_eq!(index.contains_range("children.sv", 10, 10), Some(false));
     }
 
     #[test]

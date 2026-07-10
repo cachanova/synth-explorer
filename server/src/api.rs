@@ -567,7 +567,7 @@ async fn synthesize_uncached(
             format!("failed to build analysis graph: {err}"),
         )
     })?;
-    let (_, source_module) = select_top(&source_parsed, None).map_err(|err| {
+    let (source_top, _) = select_top(&source_parsed, None).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to resolve source-provenance top module: {err}"),
@@ -578,14 +578,15 @@ async fn synthesize_uncached(
         truncated: source_ranges_truncated,
     } = continuous_assign_provenance(
         &graph,
-        source_module,
+        &source_parsed,
         validated
             .files
             .iter()
             .map(|file| (file.name.clone(), file.content.clone())),
     );
     let mut analysis = Analysis::new(&graph, validated.file_names());
-    let mut source_index = SourceLineIndex::from_module(source_module, validated.file_names());
+    let mut source_index =
+        SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
     source_index.extend_ranges(&ranges);
     analysis.extend_source_ranges(ranges, source_ranges_truncated);
     let response = SynthesizeResponse {
