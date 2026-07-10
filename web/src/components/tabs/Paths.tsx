@@ -54,6 +54,12 @@ export function Paths() {
           </li>
         </ul>
       )}
+      {data.truncated && (
+        <div className="caveat" style={{ marginBottom: 10 }}>
+          Additional endpoint bits or structural route variants were omitted by the
+          bounded path-analysis limit.
+        </div>
+      )}
       <div className="section-title">
         Longest logical path variants ({data.paths.length})
       </div>

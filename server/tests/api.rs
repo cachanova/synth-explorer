@@ -387,6 +387,73 @@ async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() 
     assert_eq!(declaration["status"], "unmapped");
 }
 
+#[tokio::test]
+async fn generated_clock_is_labeled_and_warned_without_default_clock_wiring() {
+    let source = r#"
+module generated_clock (
+    input logic clk,
+    input logic en,
+    input logic d,
+    output logic q
+);
+  wire gated_clk = clk & en;
+  always_ff @(posedge gated_clk) q <= d;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "generated_clock.sv", "content": source}],
+                        "top": "generated_clock",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let register_id = endpoints["registers"][0]["bits"][0]["node_id"]
+        .as_u64()
+        .unwrap();
+
+    let netlist = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=100"),
+    )
+    .await;
+    let register = netlist["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"].as_u64() == Some(register_id))
+        .expect("register should be present in schematic projection");
+    let clock = register["controls"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|control| control["role"] == "clock")
+        .expect("register should expose a clock label");
+    assert_eq!(clock["generated"], true);
+    assert_eq!(clock["net_name"], "gated_clk");
+    assert!(clock["fanout"].as_u64().is_some_and(|fanout| fanout >= 1));
+    assert!(netlist["edges"].as_array().unwrap().iter().all(|edge| {
+        edge["to"].as_u64() != Some(register_id)
+            || (edge["to_port"] != "CLK" && edge["to_port"] != "C")
+    }));
+}
+
 async fn get_json(app: &mut axum::Router, uri: &str) -> serde_json::Value {
     let response = get_response(app, uri).await;
     assert_eq!(response.status(), StatusCode::OK);

@@ -9,6 +9,7 @@ describe('getLineCone', () => {
   it('sends a bounded source range and graph options', async () => {
     const response = {
       status: 'unmapped' as const,
+      control: false,
       graph: { nodes: [], edges: [], truncated: false },
     }
     const fetchMock = vi.fn().mockResolvedValue(

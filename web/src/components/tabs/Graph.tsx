@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
 import { layoutSubgraph, MAX_LAYOUT_NODES, type LaidOutGraph } from '../../lib/layout'
 import { parseSrc } from '../../lib/src'
+import { controlLabel } from '../../lib/symbols'
 import { useStore } from '../../store'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { GraphView } from '../GraphView'
@@ -17,6 +18,7 @@ export function Graph() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
   const [sourceStatus, setSourceStatus] = useState<LineConeStatus | null>(null)
+  const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
 
@@ -34,6 +36,7 @@ export function Graph() {
     setLoading(true)
     setError(null)
     setSourceStatus(null)
+    setSourceControl(false)
     if (coneReq.kind !== 'source') setSelected(null)
     const fetchP =
       coneReq.kind === 'netlist'
@@ -44,6 +47,7 @@ export function Graph() {
           ).then((graph) => ({
             graph,
             status: null,
+            control: false,
           }))
         : coneReq.kind === 'source'
           ? getLineCone(design.design_id, {
@@ -57,6 +61,7 @@ export function Graph() {
             }).then((response) => ({
               graph: response.graph,
               status: response.status,
+              control: response.control,
             }))
           : getCone(design.design_id, {
               node: coneReq.node,
@@ -66,11 +71,12 @@ export function Graph() {
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
               show_infrastructure: graphOptions.showInfrastructure,
-            }).then((graph) => ({ graph, status: null }))
+            }).then((graph) => ({ graph, status: null, control: false }))
     fetchP
-      .then(({ graph, status }) => {
+      .then(({ graph, status, control }) => {
         if (myReq !== reqSeq.current) return
         setSourceStatus(status)
+        setSourceControl(control)
         // An unmapped/absorbed selection is information about the source, not
         // a request to erase the user's last meaningful schematic.
         if (status == null || status === 'mapped') setSub(graph)
@@ -159,6 +165,12 @@ export function Graph() {
               setSelected(node)
               store.highlightSources(parseSrc(node?.src))
             }}
+            onControlSelect={(control) =>
+              store.openControlCone({
+                node: control.driver_id,
+                label: controlLabel(control),
+              })
+            }
             fitNonce={fitNonce}
           />
         ) : (
@@ -198,6 +210,11 @@ export function Graph() {
           )}
           {sourceStatus === 'unmapped' && (
             <span className="msg">No synthesizable logic maps to this selection.</span>
+          )}
+          {sourceControl && (
+            <span className="msg">
+              control path selection — reset/clock/enable connectivity is shown
+            </span>
           )}
           {coneReq.kind === 'source' && coneReq.selectionTruncated && (
             <span className="msg">selection capped at 200 source lines</span>

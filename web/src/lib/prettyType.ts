@@ -2,26 +2,6 @@
 
 import type { GraphNode, NodeRef } from '../types'
 
-/**
- * Turn a raw yosys cell type into a compact human label.
- *   "$_NAND_" -> "NAND"
- *   "$and"    -> "AND"
- *   "$_SDFF_PP0_" -> "SDFF_PP0"
- *   "$lut"    -> "LUT"
- *   "SB_LUT4" -> "SB_LUT4"  (vendor prims kept as-is)
- */
-export function prettyCellType(cellType: string | undefined): string {
-  if (!cellType) return '?'
-  let t = cellType
-  // Strip gate-primitive wrapper: $_NAND_ -> NAND
-  if (t.startsWith('$_') && t.endsWith('_')) {
-    t = t.slice(2, -1)
-  } else if (t.startsWith('$')) {
-    t = t.slice(1)
-  }
-  return t.toUpperCase()
-}
-
 /** LUT width from params (WIDTH), if present. */
 export function lutWidth(params: Record<string, string> | undefined): number | null {
   if (!params) return null

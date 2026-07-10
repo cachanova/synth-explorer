@@ -126,12 +126,17 @@ describe('operator and control labels', () => {
   })
 
   it('reads a future controls array without requiring the graph type yet', () => {
-    const n = cell('FDRE') as GraphNode & {
-      controls: Array<{ role: string; net_name: string; driver_id: number; generated?: boolean }>
-    }
+    const n = cell('FDRE')
     n.controls = [
-      { role: 'clock', net_name: 'sys_clk', driver_id: 4 },
-      { role: 'reset', net_name: 'rst_n', driver_id: 5, generated: true },
+      { role: 'clock', pin: 'C', net_name: 'sys_clk', driver_id: 4, fanout: 2 },
+      {
+        role: 'reset',
+        pin: 'R',
+        net_name: 'rst_n',
+        driver_id: 5,
+        fanout: 2,
+        generated: true,
+      },
     ]
     expect(controlsFor(n)).toEqual(n.controls)
     expect(controlLabel(n.controls[0])).toBe('CLK sys_clk')
@@ -139,8 +144,10 @@ describe('operator and control labels', () => {
   })
 
   it('ignores malformed future control metadata', () => {
-    const n = cell('FDRE') as GraphNode & { controls: unknown }
-    n.controls = [{ role: 'clock', net_name: 3, driver_id: 'bad' }]
+    const n = {
+      ...cell('FDRE'),
+      controls: [{ role: 'clock', net_name: 3, driver_id: 'bad' }],
+    } as unknown as GraphNode
     expect(controlsFor(n)).toEqual([])
   })
 })

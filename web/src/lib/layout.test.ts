@@ -17,12 +17,10 @@ describe('schematic layout sizing', () => {
 
   it('reserves register space for compact control-net labels', () => {
     const plain = nodeDimensions(node(1, 'FDRE'))
-    const controlledNode = node(2, 'FDRE') as GraphNode & {
-      controls: Array<{ role: string; net_name: string; driver_id: number }>
-    }
+    const controlledNode = node(2, 'FDRE')
     controlledNode.controls = [
-      { role: 'clock', net_name: 'sys_clk', driver_id: 8 },
-      { role: 'reset', net_name: 'rst_n', driver_id: 9 },
+      { role: 'clock', pin: 'C', net_name: 'sys_clk', driver_id: 8, fanout: 2 },
+      { role: 'reset', pin: 'R', net_name: 'rst_n', driver_id: 9, fanout: 2 },
     ]
     const controlled = nodeDimensions(controlledNode)
     expect(controlled.height).toBeGreaterThan(plain.height)

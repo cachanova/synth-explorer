@@ -35,8 +35,13 @@ export type SymbolKind =
  */
 export interface ControlNetRef {
   role: string
+  pin?: string
   net_name: string
   driver_id: number
+  fanout?: number
+  active_low?: boolean
+  synchronous?: boolean
+  src?: string
   generated?: boolean
 }
 
@@ -52,6 +57,11 @@ function isControlNetRef(value: unknown): value is ControlNetRef {
     item.net_name.length > 0 &&
     typeof item.driver_id === 'number' &&
     Number.isInteger(item.driver_id) &&
+    (item.fanout === undefined ||
+      (typeof item.fanout === 'number' && Number.isInteger(item.fanout))) &&
+    (item.active_low === undefined || typeof item.active_low === 'boolean') &&
+    (item.synchronous === undefined || typeof item.synchronous === 'boolean') &&
+    (item.src === undefined || typeof item.src === 'string') &&
     (item.generated === undefined || typeof item.generated === 'boolean')
   )
 }
@@ -72,7 +82,8 @@ export function controlLabel(control: ControlNetRef): string {
       : role === 'enable' || role === 'en' || role === 'ce'
         ? 'EN'
         : control.role.toUpperCase()
-  return `${prefix} ${shortNetName(control.net_name)}`
+  const polarity = control.active_low ? '↓' : ''
+  return `${prefix}${polarity} ${shortNetName(control.net_name)}`
 }
 
 /** Infer a top-level port's data direction from the graph topology. */

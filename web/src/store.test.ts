@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeSourceSelection, synthesisInput } from './store'
+import { normalizeSourceSelection, synthesisInput } from './lib/liveAnalysis'
 
 describe('synthesis input identity', () => {
   it('changes for every value sent to synthesis', () => {

@@ -9,6 +9,12 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from './api'
+import {
+  normalizeSourceSelection,
+  synthesisInput,
+  type SourceSelection,
+  type SynthesisInput,
+} from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
 import type { SrcSpan } from './lib/src'
 import type {
@@ -75,23 +81,12 @@ export interface EditorHighlight {
   nonce: number
 }
 
-export interface SourceSelection {
-  file: string
-  startLine: number
-  endLine: number
-}
-
 export type AnalysisState =
   | 'none'
   | 'current'
   | 'stale'
   | 'refreshing'
   | 'error'
-
-interface SynthesisInput {
-  request: import('./types').SynthesizeRequest
-  key: string
-}
 
 const MAX_SOURCE_LINES = 200
 const AUTO_SYNTH_DELAY_MS = 3000
@@ -130,31 +125,6 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideControl: true,
   hideConst: true,
   showInfrastructure: false,
-}
-
-export function synthesisInput(
-  files: DesignFile[],
-  top: string,
-  mode: Mode,
-  extraArgs: string,
-): SynthesisInput {
-  const request = {
-    files,
-    top: top.trim() || undefined,
-    mode,
-    extra_args: extraArgs.trim() || undefined,
-  }
-  return { request, key: JSON.stringify(request) }
-}
-
-export function normalizeSourceSelection(
-  file: string,
-  startLine: number,
-  endLine: number,
-): SourceSelection {
-  const start = Math.max(1, Math.min(startLine, endLine))
-  const end = Math.max(start, Math.max(startLine, endLine))
-  return { file, startLine: start, endLine: end }
 }
 
 function sourceGraphRequest(
@@ -224,7 +194,6 @@ export interface Store {
 
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
-  highlightSrc: (span: SrcSpan) => void
   highlightSources: (spans: SrcSpan[]) => void
 
   // cross-probe: editor -> graph nodes
@@ -511,11 +480,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setEditorHighlight({ spans, primary: primaryIndex, nonce: nextNonce() })
   }, [])
 
-  const highlightSrc = useCallback(
-    (span: SrcSpan) => highlightSources([span]),
-    [highlightSources],
-  )
-
   const setSourceSelection = useCallback(
     (file: string, startLine: number, endLine: number) => {
       const selection = normalizeSourceSelection(file, startLine, endLine)
@@ -604,7 +568,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       showPathInGraph,
       openNetlist,
       editorHighlight,
-      highlightSrc,
       highlightSources,
       sourceSelection,
       setSourceSelection,
@@ -641,7 +604,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       showPathInGraph,
       openNetlist,
       editorHighlight,
-      highlightSrc,
       highlightSources,
       sourceSelection,
       setSourceSelection,

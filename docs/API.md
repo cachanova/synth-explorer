@@ -33,7 +33,10 @@ export interface GraphNode extends NodeRef {
     pin: string;
     net_name: string;
     driver_id: number;
+    fanout: number;
     active_low?: boolean;
+    synchronous?: boolean; // reset/set behavior when known from the primitive
+    src?: string;          // control-driver source attribution when available
     generated?: boolean; // clock is not a direct input/buffer-chain source
   }[];                   // label-connected controls omitted from ordinary wiring
 }
@@ -165,8 +168,13 @@ With `to`, only variants ending at that node are returned.
     nodes: NodeRef[];            // startpoint -> ... -> endpoint, in order
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
+  truncated: boolean;            // response limit or bounded route sampling hit
 }
 ```
+
+To keep wide designs bounded, the server samples at most 64 deepest bit targets
+per logical endpoint and at most `min(limit * 16, 8000)` targets overall before
+grouping route variants. `truncated` makes any omitted variants explicit.
 
 ## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
 

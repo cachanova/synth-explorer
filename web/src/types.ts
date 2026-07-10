@@ -27,7 +27,10 @@ export interface ControlRef {
   pin: string
   net_name: string
   driver_id: number
+  fanout: number
   active_low?: boolean
+  synchronous?: boolean
+  src?: string
   generated?: boolean
 }
 
@@ -51,6 +54,7 @@ export type LineConeStatus = 'mapped' | 'optimized_or_absorbed' | 'unmapped'
 
 export interface LineConeResponse {
   status: LineConeStatus
+  control: boolean
   graph: Subgraph
 }
 
@@ -77,7 +81,7 @@ export interface Stats {
   num_register_groups: number
   num_inputs: number // port bit counts
   num_outputs: number
-  max_depth: number // worst comb depth (cells) across all endpoints
+  max_depth: number // worst weighted structural logic depth across all endpoints
   depths: DepthSummary
   cell_categories: CellCategoryCounts
 }
@@ -166,7 +170,7 @@ export type PathClass =
   | 'other'
 
 export interface TimingPath {
-  depth: number // comb cells on the path
+  depth: number // weighted structural logic levels on the path
   class: PathClass
   endpoint_group: string
   endpoint_kind: EndpointKind
@@ -181,6 +185,7 @@ export interface TimingPath {
 export interface PathsResponse {
   paths: TimingPath[]
   comb_loops: string[] // names of nodes excluded due to comb cycles
+  truncated: boolean // response limit or bounded per-endpoint route sampling was hit
 }
 
 // --- GET /api/design/:id/fanout ---

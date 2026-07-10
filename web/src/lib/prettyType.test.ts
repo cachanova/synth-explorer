@@ -5,24 +5,9 @@ import {
   fanoutDriverLabel,
   isHiddenName,
   nodeSublabel,
-  prettyCellType,
   shortNetName,
 } from './prettyType'
 import type { NodeRef } from '../types'
-
-describe('prettyCellType', () => {
-  it('strips gate-primitive wrappers', () => {
-    expect(prettyCellType('$_NAND_')).toBe('NAND')
-    expect(prettyCellType('$_SDFF_PP0_')).toBe('SDFF_PP0')
-  })
-  it('strips $ from RTL cells', () => {
-    expect(prettyCellType('$add')).toBe('ADD')
-    expect(prettyCellType('$lut')).toBe('LUT')
-  })
-  it('keeps vendor primitives', () => {
-    expect(prettyCellType('SB_LUT4')).toBe('SB_LUT4')
-  })
-})
 
 describe('isHiddenName', () => {
   it('flags $-prefixed and empty names', () => {

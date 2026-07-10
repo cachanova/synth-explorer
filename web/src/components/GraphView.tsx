@@ -320,6 +320,18 @@ function ControlLabels({
       {controls.map((control, index) => {
         const y = 59 + index * 13
         const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
+        const details = [
+          `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${shortNetName(control.net_name)}`,
+          control.active_low ? 'active-low' : null,
+          control.synchronous === true
+            ? 'synchronous'
+            : control.synchronous === false
+              ? 'asynchronous'
+              : null,
+          control.fanout != null ? `fanout ${control.fanout}` : null,
+          control.generated ? 'generated or gated' : null,
+          control.src ? `source ${control.src}` : null,
+        ].filter(Boolean).join(' · ')
         return (
           <g
             key={`${control.role}-${control.driver_id}-${index}`}
@@ -339,8 +351,7 @@ function ControlLabels({
             } : undefined}
           >
             <title>
-              {control.generated ? 'Generated or gated control net: ' : 'Control net: '}
-              {controlLabel(control)}
+              {details}
             </title>
             <rect x={8} y={y} width={Math.max(0, width - 16)} height={11} rx={3} />
             <text x={width / 2} y={y + 8.5} textAnchor="middle">

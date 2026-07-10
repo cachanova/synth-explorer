@@ -60,8 +60,13 @@ pub struct ControlRef {
     pub pin: String,
     pub net_name: String,
     pub driver_id: NodeId,
+    pub fanout: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_low: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub synchronous: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generated: Option<bool>,
 }
@@ -182,6 +187,7 @@ pub enum PathClass {
 pub struct PathsResponse {
     pub paths: Vec<PathEntry>,
     pub comb_loops: Vec<String>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,6 +271,12 @@ pub struct CellCategoryCounts {
     pub infrastructure: usize,
 }
 
+struct DepthComputation {
+    node_depth: Vec<Option<u32>>,
+    best_pred: Vec<Option<usize>>,
+    node_startpoint: Vec<Option<NodeId>>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Analysis {
     pub node_depth: Vec<Option<u32>>,
@@ -292,10 +304,14 @@ impl Analysis {
     pub fn new(graph: &Graph, source_files: Vec<String>) -> Self {
         let comb_loops = find_comb_loops(graph);
         let loop_set: HashSet<NodeId> = comb_loops.iter().copied().collect();
-        let (node_depth, best_pred) = compute_depths(graph, &loop_set);
+        let DepthComputation {
+            node_depth,
+            best_pred,
+            node_startpoint,
+        } = compute_depths(graph, &loop_set);
         let (endpoints, endpoint_targets) = discover_endpoints(graph, &node_depth);
         let source_map = build_source_map(graph, source_files);
-        let stats = build_stats(graph, &endpoints, &endpoint_targets, &best_pred);
+        let stats = build_stats(graph, &endpoints, &endpoint_targets, &node_startpoint);
         let warnings = build_warnings(graph, &comb_loops);
         Self {
             node_depth,
@@ -360,14 +376,33 @@ impl Analysis {
     }
 
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
-        let targets: Vec<&EndpointTarget> = self
+        const TARGETS_PER_GROUP_CAP: usize = 64;
+        let mut targets: Vec<&EndpointTarget> = self
             .endpoint_targets
             .iter()
             .filter(|target| to.is_none_or(|id| target.endpoint == id))
             .collect();
+        targets.sort_by_key(|target| (Reverse(target.depth), target.group.clone(), target.bit));
+        let total_targets = targets.len();
+        let candidate_cap = limit.max(1).saturating_mul(16).min(8000);
+        let mut per_group: HashMap<(EndpointKind, &str), usize> = HashMap::new();
+        let mut candidates = Vec::new();
+        for target in targets {
+            let count = per_group
+                .entry((target.kind, target.group.as_str()))
+                .or_default();
+            if *count >= TARGETS_PER_GROUP_CAP {
+                continue;
+            }
+            *count += 1;
+            candidates.push(target);
+            if candidates.len() >= candidate_cap {
+                break;
+            }
+        }
         let mut grouped: BTreeMap<(String, EndpointKind, PathClass, u32, Vec<String>), PathEntry> =
             BTreeMap::new();
-        for target in targets {
+        for target in &candidates {
             let path = self.path_for_target(graph, target);
             let signature = path
                 .nodes
@@ -398,6 +433,7 @@ impl Analysis {
                 path.bits.first().copied().unwrap_or_default(),
             )
         });
+        let grouped_count = paths.len();
         paths.truncate(limit);
         PathsResponse {
             paths,
@@ -406,6 +442,7 @@ impl Analysis {
                 .iter()
                 .map(|id| graph.node_ref_name(*id))
                 .collect(),
+            truncated: candidates.len() < total_targets || grouped_count > limit,
         }
     }
 
@@ -963,10 +1000,7 @@ fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
     loops
 }
 
-fn compute_depths(
-    graph: &Graph,
-    loop_set: &HashSet<NodeId>,
-) -> (Vec<Option<u32>>, Vec<Option<usize>>) {
+fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation {
     let mut indegree = vec![0usize; graph.nodes.len()];
     for edge in &graph.edges {
         if graph.is_comb(edge.from)
@@ -988,6 +1022,7 @@ fn compute_depths(
 
     let mut depth = vec![None; graph.nodes.len()];
     let mut best_pred = vec![None; graph.nodes.len()];
+    let mut startpoint = vec![None; graph.nodes.len()];
 
     while let Some(id) = queue.pop_front() {
         let weight = graph.nodes[id as usize]
@@ -995,7 +1030,7 @@ fn compute_depths(
             .as_deref()
             .map(cell_depth_weight)
             .unwrap_or(1);
-        let mut best: Option<(u32, usize)> = None;
+        let mut best: Option<(u32, usize, NodeId)> = None;
         for edge_idx in &graph.incoming[id as usize] {
             let edge = &graph.edges[*edge_idx];
             if loop_set.contains(&edge.from) {
@@ -1007,12 +1042,18 @@ fn compute_depths(
                 0
             };
             let candidate = base + weight;
-            if best.is_none_or(|(current, _)| candidate > current) {
-                best = Some((candidate, *edge_idx));
+            let origin = if graph.is_comb(edge.from) {
+                startpoint[edge.from as usize].unwrap_or(edge.from)
+            } else {
+                edge.from
+            };
+            if best.is_none_or(|(current, _, _)| candidate > current) {
+                best = Some((candidate, *edge_idx, origin));
             }
         }
-        let (node_depth, pred) = best.unwrap_or((weight, usize::MAX));
+        let (node_depth, pred, origin) = best.unwrap_or((weight, usize::MAX, id));
         depth[id as usize] = Some(node_depth);
+        startpoint[id as usize] = Some(origin);
         if pred != usize::MAX {
             best_pred[id as usize] = Some(pred);
         }
@@ -1028,7 +1069,11 @@ fn compute_depths(
         }
     }
 
-    (depth, best_pred)
+    DepthComputation {
+        node_depth: depth,
+        best_pred,
+        node_startpoint: startpoint,
+    }
 }
 
 fn discover_endpoints(
@@ -1333,16 +1378,7 @@ fn is_labeled_control_edge(graph: &Graph, edge: &Edge) -> bool {
     }
     match control_role(&edge.to_port) {
         ControlRole::Clock | ControlRole::Reset | ControlRole::Set => true,
-        ControlRole::Enable => {
-            graph.outgoing[edge.from as usize]
-                .iter()
-                .filter(|idx| {
-                    let candidate = &graph.edges[**idx];
-                    candidate.control && control_role(&candidate.to_port) == ControlRole::Enable
-                })
-                .count()
-                >= 8
-        }
+        ControlRole::Enable => graph.outgoing[edge.from as usize].len() >= 8,
         ControlRole::Other => false,
     }
 }
@@ -1364,12 +1400,18 @@ fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
             .then_some(true);
         let generated =
             (role == ControlRole::Clock).then(|| !is_simple_control_source(graph, edge.from));
+        let fanout = graph.outgoing[edge.from as usize].len();
+        let synchronous =
+            control_synchronous(graph.nodes[node_id as usize].cell_type.as_deref(), role);
         controls.push(ControlRef {
             role,
             pin: edge.to_port.clone(),
             net_name: edge.net_name.clone(),
             driver_id: edge.from,
+            fanout,
             active_low,
+            synchronous,
+            src: graph.nodes[edge.from as usize].src.clone(),
             generated,
         });
     }
@@ -1389,6 +1431,27 @@ fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
         a.role == b.role && a.net_name == b.net_name && a.driver_id == b.driver_id
     });
     controls
+}
+
+fn control_synchronous(cell_type: Option<&str>, role: ControlRole) -> Option<bool> {
+    if !matches!(role, ControlRole::Reset | ControlRole::Set) {
+        return None;
+    }
+    let upper = cell_type?.to_ascii_uppercase();
+    if upper.starts_with("$_SDFF")
+        || matches!(
+            upper.as_str(),
+            "$SDFF" | "$SDFFE" | "$SDFFCE" | "FDRE" | "FDSE"
+        )
+    {
+        return Some(true);
+    }
+    if upper.starts_with("$_DFF_") && upper.matches('_').count() >= 3
+        || matches!(upper.as_str(), "$ADFF" | "$ADFFE" | "FDCE" | "FDPE")
+    {
+        return Some(false);
+    }
+    None
 }
 
 fn is_simple_control_source(graph: &Graph, start: NodeId) -> bool {
@@ -1568,7 +1631,7 @@ fn build_stats(
     graph: &Graph,
     endpoints: &EndpointsResponse,
     endpoint_targets: &[EndpointTarget],
-    best_pred: &[Option<usize>],
+    node_startpoint: &[Option<NodeId>],
 ) -> Stats {
     let mut cells_by_type = BTreeMap::new();
     let mut cell_categories = CellCategoryCounts::default();
@@ -1607,7 +1670,7 @@ fn build_stats(
         .unwrap_or_default();
     let mut depths = DepthSummary::default();
     for target in endpoint_targets {
-        let startpoint = node_ref(graph, target_startpoint_id(graph, best_pred, target));
+        let startpoint = node_ref(graph, target_startpoint_id(graph, node_startpoint, target));
         match classify_path(&startpoint, target.kind) {
             PathClass::InputToRegister => update_max(&mut depths.input_to_register, target.depth),
             PathClass::RegisterToRegister => {
@@ -1633,20 +1696,18 @@ fn build_stats(
 
 fn target_startpoint_id(
     graph: &Graph,
-    best_pred: &[Option<usize>],
+    node_startpoint: &[Option<NodeId>],
     target: &EndpointTarget,
 ) -> NodeId {
     let Some(edge_idx) = target.edge else {
         return target.endpoint;
     };
-    let mut current = graph.edges[edge_idx].from;
-    while graph.is_comb(current) {
-        let Some(pred_edge) = best_pred[current as usize] else {
-            break;
-        };
-        current = graph.edges[pred_edge].from;
+    let current = graph.edges[edge_idx].from;
+    if graph.is_comb(current) {
+        node_startpoint[current as usize].unwrap_or(current)
+    } else {
+        current
     }
-    current
 }
 
 fn update_max(slot: &mut Option<u32>, value: u32) {
