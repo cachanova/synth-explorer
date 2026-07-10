@@ -143,6 +143,96 @@ endmodule
     );
 }
 
+#[tokio::test]
+async fn line_cone_returns_assign_envelope_and_validates_source_location() {
+    let source = std::fs::read_to_string("../examples/03_adder_chain.sv").unwrap();
+    let mut app = app(AppState::default());
+    let synth_body = json!({
+        "files": [{"name": "03_adder_chain.sv", "content": source}],
+        "top": "adder_chain",
+        "mode": "rtl"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&synth_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let source_map = get_json(&mut app, &format!("/api/design/{design_id}/source-map")).await;
+    let mapped_roots: BTreeSet<_> = source_map["by_line"]["03_adder_chain.sv:17"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    assert!(!mapped_roots.is_empty());
+
+    let envelope = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&line=17&max_nodes=400&hide_control=true&hide_const=true"
+        ),
+    )
+    .await;
+    let nodes = envelope["nodes"].as_array().unwrap();
+    let returned_roots: BTreeSet<_> = nodes
+        .iter()
+        .filter(|node| node["is_root"].as_bool() == Some(true))
+        .map(|node| node["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(returned_roots, mapped_roots);
+    assert!(
+        nodes
+            .iter()
+            .any(|node| { node["kind"] == "port" && node["is_boundary"].as_bool() == Some(true) })
+    );
+    assert!(nodes.iter().any(|node| {
+        node["seq"].as_bool() == Some(true) && node["is_boundary"].as_bool() == Some(true)
+    }));
+    assert!(
+        envelope["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|edge| mapped_roots.contains(&edge["from"].as_u64().unwrap()))
+    );
+    assert_eq!(envelope["truncated"], false);
+
+    let comment_line = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/line-cone?file=03_adder_chain.sv&line=2"),
+    )
+    .await;
+    assert_eq!(comment_line["nodes"], json!([]));
+    assert_eq!(comment_line["edges"], json!([]));
+    assert_eq!(comment_line["truncated"], false);
+
+    for uri in [
+        format!("/api/design/{design_id}/line-cone?file=unknown.sv&line=17"),
+        format!("/api/design/{design_id}/line-cone?file=03_adder_chain.sv&line=0"),
+    ] {
+        let response = get_response(&mut app, &uri).await;
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    let response = get_response(
+        &mut app,
+        "/api/design/unknown/line-cone?file=03_adder_chain.sv&line=17",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
 async fn get_json(app: &mut axum::Router, uri: &str) -> serde_json::Value {
     let response = get_response(app, uri).await;
     assert_eq!(response.status(), StatusCode::OK);

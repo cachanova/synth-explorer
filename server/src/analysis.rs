@@ -211,6 +211,20 @@ impl Analysis {
         self.source_map.clone()
     }
 
+    pub fn source_nodes(&self, file: &str, line: usize) -> Option<&[NodeId]> {
+        if !self.source_map.files.iter().any(|name| name == file) {
+            return None;
+        }
+        let key = format!("{file}:{line}");
+        Some(
+            self.source_map
+                .by_line
+                .get(&key)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )
+    }
+
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
         let mut targets: Vec<&EndpointTarget> = self
             .endpoint_targets
@@ -240,61 +254,143 @@ impl Analysis {
     }
 
     pub fn cone(&self, graph: &Graph, root: NodeId, options: ConeOptions) -> Option<Subgraph> {
-        graph.nodes.get(root as usize)?;
+        self.multi_root_cone(graph, &[root], options)
+    }
+
+    pub fn multi_root_cone(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(graph, roots, &[options.dir], options)
+    }
+
+    pub fn envelope(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(graph, roots, &[ConeDir::Fanin, ConeDir::Fanout], options)
+    }
+
+    fn multi_root_subgraph(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        directions: &[ConeDir],
+        options: ConeOptions,
+    ) -> Option<Subgraph> {
+        if roots
+            .iter()
+            .any(|root| graph.nodes.get(*root as usize).is_none())
+        {
+            return None;
+        }
+
         let cap = options.max_nodes.clamp(1, 2000);
         let mut seen: HashSet<NodeId> = HashSet::new();
-        let mut distances: HashMap<NodeId, u32> = HashMap::new();
+        let mut unique_roots: HashSet<NodeId> = HashSet::new();
+        let mut included_root_ids = Vec::new();
         let mut boundary_nodes: HashSet<NodeId> = HashSet::new();
         let mut edge_set: HashSet<usize> = HashSet::new();
-        let mut queue = VecDeque::new();
         let mut truncated = false;
 
-        seen.insert(root);
-        distances.insert(root, 0);
-        queue.push_back(root);
-
-        while let Some(id) = queue.pop_front() {
-            let depth = distances.get(&id).copied().unwrap_or_default();
-            if depth > 0 && graph.is_boundary(id) {
-                boundary_nodes.insert(id);
-                continue;
-            }
-            if depth >= options.max_depth {
-                if has_visible_neighbor(
-                    graph,
-                    id,
-                    options.dir,
-                    options.hide_control,
-                    options.hide_const,
-                ) {
-                    boundary_nodes.insert(id);
+        for root in roots {
+            if unique_roots.insert(*root) {
+                if seen.len() >= cap {
                     truncated = true;
-                }
-                continue;
-            }
-            let edge_ids = match options.dir {
-                ConeDir::Fanin => &graph.incoming[id as usize],
-                ConeDir::Fanout => &graph.outgoing[id as usize],
-            };
-            for edge_idx in edge_ids {
-                let edge = &graph.edges[*edge_idx];
-                if should_hide_edge(graph, edge, options.hide_control, options.hide_const) {
                     continue;
                 }
-                let next = match options.dir {
-                    ConeDir::Fanin => edge.from,
-                    ConeDir::Fanout => edge.to,
-                };
-                if !seen.contains(&next) {
-                    if seen.len() >= cap {
-                        truncated = true;
+                seen.insert(*root);
+                included_root_ids.push(*root);
+            }
+        }
+
+        let included_roots = seen.clone();
+        let mut traversals: Vec<Traversal> = directions
+            .iter()
+            .map(|dir| Traversal {
+                dir: *dir,
+                seen: included_roots.clone(),
+                queue: included_root_ids
+                    .iter()
+                    .copied()
+                    .map(|root| (root, 0))
+                    .collect(),
+                current: None,
+            })
+            .collect();
+
+        loop {
+            let mut advanced = false;
+            for traversal in &mut traversals {
+                loop {
+                    if traversal.current.is_none() {
+                        let Some((id, depth)) = traversal.queue.pop_front() else {
+                            break;
+                        };
+                        if !included_roots.contains(&id) && graph.is_boundary(id) {
+                            boundary_nodes.insert(id);
+                            continue;
+                        }
+                        if depth >= options.max_depth {
+                            if has_visible_neighbor(
+                                graph,
+                                id,
+                                traversal.dir,
+                                options.hide_control,
+                                options.hide_const,
+                            ) {
+                                boundary_nodes.insert(id);
+                                truncated = true;
+                            }
+                            continue;
+                        }
+                        traversal.current = Some(TraversalFrame {
+                            id,
+                            depth,
+                            next_edge: 0,
+                        });
+                    }
+
+                    let frame = traversal.current.as_mut().expect("frame was initialized");
+                    let edge_ids = match traversal.dir {
+                        ConeDir::Fanin => &graph.incoming[frame.id as usize],
+                        ConeDir::Fanout => &graph.outgoing[frame.id as usize],
+                    };
+                    let Some(edge_idx) = edge_ids.get(frame.next_edge).copied() else {
+                        traversal.current = None;
+                        continue;
+                    };
+                    frame.next_edge += 1;
+                    let edge = &graph.edges[edge_idx];
+                    if should_hide_edge(graph, edge, options.hide_control, options.hide_const) {
                         continue;
                     }
-                    seen.insert(next);
-                    distances.insert(next, depth + 1);
-                    queue.push_back(next);
+
+                    advanced = true;
+                    let next = match traversal.dir {
+                        ConeDir::Fanin => edge.from,
+                        ConeDir::Fanout => edge.to,
+                    };
+                    if !seen.contains(&next) {
+                        if seen.len() >= cap {
+                            truncated = true;
+                            break;
+                        }
+                        seen.insert(next);
+                    }
+                    if traversal.seen.insert(next) {
+                        traversal.queue.push_back((next, frame.depth + 1));
+                    }
+                    edge_set.insert(edge_idx);
+                    break;
                 }
-                edge_set.insert(*edge_idx);
+            }
+            if !advanced {
+                break;
             }
         }
 
@@ -302,7 +398,7 @@ impl Analysis {
             graph,
             &seen,
             &edge_set,
-            Some(root),
+            &included_roots,
             &boundary_nodes,
             truncated,
         ))
@@ -325,7 +421,7 @@ impl Analysis {
             graph,
             &seen,
             &edge_set,
-            None,
+            &HashSet::new(),
             &HashSet::new(),
             graph.nodes.len() > cap,
         )
@@ -415,7 +511,7 @@ impl Analysis {
         graph: &Graph,
         seen: &HashSet<NodeId>,
         edge_set: &HashSet<usize>,
-        root: Option<NodeId>,
+        roots: &HashSet<NodeId>,
         boundary_nodes: &HashSet<NodeId>,
         truncated: bool,
     ) -> Subgraph {
@@ -425,10 +521,10 @@ impl Analysis {
             .into_iter()
             .map(|id| {
                 let node = &graph.nodes[id as usize];
-                let boundary = root != Some(id) && boundary_nodes.contains(&id);
+                let boundary = !roots.contains(&id) && boundary_nodes.contains(&id);
                 GraphNode {
                     node: node_ref(graph, id),
-                    is_root: (root == Some(id)).then_some(true),
+                    is_root: roots.contains(&id).then_some(true),
                     is_boundary: boundary.then_some(true),
                     depth: graph
                         .is_comb(id)
@@ -457,6 +553,19 @@ impl Analysis {
             truncated,
         }
     }
+}
+
+struct Traversal {
+    dir: ConeDir,
+    seen: HashSet<NodeId>,
+    queue: VecDeque<(NodeId, u32)>,
+    current: Option<TraversalFrame>,
+}
+
+struct TraversalFrame {
+    id: NodeId,
+    depth: u32,
+    next_edge: usize,
 }
 
 #[derive(Debug, Clone, Copy)]

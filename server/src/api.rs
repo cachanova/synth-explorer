@@ -123,6 +123,7 @@ pub fn app(state: AppState) -> Router {
         .route("/design/{id}/endpoints", get(endpoints))
         .route("/design/{id}/paths", get(paths))
         .route("/design/{id}/cone", get(cone))
+        .route("/design/{id}/line-cone", get(line_cone))
         .route("/design/{id}/fanout", get(fanout))
         .route("/design/{id}/netlist", get(netlist))
         .route("/design/{id}/source-map", get(source_map))
@@ -269,6 +270,54 @@ async fn cone(
             },
         )
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown node"))?;
+    Ok(Json(subgraph))
+}
+
+#[derive(Debug, Deserialize)]
+struct LineConeQuery {
+    file: Option<String>,
+    line: Option<isize>,
+    max_nodes: Option<usize>,
+    hide_control: Option<bool>,
+    hide_const: Option<bool>,
+}
+
+async fn line_cone(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<LineConeQuery>,
+) -> Result<Json<Subgraph>, ApiError> {
+    let design = get_design(&state, &id).await?;
+    let file = query
+        .file
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "file is required"))?;
+    let line = query
+        .line
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "line is required"))?;
+    if line < 1 {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "line must be at least 1",
+        ));
+    }
+    let roots = design
+        .analysis
+        .source_nodes(&file, line as usize)
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
+    let subgraph = design
+        .analysis
+        .envelope(
+            &design.graph,
+            roots,
+            ConeOptions {
+                dir: ConeDir::Fanin,
+                max_depth: 64,
+                max_nodes: query.max_nodes.unwrap_or(400),
+                hide_control: query.hide_control.unwrap_or(true),
+                hide_const: query.hide_const.unwrap_or(true),
+            },
+        )
+        .expect("source map contains only valid graph node ids");
     Ok(Json(subgraph))
 }
 

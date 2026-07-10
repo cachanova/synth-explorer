@@ -165,6 +165,18 @@ design exceeds `max_nodes`). Used by the optional full-schematic view.
 }
 ```
 
+## GET `/api/design/:id/line-cone?file=<name>&line=<n>&max_nodes=400&hide_control=true&hide_const=true`
+
+Source-line envelope: the reg-to-reg neighborhood of one RTL line. Takes the
+cells whose `src` maps to `file:line` (same index as `/source-map`), then
+returns the union of their fanin and fanout cones (traversal stops at
+sequential cells / ports / consts as usual) as a `Subgraph`. The line's own
+cells have `is_root: true` so the client can highlight them. `max_nodes`
+clamps to 2000; `truncated` set on cap. If no cells map to the line, returns
+an empty `Subgraph` (`200`, `nodes: []`) — mapped modes lose most `src`
+attributes, so this is common and not an error. `422` for an unknown file
+name or `line < 1`.
+
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 
 Resolve node ids to display metadata (used by the source-probe panel).

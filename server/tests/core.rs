@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use synth_explorer_server::analysis::{Analysis, ConeDir, ConeOptions};
 use synth_explorer_server::graph::{Graph, NodeKind};
 use synth_explorer_server::netlist::{parse_str, select_top};
@@ -52,6 +53,67 @@ fn cone_stops_at_boundary_nodes() {
         node.node.kind,
         synth_explorer_server::analysis::ApiNodeKind::Port
     ) && node.is_boundary == Some(true)));
+}
+
+#[test]
+fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
+    let (graph, analysis) = fixture("high_fanout_enable_gates.json");
+    let roots: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Cell)
+        .take(2)
+        .map(|node| node.id)
+        .collect();
+    assert_eq!(roots.len(), 2);
+
+    let options = ConeOptions {
+        dir: ConeDir::Fanin,
+        max_depth: 8,
+        max_nodes: 20,
+        hide_control: false,
+        hide_const: true,
+    };
+    let envelope = analysis.envelope(&graph, &roots, options).unwrap();
+    assert!(!envelope.truncated);
+    assert!(envelope.nodes.len() <= options.max_nodes);
+    assert!(roots.iter().all(|root| {
+        envelope
+            .nodes
+            .iter()
+            .any(|node| node.node.id == *root && node.is_root == Some(true))
+    }));
+    assert!(roots.iter().all(|root| {
+        envelope.edges.iter().any(|edge| edge.to == *root)
+            && envelope.edges.iter().any(|edge| edge.from == *root)
+    }));
+
+    let node_ids: HashSet<_> = envelope.nodes.iter().map(|node| node.node.id).collect();
+    assert_eq!(node_ids.len(), envelope.nodes.len());
+    let edge_ids: HashSet<_> = envelope
+        .edges
+        .iter()
+        .map(|edge| (edge.from, edge.to, &edge.from_port, &edge.to_port))
+        .collect();
+    assert_eq!(edge_ids.len(), envelope.edges.len());
+    assert!(node_ids.iter().any(|candidate| {
+        roots.iter().all(|root| {
+            envelope
+                .edges
+                .iter()
+                .any(|edge| edge.from == *candidate && edge.to == *root)
+        })
+    }));
+
+    let capped_options = ConeOptions {
+        max_nodes: roots.len() + 2,
+        ..options
+    };
+    let capped = analysis.envelope(&graph, &roots, capped_options).unwrap();
+    assert!(capped.nodes.len() <= capped_options.max_nodes);
+    assert!(capped.truncated);
+    assert!(capped.edges.iter().any(|edge| roots.contains(&edge.to)));
+    assert!(capped.edges.iter().any(|edge| roots.contains(&edge.from)));
 }
 
 #[test]
