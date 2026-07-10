@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d1117" />
+    <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>Synth Explorer Logo Lab</title>
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero__copy">
+        <p class="eyebrow">Synth Explorer / Logo Lab</p>
+        <h1>Find the signal in the noise.</h1>
+        <p class="lede">
+          A broad set of no-register schematic marks. Filter the field, inspect each one at
+          header and favicon sizes, then select a direction.
+        </p>
+      </div>
+      <div class="hero__meta" aria-label="Gallery summary">
+        <span><strong id="total-count">0</strong> marks</span>
+        <span>5 families</span>
+        <span>SVG only</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="decision" aria-labelledby="decision-title">
+        <div class="decision__heading">
+          <p class="eyebrow">Current selection</p>
+          <span class="selection-id" id="selection-id">None</span>
+        </div>
+
+        <div class="selected-stage theme-dark" id="selected-stage">
+          <div class="empty-mark" aria-hidden="true">?</div>
+        </div>
+
+        <div class="decision__copy" aria-live="polite">
+          <h2 id="decision-title">Pick a mark</h2>
+          <p id="decision-note">Click any option to see it in context and save the choice.</p>
+        </div>
+
+        <div class="preview-theme" aria-label="Preview background">
+          <button type="button" class="theme-button active" data-theme="dark" aria-pressed="true">
+            Dark
+          </button>
+          <button type="button" class="theme-button" data-theme="light" aria-pressed="false">
+            Light
+          </button>
+        </div>
+
+        <div class="lockup theme-dark" id="lockup-preview" aria-label="Header preview">
+          <div class="lockup__mark" id="lockup-mark"></div>
+          <div class="lockup__wordmark">Synth <span>Explorer</span></div>
+          <div class="lockup__tagline">Compiler Explorer for RTL</div>
+        </div>
+
+        <div class="scale-row" aria-label="Small-size previews">
+          <div>
+            <span>16</span>
+            <div class="scale-preview theme-dark" id="preview-16"></div>
+          </div>
+          <div>
+            <span>24</span>
+            <div class="scale-preview theme-dark" id="preview-24"></div>
+          </div>
+          <div>
+            <span>32</span>
+            <div class="scale-preview theme-light" id="preview-32"></div>
+          </div>
+        </div>
+
+        <div class="decision__actions">
+          <button type="button" class="primary-action" id="copy-choice" disabled>
+            Copy choice
+          </button>
+          <button type="button" class="quiet-action" id="clear-choice" disabled>
+            Clear
+          </button>
+        </div>
+        <p class="selection-help" id="selection-help">
+          Your selection is saved in this browser and encoded in the page URL.
+        </p>
+      </aside>
+
+      <section class="catalog" aria-labelledby="catalog-title">
+        <div class="catalog__header">
+          <div>
+            <p class="eyebrow">Candidate set</p>
+            <h2 id="catalog-title">Schematic marks</h2>
+          </div>
+          <label class="search">
+            <span class="sr-only">Search logos</span>
+            <svg viewBox="0 0 20 20" aria-hidden="true">
+              <circle cx="8.5" cy="8.5" r="5.5"></circle>
+              <path d="m13 13 4 4"></path>
+            </svg>
+            <input id="search" type="search" placeholder="Search names or ideas" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="filters" id="filters" aria-label="Logo family filters">
+          <button type="button" class="filter active" data-family="all" aria-pressed="true">All</button>
+          <button type="button" class="filter" data-family="xor" aria-pressed="false">XOR</button>
+          <button type="button" class="filter" data-family="gates" aria-pressed="false">Gates</button>
+          <button type="button" class="filter" data-family="signal" aria-pressed="false">Signal</button>
+          <button type="button" class="filter" data-family="netlist" aria-pressed="false">Netlist</button>
+          <button type="button" class="filter" data-family="monogram" aria-pressed="false">Monogram</button>
+        </div>
+
+        <div class="results-line" aria-live="polite">
+          <span id="result-count">0 options</span>
+          <span>Click a card to select</span>
+        </div>
+
+        <div class="logo-grid" id="logo-grid" role="radiogroup" aria-label="Logo candidates"></div>
+        <div class="no-results" id="no-results" hidden>
+          No marks match that filter. Try a shorter search.
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
