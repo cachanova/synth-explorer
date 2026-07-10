@@ -3,7 +3,7 @@ import { getEndpoints } from '../../api'
 import { fuzzyFilter } from '../../lib/fuzzy'
 import { useDesignData } from '../../lib/useDesignData'
 import { useStore } from '../../store'
-import type { OutputEndpoint, RegisterEndpoint } from '../../types'
+import type { EndpointBit, OutputEndpoint, RegisterEndpoint } from '../../types'
 import { SrcLink } from '../SrcLink'
 
 export function Endpoints() {
@@ -93,47 +93,151 @@ export function Endpoints() {
 
 type Opener = ReturnType<typeof useStore>['openCone']
 
-function RegRow({ r, onOpen }: { r: RegisterEndpoint; onOpen: Opener }) {
-  const node = r.bits[0]?.node_id
+/** Bit with the deepest fanin cone — the one people actually care about. */
+function worstBit(bits: EndpointBit[]): EndpointBit | undefined {
+  if (bits.length === 0) return undefined
+  return bits.reduce((a, b) => (b.depth > a.depth ? b : a), bits[0])
+}
+
+function bitLabel(name: string, width: number, bit: number): string {
+  return width > 1 ? `${name}[${bit}]` : name
+}
+
+/** Expandable per-bit cone selector, shown under a multi-bit row. */
+function BitsRow({
+  name,
+  width,
+  bits,
+  colSpan,
+  onOpen,
+}: {
+  name: string
+  width: number
+  bits: EndpointBit[]
+  colSpan: number
+  onOpen: Opener
+}) {
   return (
-    <tr
-      className="clickable"
-      onClick={() =>
-        node != null && onOpen({ node, dir: 'fanin', label: `${r.name} (fanin)` })
-      }
-      title="Open fanin cone in Graph"
-    >
-      <td className="mono">{r.name}</td>
-      <td className="num">{r.width}</td>
-      <td>
-        <span className="tag">{r.cell_type}</span>
-      </td>
-      <td className="mono faint">{r.clock ?? '—'}</td>
-      <td className="num">
-        <span className="depth-chip">{r.worst_depth}</span>
-      </td>
-      <td>
-        <SrcLink src={r.src} />
+    <tr className="expanded">
+      <td colSpan={colSpan}>
+        <div className="chain">
+          {bits.map((b) => (
+            <button
+              key={b.bit}
+              className="hop"
+              style={{ cursor: 'pointer' }}
+              title={`Open fanin cone for ${bitLabel(name, width, b.bit)}`}
+              onClick={() =>
+                onOpen({
+                  node: b.node_id,
+                  dir: 'fanin',
+                  label: `${bitLabel(name, width, b.bit)} (fanin)`,
+                })
+              }
+            >
+              <span className="t">[{b.bit}]</span>
+              <span className="n">depth {b.depth}</span>
+            </button>
+          ))}
+        </div>
       </td>
     </tr>
   )
 }
 
-function OutRow({ o, onOpen }: { o: OutputEndpoint; onOpen: Opener }) {
-  const node = o.bits[0]?.node_id
+function RegRow({ r, onOpen }: { r: RegisterEndpoint; onOpen: Opener }) {
+  const [open, setOpen] = useState(false)
+  const worst = worstBit(r.bits)
   return (
-    <tr
-      className="clickable"
-      onClick={() =>
-        node != null && onOpen({ node, dir: 'fanin', label: `${o.name} (fanin)` })
-      }
-      title="Open fanin cone in Graph"
-    >
-      <td className="mono">{o.name}</td>
-      <td className="num">{o.width}</td>
-      <td className="num">
-        <span className="depth-chip">{o.worst_depth}</span>
-      </td>
-    </tr>
+    <>
+      <tr
+        className={`clickable${open ? ' expanded' : ''}`}
+        onClick={() =>
+          worst &&
+          onOpen({
+            node: worst.node_id,
+            dir: 'fanin',
+            label: `${bitLabel(r.name, r.width, worst.bit)} (fanin)`,
+          })
+        }
+        title="Open fanin cone of the worst-depth bit in Graph"
+      >
+        <td className="mono">
+          {r.name}
+          {r.width > 1 && (
+            <a
+              className="faint"
+              style={{ marginLeft: 6, fontSize: 11 }}
+              title="Choose a specific bit"
+              onClick={(e) => {
+                e.stopPropagation()
+                setOpen((v) => !v)
+              }}
+            >
+              bits {open ? '▾' : '▸'}
+            </a>
+          )}
+        </td>
+        <td className="num">{r.width}</td>
+        <td>
+          <span className="tag">{r.cell_type}</span>
+        </td>
+        <td className="mono faint">{r.clock ?? '—'}</td>
+        <td className="num">
+          <span className="depth-chip">{r.worst_depth}</span>
+        </td>
+        <td>
+          <SrcLink src={r.src} />
+        </td>
+      </tr>
+      {open && (
+        <BitsRow name={r.name} width={r.width} bits={r.bits} colSpan={6} onOpen={onOpen} />
+      )}
+    </>
+  )
+}
+
+function OutRow({ o, onOpen }: { o: OutputEndpoint; onOpen: Opener }) {
+  const [open, setOpen] = useState(false)
+  const worst = worstBit(o.bits)
+  return (
+    <>
+      <tr
+        className={`clickable${open ? ' expanded' : ''}`}
+        onClick={() =>
+          worst &&
+          onOpen({
+            node: worst.node_id,
+            dir: 'fanin',
+            label: `${bitLabel(o.name, o.width, worst.bit)} (fanin)`,
+          })
+        }
+        title="Open fanin cone of the worst-depth bit in Graph"
+      >
+        <td className="mono">
+          {o.name}
+          {o.width > 1 && (
+            <a
+              className="faint"
+              style={{ marginLeft: 6, fontSize: 11 }}
+              title="Choose a specific bit"
+              onClick={(e) => {
+                e.stopPropagation()
+                setOpen((v) => !v)
+              }}
+            >
+              bits {open ? '▾' : '▸'}
+            </a>
+          )}
+        </td>
+        <td className="num">{o.width}</td>
+        <td className="num">
+          <span className="depth-chip">{o.worst_depth}</span>
+        </td>
+      </tr>
+      {open && (
+        <BitsRow name={o.name} width={o.width} bits={o.bits} colSpan={3} onOpen={onOpen} />
+      )}
+    </>
   )
 }

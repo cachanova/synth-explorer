@@ -70,3 +70,35 @@ export function looksSequential(cellType: string | undefined): boolean {
   if (!cellType) return false
   return SEQ_HINT.test(cellType)
 }
+
+/** True for yosys auto-generated / hidden names ("$abc$240$auto$blifparse..."). */
+export function isHiddenName(name: string | undefined): boolean {
+  return !name || name.startsWith('$')
+}
+
+/**
+ * Shorten an auto-generated net name to its last meaningful segment:
+ *   "$abc$240$new_n27"  -> "new_n27"
+ *   "$auto$123"         -> "123"
+ *   "sum[3]"            -> "sum[3]" (human names pass through)
+ */
+export function shortNetName(net: string): string {
+  if (!net.startsWith('$')) return net
+  const segs = net.split('$').filter((s) => s.length > 0)
+  if (segs.length === 0) return net
+  // Drop path-like segments ("auto$blifparse.cc:397:parse_blif") entirely;
+  // the last segment is the local identity.
+  return segs[segs.length - 1]
+}
+
+/**
+ * Primary display label for a fanout driver. Comb cells with hidden names
+ * show "TYPE · shortNet" (e.g. "NAND · new_n27") instead of unreadable ABC
+ * names; ports/FFs/named cells keep their own name.
+ */
+export function fanoutDriverLabel(driver: NodeRef, netName: string): string {
+  if (driver.kind === 'cell' && !driver.seq && isHiddenName(driver.name)) {
+    return `${prettyCellType(driver.cell_type)} · ${shortNetName(netName)}`
+  }
+  return driver.name
+}

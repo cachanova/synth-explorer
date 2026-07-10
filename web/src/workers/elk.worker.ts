@@ -2,6 +2,8 @@
 // Uses the bundled build (algorithms inline) — the constructor's default fake
 // worker runs synchronously here in this worker thread.
 
+// MUST come before the elk import — see elkEnvShim.ts for why.
+import './elkEnvShim'
 import ELK from 'elkjs/lib/elk.bundled.js'
 import type { ElkNode } from 'elkjs/lib/elk-api'
 

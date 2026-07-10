@@ -5,6 +5,7 @@ import type {
   ExamplesResponse,
   FanoutResponse,
   Mode,
+  NodesResponse,
   PathsResponse,
   SourceMapResponse,
   Subgraph,
@@ -109,6 +110,14 @@ export function getNetlist(id: string, maxNodes = 1500): Promise<Subgraph> {
 
 export function getSourceMap(id: string): Promise<SourceMapResponse> {
   return getJson<SourceMapResponse>(`/api/design/${encodeURIComponent(id)}/source-map`)
+}
+
+/** Resolve node ids to display metadata. Caps at the contract's 200-id limit. */
+export function getNodes(id: string, ids: number[]): Promise<NodesResponse> {
+  const capped = ids.slice(0, 200)
+  return getJson<NodesResponse>(
+    `/api/design/${encodeURIComponent(id)}/nodes?ids=${capped.join(',')}`,
+  )
 }
 
 export function getExamples(): Promise<ExamplesResponse> {

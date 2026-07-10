@@ -13,6 +13,7 @@ import type {
   DesignFile,
   Example,
   Mode,
+  NodeRef,
   Stats,
   SynthesizeResponse,
   TimingPath,
@@ -62,6 +63,9 @@ export interface ProbeState {
   file: string
   line: number
   nodeIds: number[]
+  // display metadata from /nodes, keyed by id; empty when the endpoint is
+  // unavailable (fall back to "#id" display)
+  refs: Record<number, NodeRef>
 }
 
 const DEFAULT_FILE: DesignFile = {
@@ -322,7 +326,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const map = await api.getSourceMap(design.design_id)
       const key = `${cursor.file}:${cursor.line}`
       const ids = map.by_line[key] ?? []
-      setProbe({ file: cursor.file, line: cursor.line, nodeIds: ids })
+      // Resolve display metadata; best-effort (endpoint may not exist yet —
+      // fall back to bare "#id" rows).
+      const refs: Record<number, NodeRef> = {}
+      if (ids.length > 0) {
+        try {
+          const res = await api.getNodes(design.design_id, ids)
+          for (const n of res.nodes) refs[n.id] = n
+        } catch {
+          /* 404/422 → keep refs empty */
+        }
+      }
+      setProbe({ file: cursor.file, line: cursor.line, nodeIds: ids, refs })
     } catch (e) {
       const err = e as api.ApiRequestError
       setError({ message: err.message, log: err.log, status: err.status })

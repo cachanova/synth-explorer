@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { getFanout } from '../../api'
 import { fuzzyFilter } from '../../lib/fuzzy'
+import { fanoutDriverLabel } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
 import { useStore } from '../../store'
 import { SrcLink } from '../SrcLink'
@@ -48,22 +49,29 @@ export function Fanout() {
           </tr>
         </thead>
         <tbody>
-          {drivers.map((d, i) => (
+          {drivers.map((d, i) => {
+            const label = fanoutDriverLabel(d.driver, d.net_name)
+            const prettified = label !== d.driver.name
+            return (
             <tr
               key={i}
               className="clickable"
-              title="Open fanout cone in Graph"
+              title={
+                prettified
+                  ? `${d.driver.name} — open fanout cone in Graph`
+                  : 'Open fanout cone in Graph'
+              }
               onClick={() =>
                 store.openCone({
                   node: d.driver.id,
                   dir: 'fanout',
-                  label: `${d.driver.name} (fanout)`,
+                  label: `${label} (fanout)`,
                 })
               }
             >
               <td className="mono">
-                {d.driver.name}
-                <span className="faint"> ·{d.port}</span>
+                {label}
+                {!prettified && <span className="faint"> ·{d.port}</span>}
               </td>
               <td className="mono faint">{d.net_name}</td>
               <td className="num">
@@ -75,7 +83,8 @@ export function Fanout() {
                 <SrcLink src={d.driver.src} />
               </td>
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>

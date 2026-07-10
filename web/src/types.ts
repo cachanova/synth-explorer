@@ -137,6 +137,14 @@ export interface FanoutResponse {
   drivers: FanoutDriver[]
 }
 
+// --- GET /api/design/:id/nodes?ids=1,2,3 ---
+// Resolve node ids to display metadata. Returned in request order; unknown
+// ids omitted. At most 200 ids per request (422 above that).
+
+export interface NodesResponse {
+  nodes: NodeRef[]
+}
+
 // --- GET /api/design/:id/source-map ---
 
 export interface SourceMapResponse {

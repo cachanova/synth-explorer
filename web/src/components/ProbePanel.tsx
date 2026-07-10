@@ -1,4 +1,27 @@
+import { prettyCellType } from '../lib/prettyType'
 import { useStore } from '../store'
+import type { NodeRef } from '../types'
+import { SrcLink } from './SrcLink'
+
+function ProbeName({ id, node }: { id: number; node?: NodeRef }) {
+  if (!node) return <span className="mono">node #{id}</span>
+  return (
+    <span className="row" style={{ gap: 6, minWidth: 0 }}>
+      <span
+        className="mono"
+        style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        title={node.name}
+      >
+        {node.name}
+      </span>
+      <span className="tag">
+        {node.kind === 'cell' ? prettyCellType(node.cell_type) : node.kind}
+      </span>
+      {node.seq && <span className="pill">seq</span>}
+      {node.src && <SrcLink src={node.src} />}
+    </span>
+  )
+}
 
 export function ProbePanel() {
   const store = useStore()
@@ -20,27 +43,31 @@ export function ProbePanel() {
           their source attribution — cross-probe is best-effort.
         </div>
       ) : (
-        probe.nodeIds.map((id) => (
-          <div className="probe-item" key={id}>
-            <span className="mono">node #{id}</span>
-            <span className="row">
-              <a
-                onClick={() =>
-                  store.openCone({ node: id, dir: 'fanin', label: `node #${id}` })
-                }
-              >
-                fanin
-              </a>
-              <a
-                onClick={() =>
-                  store.openCone({ node: id, dir: 'fanout', label: `node #${id}` })
-                }
-              >
-                fanout
-              </a>
-            </span>
-          </div>
-        ))
+        probe.nodeIds.map((id) => {
+          const node = probe.refs[id]
+          const label = node ? node.name : `node #${id}`
+          return (
+            <div className="probe-item" key={id}>
+              <ProbeName id={id} node={node} />
+              <span className="row">
+                <a
+                  onClick={() =>
+                    store.openCone({ node: id, dir: 'fanin', label: `${label} (fanin)` })
+                  }
+                >
+                  fanin
+                </a>
+                <a
+                  onClick={() =>
+                    store.openCone({ node: id, dir: 'fanout', label: `${label} (fanout)` })
+                  }
+                >
+                  fanout
+                </a>
+              </span>
+            </div>
+          )
+        })
       )}
     </div>
   )
