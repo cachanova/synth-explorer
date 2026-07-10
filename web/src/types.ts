@@ -17,6 +17,18 @@ export interface GraphNode extends NodeRef {
   is_boundary?: boolean // traversal stopped here (startpoint/endpoint/limit)
   depth?: number // comb depth from startpoints (absent for seq/port nodes)
   params?: Record<string, string> // e.g. { "LUT": "0111...", "WIDTH": "4" }
+  controls?: ControlRef[] // omitted when the node has no labeled control connections
+}
+
+export type ControlRole = 'clock' | 'reset' | 'set' | 'enable' | 'other'
+
+export interface ControlRef {
+  role: ControlRole
+  pin: string
+  net_name: string
+  driver_id: number
+  active_low?: boolean
+  generated?: boolean
 }
 
 export interface GraphEdge {
@@ -66,6 +78,22 @@ export interface Stats {
   num_inputs: number // port bit counts
   num_outputs: number
   max_depth: number // worst comb depth (cells) across all endpoints
+  depths: DepthSummary
+  cell_categories: CellCategoryCounts
+}
+
+export interface DepthSummary {
+  input_to_register: number | null
+  register_to_register: number | null
+  register_to_output: number | null
+  input_to_output: number | null
+}
+
+export interface CellCategoryCounts {
+  logic: number
+  registers: number
+  carry_special: number
+  infrastructure: number
 }
 
 export interface SynthesizeResponse {
@@ -93,6 +121,18 @@ export interface RegisterEndpoint {
   src?: string
   worst_depth: number // max comb depth into any bit's D
   bits: EndpointBit[]
+  output_aliases: OutputAlias[]
+}
+
+export interface OutputAliasBit {
+  output_bit: number
+  register_bit: number
+}
+
+export interface OutputAlias {
+  name: string
+  width: number
+  bits: OutputAliasBit[]
 }
 
 export interface OutputEndpoint {
@@ -116,8 +156,22 @@ export interface EndpointsResponse {
 
 // --- GET /api/design/:id/paths ---
 
+export type EndpointKind = 'register' | 'output' | 'blackbox'
+
+export type PathClass =
+  | 'input_to_register'
+  | 'register_to_register'
+  | 'register_to_output'
+  | 'input_to_output'
+  | 'other'
+
 export interface TimingPath {
   depth: number // comb cells on the path
+  class: PathClass
+  endpoint_group: string
+  endpoint_kind: EndpointKind
+  bits: number[] // endpoint bits sharing this depth and structural route
+  output_aliases: OutputAlias[]
   startpoint: NodeRef // input port bit / FF cell (Q) / blackbox
   endpoint: NodeRef // FF cell (D) / output port bit / blackbox
   endpoint_port: string // "D", output port name, ...
