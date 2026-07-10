@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  fitViewportToContent,
   panViewport,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -491,7 +492,6 @@ export function GraphView({
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
   const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
-  const [stageSize, setStageSize] = useState<{ width: number; height: number } | null>(null)
   const panState = useRef<PanState | null>(null)
   const suppressClick = useRef(false)
   const userAdjusted = useRef(false)
@@ -551,16 +551,13 @@ export function GraphView({
     const stage = stageRef.current
     if (!stage || graph.nodes.length === 0) return
     const rect = stage.getBoundingClientRect()
-    const pad = 40
-    const width = graph.width || 1
-    const height = graph.height || 1
-    const scale = Math.min((rect.width - pad) / width, (rect.height - pad) / height, 1.5)
-    const safeScale = scale > 0 && Number.isFinite(scale) ? scale : 1
-    applyTransform({
-      x: (rect.width - width * safeScale) / 2,
-      y: (rect.height - height * safeScale) / 2,
-      k: safeScale,
-    })
+    const next = fitViewportToContent(
+      rect.width,
+      rect.height,
+      graph.width,
+      graph.height,
+    )
+    if (next) applyTransform(next)
   }, [applyTransform, graph])
 
   useLayoutEffect(() => {
@@ -574,15 +571,15 @@ export function GraphView({
     if (!stage) return
 
     const updateSize = () => {
-      const next = { width: stage.clientWidth, height: stage.clientHeight }
-      setStageSize((previous) =>
-        previous?.width === next.width && previous.height === next.height ? previous : next,
-      )
       if (!userAdjusted.current) fit()
     }
 
+    // ResizeObserver normally delivers an initial entry, but measuring now
+    // avoids one frame with a stale transform when a display:none Graph tab is
+    // shown again. fit() ignores transient zero-sized flex layouts.
+    updateSize()
+
     if (typeof ResizeObserver === 'undefined') {
-      updateSize()
       window.addEventListener('resize', updateSize)
       return () => window.removeEventListener('resize', updateSize)
     }
@@ -690,8 +687,8 @@ export function GraphView({
     <div className="graph-stage" ref={stageRef}>
       <svg
         ref={svgRef}
-        width={stageSize?.width ?? '100%'}
-        height={stageSize?.height ?? '100%'}
+        width="100%"
+        height="100%"
         onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}

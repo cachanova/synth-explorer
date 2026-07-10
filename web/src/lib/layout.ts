@@ -75,6 +75,46 @@ export function zoomViewportAt(
   }
 }
 
+/**
+ * Center laid-out graph content in a viewport without relying on SVG viewBox
+ * scaling. A hidden or not-yet-laid-out flex pane can transiently report a
+ * zero-sized viewport; callers should retain the last transform in that case.
+ */
+export function fitViewportToContent(
+  viewportWidth: number,
+  viewportHeight: number,
+  contentWidth: number,
+  contentHeight: number,
+  padding = 40,
+  maxScale = 1.5,
+): ViewportTransform | null {
+  if (
+    !Number.isFinite(viewportWidth) ||
+    !Number.isFinite(viewportHeight) ||
+    viewportWidth <= padding ||
+    viewportHeight <= padding
+  ) {
+    return null
+  }
+
+  const width =
+    Number.isFinite(contentWidth) && contentWidth > 0 ? contentWidth : 1
+  const height =
+    Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : 1
+  const scale = Math.min(
+    (viewportWidth - padding) / width,
+    (viewportHeight - padding) / height,
+    maxScale,
+  )
+  if (!(scale > 0) || !Number.isFinite(scale)) return null
+
+  return {
+    x: (viewportWidth - width * scale) / 2,
+    y: (viewportHeight - height * scale) / 2,
+    k: scale,
+  }
+}
+
 const CHAR_WIDTH = 7.2
 const PAD_X = 24
 

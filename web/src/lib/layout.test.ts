@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
+  fitViewportToContent,
   layoutSubgraph,
   nodeDimensions,
   panViewport,
@@ -116,6 +117,25 @@ describe('schematic layout sizing', () => {
 })
 
 describe('viewport transforms', () => {
+  it('refits centered graph content when the containing pane changes size', () => {
+    expect(fitViewportToContent(1000, 600, 800, 400)).toEqual({
+      x: 20,
+      y: 60,
+      k: 1.2,
+    })
+    expect(fitViewportToContent(600, 400, 800, 400)).toEqual({
+      x: 20,
+      y: 60,
+      k: 0.7,
+    })
+  })
+
+  it('ignores transient hidden-pane measurements instead of corrupting the transform', () => {
+    expect(fitViewportToContent(0, 0, 800, 400)).toBeNull()
+    expect(fitViewportToContent(1000, 0, 800, 400)).toBeNull()
+    expect(fitViewportToContent(Number.NaN, 600, 800, 400)).toBeNull()
+  })
+
   it('pans without changing scale and emits the SVG transform', () => {
     const moved = panViewport({ x: 10, y: 20, k: 2 }, 5, -7)
     expect(moved).toEqual({ x: 15, y: 13, k: 2 })
