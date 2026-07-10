@@ -5,6 +5,7 @@ import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
 import type { GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import { nodeLabel } from './prettyType'
+import { controlLabel, controlsFor, symbolKind } from './symbols'
 
 export const MAX_LAYOUT_NODES = 1500
 
@@ -36,25 +37,67 @@ export interface LaidOutGraph {
   height: number
 }
 
-const NODE_HEIGHT = 46
-const MIN_WIDTH = 64
 const CHAR_WIDTH = 7.2
-const PAD_X = 22
+const PAD_X = 24
 
-function nodeWidth(node: GraphNode): number {
+function textWidth(node: GraphNode): number {
   const label = nodeLabel(node)
-  const name = node.name ?? ''
+  const name = node.name?.startsWith('$') ? '' : node.name ?? ''
   const longest = Math.max(label.length, Math.min(name.length, 22))
-  return Math.max(MIN_WIDTH, Math.round(longest * CHAR_WIDTH + PAD_X))
+  return Math.round(longest * CHAR_WIDTH + PAD_X)
+}
+
+export function nodeDimensions(node: GraphNode): { width: number; height: number } {
+  const kind = symbolKind(node)
+  const contentWidth = textWidth(node)
+
+  switch (kind) {
+    case 'and':
+    case 'nand':
+    case 'or':
+    case 'nor':
+    case 'xor':
+    case 'xnor':
+      return { width: Math.max(76, contentWidth), height: 52 }
+    case 'not':
+    case 'buf':
+      return { width: Math.max(62, contentWidth), height: 46 }
+    case 'mux':
+    case 'nmux':
+      return { width: Math.max(70, contentWidth), height: 58 }
+    case 'port-in':
+    case 'port-out':
+      return { width: Math.max(74, contentWidth), height: 34 }
+    case 'reg': {
+      const controls = controlsFor(node)
+      const controlWidth = controls.reduce(
+        (max, control) => Math.max(max, controlLabel(control).length * 6.2 + PAD_X),
+        0,
+      )
+      return {
+        width: Math.max(92, contentWidth, Math.round(controlWidth)),
+        height: 58 + Math.min(controls.length, 3) * 13,
+      }
+    }
+    case 'lut':
+      return { width: Math.max(78, contentWidth), height: 54 }
+    case 'arith':
+      return { width: Math.max(72, contentWidth), height: 54 }
+    case 'memory':
+      return { width: Math.max(112, contentWidth), height: 62 }
+    case 'const':
+      return { width: Math.max(58, contentWidth), height: 32 }
+    case 'box':
+      return { width: Math.max(96, contentWidth), height: 58 }
+  }
 }
 
 /** Build the ELK graph description from a Subgraph. */
 export function toElkGraph(sub: Subgraph): ElkNode {
-  const children: ElkNode[] = sub.nodes.map((n) => ({
-    id: String(n.id),
-    width: nodeWidth(n),
-    height: NODE_HEIGHT,
-  }))
+  const children: ElkNode[] = sub.nodes.map((n) => {
+    const { width, height } = nodeDimensions(n)
+    return { id: String(n.id), width, height }
+  })
 
   const edges: ElkExtendedEdge[] = sub.edges.map((e, i) => ({
     id: `e${i}`,
@@ -68,8 +111,8 @@ export function toElkGraph(sub: Subgraph): ElkNode {
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
-      'elk.layered.spacing.nodeNodeBetweenLayers': '60',
-      'elk.spacing.nodeNode': '26',
+      'elk.layered.spacing.nodeNodeBetweenLayers': '66',
+      'elk.spacing.nodeNode': '30',
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
       'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
@@ -85,13 +128,15 @@ function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
 
   const nodes: LaidOutNode[] = (root.children ?? []).map((c) => {
     const id = Number(c.id)
+    const node = byId.get(id)!
+    const fallback = nodeDimensions(node)
     return {
       id,
       x: c.x ?? 0,
       y: c.y ?? 0,
-      width: c.width ?? MIN_WIDTH,
-      height: c.height ?? NODE_HEIGHT,
-      node: byId.get(id)!,
+      width: c.width ?? fallback.width,
+      height: c.height ?? fallback.height,
+      node,
     }
   })
 
