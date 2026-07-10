@@ -32,7 +32,7 @@ export function Graph({ active }: { active: boolean }) {
   useEffect(() => {
     setSourceStatus(null)
     setSourceControl(false)
-  }, [coneReq?.nonce])
+  }, [analysisState, coneReq?.nonce])
 
   // Fetch subgraphs only while Graph is visible. A completed request key is
   // retained across tab switches so returning to Graph does not refetch or
@@ -130,8 +130,9 @@ export function Graph({ active }: { active: boolean }) {
     }
     if (laidOutSubgraph.current === sub) return
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
-    layoutSubgraph(sub)
+    layoutSubgraph(sub, controller.signal)
       .then((g) => {
         if (cancelled) return
         setLaid(g)
@@ -140,7 +141,7 @@ export function Graph({ active }: { active: boolean }) {
         setFitNonce((n) => n + 1)
       })
       .catch((e) => {
-        if (cancelled) return
+        if (cancelled || controller.signal.aborted) return
         setError(String(e instanceof Error ? e.message : e))
         setLaid(null)
         laidOutSubgraph.current = null
@@ -148,6 +149,7 @@ export function Graph({ active }: { active: boolean }) {
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
   }, [active, sub])
 

@@ -196,7 +196,7 @@ function endpointKindLabel(kind: EndpointKind): string {
 function startpointKind(node: NodeRef): string {
   if (node.kind === 'port') return 'Input'
   if (node.kind === 'const') return 'Constant'
-  if (node.seq) return 'Register'
+  if (node.register === true || (node.register == null && node.seq)) return 'Register'
   return 'Boundary'
 }
 
@@ -296,7 +296,7 @@ function Hop({ node, last }: { node: NodeRef; last: boolean }) {
   const name = nodeSublabel(node)
   return (
     <>
-      <span className={`hop${node.seq ? ' seq' : ''}`}>
+      <span className={`hop${node.register === true || (node.register == null && node.seq) ? ' seq' : ''}`}>
         <span className="t">{label}</span>
         {(name || node.src) && (
           <span className="n">

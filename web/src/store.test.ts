@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  analysisNeedsRefresh,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
@@ -85,5 +86,15 @@ describe('latest-only synthesis queue', () => {
 
     expect(retainQueuedSynthesis(queued, current.key)).toBeNull()
     expect(retainQueuedSynthesis(current, current.key)).toBe(current)
+  })
+
+  it('refreshes when an obsolete request is running even if the last design matches', () => {
+    const current = input('A')
+    const obsoleteRunning = input('B')
+
+    expect(
+      analysisNeedsRefresh(current.key, current.key, obsoleteRunning.key),
+    ).toBe(true)
+    expect(analysisNeedsRefresh(current.key, current.key, current.key)).toBe(false)
   })
 })

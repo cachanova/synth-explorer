@@ -172,6 +172,22 @@ const pending = new Map<
   { resolve: (g: ElkNode) => void; reject: (e: Error) => void }
 >()
 
+function abortError(): Error {
+  const error = new Error('layout aborted')
+  error.name = 'AbortError'
+  return error
+}
+
+function terminateWorker(instance: Worker, reason: Error) {
+  if (worker !== instance) return
+  instance.onmessage = null
+  instance.onerror = null
+  instance.terminate()
+  worker = null
+  for (const entry of pending.values()) entry.reject(reason)
+  pending.clear()
+}
+
 function getWorker(): Worker {
   if (worker) return worker
   const w = new Worker(new URL('../workers/elk.worker.ts', import.meta.url), {
@@ -186,21 +202,19 @@ function getWorker(): Worker {
     else entry.reject(new Error(msg.error))
   }
   w.onerror = (ev) => {
-    for (const entry of pending.values()) {
-      entry.reject(new Error(ev.message || 'elk worker error'))
-    }
-    pending.clear()
     // The worker is dead — drop the singleton so the next layout spawns a
     // fresh one instead of posting into a void forever.
-    w.terminate()
-    if (worker === w) worker = null
+    terminateWorker(w, new Error(ev.message || 'elk worker error'))
   }
   worker = w
   return w
 }
 
 /** Lay out a Subgraph in the worker. Rejects if node count exceeds the cap. */
-export async function layoutSubgraph(sub: Subgraph): Promise<LaidOutGraph> {
+export async function layoutSubgraph(
+  sub: Subgraph,
+  signal?: AbortSignal,
+): Promise<LaidOutGraph> {
   if (sub.nodes.length > MAX_GRAPH_RENDER_NODES) {
     throw new Error(
       `cone too large (${sub.nodes.length} nodes) — reduce depth or pick a narrower signal`,
@@ -210,7 +224,23 @@ export async function layoutSubgraph(sub: Subgraph): Promise<LaidOutGraph> {
   const id = ++seq
   const graph = toElkGraph(sub)
   const result = await new Promise<ElkNode>((resolve, reject) => {
-    pending.set(id, { resolve, reject })
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    const onAbort = () => terminateWorker(w, abortError())
+    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    pending.set(id, {
+      resolve: (value) => {
+        cleanup()
+        resolve(value)
+      },
+      reject: (error) => {
+        cleanup()
+        reject(error)
+      },
+    })
+    signal?.addEventListener('abort', onAbort, { once: true })
     const req: ElkRequest = { id, graph }
     w.postMessage(req)
   })

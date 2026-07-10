@@ -55,3 +55,11 @@ export function queuedSynthesisForRequest(
 ): SynthesisInput | null {
   return runningKey === requested.key ? null : requested
 }
+
+export function analysisNeedsRefresh(
+  currentKey: string,
+  designKey: string | null,
+  runningKey: string | null,
+): boolean {
+  return designKey !== currentKey || (runningKey != null && runningKey !== currentKey)
+}

@@ -152,8 +152,8 @@ const ARITH_GLYPHS: Record<string, string> = {
   REDUCE_XOR: '=1',
 }
 
-const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAMB|URAM|DP16KD|SPRAM)/i
-const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|DLATCH|SR|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|R|S|C|P)$|^SB_DFF|^TRELLIS_FF$|^FL1P3|^SRL(?:16E|C32E)$/i
+const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAMB|URAM|DP16KD|SPRAM|SRL(?:16E|C32E))/i
+const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|DLATCH|SR|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|R|S|C|P)$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i
 
 /** Map a graph node to a schematic archetype. */
@@ -171,7 +171,9 @@ export function symbolKind(
   // Memory and unknown black-box boundaries can also carry seq=true. Keep
   // them as explicit boundaries rather than misrepresenting them as DFFs.
   if (MEMORY_HINT.test(token)) return 'memory'
-  if (REGISTER_HINT.test(token)) return 'reg'
+  if (node.register === true || (node.register !== false && REGISTER_HINT.test(token))) {
+    return 'reg'
+  }
   if (LUT_HINT.test(token)) return 'lut'
   if (MUX_TYPES.has(token) || /^MUX\d+$/.test(token)) return 'mux'
   if (/^NMUX\d*$/.test(token)) return 'nmux'

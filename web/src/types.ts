@@ -9,6 +9,7 @@ export interface NodeRef {
   name: string // human name: cell name (cleaned), "a[3]" for port bits, "1'b0" for consts
   cell_type?: string // "$lut", "$_NAND_", "$add", "SB_LUT4", ... (kind === "cell")
   seq?: boolean // sequential cell (FF/memory/blackbox boundary)
+  register?: boolean // true only for ordinary register/latch storage, not memories/SRLs/blackboxes
   src?: string // yosys src attr, e.g. "design.sv:12.16-12.21" (may be absent)
 }
 

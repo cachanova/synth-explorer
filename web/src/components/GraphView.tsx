@@ -323,7 +323,11 @@ function ControlLabels({
         const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
         const details = [
           `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${shortNetName(control.net_name)}`,
-          control.active_low ? 'active-low' : null,
+          control.active_low === true
+            ? 'active-low'
+            : control.active_low === false
+              ? 'active-high'
+              : null,
           control.synchronous === true
             ? 'synchronous'
             : control.synchronous === false

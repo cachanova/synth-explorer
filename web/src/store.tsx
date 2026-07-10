@@ -11,6 +11,7 @@ import {
 import * as api from './api'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
+  analysisNeedsRefresh,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
@@ -418,7 +419,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     )
     if (!autoSynthesize) return
     const timer = window.setTimeout(() => {
-      if (designInputKeyRef.current !== currentInputRef.current.key) {
+      const key = currentInputRef.current.key
+      if (
+        analysisNeedsRefresh(
+          key,
+          designInputKeyRef.current,
+          synthesisRunningRef.current ? synthesisKeyRef.current : null,
+        )
+      ) {
         void synthesize()
       }
     }, AUTO_SYNTH_DELAY_MS)
@@ -530,10 +538,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setActiveTab(tab)
     activeTabRef.current = tab
     if (tab === 'graph') {
-      // Keep an existing cone and its local pan/zoom/selection state intact.
-      // The initial Graph visit still opens the current source selection.
+      // Explicit path/node cones retain their local pan/zoom state. A source
+      // probe catches up to cursor movement that happened on another tab.
       setConeReq((request) =>
-        request ?? sourceGraphRequest(sourceSelectionRef.current, nextNonce()),
+        request && request.kind !== 'source'
+          ? request
+          : sourceGraphRequest(sourceSelectionRef.current, nextNonce()),
       )
     }
   }, [])
