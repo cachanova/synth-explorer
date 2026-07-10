@@ -58,6 +58,7 @@ pub struct Graph {
     pub incoming: Vec<Vec<usize>>,
     pub top: String,
     pub net_names: HashMap<u32, String>,
+    pub net_aliases: HashMap<u32, Vec<String>>,
     pub cell_info: HashMap<NodeId, CellInfo>,
     pub blackboxes: Vec<NodeId>,
 }
@@ -74,7 +75,7 @@ impl Graph {
         top_name: &str,
         module: &YosysModule,
     ) -> Result<Self, GraphError> {
-        let net_names = best_net_names(module);
+        let (net_names, net_aliases) = net_name_maps(module);
         let blackbox_modules = module_blackboxes(netlist);
         let module_names: HashSet<&str> = netlist.modules.keys().map(String::as_str).collect();
 
@@ -285,6 +286,7 @@ impl Graph {
             incoming: builder.incoming,
             top: top_name.to_owned(),
             net_names: builder.net_names,
+            net_aliases,
             cell_info: builder.cell_info,
             blackboxes: builder.blackboxes,
         })
@@ -441,8 +443,9 @@ fn input_ports(cell: &YosysCell) -> HashSet<String> {
     inputs
 }
 
-fn best_net_names(module: &YosysModule) -> HashMap<u32, String> {
+fn net_name_maps(module: &YosysModule) -> (HashMap<u32, String>, HashMap<u32, Vec<String>>) {
     let mut names: HashMap<u32, (bool, usize, String)> = HashMap::new();
+    let mut aliases: HashMap<u32, Vec<String>> = HashMap::new();
     for (raw_name, netname) in &module.netnames {
         let base = clean_net_name(raw_name);
         for (idx, bit) in netname.bits.iter().enumerate() {
@@ -457,12 +460,18 @@ fn best_net_names(module: &YosysModule) -> HashMap<u32, String> {
             if replace {
                 names.insert(net, score);
             }
+            aliases.entry(net).or_default().push(display);
         }
     }
-    names
+    for names in aliases.values_mut() {
+        names.sort();
+        names.dedup();
+    }
+    let best = names
         .into_iter()
         .map(|(net, (_, _, name))| (net, name))
-        .collect()
+        .collect();
+    (best, aliases)
 }
 
 fn better_net_score(candidate: &(bool, usize, String), current: &(bool, usize, String)) -> bool {
@@ -470,7 +479,7 @@ fn better_net_score(candidate: &(bool, usize, String), current: &(bool, usize, S
 }
 
 fn bit_name(base: &str, idx: usize, width: usize) -> String {
-    if width <= 1 || has_bit_suffix(base) {
+    if width <= 1 {
         base.to_owned()
     } else {
         format!("{base}[{idx}]")

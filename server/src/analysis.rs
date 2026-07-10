@@ -179,7 +179,7 @@ impl Analysis {
         let (node_depth, best_pred) = compute_depths(graph, &loop_set);
         let (endpoints, endpoint_targets) = discover_endpoints(graph, &node_depth);
         let source_map = build_source_map(graph, source_files);
-        let stats = build_stats(graph, &endpoints);
+        let stats = build_stats(graph, &endpoints, &endpoint_targets);
         let warnings = build_warnings(graph, &comb_loops);
         Self {
             node_depth,
@@ -654,7 +654,7 @@ fn discover_endpoints(
             .q_bits
             .iter()
             .find_map(|bit| bit.net())
-            .and_then(|net| graph.net_names.get(&net))
+            .and_then(|net| register_q_name(graph, net))
             .map(|name| strip_bit_suffix(name).to_owned())
             .unwrap_or_else(|| node.name.clone());
         let cell_type = node.cell_type.clone().unwrap_or_default();
@@ -664,8 +664,8 @@ fn discover_endpoints(
                 .q_bits
                 .get(bit_idx)
                 .and_then(|bit| bit.net())
-                .and_then(|net| graph.net_names.get(&net))
-                .and_then(|name| bit_index_from_name(name))
+                .and_then(|net| register_q_name(graph, net))
+                .and_then(bit_index_from_name)
                 .unwrap_or(bit_idx);
             let edge = info
                 .d_bits
@@ -898,7 +898,11 @@ fn merge_edges(edges: Vec<&Edge>) -> Vec<GraphEdge> {
     merged.into_values().collect()
 }
 
-fn build_stats(graph: &Graph, endpoints: &EndpointsResponse) -> Stats {
+fn build_stats(
+    graph: &Graph,
+    endpoints: &EndpointsResponse,
+    endpoint_targets: &[EndpointTarget],
+) -> Stats {
     let mut cells_by_type = BTreeMap::new();
     for node in &graph.nodes {
         if node.kind == NodeKind::Cell {
@@ -910,11 +914,9 @@ fn build_stats(graph: &Graph, endpoints: &EndpointsResponse) -> Stats {
     let num_register_bits = endpoints.registers.iter().map(|group| group.width).sum();
     let num_inputs = endpoints.inputs.iter().map(|group| group.width).sum();
     let num_outputs = endpoints.outputs.iter().map(|group| group.width).sum();
-    let max_depth = endpoints
-        .registers
+    let max_depth = endpoint_targets
         .iter()
-        .map(|group| group.worst_depth)
-        .chain(endpoints.outputs.iter().map(|group| group.worst_depth))
+        .map(|target| target.depth)
         .max()
         .unwrap_or_default();
     Stats {
@@ -986,6 +988,28 @@ fn parse_src_loc(loc: &str) -> Option<(String, usize, usize)> {
         .unwrap_or(file)
         .to_owned();
     Some((file_name, start_line, end_line.max(start_line)))
+}
+
+fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
+    let aliases = graph.net_aliases.get(&net)?;
+    let mut best: Option<&str> = None;
+    for candidate in aliases {
+        let candidate = candidate.as_str();
+        let candidate_depth = bracket_depth(candidate);
+        let replace = best.is_none_or(|current| {
+            let current_depth = bracket_depth(current);
+            candidate_depth > current_depth
+                || (candidate_depth == current_depth && candidate.len() < current.len())
+        });
+        if replace {
+            best = Some(candidate);
+        }
+    }
+    best.or_else(|| graph.net_names.get(&net).map(String::as_str))
+}
+
+fn bracket_depth(name: &str) -> usize {
+    name.as_bytes().iter().filter(|byte| **byte == b'[').count()
 }
 
 fn bit_index_from_name(name: &str) -> Option<usize> {

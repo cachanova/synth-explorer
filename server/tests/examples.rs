@@ -48,6 +48,16 @@ async fn high_fanout_enable_ranks_large_driver() {
     )
     .await;
     let fanout: FanoutResponse = analysis.fanout(&graph, 5);
+    let endpoints = analysis.endpoints();
+    assert_eq!(analysis.stats().num_register_bits, 128);
+    assert_eq!(analysis.stats().num_register_groups, 16);
+    assert_eq!(endpoints.registers.len(), 16);
+    assert!(
+        endpoints
+            .registers
+            .iter()
+            .all(|group| group.name.starts_with("regs[") && group.width == 8)
+    );
     assert!(
         fanout
             .drivers

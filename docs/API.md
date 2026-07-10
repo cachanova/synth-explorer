@@ -165,6 +165,12 @@ design exceeds `max_nodes`). Used by the optional full-schematic view.
 }
 ```
 
+## GET `/api/design/:id/nodes?ids=1,2,3`
+
+Resolve node ids to display metadata (used by the source-probe panel).
+Returns `{ "nodes": NodeRef[] }` in request order; unknown ids are omitted.
+At most 200 ids per request (`422` above that).
+
 ## GET `/api/examples`
 
 ```ts

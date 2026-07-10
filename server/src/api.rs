@@ -1,6 +1,6 @@
 use crate::analysis::{
-    Analysis, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, PathsResponse,
-    SourceMapResponse, Stats, Subgraph,
+    Analysis, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef, PathsResponse,
+    SourceMapResponse, Stats, Subgraph, node_ref,
 };
 use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
@@ -97,6 +97,7 @@ pub fn app(state: AppState) -> Router {
         .route("/design/{id}/fanout", get(fanout))
         .route("/design/{id}/netlist", get(netlist))
         .route("/design/{id}/source-map", get(source_map))
+        .route("/design/{id}/nodes", get(nodes))
         .layer(DefaultBodyLimit::max(4 * 1024 * 1024))
         .with_state(state);
 
@@ -282,6 +283,40 @@ async fn source_map(
     Ok(Json(design.analysis.source_map()))
 }
 
+#[derive(Debug, Deserialize)]
+struct NodesQuery {
+    ids: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct NodesResponse {
+    nodes: Vec<NodeRef>,
+}
+
+async fn nodes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<NodesQuery>,
+) -> Result<Json<NodesResponse>, ApiError> {
+    let design = get_design(&state, &id).await?;
+    let ids = query
+        .ids
+        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "ids is required"))?;
+    let ids = parse_node_ids(&ids)?;
+    if ids.len() > 200 {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "at most 200 ids may be requested",
+        ));
+    }
+    let nodes = ids
+        .into_iter()
+        .filter(|id| design.graph.nodes.get(*id as usize).is_some())
+        .map(|id| node_ref(&design.graph, id))
+        .collect();
+    Ok(Json(NodesResponse { nodes }))
+}
+
 #[derive(Debug, Serialize)]
 struct ExamplesResponse {
     examples: Vec<Example>,
@@ -396,4 +431,20 @@ fn map_yosys_error(err: YosysError) -> ApiError {
 
 fn mode_string(mode: SynthMode) -> String {
     mode.to_string()
+}
+
+fn parse_node_ids(ids: &str) -> Result<Vec<u32>, ApiError> {
+    if ids.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    ids.split(',')
+        .map(|raw| {
+            raw.trim().parse::<u32>().map_err(|_| {
+                ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    format!("invalid node id: {raw}"),
+                )
+            })
+        })
+        .collect()
 }
