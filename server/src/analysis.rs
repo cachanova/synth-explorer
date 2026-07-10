@@ -4,8 +4,10 @@ use crate::graph::{
 };
 use crate::netlist::{PortDirection, YosysModule};
 use serde::Serialize;
-use std::cmp::Reverse;
+use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+
+const PATH_NODE_CAP: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -298,6 +300,7 @@ struct EndpointTarget {
     endpoint: NodeId,
     endpoint_port: String,
     edge: Option<usize>,
+    startpoint: NodeId,
     depth: u32,
     group: String,
     kind: EndpointKind,
@@ -313,9 +316,10 @@ impl Analysis {
             best_pred,
             node_startpoint,
         } = compute_depths(graph, &loop_set);
-        let (endpoints, endpoint_targets) = discover_endpoints(graph, &node_depth);
+        let (endpoints, endpoint_targets) =
+            discover_endpoints(graph, &node_depth, &node_startpoint);
         let source_map = build_source_map(graph, source_files);
-        let stats = build_stats(graph, &endpoints, &endpoint_targets, &node_startpoint);
+        let stats = build_stats(graph, &endpoints, &endpoint_targets);
         let warnings = build_warnings(graph, &comb_loops);
         Self {
             node_depth,
@@ -390,33 +394,79 @@ impl Analysis {
 
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
         const TARGETS_PER_GROUP_CAP: usize = 64;
-        let mut targets: Vec<&EndpointTarget> = self
+        let candidate_cap = limit.max(1).saturating_mul(16).min(8000);
+        let mut total_targets = 0;
+        let mut grouped_targets: HashMap<(EndpointKind, &str), Vec<&EndpointTarget>> =
+            HashMap::new();
+        for target in self
             .endpoint_targets
             .iter()
             .filter(|target| to.is_none_or(|id| target.endpoint == id))
-            .collect();
-        targets.sort_by_key(|target| (Reverse(target.depth), target.group.clone(), target.bit));
-        let total_targets = targets.len();
-        let candidate_cap = limit.max(1).saturating_mul(16).min(8000);
-        let mut per_group: HashMap<(EndpointKind, &str), usize> = HashMap::new();
-        let mut candidates = Vec::new();
-        for target in targets {
-            let count = per_group
+        {
+            total_targets += 1;
+            let group = grouped_targets
                 .entry((target.kind, target.group.as_str()))
                 .or_default();
-            if *count >= TARGETS_PER_GROUP_CAP {
+            if group.len() < TARGETS_PER_GROUP_CAP {
+                group.push(target);
                 continue;
             }
-            *count += 1;
-            candidates.push(target);
-            if candidates.len() >= candidate_cap {
-                break;
+            let worst = group
+                .iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| compare_target_rank(a, b))
+                .map(|(index, _)| index)
+                .expect("a capped target group is not empty");
+            if compare_target_rank(target, group[worst]) == Ordering::Less {
+                group[worst] = target;
             }
         }
+
+        let mut target_groups: Vec<((EndpointKind, &str), Vec<&EndpointTarget>)> =
+            grouped_targets.into_iter().collect();
+        for (_, targets) in &mut target_groups {
+            targets.sort_by(|a, b| compare_target_rank(a, b));
+        }
+        target_groups.sort_by(|(a_key, a), (b_key, b)| {
+            Reverse(a[0].depth)
+                .cmp(&Reverse(b[0].depth))
+                .then_with(|| a_key.cmp(b_key))
+        });
+
+        // Give every deepest logical endpoint a representative before spending
+        // the bounded budget on additional bit/route variants. Extra targets
+        // are selected round-robin so a single wide vector cannot crowd out
+        // other groups.
+        let represented_groups = target_groups.len().min(candidate_cap);
+        let mut candidates = Vec::with_capacity(candidate_cap);
+        for (_, targets) in target_groups.iter().take(represented_groups) {
+            candidates.push(targets[0]);
+        }
+        let mut bit_index = 1;
+        while candidates.len() < candidate_cap {
+            let mut added = false;
+            for (_, targets) in target_groups.iter().take(represented_groups) {
+                let Some(target) = targets.get(bit_index) else {
+                    continue;
+                };
+                candidates.push(*target);
+                added = true;
+                if candidates.len() == candidate_cap {
+                    break;
+                }
+            }
+            if !added {
+                break;
+            }
+            bit_index += 1;
+        }
+
         let mut grouped: BTreeMap<(String, EndpointKind, PathClass, u32, Vec<String>), PathEntry> =
             BTreeMap::new();
+        let mut route_clipped = false;
         for target in &candidates {
-            let path = self.path_for_target(graph, target);
+            let (path, clipped) = self.path_for_target(graph, target);
+            route_clipped |= clipped;
             let signature = path
                 .nodes
                 .iter()
@@ -455,7 +505,7 @@ impl Analysis {
                 .iter()
                 .map(|id| graph.node_ref_name(*id))
                 .collect(),
-            truncated: candidates.len() < total_targets || grouped_count > limit,
+            truncated: route_clipped || candidates.len() < total_targets || grouped_count > limit,
         }
     }
 
@@ -698,35 +748,45 @@ impl Analysis {
         FanoutResponse { drivers }
     }
 
-    fn path_for_target(&self, graph: &Graph, target: &EndpointTarget) -> PathEntry {
+    fn path_for_target(&self, graph: &Graph, target: &EndpointTarget) -> (PathEntry, bool) {
         let mut node_ids = vec![target.endpoint];
-        if let Some(mut edge_idx) = target.edge {
+        let mut clipped = false;
+        if let Some(edge_idx) = target.edge {
             let mut current = graph.edges[edge_idx].from;
-            node_ids.push(current);
-            while graph.is_comb(current) {
+            loop {
+                if node_ids.len() >= PATH_NODE_CAP {
+                    clipped = true;
+                    break;
+                }
+                node_ids.push(current);
+                if !graph.is_comb(current) {
+                    break;
+                }
                 let Some(pred_edge) = self.best_pred[current as usize] else {
                     break;
                 };
-                edge_idx = pred_edge;
-                current = graph.edges[edge_idx].from;
-                node_ids.push(current);
+                current = graph.edges[pred_edge].from;
             }
+        }
+        if clipped && node_ids.last().copied() != Some(target.startpoint) {
+            *node_ids
+                .last_mut()
+                .expect("an endpoint path always contains its endpoint") = target.startpoint;
         }
         node_ids.reverse();
         let nodes: Vec<NodeRef> = node_ids
             .iter()
             .filter(|id| {
-                graph.nodes[**id as usize]
-                    .cell_type
-                    .as_deref()
-                    .is_none_or(|cell_type| !is_infrastructure_cell(cell_type))
+                **id == target.startpoint
+                    || **id == target.endpoint
+                    || graph.nodes[**id as usize]
+                        .cell_type
+                        .as_deref()
+                        .is_none_or(|cell_type| !is_infrastructure_cell(cell_type))
             })
             .map(|id| node_ref(graph, *id))
             .collect();
-        let startpoint = nodes
-            .first()
-            .cloned()
-            .unwrap_or_else(|| node_ref(graph, target.endpoint));
+        let startpoint = node_ref(graph, target.startpoint);
         let endpoint = node_ref(graph, target.endpoint);
         let class = classify_path(&startpoint, target.kind);
         let output_aliases = self
@@ -736,18 +796,21 @@ impl Analysis {
             .find(|group| target.kind == EndpointKind::Register && group.name == target.group)
             .map(|group| aliases_for_register_bit(&group.output_aliases, target.bit))
             .unwrap_or_default();
-        PathEntry {
-            depth: target.depth,
-            class,
-            endpoint_group: target.group.clone(),
-            endpoint_kind: target.kind,
-            bits: vec![target.bit],
-            output_aliases,
-            startpoint,
-            endpoint,
-            endpoint_port: target.endpoint_port.clone(),
-            nodes,
-        }
+        (
+            PathEntry {
+                depth: target.depth,
+                class,
+                endpoint_group: target.group.clone(),
+                endpoint_kind: target.kind,
+                bits: vec![target.bit],
+                output_aliases,
+                startpoint,
+                endpoint,
+                endpoint_port: target.endpoint_port.clone(),
+                nodes,
+            },
+            clipped,
+        )
     }
 
     fn subgraph_from_sets(
@@ -821,6 +884,14 @@ fn path_node_signature(node: &NodeRef) -> String {
         ApiNodeKind::Port => "port".to_owned(),
         ApiNodeKind::Const => "const".to_owned(),
     }
+}
+
+fn compare_target_rank(a: &EndpointTarget, b: &EndpointTarget) -> Ordering {
+    Reverse(a.depth)
+        .cmp(&Reverse(b.depth))
+        .then_with(|| a.bit.cmp(&b.bit))
+        .then_with(|| a.endpoint.cmp(&b.endpoint))
+        .then_with(|| a.endpoint_port.cmp(&b.endpoint_port))
 }
 
 fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass {
@@ -1092,6 +1163,7 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
 fn discover_endpoints(
     graph: &Graph,
     node_depth: &[Option<u32>],
+    node_startpoint: &[Option<NodeId>],
 ) -> (EndpointsResponse, Vec<EndpointTarget>) {
     let mut targets = Vec::new();
     let mut register_map: BTreeMap<String, RegisterGroup> = BTreeMap::new();
@@ -1114,7 +1186,8 @@ fn discover_endpoints(
             .unwrap_or_else(|| node.name.clone());
         let cell_type = node.cell_type.clone().unwrap_or_default();
         let mut bits = Vec::new();
-        for bit_idx in 0..q_width {
+        let data_edges = endpoint_data_edges(graph, node.id, info, q_width);
+        for (bit_idx, edge) in data_edges.into_iter().enumerate() {
             let display_bit = info
                 .q_bits
                 .get(bit_idx)
@@ -1122,11 +1195,6 @@ fn discover_endpoints(
                 .and_then(|net| register_q_name(graph, net))
                 .and_then(bit_index_from_name)
                 .unwrap_or(bit_idx);
-            let edge = info
-                .d_bits
-                .get(bit_idx)
-                .and_then(|d_bit| find_matching_input_edge(graph, node.id, "D", d_bit))
-                .or_else(|| find_nth_data_edge(graph, node.id, bit_idx));
             let depth = edge.map_or(0, |idx| edge_depth(graph, node_depth, idx));
             bits.push(EndpointBit {
                 bit: display_bit,
@@ -1141,6 +1209,7 @@ fn discover_endpoints(
                 endpoint: node.id,
                 endpoint_port: "D".to_owned(),
                 edge,
+                startpoint: endpoint_startpoint_id(graph, node_startpoint, node.id, edge),
                 depth,
                 group: group_name.clone(),
                 kind: EndpointKind::Register,
@@ -1164,7 +1233,9 @@ fn discover_endpoints(
             .worst_depth
             .max(bits.iter().map(|bit| bit.depth).max().unwrap_or_default());
         entry.bits.extend(bits);
-        entry.bits.sort_by_key(|bit| bit.bit);
+    }
+    for register in register_map.values_mut() {
+        register.bits.sort_by_key(|bit| bit.bit);
     }
 
     let mut outputs = Vec::new();
@@ -1223,6 +1294,7 @@ fn discover_endpoints(
                     endpoint: node.id,
                     endpoint_port: name.clone(),
                     edge,
+                    startpoint: endpoint_startpoint_id(graph, node_startpoint, node.id, edge),
                     depth,
                     group: name.clone(),
                     kind: EndpointKind::Output,
@@ -1268,6 +1340,12 @@ fn discover_endpoints(
                     endpoint: node.id,
                     endpoint_port: edge.to_port.clone(),
                     edge: Some(*edge_idx),
+                    startpoint: endpoint_startpoint_id(
+                        graph,
+                        node_startpoint,
+                        node.id,
+                        Some(*edge_idx),
+                    ),
                     depth: edge_depth(graph, node_depth, *edge_idx),
                     group: node.name.clone(),
                     kind: EndpointKind::Blackbox,
@@ -1287,27 +1365,56 @@ fn discover_endpoints(
     )
 }
 
-fn find_matching_input_edge(
+fn endpoint_data_edges(
     graph: &Graph,
     node_id: NodeId,
-    port: &str,
-    bit: &crate::netlist::YosysBit,
-) -> Option<usize> {
-    graph.incoming[node_id as usize]
-        .iter()
-        .copied()
-        .find(|idx| {
-            let edge = &graph.edges[*idx];
-            edge.to_port == port && edge.bit == bit.net()
+    info: &crate::graph::CellInfo,
+    width: usize,
+) -> Vec<Option<usize>> {
+    let mut data_edges = Vec::new();
+    let mut d_edges = Vec::new();
+    let mut d_edges_by_net = HashMap::new();
+    for edge_idx in &graph.incoming[node_id as usize] {
+        let edge = &graph.edges[*edge_idx];
+        if edge.control {
+            continue;
+        }
+        data_edges.push(*edge_idx);
+        if edge.to_port == "D" {
+            d_edges.push(*edge_idx);
+            if let Some(bit) = edge.bit {
+                d_edges_by_net.entry(bit).or_insert(*edge_idx);
+            }
+        }
+    }
+
+    (0..width)
+        .map(|bit_idx| {
+            info.d_bits
+                .get(bit_idx)
+                .and_then(|bit| bit.net())
+                .and_then(|bit| d_edges_by_net.get(&bit).copied())
+                .or_else(|| d_edges.get(bit_idx).copied())
+                .or_else(|| data_edges.get(bit_idx).copied())
         })
+        .collect()
 }
 
-fn find_nth_data_edge(graph: &Graph, node_id: NodeId, nth: usize) -> Option<usize> {
-    graph.incoming[node_id as usize]
-        .iter()
-        .copied()
-        .filter(|idx| !graph.edges[*idx].control)
-        .nth(nth)
+fn endpoint_startpoint_id(
+    graph: &Graph,
+    node_startpoint: &[Option<NodeId>],
+    endpoint: NodeId,
+    edge: Option<usize>,
+) -> NodeId {
+    let Some(edge_idx) = edge else {
+        return endpoint;
+    };
+    let current = graph.edges[edge_idx].from;
+    if graph.is_comb(current) {
+        node_startpoint[current as usize].unwrap_or(current)
+    } else {
+        current
+    }
 }
 
 fn best_endpoint_edge(
@@ -1701,7 +1808,6 @@ fn build_stats(
     graph: &Graph,
     endpoints: &EndpointsResponse,
     endpoint_targets: &[EndpointTarget],
-    node_startpoint: &[Option<NodeId>],
 ) -> Stats {
     let mut cells_by_type = BTreeMap::new();
     let mut cell_categories = CellCategoryCounts::default();
@@ -1740,7 +1846,7 @@ fn build_stats(
         .unwrap_or_default();
     let mut depths = DepthSummary::default();
     for target in endpoint_targets {
-        let startpoint = node_ref(graph, target_startpoint_id(graph, node_startpoint, target));
+        let startpoint = node_ref(graph, target.startpoint);
         match classify_path(&startpoint, target.kind) {
             PathClass::InputToRegister => update_max(&mut depths.input_to_register, target.depth),
             PathClass::RegisterToRegister => {
@@ -1761,22 +1867,6 @@ fn build_stats(
         max_depth,
         depths,
         cell_categories,
-    }
-}
-
-fn target_startpoint_id(
-    graph: &Graph,
-    node_startpoint: &[Option<NodeId>],
-    target: &EndpointTarget,
-) -> NodeId {
-    let Some(edge_idx) = target.edge else {
-        return target.endpoint;
-    };
-    let current = graph.edges[edge_idx].from;
-    if graph.is_comb(current) {
-        node_startpoint[current as usize].unwrap_or(current)
-    } else {
-        current
     }
 }
 
@@ -1903,8 +1993,8 @@ fn bit_index_from_name(name: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{Edge, Graph, Node, NodeKind};
-    use crate::netlist::{PortDirection, parse_str, select_top};
+    use crate::graph::{CellInfo, Edge, Graph, Node, NodeKind};
+    use crate::netlist::{PortDirection, YosysBit, parse_str, select_top};
     use std::time::Instant;
 
     fn fixture(name: &str) -> (Graph, Analysis) {
@@ -1972,6 +2062,54 @@ mod tests {
         assert!(started.elapsed().as_secs() < 10);
         assert!(analysis.comb_loops.is_empty());
         assert_eq!(analysis.stats.max_depth, depth as u32);
+
+        let paths = analysis.paths(&graph, 1, None);
+        assert!(paths.truncated);
+        assert_eq!(paths.paths.len(), 1);
+        let path = &paths.paths[0];
+        assert_eq!(path.nodes.len(), PATH_NODE_CAP);
+        assert_eq!(path.startpoint.id, 0);
+        assert_eq!(path.endpoint.id, (depth + 1) as NodeId);
+        assert_eq!(
+            path.nodes.first().map(|node| node.id),
+            Some(path.startpoint.id)
+        );
+        assert_eq!(
+            path.nodes.last().map(|node| node.id),
+            Some(path.endpoint.id)
+        );
+    }
+
+    #[test]
+    fn path_sampling_represents_deepest_logical_groups_before_extra_bits() {
+        let graph = register_bank_graph(30, 64);
+        let analysis = Analysis::new(&graph, vec!["register_bank.sv".to_owned()]);
+
+        let paths = analysis.paths(&graph, 25, None);
+        let groups: HashSet<_> = paths
+            .paths
+            .iter()
+            .map(|path| path.endpoint_group.as_str())
+            .collect();
+        assert_eq!(paths.paths.len(), 25);
+        assert_eq!(groups.len(), 25);
+        assert!(paths.truncated);
+    }
+
+    #[test]
+    fn wide_register_endpoint_discovery_is_near_linear() {
+        let width = 20_000;
+        let graph = register_bank_graph(1, width);
+        let started = Instant::now();
+        let analysis = Analysis::new(&graph, vec!["wide_register.sv".to_owned()]);
+
+        assert!(started.elapsed().as_secs() < 5);
+        assert_eq!(analysis.endpoints.registers.len(), 1);
+        assert_eq!(analysis.endpoints.registers[0].bits.len(), width);
+        assert_eq!(
+            analysis.endpoints.registers[0].bits[width - 1].bit,
+            width - 1
+        );
     }
 
     fn deep_chain_graph(depth: usize) -> Graph {
@@ -2058,6 +2196,97 @@ mod tests {
             cell_info: HashMap::new(),
             blackboxes: Vec::new(),
             signal_fanout: HashMap::new(),
+        }
+    }
+
+    fn register_bank_graph(groups: usize, width: usize) -> Graph {
+        let mut nodes = Vec::with_capacity(groups + 1);
+        nodes.push(Node {
+            id: 0,
+            kind: NodeKind::PortBit,
+            name: "in".to_owned(),
+            raw_name: "in".to_owned(),
+            cell_type: None,
+            seq: false,
+            blackbox: false,
+            src: None,
+            params: BTreeMap::new(),
+            port: Some("in".to_owned()),
+            port_bit: Some(0),
+            port_dir: Some(PortDirection::Input),
+            const_value: None,
+        });
+
+        let mut edges = Vec::with_capacity(groups * width);
+        let mut outgoing = vec![Vec::new(); groups + 1];
+        let mut incoming = vec![Vec::new(); groups + 1];
+        let mut net_aliases = HashMap::new();
+        let mut cell_info = HashMap::new();
+        let d_bits: Vec<YosysBit> = (0..width)
+            .map(|bit| YosysBit::Net((bit + 1) as u32))
+            .collect();
+
+        for group in 0..groups {
+            let id = (group + 1) as NodeId;
+            nodes.push(Node {
+                id,
+                kind: NodeKind::Cell,
+                name: format!("q{group}"),
+                raw_name: format!("q{group}"),
+                cell_type: Some("$dff".to_owned()),
+                seq: true,
+                blackbox: false,
+                src: None,
+                params: BTreeMap::new(),
+                port: None,
+                port_bit: None,
+                port_dir: None,
+                const_value: None,
+            });
+
+            let q_bits: Vec<YosysBit> = (0..width)
+                .map(|bit| {
+                    let net = 1_000_000 + group * width + bit;
+                    net_aliases.insert(net as u32, vec![format!("q{group}[{bit}]")]);
+                    YosysBit::Net(net as u32)
+                })
+                .collect();
+            for bit in 0..width {
+                let edge_idx = edges.len();
+                edges.push(Edge {
+                    from: 0,
+                    to: id,
+                    from_port: "in".to_owned(),
+                    to_port: "D".to_owned(),
+                    bit: Some((bit + 1) as u32),
+                    net_name: format!("d[{bit}]"),
+                    control: false,
+                });
+                outgoing[0].push(edge_idx);
+                incoming[id as usize].push(edge_idx);
+            }
+            cell_info.insert(
+                id,
+                CellInfo {
+                    q_bits,
+                    d_bits: d_bits.clone(),
+                    clock_net: None,
+                    output_ports: HashSet::from(["Q".to_owned()]),
+                    input_ports: HashSet::from(["D".to_owned()]),
+                },
+            );
+        }
+
+        Graph {
+            nodes,
+            edges,
+            outgoing,
+            incoming,
+            top: "register_bank".to_owned(),
+            net_names: HashMap::new(),
+            net_aliases,
+            cell_info,
+            blackboxes: Vec::new(),
         }
     }
 }
