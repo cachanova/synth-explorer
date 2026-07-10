@@ -84,6 +84,7 @@ export interface ConeOptions {
   max_nodes?: number
   hide_control?: boolean
   hide_const?: boolean
+  show_infrastructure?: boolean
 }
 
 export function getCone(id: string, opts: ConeOptions): Promise<Subgraph> {
@@ -94,6 +95,9 @@ export function getCone(id: string, opts: ConeOptions): Promise<Subgraph> {
   if (opts.max_nodes != null) p.set('max_nodes', String(opts.max_nodes))
   if (opts.hide_control != null) p.set('hide_control', String(opts.hide_control))
   if (opts.hide_const != null) p.set('hide_const', String(opts.hide_const))
+  if (opts.show_infrastructure != null) {
+    p.set('show_infrastructure', String(opts.show_infrastructure))
+  }
   return getJson<Subgraph>(`/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`)
 }
 
@@ -104,6 +108,7 @@ export interface LineConeOptions {
   max_nodes?: number
   hide_control?: boolean
   hide_const?: boolean
+  show_infrastructure?: boolean
 }
 
 export function getLineCone(
@@ -117,6 +122,9 @@ export function getLineCone(
   if (opts.max_nodes != null) p.set('max_nodes', String(opts.max_nodes))
   if (opts.hide_control != null) p.set('hide_control', String(opts.hide_control))
   if (opts.hide_const != null) p.set('hide_const', String(opts.hide_const))
+  if (opts.show_infrastructure != null) {
+    p.set('show_infrastructure', String(opts.show_infrastructure))
+  }
   return getJson<LineConeResponse>(
     `/api/design/${encodeURIComponent(id)}/line-cone?${p.toString()}`,
   )
@@ -128,9 +136,13 @@ export function getFanout(id: string, limit = 50): Promise<FanoutResponse> {
   )
 }
 
-export function getNetlist(id: string, maxNodes = 1500): Promise<Subgraph> {
+export function getNetlist(
+  id: string,
+  maxNodes = 1500,
+  showInfrastructure = false,
+): Promise<Subgraph> {
   return getJson<Subgraph>(
-    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}`,
+    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}`,
   )
 }
 

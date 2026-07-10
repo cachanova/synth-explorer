@@ -20,7 +20,7 @@ export function Graph() {
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
 
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}`
 
   // fetch subgraph whenever the request or options change
   useEffect(() => {
@@ -37,7 +37,11 @@ export function Graph() {
     if (coneReq.kind !== 'source') setSelected(null)
     const fetchP =
       coneReq.kind === 'netlist'
-        ? getNetlist(design.design_id, graphOptions.maxNodes).then((graph) => ({
+        ? getNetlist(
+            design.design_id,
+            graphOptions.maxNodes,
+            graphOptions.showInfrastructure,
+          ).then((graph) => ({
             graph,
             status: null,
           }))
@@ -49,6 +53,7 @@ export function Graph() {
               max_nodes: graphOptions.maxNodes,
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
+              show_infrastructure: graphOptions.showInfrastructure,
             }).then((response) => ({
               graph: response.graph,
               status: response.status,
@@ -60,6 +65,7 @@ export function Graph() {
               max_nodes: graphOptions.maxNodes,
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
+              show_infrastructure: graphOptions.showInfrastructure,
             }).then((graph) => ({ graph, status: null }))
     fetchP
       .then(({ graph, status }) => {
@@ -305,6 +311,17 @@ function GraphToolbar() {
             +
           </button>
         </div>
+      </label>
+
+      <label className="toggle" title="Show vendor IO and clock-buffer cells">
+        <input
+          type="checkbox"
+          checked={graphOptions.showInfrastructure}
+          onChange={(event) =>
+            setOpt({ showInfrastructure: event.target.checked })
+          }
+        />
+        infrastructure
       </label>
 
       <span className="sep" />

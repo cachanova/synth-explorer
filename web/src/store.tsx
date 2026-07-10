@@ -15,7 +15,6 @@ import type {
   DesignFile,
   Example,
   Mode,
-  NodeRef,
   Stats,
   SynthesizeResponse,
   TimingPath,
@@ -67,6 +66,7 @@ export interface GraphOptions {
   maxNodes: number
   hideControl: boolean
   hideConst: boolean
+  showInfrastructure: boolean
 }
 
 export interface EditorHighlight {
@@ -105,15 +105,6 @@ export interface Snapshot {
   fanout: import('./types').FanoutDriver[]
 }
 
-export interface ProbeState {
-  file: string
-  line: number
-  nodeIds: number[]
-  // display metadata from /nodes, keyed by id; empty when the endpoint is
-  // unavailable (fall back to "#id" display)
-  refs: Record<number, NodeRef>
-}
-
 const DEFAULT_FILE: DesignFile = {
   name: 'design.sv',
   content: `module top (
@@ -138,6 +129,7 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   maxNodes: 300,
   hideControl: true,
   hideConst: true,
+  showInfrastructure: false,
 }
 
 export function synthesisInput(
@@ -226,6 +218,7 @@ export interface Store {
   graphOptions: GraphOptions
   setGraphOptions: (patch: Partial<GraphOptions>) => void
   openCone: (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => void
+  openControlCone: (opts: { node: number; label: string }) => void
   showPathInGraph: (path: TimingPath) => void
   openNetlist: () => void
 
@@ -235,14 +228,8 @@ export interface Store {
   highlightSources: (spans: SrcSpan[]) => void
 
   // cross-probe: editor -> graph nodes
-  cursor: { file: string; line: number }
-  setCursor: (file: string, line: number) => void
   sourceSelection: SourceSelection
   setSourceSelection: (file: string, startLine: number, endLine: number) => void
-  probe: ProbeState | null
-  runProbe: () => Promise<void>
-  clearProbe: () => void
-
   // compare
   snapshotA: Snapshot | null
   snapshotB: Snapshot | null
@@ -286,8 +273,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     startLine: 1,
     endLine: 1,
   })
-  const [probe, setProbe] = useState<ProbeState | null>(null)
-
   const [snapshotA, setSnapshotA] = useState<Snapshot | null>(null)
   const [snapshotB, setSnapshotB] = useState<Snapshot | null>(null)
 
@@ -416,8 +401,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           setDesign(res)
           setDesignInputKey(running.key)
           designInputKeyRef.current = running.key
-          setProbe(null)
-
           // A source graph tracks the selected lines across synthesis. Other
           // explicit cones remain stable until the user asks to replace them.
           setConeReq((request) =>
@@ -487,6 +470,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setActiveTab('graph')
   }, [])
 
+  const openControlCone = useCallback(
+    ({ node, label }: { node: number; label: string }) => {
+      setGraphOptionsState((options) => ({ ...options, hideControl: false }))
+      setConeReq({
+        kind: 'cone',
+        node,
+        dir: 'fanout',
+        label: `${label} (control fanout)`,
+        highlight: [],
+        nonce: nextNonce(),
+      })
+      setActiveTab('graph')
+    },
+    [],
+  )
+
   const openNetlist = useCallback(() => {
     setConeReq({
       kind: 'netlist',
@@ -537,11 +536,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [setSourceSelection],
   )
 
-  const setCursor = useCallback(
-    (file: string, line: number) => setSourceSelection(file, line, line),
-    [setSourceSelection],
-  )
-
   const setActiveTabForUser = useCallback((tab: TabId) => {
     setActiveTab(tab)
     activeTabRef.current = tab
@@ -549,37 +543,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setConeReq(sourceGraphRequest(sourceSelectionRef.current, nextNonce()))
     }
   }, [])
-
-  const cursor = useMemo(
-    () => ({ file: sourceSelection.file, line: sourceSelection.endLine }),
-    [sourceSelection],
-  )
-
-  const runProbe = useCallback(async () => {
-    if (!design) return
-    try {
-      const map = await api.getSourceMap(design.design_id)
-      const key = `${cursor.file}:${cursor.line}`
-      const ids = map.by_line[key] ?? []
-      // Resolve display metadata; best-effort (endpoint may not exist yet —
-      // fall back to bare "#id" rows).
-      const refs: Record<number, NodeRef> = {}
-      if (ids.length > 0) {
-        try {
-          const res = await api.getNodes(design.design_id, ids)
-          for (const n of res.nodes) refs[n.id] = n
-        } catch {
-          /* 404/422 → keep refs empty */
-        }
-      }
-      setProbe({ file: cursor.file, line: cursor.line, nodeIds: ids, refs })
-    } catch (e) {
-      const err = e as api.ApiRequestError
-      setError({ message: err.message, log: err.log, status: err.status })
-    }
-  }, [design, cursor])
-
-  const clearProbe = useCallback(() => setProbe(null), [])
 
   const takeSnapshot = useCallback(
     async (slot: 'A' | 'B') => {
@@ -637,18 +600,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       graphOptions,
       setGraphOptions,
       openCone,
+      openControlCone,
       showPathInGraph,
       openNetlist,
       editorHighlight,
       highlightSrc,
       highlightSources,
-      cursor,
-      setCursor,
       sourceSelection,
       setSourceSelection,
-      probe,
-      runProbe,
-      clearProbe,
       snapshotA,
       snapshotB,
       takeSnapshot,
@@ -678,18 +637,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       graphOptions,
       setGraphOptions,
       openCone,
+      openControlCone,
       showPathInGraph,
       openNetlist,
       editorHighlight,
       highlightSrc,
       highlightSources,
-      cursor,
-      setCursor,
       sourceSelection,
       setSourceSelection,
-      probe,
-      runProbe,
-      clearProbe,
       snapshotA,
       snapshotB,
       takeSnapshot,

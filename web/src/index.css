@@ -813,28 +813,3 @@ table.grid tr.expanded td {
 .delta-rm {
   color: var(--red);
 }
-
-/* ---- probe panel ---- */
-.probe-panel {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
-  background: var(--bg-1);
-  padding: 8px 10px;
-  max-height: 30%;
-  overflow: auto;
-}
-.probe-panel .head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-.probe-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 4px;
-  border-bottom: 1px solid var(--bg-3);
-  font-size: 12px;
-}

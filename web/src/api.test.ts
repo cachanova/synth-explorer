@@ -27,6 +27,7 @@ describe('getLineCone', () => {
         max_nodes: 400,
         hide_control: true,
         hide_const: false,
+        show_infrastructure: true,
       }),
     ).resolves.toEqual(response)
 
@@ -39,6 +40,7 @@ describe('getLineCone', () => {
       max_nodes: '400',
       hide_control: 'true',
       hide_const: 'false',
+      show_infrastructure: 'true',
     })
   })
 })

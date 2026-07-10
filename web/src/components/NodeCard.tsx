@@ -1,8 +1,7 @@
-import { parseSrc } from '../lib/src'
+import { parseSrc, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { useStore } from '../store'
 import type { GraphNode } from '../types'
-import { SrcLink } from './SrcLink'
 
 export function NodeCard({
   node,
@@ -27,16 +26,8 @@ export function NodeCard({
       <div className="kv">
         <span className="k">kind</span>
         <span className="v">{node.kind}</span>
-        {node.cell_type && (
-          <>
-            <span className="k">yosys type</span>
-            <span className="v">{node.cell_type}</span>
-          </>
-        )}
         <span className="k">name</span>
         <span className="v">{name}</span>
-        <span className="k">id</span>
-        <span className="v">{node.id}</span>
         {node.depth != null && (
           <>
             <span className="k">depth</span>
@@ -57,28 +48,52 @@ export function NodeCard({
         )}
       </div>
 
-      {params.length > 0 && (
-        <>
-          <div className="section-title" style={{ margin: '8px 0 4px' }}>
-            Params
-          </div>
-          <div className="kv">
-            {params.map(([k, v]) => (
-              <span key={k} style={{ display: 'contents' }}>
-                <span className="k">{k}</span>
-                <span className="v">{truncateMid(v, 40)}</span>
-              </span>
-            ))}
-          </div>
-        </>
-      )}
-
       {spans.length > 0 && (
         <div style={{ margin: '8px 0' }}>
-          <span className="k faint">src: </span>
-          <SrcLink src={node.src} />
+          <div className="section-title" style={{ margin: '8px 0 4px' }}>
+            Source locations
+          </div>
+          <div className="chain">
+            {spans.map((span, index) => (
+              <button
+                key={`${span.file}:${span.startLine}:${span.startCol}:${index}`}
+                className="hop"
+                onClick={() =>
+                  store.highlightSources([
+                    span,
+                    ...spans.filter((_, other) => other !== index),
+                  ])
+                }
+              >
+                <span className="t">{index === 0 ? 'primary' : 'contributor'}</span>
+                <span className="n">{srcLabel(span)}</span>
+              </button>
+            ))}
+          </div>
         </div>
       )}
+
+      <details className="collapsible" style={{ margin: '8px 0' }}>
+        <summary>Yosys details</summary>
+        <div className="kv" style={{ marginTop: 6 }}>
+          <span className="k">raw name</span>
+          <span className="v">{node.name}</span>
+          {node.cell_type && (
+            <>
+              <span className="k">raw type</span>
+              <span className="v">{node.cell_type}</span>
+            </>
+          )}
+          <span className="k">node id</span>
+          <span className="v">{node.id}</span>
+          {params.map(([k, v]) => (
+            <span key={k} style={{ display: 'contents' }}>
+              <span className="k">{k}</span>
+              <span className="v">{truncateMid(v, 40)}</span>
+            </span>
+          ))}
+        </div>
+      </details>
 
       <div className="actions">
         <button
