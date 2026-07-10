@@ -130,10 +130,10 @@ const pending = new Map<
 
 function getWorker(): Worker {
   if (worker) return worker
-  worker = new Worker(new URL('../workers/elk.worker.ts', import.meta.url), {
+  const w = new Worker(new URL('../workers/elk.worker.ts', import.meta.url), {
     type: 'module',
   })
-  worker.onmessage = (ev: MessageEvent<ElkResponse>) => {
+  w.onmessage = (ev: MessageEvent<ElkResponse>) => {
     const msg = ev.data
     const entry = pending.get(msg.id)
     if (!entry) return
@@ -141,11 +141,18 @@ function getWorker(): Worker {
     if (msg.ok) entry.resolve(msg.result)
     else entry.reject(new Error(msg.error))
   }
-  worker.onerror = (ev) => {
-    for (const entry of pending.values()) entry.reject(new Error(ev.message))
+  w.onerror = (ev) => {
+    for (const entry of pending.values()) {
+      entry.reject(new Error(ev.message || 'elk worker error'))
+    }
     pending.clear()
+    // The worker is dead — drop the singleton so the next layout spawns a
+    // fresh one instead of posting into a void forever.
+    w.terminate()
+    if (worker === w) worker = null
   }
-  return worker
+  worker = w
+  return w
 }
 
 /** Lay out a Subgraph in the worker. Rejects if node count exceeds the cap. */

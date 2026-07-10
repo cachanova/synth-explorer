@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from './api'
+import { createLatestGuard } from './lib/latest'
 import type { SrcSpan } from './lib/src'
 import type {
   DesignFile,
@@ -186,6 +187,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const nonceRef = useRef(0)
   const nextNonce = () => ++nonceRef.current
+  const synthGuard = useRef(createLatestGuard()).current
 
   // Load examples once.
   const loadedExamples = useRef(false)
@@ -246,6 +248,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const synthesize = useCallback(async () => {
+    // Only the most recent request may commit state or clear the spinner:
+    // a slower earlier request must not overwrite a newer design, and its
+    // completion must not stop the spinner while the newer one is in flight.
+    const token = synthGuard.begin()
     setSynthesizing(true)
     setError(null)
     try {
@@ -255,18 +261,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         mode,
         extra_args: extraArgs.trim() || undefined,
       })
+      if (!synthGuard.isCurrent(token)) return
       setDesign(res)
       setConeReq(null)
       setProbe(null)
       setActiveTab('overview')
     } catch (e) {
+      if (!synthGuard.isCurrent(token)) return
       const err = e as api.ApiRequestError
       setError({ message: err.message, log: err.log, status: err.status })
       setDesign(null)
     } finally {
-      setSynthesizing(false)
+      if (synthGuard.isCurrent(token)) setSynthesizing(false)
     }
-  }, [files, top, mode, extraArgs])
+  }, [files, top, mode, extraArgs, synthGuard])
 
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
     setGraphOptionsState((o) => ({ ...o, ...patch }))
