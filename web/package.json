@@ -10,7 +10,6 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify:logo-lab": "node scripts/verify-logo-lab.mjs",
     "verify:worker": "node scripts/verify-worker.mjs"
   },
   "dependencies": {
