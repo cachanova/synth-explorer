@@ -28,6 +28,14 @@ export interface GraphNode extends NodeRef {
   is_boundary?: boolean;// traversal stopped here (startpoint/endpoint/limit)
   depth?: number;       // comb depth from startpoints (absent for seq/port nodes)
   params?: Record<string, string>; // e.g. { "LUT": "0111...", "WIDTH": "4" }
+  controls?: {
+    role: "clock" | "reset" | "set" | "enable" | "other";
+    pin: string;
+    net_name: string;
+    driver_id: number;
+    active_low?: boolean;
+    generated?: boolean; // clock is not a direct input/buffer-chain source
+  }[];                   // label-connected controls omitted from ordinary wiring
 }
 
 export interface GraphEdge {
@@ -77,6 +85,18 @@ Response `200`:
     num_inputs: number;    // port bit counts
     num_outputs: number;
     max_depth: number;     // worst comb depth (cells) across all endpoints
+    depths: {
+      input_to_register: number | null;
+      register_to_register: number | null;
+      register_to_output: number | null;
+      input_to_output: number | null;
+    };
+    cell_categories: {
+      logic: number;
+      registers: number;
+      carry_special: number;
+      infrastructure: number;
+    };
   };
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
@@ -98,8 +118,13 @@ failure, `504` on timeout.
     src?: string;
     worst_depth: number; // max comb depth into any bit's D
     bits: { bit: number; node_id: number; depth: number }[]; // per-bit FF cells, index-ordered
+    output_aliases: {
+      name: string;      // top-level output directly driven by this register
+      width: number;     // declared output width
+      bits: { output_bit: number; register_bit: number }[];
+    }[];
   }[];
-  outputs: { name: string; width: number; worst_depth: number;
+  outputs: { name: string; width: number; worst_depth: number; // non-aliased bits only
              bits: { bit: number; node_id: number; depth: number }[] }[];
   inputs:  { name: string; width: number;
              bits: { bit: number; node_id: number }[] }[];
@@ -107,19 +132,33 @@ failure, `504` on timeout.
 ```
 
 `node_id` for a register bit is the **FF cell node**; for an output bit the
-**port bit node**. Both are valid `node`/`to` params below.
+**port bit node**. Both are valid `node`/`to` params below. Output bits driven
+directly by register Q through wiring or unconditional zero-depth buffers are
+listed under that register's `output_aliases` and are not duplicated in
+`outputs`.
 
 ## GET `/api/design/:id/paths?limit=25&to=<node_id>`
 
-Ranked longest structural paths (deepest first). Without `to`: top paths across
-all endpoints (at most one path — the critical one — per endpoint bit). With
-`to`: paths into that endpoint node only (its per-bit critical paths if the id
-is an FF cell; ranked alternatives are future work).
+Ranked longest structural paths (deepest first). Paths with the same logical
+endpoint, depth, and normalized structural route are grouped into bit cohorts;
+different vector-bit routes remain separate. Direct registered-output aliases
+share the register endpoint and do not create a duplicate zero-depth path.
+With `to`, only variants ending at that node are returned.
 
 ```ts
 {
   paths: {
-    depth: number;               // comb cells on the path
+    depth: number;               // weighted structural logic levels
+    class: "input_to_register" | "register_to_register" |
+           "register_to_output" | "input_to_output" | "other";
+    endpoint_group: string;      // logical register/output/blackbox group
+    endpoint_kind: "register" | "output" | "blackbox";
+    bits: number[];              // structurally equivalent endpoint bits
+    output_aliases: {
+      name: string;
+      width: number;
+      bits: { output_bit: number; register_bit: number }[];
+    }[];
     startpoint: NodeRef;         // input port bit / FF cell (Q) / blackbox
     endpoint: NodeRef;           // FF cell (D) / output port bit / blackbox
     endpoint_port: string;       // "D", output port name, ...
@@ -129,12 +168,15 @@ is an FF cell; ranked alternatives are future work).
 }
 ```
 
-## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true`
+## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
 
 Returns a `Subgraph` for rendering. Traversal stops at sequential cells, port
-bits, and consts (they appear as boundary nodes); `hide_control` drops
-clock/reset/enable edges into FFs; `hide_const` drops const drivers.
-`max_nodes` is clamped server-side to 2000.
+bits, and consts (they appear as boundary nodes). With `hide_control`, ordinary
+clock/reset/set nets and high-fanout enables are represented by `controls`
+labels instead of edges; local enables remain wired data dependencies.
+`hide_const` drops const drivers. With `show_infrastructure=false`, zero-depth
+IO/clock buffers are collapsed into edges but remain present in implementation
+statistics. `max_nodes` is clamped server-side to 2000.
 
 ## GET `/api/design/:id/fanout?limit=50`
 
@@ -151,10 +193,11 @@ clock/reset/enable edges into FFs; `hide_const` drops const drivers.
 }
 ```
 
-## GET `/api/design/:id/netlist?max_nodes=1500`
+## GET `/api/design/:id/netlist?max_nodes=1500&show_infrastructure=false`
 
 Full design as a `Subgraph` (same caps and shapes; `truncated` set if the
-design exceeds `max_nodes`). Used by the optional full-schematic view.
+design exceeds `max_nodes`). Label-connected controls omit ordinary control
+wires. Used by the optional full-schematic view.
 
 ## GET `/api/design/:id/source-map`
 
@@ -165,21 +208,33 @@ design exceeds `max_nodes`). Used by the optional full-schematic view.
 }
 ```
 
-## GET `/api/design/:id/line-cone?file=<name>&line=<n>&max_nodes=400&hide_control=true&hide_const=true`
+## GET `/api/design/:id/line-cone?file=<name>&start_line=<n>&end_line=<n>&max_nodes=400&hide_control=true&hide_const=true&show_infrastructure=false`
 
-Source-line envelope: the reg-to-reg neighborhood of one RTL line. Takes the
-cells whose `src` maps to `file:line` (same index as `/source-map`), then
+Source-range envelope: the register-boundary neighborhood of one to 200 RTL
+lines. Takes the cells whose `src` maps to the selected range, then
 returns the union of their fanin and fanout cones (traversal stops at
-sequential cells / ports / consts as usual) as a `Subgraph`. The line's own
-cells have `is_root: true` so the client can highlight them. `max_nodes`
-clamps to 2000; `truncated` set on cap. If no cells map to the line, returns
-an empty `Subgraph` (`200`, `nodes: []`) — mapped modes lose most `src`
-attributes, so this is common and not an error. `422` for an unknown file
-name or `line < 1`.
+sequential cells / ports / consts as usual) as a `Subgraph`. Selected cells
+have `is_root: true`. A selected register is allowed as the center so its
+upstream D and downstream Q neighborhoods are both visible without implying a
+combinational path through it. If selected roots drive control pins, control
+edges are included and `control` is true.
+
+```ts
+{
+  status: "mapped" | "optimized_or_absorbed" | "unmapped";
+  control: boolean;
+  graph: Subgraph;
+}
+```
+
+`optimized_or_absorbed` means a pre-mapping synthesis object was attributed to
+the range but no final object retained that attribution; it deliberately does
+not claim whether the logic was removed, folded, shared, or absorbed. `422` for
+an unknown file, invalid range, or a range longer than 200 lines.
 
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 
-Resolve node ids to display metadata (used by the source-probe panel).
+Resolve node ids to display metadata.
 Returns `{ "nodes": NodeRef[] }` in request order; unknown ids are omitted.
 At most 200 ids per request (`422` above that).
 

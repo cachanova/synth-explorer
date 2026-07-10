@@ -1,5 +1,5 @@
 use crate::graph::{
-    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_data_pin, is_infrastructure_cell,
+    Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_infrastructure_cell,
     is_transparent_data_buffer, strip_bit_suffix,
 };
 use crate::netlist::{PortDirection, YosysModule};
@@ -578,7 +578,11 @@ impl Analysis {
             .edges
             .iter()
             .enumerate()
-            .filter(|(_, edge)| seen.contains(&edge.from) && seen.contains(&edge.to))
+            .filter(|(_, edge)| {
+                seen.contains(&edge.from)
+                    && seen.contains(&edge.to)
+                    && !is_labeled_control_edge(graph, edge)
+            })
             .map(|(idx, _)| idx)
             .collect();
         let empty = HashSet::new();
@@ -1201,7 +1205,7 @@ fn discover_endpoints(
         }
         for edge_idx in &graph.incoming[node.id as usize] {
             let edge = &graph.edges[*edge_idx];
-            if is_data_pin(&edge.to_port) {
+            if !edge.control {
                 targets.push(EndpointTarget {
                     endpoint: node.id,
                     endpoint_port: edge.to_port.clone(),
@@ -1244,7 +1248,7 @@ fn find_nth_data_edge(graph: &Graph, node_id: NodeId, nth: usize) -> Option<usiz
     graph.incoming[node_id as usize]
         .iter()
         .copied()
-        .filter(|idx| is_data_pin(&graph.edges[*idx].to_port))
+        .filter(|idx| !graph.edges[*idx].control)
         .nth(nth)
 }
 
@@ -1739,7 +1743,11 @@ fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
     let aliases = graph.net_aliases.get(&net)?;
     let mut best: Option<&str> = None;
     for candidate in aliases {
-        let candidate = candidate.as_str();
+        let raw_candidate = candidate.as_str();
+        let candidate = raw_candidate
+            .strip_prefix("$iopadmap$")
+            .filter(|name| !name.is_empty())
+            .unwrap_or(raw_candidate);
         let candidate_depth = bracket_depth(candidate);
         let replace = best.is_none_or(|current| {
             let current_depth = bracket_depth(current);

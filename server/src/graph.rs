@@ -173,6 +173,9 @@ impl Graph {
             };
             for control_pin in CONTROL_PINS {
                 if let Some(bits) = cell.connections.get(*control_pin) {
+                    if !is_control_pin_for_cell(&cell.cell_type, control_pin) {
+                        continue;
+                    }
                     if info.clock_net.is_none() {
                         info.clock_net = bits
                             .iter()
@@ -193,7 +196,7 @@ impl Graph {
             }
             if builder.nodes[node_id as usize].seq && info.d_bits.is_empty() {
                 for port in &input_ports {
-                    if is_control_pin(port) {
+                    if is_control_pin_for_cell(&cell.cell_type, port) {
                         continue;
                     }
                     if let Some(bits) = cell.connections.get(port) {
@@ -232,7 +235,7 @@ impl Graph {
                     continue;
                 };
                 for bit in bits {
-                    let control = is_control_pin(&input_port);
+                    let control = is_control_pin_for_cell(&cell.cell_type, &input_port);
                     let net_name = bit_to_name(bit, &builder.net_names);
                     for (driver_id, driver_port) in
                         resolve_drivers(bit, &drivers, &mut builder, &mut const_nodes)?
@@ -390,13 +393,29 @@ fn resolve_drivers(
 }
 
 pub const CONTROL_PINS: &[&str] = &[
-    "CLK", "C", "E", "EN", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST", "LSR", "SR",
+    "CLK", "C", "E", "EN", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST", "LSR", "SR", "T",
 ];
 
 pub fn is_control_pin(port: &str) -> bool {
-    CONTROL_PINS
-        .iter()
-        .any(|pin| pin.eq_ignore_ascii_case(port))
+    matches!(
+        port.to_ascii_uppercase().as_str(),
+        "CLK" | "EN" | "ARST" | "SRST" | "CLR" | "PRE" | "CE" | "RST" | "LSR" | "SR"
+    )
+}
+
+pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
+    if is_control_pin(port) {
+        return true;
+    }
+    let upper_port = port.to_ascii_uppercase();
+    if matches!(upper_port.as_str(), "C" | "E" | "R" | "S") {
+        return is_sequential_type(cell_type);
+    }
+    upper_port == "T"
+        && matches!(
+            cell_type.to_ascii_uppercase().as_str(),
+            "OBUFT" | "IOBUF" | "SB_IO"
+        )
 }
 
 pub fn is_data_pin(port: &str) -> bool {

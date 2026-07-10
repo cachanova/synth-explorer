@@ -1,5 +1,7 @@
 use synth_explorer_server::analysis::{Analysis, ConeDir, ConeOptions, FanoutResponse};
-use synth_explorer_server::graph::{Graph, NodeKind, cell_depth_weight, is_control_pin};
+use synth_explorer_server::graph::{
+    Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell,
+};
 use synth_explorer_server::netlist::{parse_value, select_top};
 use synth_explorer_server::yosys::{SourceFile, SynthMode, SynthRequest, run_yosys};
 
@@ -95,24 +97,35 @@ async fn blackbox_is_seq_like_boundary() {
 
 #[tokio::test]
 async fn reg_mux_endpoints_include_q_width_8() {
-    let (graph, analysis) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
-    let endpoints = analysis.endpoints();
-    let q = endpoints
-        .registers
-        .iter()
-        .find(|group| group.name == "q" && group.width == 8)
-        .expect("expected q register group");
-    assert_eq!(q.output_aliases.len(), 1);
-    assert_eq!(q.output_aliases[0].name, "q");
-    assert_eq!(q.output_aliases[0].bits.len(), 8);
-    assert!(endpoints.outputs.iter().all(|output| output.name != "q"));
+    for mode in [SynthMode::Rtl, SynthMode::Xilinx] {
+        let (graph, analysis) = analyze_example("01_reg_mux.sv", "reg_mux", mode).await;
+        let endpoints = analysis.endpoints();
+        let q = endpoints
+            .registers
+            .iter()
+            .find(|group| group.name == "q" && group.width == 8)
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected q register group in {mode}; got {:?}",
+                    endpoints
+                        .registers
+                        .iter()
+                        .map(|group| (&group.name, group.width))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(q.output_aliases.len(), 1, "mode {mode}");
+        assert_eq!(q.output_aliases[0].name, "q");
+        assert_eq!(q.output_aliases[0].bits.len(), 8);
+        assert!(endpoints.outputs.iter().all(|output| output.name != "q"));
 
-    let paths = analysis.paths(&graph, 25, None);
-    assert!(paths.paths.iter().any(|path| {
-        path.endpoint_group == "q"
-            && path.output_aliases.iter().any(|alias| alias.name == "q")
-            && !path.bits.is_empty()
-    }));
+        let paths = analysis.paths(&graph, 25, None);
+        assert!(paths.paths.iter().any(|path| {
+            path.endpoint_group == "q"
+                && path.output_aliases.iter().any(|alias| alias.name == "q")
+                && !path.bits.is_empty()
+        }));
+    }
 }
 
 #[tokio::test]
@@ -232,7 +245,7 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
         (SynthMode::Ice40, "SB_DFFSR", &["C", "R"][..]),
         (SynthMode::Ecp5, "TRELLIS_FF", &["CLK", "LSR"][..]),
     ] {
-        let (graph, _analysis) = analyze_example("08_fsm.sv", "fsm", mode).await;
+        let (graph, analysis) = analyze_example("08_fsm.sv", "fsm", mode).await;
         let ff = graph
             .nodes
             .iter()
@@ -264,14 +277,53 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
                 .filter(|edge| edge.to_port == "D" || edge.to_port == "DI")
                 .all(|edge| !edge.control)
         );
+
+        let schematic = analysis.full_netlist(&graph, 2000, false);
+        let rendered_ff = schematic
+            .nodes
+            .iter()
+            .find(|node| node.node.id == ff.id)
+            .expect("FF should remain in the schematic projection");
+        assert!(rendered_ff.controls.iter().any(|control| {
+            control.role == synth_explorer_server::analysis::ControlRole::Clock
+        }));
+        assert!(schematic.edges.iter().all(|edge| {
+            edge.to != ff.id
+                || !rendered_ff
+                    .controls
+                    .iter()
+                    .any(|control| control.driver_id == edge.from && control.pin == edge.to_port)
+        }));
     }
 }
 
 #[test]
 fn vendor_flip_flop_control_pin_names_are_tagged() {
-    for pin in ["C", "CLK", "CE", "E", "R", "S", "CLR", "PRE", "LSR", "SR"] {
+    for pin in ["CLK", "CE", "CLR", "PRE", "LSR", "SR"] {
         assert!(is_control_pin(pin), "{pin} should be a control pin");
+    }
+    for context_dependent in ["C", "E", "R", "S"] {
+        assert!(!is_control_pin(context_dependent));
     }
     assert!(!is_control_pin("D"));
     assert!(!is_control_pin("DI"));
+    assert!(is_control_pin_for_cell("FDRE", "S"));
+    assert!(!is_control_pin_for_cell("$_MUX_", "S"));
+}
+
+#[tokio::test]
+async fn mux_select_is_a_data_dependency_not_a_set_reset_control() {
+    let (graph, _analysis) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
+    let mux = graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("$mux"))
+        .expect("expected RTL mux");
+    let select_edges: Vec<_> = graph.incoming[mux.id as usize]
+        .iter()
+        .map(|idx| &graph.edges[*idx])
+        .filter(|edge| edge.to_port == "S")
+        .collect();
+    assert!(!select_edges.is_empty());
+    assert!(select_edges.iter().all(|edge| !edge.control));
 }
