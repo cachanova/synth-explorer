@@ -28,7 +28,8 @@ almost immediately.
 
 ## Running it
 
-Requirements: `yosys` on PATH (tested with 0.64), Rust stable, Node 20+.
+Requirements: `yosys` on PATH (tested with 0.64), Rust stable, Node 24.11.1
+(npm 11.6.2).
 
 ```bash
 cd web && npm install && npm run build && cd ..
@@ -38,6 +39,16 @@ cd server && cargo run
 
 Development: `cargo run` in `server/` plus `npm run dev` in `web/` (Vite on
 :5173 proxies `/api` to :8787).
+
+## Production
+
+Production deploys [synthexplorer.dev](https://synthexplorer.dev) to one Hetzner
+VM. Caddy terminates HTTPS, and the Rust server serves both the built
+frontend and `/api`. GitHub Actions publishes an immutable container image to
+GHCR and deploys that digest over SSH after each push to `main`.
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for provisioning, DNS, deployment,
+rollback, monitoring, and recovery instructions.
 
 ## Layout
 
