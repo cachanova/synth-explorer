@@ -1,5 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { EditorState, StateEffect, StateField, type Extension } from '@codemirror/state'
+import {
+  Annotation,
+  EditorState,
+  StateEffect,
+  StateField,
+  type Extension,
+} from '@codemirror/state'
 import {
   Decoration,
   EditorView,
@@ -17,8 +23,19 @@ import { useStore } from '../store'
 import type { EditorHighlight } from '../store'
 
 // --- src highlight state ---
-const setHighlight = StateEffect.define<{ from: number; to: number } | null>()
-const hlMark = Decoration.mark({ class: 'cm-src-hl' })
+const setHighlight = StateEffect.define<
+  { from: number; primary: boolean }[] | null
+>()
+const programmaticUpdate = Annotation.define<boolean>()
+const secondaryLine = Decoration.line({
+  attributes: {
+    class: 'cm-src-hl-secondary',
+    style: 'background-color: rgba(88, 166, 255, 0.10)',
+  },
+})
+const primaryLine = Decoration.line({
+  attributes: { class: 'cm-src-hl' },
+})
 
 const highlightField = StateField.define<DecorationSet>({
   create() {
@@ -29,7 +46,14 @@ const highlightField = StateField.define<DecorationSet>({
     for (const e of tr.effects) {
       if (e.is(setHighlight)) {
         if (e.value == null) next = Decoration.none
-        else next = Decoration.set([hlMark.range(e.value.from, e.value.to)])
+        else {
+          next = Decoration.set(
+            e.value.map(({ from, primary }) =>
+              (primary ? primaryLine : secondaryLine).range(from),
+            ),
+            true,
+          )
+        }
       }
     }
     return next
@@ -37,23 +61,51 @@ const highlightField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 })
 
-function applyHighlight(view: EditorView, hl: EditorHighlight) {
+function applyHighlight(view: EditorView, hl: EditorHighlight, activeFile: string) {
   const doc = view.state.doc
-  const { span } = hl
-  const startLine = Math.min(Math.max(span.startLine, 1), doc.lines)
-  const endLine = Math.min(Math.max(span.endLine, startLine), doc.lines)
-  const lineStart = doc.line(startLine)
-  const lineEnd = doc.line(endLine)
-  // Use the whole line range so single-column spans are still visible.
-  const from = lineStart.from
-  const to = lineEnd.to
-  view.dispatch({
-    effects: [setHighlight.of({ from, to }), EditorView.scrollIntoView(from, { y: 'center' })],
+  const primarySpan = hl.spans[hl.primary]
+  const linePriority = new Map<number, boolean>()
+  hl.spans.forEach((span, index) => {
+    if (span.file !== activeFile) return
+    const start = Math.min(Math.max(span.startLine, 1), doc.lines)
+    const end = Math.min(Math.max(span.endLine, start), doc.lines)
+    for (let line = start; line <= end; line += 1) {
+      const primary = index === hl.primary
+      linePriority.set(line, primary || linePriority.get(line) === true)
+    }
   })
-  // fade the highlight out after a moment
-  window.setTimeout(() => {
-    view.dispatch({ effects: setHighlight.of(null) })
-  }, 2200)
+  const decorations = [...linePriority.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([line, primary]) => ({ from: doc.line(line).from, primary }))
+
+  const primaryLineNumber =
+    primarySpan?.file === activeFile
+      ? Math.min(Math.max(primarySpan.startLine, 1), doc.lines)
+      : decorations.length > 0
+        ? doc.lineAt(decorations[0].from).number
+        : 1
+  const primaryPosition = doc.line(primaryLineNumber).from
+  view.dispatch({
+    selection: { anchor: primaryPosition },
+    effects: [
+      setHighlight.of(decorations),
+      EditorView.scrollIntoView(primaryPosition, { y: 'center' }),
+    ],
+    annotations: programmaticUpdate.of(true),
+  })
+}
+
+function selectedLines(state: EditorState): { startLine: number; endLine: number } {
+  const selection = state.selection.main
+  const startLine = state.doc.lineAt(selection.from).number
+  let endLine = state.doc.lineAt(selection.to).number
+  if (
+    selection.from !== selection.to &&
+    selection.to === state.doc.line(endLine).from
+  ) {
+    endLine = Math.max(startLine, endLine - 1)
+  }
+  return { startLine, endLine }
 }
 
 export function Editor() {
@@ -75,13 +127,18 @@ export function Editor() {
         ?.content ?? ''
 
     const updateListener = EditorView.updateListener.of((u) => {
+      if (u.transactions.some((tr) => tr.annotation(programmaticUpdate))) return
       if (u.docChanged) {
         const text = u.state.doc.toString()
         storeRef.current.updateFileContent(currentFileRef.current, text)
       }
       if (u.selectionSet || u.docChanged) {
-        const line = u.state.doc.lineAt(u.state.selection.main.head).number
-        storeRef.current.setCursor(currentFileRef.current, line)
+        const { startLine, endLine } = selectedLines(u.state)
+        storeRef.current.setSourceSelection(
+          currentFileRef.current,
+          startLine,
+          endLine,
+        )
       }
     })
 
@@ -130,6 +187,7 @@ export function Editor() {
     if (content !== view.state.doc.toString()) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: content },
+        annotations: programmaticUpdate.of(true),
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -138,9 +196,22 @@ export function Editor() {
   // apply cross-probe highlight
   useEffect(() => {
     const view = viewRef.current
-    if (!view || !store.editorHighlight) return
-    if (store.editorHighlight.span.file !== store.activeFileName) return
-    applyHighlight(view, store.editorHighlight)
+    if (!view) return
+    if (!store.editorHighlight) {
+      view.dispatch({
+        effects: setHighlight.of(null),
+        annotations: programmaticUpdate.of(true),
+      })
+      return
+    }
+    if (!store.editorHighlight.spans.some((span) => span.file === store.activeFileName)) {
+      view.dispatch({
+        effects: setHighlight.of(null),
+        annotations: programmaticUpdate.of(true),
+      })
+      return
+    }
+    applyHighlight(view, store.editorHighlight, store.activeFileName)
   }, [store.editorHighlight, store.activeFileName])
 
   return <div className="editor-wrap" ref={hostRef} />

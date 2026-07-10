@@ -35,6 +35,13 @@ export interface Subgraph {
   truncated: boolean // hit max_nodes/max_depth; UI must say so
 }
 
+export type LineConeStatus = 'mapped' | 'optimized_or_absorbed' | 'unmapped'
+
+export interface LineConeResponse {
+  status: LineConeStatus
+  graph: Subgraph
+}
+
 // --- POST /api/synthesize ---
 
 export type Mode = 'rtl' | 'gates' | 'lut4' | 'lut6' | 'ice40' | 'ecp5' | 'xilinx'
