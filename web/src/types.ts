@@ -51,7 +51,11 @@ export interface Subgraph {
   truncated: boolean // hit max_nodes/max_depth; UI must say so
 }
 
-export type LineConeStatus = 'mapped' | 'optimized_or_absorbed' | 'unmapped'
+export type LineConeStatus =
+  | 'mapped'
+  | 'mapping_incomplete'
+  | 'optimized_or_absorbed'
+  | 'unmapped'
 
 export interface LineConeResponse {
   status: LineConeStatus
@@ -214,15 +218,18 @@ export interface NodesResponse {
 
 // --- GET /api/design/:id/source-map ---
 
+export interface SourceRangeMapping {
+  file: string
+  start_line: number
+  end_line: number
+  node_ids: number[]
+  mapping_incomplete: boolean
+}
+
 export interface SourceMapResponse {
   files: string[] // filenames as submitted
   by_line: Record<string, number[]> // "file.sv:12" -> node ids
-  ranges: {
-    file: string
-    start_line: number
-    end_line: number
-    node_ids: number[]
-  }[]
+  ranges: SourceRangeMapping[]
   truncated: boolean
 }
 

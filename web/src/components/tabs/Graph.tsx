@@ -4,6 +4,7 @@ import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { parseSrc } from '../../lib/src'
+import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
 import { useStore } from '../../store'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
@@ -121,11 +122,12 @@ export function Graph({ active }: { active: boolean }) {
         loadedRequestKey.current = requestKey
         setSourceStatus(status)
         setSourceControl(control)
-        // An unmapped/absorbed selection is information about the source, not
-        // a request to erase the user's last meaningful schematic.
-        if (status == null || status === 'mapped') {
+        const presentation = sourceProbePresentation(status)
+        // A partial mapping is still useful and replaces the prior selection.
+        // Truly unmapped/absorbed selections retain the last meaningful graph.
+        if (presentation.acceptReturnedGraph) {
           setFetchedSubgraph({ designId: requestDesignId, requestKey, graph })
-          if (status === 'mapped') setSelected(null)
+          if (status != null) setSelected(null)
         }
         else setLoading(false)
       })
@@ -180,16 +182,17 @@ export function Graph({ active }: { active: boolean }) {
   )
   const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
   const graphInteractive = analysisState === 'current' && displayedDesignCurrent
+  const sourcePresentation = sourceProbePresentation(sourceStatus)
 
   const highlight = useMemo(
     () =>
       new Set([
         ...(coneReq?.highlight ?? []),
-        ...(coneReq?.kind === 'source' && sourceStatus === 'mapped'
+        ...(coneReq?.kind === 'source' && sourcePresentation.highlightRoots
           ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
           : []),
       ]),
-    [coneReq, sourceStatus, sub],
+    [coneReq, sourcePresentation.highlightRoots, sub],
   )
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
@@ -279,15 +282,10 @@ export function Graph({ active }: { active: boolean }) {
           {requestDesignMismatch && !displayedDesignMismatch && (
             <span className="msg">this cone belongs to the previous synthesis</span>
           )}
-          {sourceStatus === 'optimized_or_absorbed' && (
-            <span className="msg">
-              Logic for this selection was optimized away or absorbed during synthesis.
-            </span>
+          {sourcePresentation.message && (
+            <span className="msg">{sourcePresentation.message}</span>
           )}
-          {sourceStatus === 'unmapped' && (
-            <span className="msg">No synthesizable logic maps to this selection.</span>
-          )}
-          {coneReq.kind === 'source' && sourceStatus != null && sourceStatus !== 'mapped' && laid && (
+          {coneReq.kind === 'source' && sourcePresentation.retainsPreviousGraph && laid && (
             <span className="msg">showing the previous mapped selection</span>
           )}
           {sourceControl && (
