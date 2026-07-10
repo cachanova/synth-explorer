@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
+import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { fuzzyFilter } from '../../lib/fuzzy'
 import {
   displayCellType,
@@ -22,12 +23,16 @@ type LogicalEndpoint =
   | { kind: 'register'; endpoint: RegisterEndpoint }
   | { kind: 'output'; endpoint: OutputEndpoint }
 
+const ENDPOINT_PAGE_SIZE = 100
+const BIT_PAGE_SIZE = 64
+
 export function Endpoints() {
   const store = useStore()
   const id = store.design?.design_id ?? null
   const { data, loading, error } = useDesignData(id, getEndpoints)
   const [filter, setFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<EndpointFilter>('all')
+  const [page, setPage] = useState(0)
 
   const rows = useMemo(() => {
     const all: LogicalEndpoint[] = [
@@ -60,13 +65,17 @@ export function Endpoints() {
   if (error) return <div className="empty-state">Failed to load endpoints: {error}</div>
 
   const total = (data?.registers.length ?? 0) + (data?.outputs.length ?? 0)
+  const lastPage = Math.max(0, Math.ceil(rows.length / ENDPOINT_PAGE_SIZE) - 1)
+  const currentPage = Math.min(page, lastPage)
+  const rowStart = currentPage * ENDPOINT_PAGE_SIZE
+  const visibleRows = rows.slice(rowStart, rowStart + ENDPOINT_PAGE_SIZE)
+  const rowsAfter = Math.max(0, rows.length - rowStart - visibleRows.length)
 
   return (
     <div>
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
-        Logic depth is a structural synthesized-cell count, not routed timing.
-        Registered top-level outputs are aliases of their driving register and are
-        counted once.
+        {STRUCTURAL_DEPTH_CAVEAT} Registered top-level outputs are aliases of their
+        driving register and are counted once.
       </div>
 
       <div className="row" style={{ alignItems: 'stretch', marginBottom: 8 }}>
@@ -75,12 +84,18 @@ export function Endpoints() {
           style={{ marginBottom: 0 }}
           placeholder="Filter logical endpoints…"
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={(e) => {
+            setFilter(e.target.value)
+            setPage(0)
+          }}
         />
         <select
           aria-label="Endpoint kind"
           value={kindFilter}
-          onChange={(e) => setKindFilter(e.target.value as EndpointFilter)}
+          onChange={(e) => {
+            setKindFilter(e.target.value as EndpointFilter)
+            setPage(0)
+          }}
         >
           <option value="all">All kinds</option>
           <option value="register">Registers</option>
@@ -90,7 +105,8 @@ export function Endpoints() {
       </div>
 
       <div className="section-title">
-        Logical endpoints ({rows.length} / {total})
+        Logical endpoints ({rows.length} matched / {total}; showing{' '}
+        {visibleRows.length === 0 ? 0 : rowStart + 1}–{rowStart + visibleRows.length})
       </div>
       {rows.length === 0 ? (
         <div className="faint">No matching logical endpoints.</div>
@@ -107,7 +123,7 @@ export function Endpoints() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) =>
+            {visibleRows.map((row) =>
               row.kind === 'register' ? (
                 <RegisterRow
                   key={`register:${row.endpoint.name}`}
@@ -124,6 +140,27 @@ export function Endpoints() {
             )}
           </tbody>
         </table>
+      )}
+      {rows.length > ENDPOINT_PAGE_SIZE && (
+        <div className="pagination-controls">
+          <button
+            type="button"
+            disabled={currentPage === 0}
+            onClick={() => setPage(Math.max(0, currentPage - 1))}
+          >
+            Previous page
+          </button>
+          <span className="faint">
+            Page {currentPage + 1} of {lastPage + 1}
+          </span>
+          <button
+            type="button"
+            disabled={rowsAfter === 0}
+            onClick={() => setPage(Math.min(lastPage, currentPage + 1))}
+          >
+            Next page ({rowsAfter} remaining)
+          </button>
+        </div>
       )}
     </div>
   )
@@ -241,11 +278,22 @@ function BitsRow({
   colSpan: number
   onOpen: Opener
 }) {
+  const [page, setPage] = useState(0)
+  const sortedBits = useMemo(
+    () => [...bits].sort((a, b) => b.bit - a.bit),
+    [bits],
+  )
+  const lastPage = Math.max(0, Math.ceil(sortedBits.length / BIT_PAGE_SIZE) - 1)
+  const currentPage = Math.min(page, lastPage)
+  const start = currentPage * BIT_PAGE_SIZE
+  const visibleBits = sortedBits.slice(start, start + BIT_PAGE_SIZE)
+  const remaining = Math.max(0, sortedBits.length - start - visibleBits.length)
+
   return (
     <tr className="expanded">
       <td colSpan={colSpan}>
         <div className="chain">
-          {[...bits].sort((a, b) => b.bit - a.bit).map((bit) => {
+          {visibleBits.map((bit) => {
             const outputNames = aliasesForBit(aliases, bit.bit)
             return (
               <button
@@ -269,6 +317,27 @@ function BitsRow({
               </button>
             )
           })}
+          {currentPage > 0 && (
+            <button
+              type="button"
+              className="hop pagination-button"
+              onClick={() => setPage(currentPage - 1)}
+            >
+              <span className="t">Previous {Math.min(BIT_PAGE_SIZE, start)} bits</span>
+            </button>
+          )}
+          {remaining > 0 && (
+            <button
+              type="button"
+              className="hop pagination-button"
+              onClick={() => setPage(currentPage + 1)}
+            >
+              <span className="t">
+                Next {Math.min(BIT_PAGE_SIZE, remaining)} bits
+              </span>
+              <span className="n">{remaining} remaining</span>
+            </button>
+          )}
         </div>
       </td>
     </tr>

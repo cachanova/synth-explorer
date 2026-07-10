@@ -35,3 +35,23 @@ export function normalizeSourceSelection(
   const end = Math.max(start, Math.max(startLine, endLine))
   return { file, startLine: start, endLine: end }
 }
+
+/**
+ * Keep a bounded synthesis queue aligned with the editor's current input.
+ * A queued request becomes obsolete as soon as the input changes again; the
+ * normal idle debounce decides whether the replacement should be enqueued.
+ */
+export function retainQueuedSynthesis(
+  queued: SynthesisInput | null,
+  currentKey: string,
+): SynthesisInput | null {
+  return queued?.key === currentKey ? queued : null
+}
+
+/** The running request already covers a reverted input, so no follow-up is needed. */
+export function queuedSynthesisForRequest(
+  runningKey: string | null,
+  requested: SynthesisInput,
+): SynthesisInput | null {
+  return runningKey === requested.key ? null : requested
+}

@@ -1,0 +1,2 @@
+export const DEFAULT_GRAPH_MAX_NODES = 400
+export const MAX_GRAPH_RENDER_NODES = 2000

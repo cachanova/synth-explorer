@@ -1,4 +1,5 @@
 import { diffCellsByType, totalCellDelta } from '../../lib/diff'
+import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType, shortNetName } from '../../lib/prettyType'
 import { useStore } from '../../store'
 import type { Snapshot } from '../../store'
@@ -11,9 +12,6 @@ import {
   PathEndpointName,
 } from './Paths'
 
-const CAVEAT =
-  'Depth comparisons are structural synthesized-cell counts—not post-place-and-route timing comparisons.'
-
 export function Compare() {
   const store = useStore()
   const { snapshotA, snapshotB } = store
@@ -21,7 +19,7 @@ export function Compare() {
   return (
     <div>
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
-        {CAVEAT}
+        {STRUCTURAL_DEPTH_CAVEAT}
       </div>
 
       <div className="cmp-slots">

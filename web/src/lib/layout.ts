@@ -4,10 +4,9 @@
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
 import type { GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
+import { MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import { nodeLabel } from './prettyType'
 import { controlLabel, controlsFor, symbolKind } from './symbols'
-
-export const MAX_LAYOUT_NODES = 1500
 
 export interface Point {
   x: number
@@ -76,7 +75,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
       )
       return {
         width: Math.max(92, contentWidth, Math.round(controlWidth)),
-        height: 58 + Math.min(controls.length, 3) * 13,
+        height: 58 + controls.length * 13,
       }
     }
     case 'lut':
@@ -202,7 +201,7 @@ function getWorker(): Worker {
 
 /** Lay out a Subgraph in the worker. Rejects if node count exceeds the cap. */
 export async function layoutSubgraph(sub: Subgraph): Promise<LaidOutGraph> {
-  if (sub.nodes.length > MAX_LAYOUT_NODES) {
+  if (sub.nodes.length > MAX_GRAPH_RENDER_NODES) {
     throw new Error(
       `cone too large (${sub.nodes.length} nodes) — reduce depth or pick a narrower signal`,
     )

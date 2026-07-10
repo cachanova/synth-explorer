@@ -9,8 +9,11 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from './api'
+import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
   normalizeSourceSelection,
+  queuedSynthesisForRequest,
+  retainQueuedSynthesis,
   synthesisInput,
   type SourceSelection,
   type SynthesisInput,
@@ -121,7 +124,7 @@ endmodule
 
 const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   maxDepth: 64,
-  maxNodes: 300,
+  maxNodes: DEFAULT_GRAPH_MAX_NODES,
   hideControl: true,
   hideConst: true,
   showInfrastructure: false,
@@ -188,7 +191,11 @@ export interface Store {
   graphOptions: GraphOptions
   setGraphOptions: (patch: Partial<GraphOptions>) => void
   openCone: (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => void
-  openControlCone: (opts: { node: number; label: string }) => void
+  openControlCone: (opts: {
+    node: number
+    label: string
+    generated?: boolean
+  }) => void
   showPathInGraph: (path: TimingPath) => void
   openNetlist: () => void
 
@@ -348,10 +355,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const synthesize = useCallback(async () => {
     const requested = currentInputRef.current
     if (synthesisRunningRef.current) {
-      if (synthesisKeyRef.current !== requested.key) {
-        // One bounded slot, always replaced by the newest complete input.
-        queuedInputRef.current = requested
-      }
+      // One bounded slot, always replaced by the newest complete input. A
+      // revert to the running input clears an obsolete queued edit.
+      queuedInputRef.current = queuedSynthesisForRequest(
+        synthesisKeyRef.current,
+        requested,
+      )
       return
     }
 
@@ -386,7 +395,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
         // The ref may be replaced by another invocation while the request is
         // awaiting; TypeScript cannot observe that asynchronous mutation.
-        const queued = queuedInputRef.current as SynthesisInput | null
+        const queued = retainQueuedSynthesis(
+          queuedInputRef.current as SynthesisInput | null,
+          currentInputRef.current.key,
+        )
+        queuedInputRef.current = queued
         if (queued && queued.key !== running.key) next = queued
       }
     } finally {
@@ -399,6 +412,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Source/top/mode/argument/example changes make the prior analysis stale.
   // Cursor movement is deliberately absent from this dependency list.
   useEffect(() => {
+    queuedInputRef.current = retainQueuedSynthesis(
+      queuedInputRef.current,
+      currentInput.key,
+    )
     if (!autoSynthesize) return
     const timer = window.setTimeout(() => {
       if (designInputKeyRef.current !== currentInputRef.current.key) {
@@ -440,13 +457,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const openControlCone = useCallback(
-    ({ node, label }: { node: number; label: string }) => {
+    ({
+      node,
+      label,
+      generated,
+    }: {
+      node: number
+      label: string
+      generated?: boolean
+    }) => {
+      const dir = generated ? 'fanin' : 'fanout'
       setGraphOptionsState((options) => ({ ...options, hideControl: false }))
       setConeReq({
         kind: 'cone',
         node,
-        dir: 'fanout',
-        label: `${label} (control fanout)`,
+        dir,
+        label: `${label} (${generated ? 'generated control fanin' : 'control fanout'})`,
         highlight: [],
         nonce: nextNonce(),
       })
@@ -504,7 +530,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setActiveTab(tab)
     activeTabRef.current = tab
     if (tab === 'graph') {
-      setConeReq(sourceGraphRequest(sourceSelectionRef.current, nextNonce()))
+      // Keep an existing cone and its local pan/zoom/selection state intact.
+      // The initial Graph visit still opens the current source selection.
+      setConeReq((request) =>
+        request ?? sourceGraphRequest(sourceSelectionRef.current, nextNonce()),
+      )
     }
   }, [])
 

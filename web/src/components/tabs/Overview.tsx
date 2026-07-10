@@ -1,9 +1,7 @@
+import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType } from '../../lib/prettyType'
 import { useStore } from '../../store'
 import type { CellCategoryCounts } from '../../types'
-
-const CAVEAT =
-  'Depth is a structural synthesized-cell count—not post-place-and-route delay, slack, or timing closure.'
 
 function displayMode(mode: string): string {
   switch (mode) {
@@ -51,7 +49,7 @@ export function Overview() {
   return (
     <div>
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
-        {CAVEAT}
+        {STRUCTURAL_DEPTH_CAVEAT}
       </div>
 
       <div className="cards">

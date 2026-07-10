@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeSourceSelection, synthesisInput } from './lib/liveAnalysis'
+import {
+  normalizeSourceSelection,
+  queuedSynthesisForRequest,
+  retainQueuedSynthesis,
+  synthesisInput,
+} from './lib/liveAnalysis'
 
 describe('synthesis input identity', () => {
   it('changes for every value sent to synthesis', () => {
@@ -52,5 +57,33 @@ describe('source selection normalization', () => {
       startLine: 1,
       endLine: 1,
     })
+  })
+})
+
+describe('latest-only synthesis queue', () => {
+  const input = (content: string) =>
+    synthesisInput([{ name: 'top.sv', content }], 'top', 'gates', '')
+
+  it('replaces the bounded slot with the latest requested input', () => {
+    const running = input('A')
+    const newest = input('C')
+
+    expect(queuedSynthesisForRequest(running.key, newest)).toBe(newest)
+  })
+
+  it('discards a queued edit when the current input reverts to the running input', () => {
+    const running = input('A')
+    const obsolete = input('B')
+
+    expect(retainQueuedSynthesis(obsolete, running.key)).toBeNull()
+    expect(queuedSynthesisForRequest(running.key, running)).toBeNull()
+  })
+
+  it('discards a queued input when a newer edit is still inside the idle window', () => {
+    const queued = input('B')
+    const current = input('C')
+
+    expect(retainQueuedSynthesis(queued, current.key)).toBeNull()
+    expect(retainQueuedSynthesis(current, current.key)).toBe(current)
   })
 })

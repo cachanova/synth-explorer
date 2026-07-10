@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
-import { nodeDimensions, toElkGraph } from './layout'
+import { MAX_GRAPH_RENDER_NODES } from './graphLimits'
+import { layoutSubgraph, nodeDimensions, toElkGraph } from './layout'
 
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({
   id,
@@ -27,6 +28,19 @@ describe('schematic layout sizing', () => {
     expect(controlled.width).toBeGreaterThanOrEqual(plain.width)
   })
 
+  it('reserves one row for every label-connected control', () => {
+    const controlledNode = node(2, 'FDRE', {
+      controls: [
+        { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 8, fanout: 2 },
+        { role: 'reset', pin: 'R', net_name: 'rst', driver_id: 9, fanout: 2 },
+        { role: 'enable', pin: 'CE', net_name: 'ce', driver_id: 10, fanout: 2 },
+        { role: 'set', pin: 'S', net_name: 'set', driver_id: 11, fanout: 2 },
+      ],
+    })
+
+    expect(nodeDimensions(controlledNode).height).toBe(58 + 4 * 13)
+  })
+
   it('passes per-symbol dimensions to bounded ELK layout', () => {
     const sub: Subgraph = {
       nodes: [node(1, '$_XOR_'), node(2, '$mem_v2', { is_boundary: true })],
@@ -48,5 +62,18 @@ describe('schematic layout sizing', () => {
       nodeDimensions(sub.nodes[1]),
     ])
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
+  })
+
+  it('enforces the 2000-node renderer cap before starting ELK', async () => {
+    expect(MAX_GRAPH_RENDER_NODES).toBe(2000)
+    const oversized: Subgraph = {
+      nodes: Array.from({ length: MAX_GRAPH_RENDER_NODES + 1 }, (_, index) =>
+        node(index, '$_AND_'),
+      ),
+      edges: [],
+      truncated: true,
+    }
+
+    await expect(layoutSubgraph(oversized)).rejects.toThrow('cone too large')
   })
 })

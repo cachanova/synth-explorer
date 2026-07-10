@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { getPaths } from '../../api'
+import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { useDesignData } from '../../lib/useDesignData'
 import {
   displayCellType,
@@ -42,8 +43,7 @@ export function Paths() {
   return (
     <div>
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
-        These are synthesized structural logic paths and cell-count depths—not
-        placement, routing, delay, slack, or timing closure.
+        {STRUCTURAL_DEPTH_CAVEAT}
       </div>
 
       {data.comb_loops.length > 0 && (

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getLineCone } from './api'
+import { getLineCone, getNetlist } from './api'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -43,5 +43,45 @@ describe('getLineCone', () => {
       hide_const: 'false',
       show_infrastructure: 'true',
     })
+  })
+
+  it('forwards cancellation to the graph request', async () => {
+    const controller = new AbortController()
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          status: 'mapped',
+          control: false,
+          graph: { nodes: [], edges: [], truncated: false },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getLineCone(
+      'design',
+      { file: 'top.sv', start_line: 1, end_line: 1 },
+      controller.signal,
+    )
+
+    expect(fetchMock.mock.calls[0][1]).toEqual({ signal: controller.signal })
+  })
+})
+
+describe('getNetlist', () => {
+  it('requests the shared 400-node default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ nodes: [], edges: [], truncated: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getNetlist('design')
+
+    const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
+    expect(url.searchParams.get('max_nodes')).toBe('400')
   })
 })

@@ -32,6 +32,7 @@ interface Props {
   onSelect: (node: GraphNode | null) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  active: boolean
   fitNonce: number
 }
 
@@ -312,7 +313,7 @@ function ControlLabels({
   width: number
   onSelect?: (control: ControlNetRef, node: GraphNode) => void
 }) {
-  const controls = controlsFor(node).slice(0, 3)
+  const controls = controlsFor(node)
   if (controls.length === 0) return null
 
   return (
@@ -371,6 +372,7 @@ export function GraphView({
   selectedId,
   onSelect,
   onControlSelect,
+  active,
   fitNonce,
 }: Props) {
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -447,6 +449,7 @@ export function GraphView({
   }, [fit, fitNonce])
 
   useEffect(() => {
+    if (!active) return
     const stage = stageRef.current
     if (!stage) return
 
@@ -467,7 +470,7 @@ export function GraphView({
     const observer = new ResizeObserver(updateSize)
     observer.observe(stage)
     return () => observer.disconnect()
-  }, [fit])
+  }, [active, fit])
 
   const onWheel = useCallback((event: React.WheelEvent) => {
     event.preventDefault()

@@ -530,6 +530,16 @@ table.grid tr.expanded td {
   width: 100%;
   margin-bottom: 8px;
 }
+.pagination-controls {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0 2px;
+}
+.pagination-button {
+  color: var(--accent);
+}
 .warn-list {
   list-style: none;
   padding: 0;

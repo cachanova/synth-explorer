@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
-import { layoutSubgraph, MAX_LAYOUT_NODES, type LaidOutGraph } from '../../lib/layout'
+import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
+import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { parseSrc } from '../../lib/src'
 import { controlLabel } from '../../lib/symbols'
 import { useStore } from '../../store'
@@ -8,7 +9,7 @@ import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
-export function Graph() {
+export function Graph({ active }: { active: boolean }) {
   const store = useStore()
   const { analysisState, design, coneReq, graphOptions } = store
 
@@ -21,18 +22,36 @@ export function Graph() {
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
+  const loadedRequestKey = useRef<string | null>(null)
+  const laidOutSubgraph = useRef<Subgraph | null>(null)
 
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}`
 
-  // fetch subgraph whenever the request or options change
+  // A request can change while analysis is stale. Clear the previous source
+  // classification immediately instead of showing it for the new selection.
   useEffect(() => {
+    setSourceStatus(null)
+    setSourceControl(false)
+  }, [coneReq?.nonce])
+
+  // Fetch subgraphs only while Graph is visible. A completed request key is
+  // retained across tab switches so returning to Graph does not refetch or
+  // disturb its local view state.
+  useEffect(() => {
+    if (!active) return
     if (!design || !coneReq) {
       setSub(null)
       setLaid(null)
+      loadedRequestKey.current = null
+      laidOutSubgraph.current = null
       return
     }
     if (analysisState !== 'current') return
+    const requestKey = `${design.design_id}|${coneReq.nonce}|${optsKey}`
+    if (loadedRequestKey.current === requestKey) return
+
     const myReq = ++reqSeq.current
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
     setSourceStatus(null)
@@ -44,6 +63,7 @@ export function Graph() {
             design.design_id,
             graphOptions.maxNodes,
             graphOptions.showInfrastructure,
+            controller.signal,
           ).then((graph) => ({
             graph,
             status: null,
@@ -58,7 +78,7 @@ export function Graph() {
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
               show_infrastructure: graphOptions.showInfrastructure,
-            }).then((response) => ({
+            }, controller.signal).then((response) => ({
               graph: response.graph,
               status: response.status,
               control: response.control,
@@ -71,10 +91,15 @@ export function Graph() {
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
               show_infrastructure: graphOptions.showInfrastructure,
-            }).then((graph) => ({ graph, status: null, control: false }))
+            }, controller.signal).then((graph) => ({
+              graph,
+              status: null,
+              control: false,
+            }))
     fetchP
       .then(({ graph, status, control }) => {
-        if (myReq !== reqSeq.current) return
+        if (controller.signal.aborted || myReq !== reqSeq.current) return
+        loadedRequestKey.current = requestKey
         setSourceStatus(status)
         setSourceControl(control)
         // An unmapped/absorbed selection is information about the source, not
@@ -83,7 +108,7 @@ export function Graph() {
         else setLoading(false)
       })
       .catch((e) => {
-        if (myReq !== reqSeq.current) return
+        if (controller.signal.aborted || myReq !== reqSeq.current) return
         setError(e instanceof ApiRequestError ? e.message : String(e))
         if (coneReq.kind !== 'source') {
           setSub(null)
@@ -91,21 +116,26 @@ export function Graph() {
         }
         setLoading(false)
       })
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [analysisState, design?.design_id, coneReq?.nonce, optsKey])
+  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey])
 
-  // lay out whenever the subgraph changes
+  // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
+    if (!active) return
     if (!sub) {
       setLaid(null)
+      laidOutSubgraph.current = null
       return
     }
+    if (laidOutSubgraph.current === sub) return
     let cancelled = false
     setLoading(true)
     layoutSubgraph(sub)
       .then((g) => {
         if (cancelled) return
         setLaid(g)
+        laidOutSubgraph.current = sub
         setLoading(false)
         setFitNonce((n) => n + 1)
       })
@@ -113,12 +143,13 @@ export function Graph() {
         if (cancelled) return
         setError(String(e instanceof Error ? e.message : e))
         setLaid(null)
+        laidOutSubgraph.current = null
         setLoading(false)
       })
     return () => {
       cancelled = true
     }
-  }, [sub])
+  }, [active, sub])
 
   const highlight = useMemo(
     () =>
@@ -169,8 +200,10 @@ export function Graph() {
               store.openControlCone({
                 node: control.driver_id,
                 label: controlLabel(control),
+                generated: control.generated,
               })
             }
+            active={active}
             fitNonce={fitNonce}
           />
         ) : (
@@ -222,7 +255,7 @@ export function Graph() {
           {sub?.truncated && (
             <span className="msg">
               truncated — {sub.nodes.length} nodes shown (raise max-depth / max-nodes to
-              see more, up to {MAX_LAYOUT_NODES})
+              see more, up to {MAX_GRAPH_RENDER_NODES})
             </span>
           )}
           {sub && !sub.truncated && (
@@ -322,7 +355,12 @@ function GraphToolbar() {
           <span className="val">{graphOptions.maxNodes}</span>
           <button
             onClick={() =>
-              setOpt({ maxNodes: Math.min(2000, graphOptions.maxNodes + 100) })
+              setOpt({
+                maxNodes: Math.min(
+                  MAX_GRAPH_RENDER_NODES,
+                  graphOptions.maxNodes + 100,
+                ),
+              })
             }
           >
             +

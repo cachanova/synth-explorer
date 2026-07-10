@@ -1,5 +1,6 @@
 // Typed API client mirroring docs/API.md. All calls go through the /api proxy.
 
+import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import type {
   EndpointsResponse,
   ExamplesResponse,
@@ -40,8 +41,8 @@ async function parseError(res: Response): Promise<ApiRequestError> {
   return new ApiRequestError(message, res.status, log)
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = signal ? await fetch(url, { signal }) : await fetch(url)
   if (!res.ok) throw await parseError(res)
   return (await res.json()) as T
 }
@@ -87,7 +88,11 @@ export interface ConeOptions {
   show_infrastructure?: boolean
 }
 
-export function getCone(id: string, opts: ConeOptions): Promise<Subgraph> {
+export function getCone(
+  id: string,
+  opts: ConeOptions,
+  signal?: AbortSignal,
+): Promise<Subgraph> {
   const p = new URLSearchParams()
   p.set('node', String(opts.node))
   p.set('dir', opts.dir)
@@ -98,7 +103,10 @@ export function getCone(id: string, opts: ConeOptions): Promise<Subgraph> {
   if (opts.show_infrastructure != null) {
     p.set('show_infrastructure', String(opts.show_infrastructure))
   }
-  return getJson<Subgraph>(`/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`)
+  return getJson<Subgraph>(
+    `/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`,
+    signal,
+  )
 }
 
 export interface LineConeOptions {
@@ -114,6 +122,7 @@ export interface LineConeOptions {
 export function getLineCone(
   id: string,
   opts: LineConeOptions,
+  signal?: AbortSignal,
 ): Promise<LineConeResponse> {
   const p = new URLSearchParams()
   p.set('file', opts.file)
@@ -127,6 +136,7 @@ export function getLineCone(
   }
   return getJson<LineConeResponse>(
     `/api/design/${encodeURIComponent(id)}/line-cone?${p.toString()}`,
+    signal,
   )
 }
 
@@ -138,11 +148,13 @@ export function getFanout(id: string, limit = 50): Promise<FanoutResponse> {
 
 export function getNetlist(
   id: string,
-  maxNodes = 1500,
+  maxNodes = DEFAULT_GRAPH_MAX_NODES,
   showInfrastructure = false,
+  signal?: AbortSignal,
 ): Promise<Subgraph> {
   return getJson<Subgraph>(
     `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}`,
+    signal,
   )
 }
 
