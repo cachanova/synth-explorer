@@ -107,8 +107,14 @@ Response `200`:
 }
 ```
 
+Uncached synthesis is limited to two complete Yosys/parse/analysis pipelines at
+a time. Concurrent requests with the same `design_id` share one result. Parsed
+designs are retained in a 256 MiB byte-weighted FIFO cache; a synthesized design
+whose conservative cache weight exceeds that budget returns `507` rather than
+an id that subsequent analysis routes could not resolve.
+
 `400` on yosys failure (body includes yosys `log`), `422` on validation
-failure, `504` on timeout.
+failure, `504` on timeout, and `507` when one design exceeds the cache budget.
 
 ## GET `/api/design/:id/endpoints`
 
