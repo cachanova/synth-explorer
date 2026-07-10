@@ -38,6 +38,16 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.11.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Test deployment state transitions
+        run: ./ops/tests/deploy-test.sh
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -67,6 +77,18 @@ jobs:
 
       - name: Smoke-test production image
         run: ./ops/smoke-test.sh http://127.0.0.1:8787 "${GITHUB_SHA}"
+
+      - name: Install browser smoke dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Smoke-test production webpage
+        working-directory: web
+        env:
+          PLAYWRIGHT_BASE_URL: http://127.0.0.1:8787
+        run: npm run test:e2e
 
       - name: Show application logs on failure
         if: failure()
@@ -140,7 +162,7 @@ jobs:
           : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
           : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
           tar -czf "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
-            compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh \
+            compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
             examples/05_shared_logic.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
@@ -187,7 +209,19 @@ jobs:
           REMOTE
 
       - name: Verify production from outside the host
-        run: ./ops/smoke-test.sh "$PRODUCTION_URL" "$GITHUB_SHA"
+        id: external_verify
+        run: ./ops/edge-smoke.sh "$GITHUB_SHA"
+
+      - name: Roll back failed external verification
+        if: ${{ failure() && steps.external_verify.outcome == 'failure' }}
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            'SYNTH_EXPLORER_BASE_DIR=/opt/synth-explorer /opt/synth-explorer/current/ops/deploy.sh --rollback'
 
       - name: Remove host registry credentials
         if: always()

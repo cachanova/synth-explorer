@@ -37,7 +37,10 @@ services:
   app:
     image: ${IMAGE_REF:?IMAGE_REF must be an immutable image digest}
     platform: linux/amd64
-    pull_policy: always
+    # deploy.sh pulls the new digest explicitly while the workflow has a
+    # short-lived registry credential. Restarts and rollback must use the
+    # already-verified local image after that credential is removed.
+    pull_policy: never
     restart: unless-stopped
     init: true
     environment:

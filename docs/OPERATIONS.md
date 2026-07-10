@@ -214,13 +214,14 @@ The production workflow performs these steps:
 
 1. Builds one `linux/amd64` image with the full Git commit embedded in
    `/healthz`.
-2. Runs the synthesis smoke test against that image.
+2. Runs all seven synthesis modes and a browser test that enters `-noabc` in
+   the webpage against that image.
 3. Pushes the full-commit tag to GHCR and resolves its `sha256` digest.
 4. Uploads `compose.prod.yml`, `Caddyfile`, and the scripts under `ops/` over
    SSH.
 5. Calls `ops/deploy.sh <image-ref@sha256:digest>` on the host.
-6. Calls `ops/smoke-test.sh https://synthexplorer.dev <commit>` from a GitHub
-   runner.
+6. Verifies public DNS, TLS, HTTP and `www` redirects, all synthesis modes, and
+   the deployed commit from a GitHub runner.
 
 The first merge to `main` publishes and deploys automatically. To run it again
 manually:
@@ -237,7 +238,10 @@ state under `/opt/synth-explorer/state/`, starts the Compose project, and runs
 health and synthesis checks. For routine deploys, the `/opt/synth-explorer/current`
 symlink moves only after the public smoke test passes. If the new release fails,
 the script restores both the prior image reference and the prior release directory
-before returning an error.
+before returning an error. The host keeps the active and immediately previous
+release bundles and image digests; older Synth Explorer releases are removed
+after a successful deployment. Compose restarts use those local digests and do
+not need a persistent GHCR credential.
 
 On the first deployment, a locally healthy stack is left running if only the
 public DNS/TLS smoke test fails. That lets Caddy keep serving ACME challenges and
@@ -266,18 +270,23 @@ gh run list --workflow deploy-production.yml --limit 5
 gh run watch RUN_ID --exit-status
 ```
 
-The deploy script rolls back when startup or smoke verification fails. For a
-manual rollback, select a prior digest from the deployment log or GHCR package,
-then invoke the same script on the host:
+The deploy script rolls back when startup or smoke verification fails. The
+workflow also invokes rollback when its outside-host verification fails. To
+manually restore the immediately previous verified release, invoke the active
+release script with the shared base directory:
 
 ```bash
 ssh deploy@SERVER_IPV4
-cd /opt/synth-explorer
-./ops/deploy.sh 'ghcr.io/cachanova/synth-explorer@sha256:PAST_DIGEST'
+SYNTH_EXPLORER_BASE_DIR=/opt/synth-explorer \
+  /opt/synth-explorer/current/ops/deploy.sh --rollback
 ```
 
-Run the external smoke test with the commit embedded in that image. Record the
-reason and digest in the related GitHub issue.
+The command fails clearly when no previous release is available. Deploying an
+older digest outside the one-release rollback window requires a temporary GHCR
+login before invoking `current/ops/deploy.sh <image@digest>` with the same
+`SYNTH_EXPLORER_BASE_DIR`; log out again afterward. Run the external smoke test
+with the commit embedded in that image. Record the reason and digest in the
+related GitHub issue.
 
 Do not deploy `latest` or a commit tag to the host. Tags can move. The digest
 pins the bytes that passed the release smoke test.
@@ -294,9 +303,12 @@ Inspect the host when a monitor fails:
 
 ```bash
 ssh deploy@SERVER_IPV4
-cd /opt/synth-explorer
-docker compose -f compose.prod.yml ps
-docker compose -f compose.prod.yml logs --since 30m --tail 300
+docker compose --project-directory /opt/synth-explorer/current \
+  --file /opt/synth-explorer/current/compose.prod.yml \
+  --env-file /opt/synth-explorer/state/.env ps
+docker compose --project-directory /opt/synth-explorer/current \
+  --file /opt/synth-explorer/current/compose.prod.yml \
+  --env-file /opt/synth-explorer/state/.env logs --since 30m --tail 300
 docker stats --no-stream
 df -h /
 free -h

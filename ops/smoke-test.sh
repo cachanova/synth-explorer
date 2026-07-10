@@ -30,9 +30,9 @@ main() {
   require_command curl
   require_command jq
 
-  local health_file synth_file flags_synth_file design_file
-  local payload_file flags_payload_file source_file design_id flags_design_id
-  local default_cells flags_cells
+  local health_file synth_file flags_synth_file design_file matrix_file
+  local payload_file flags_payload_file matrix_payload_file source_file design_id flags_design_id
+  local default_cells flags_cells mode matrix_design_id
   temporary_dir="$(mktemp -d)"
   health_file="${temporary_dir}/health.json"
   synth_file="${temporary_dir}/synthesize.json"
@@ -40,6 +40,8 @@ main() {
   design_file="${temporary_dir}/design.json"
   payload_file="${temporary_dir}/payload.json"
   flags_payload_file="${temporary_dir}/payload-flags.json"
+  matrix_payload_file="${temporary_dir}/payload-matrix.json"
+  matrix_file="${temporary_dir}/synthesize-matrix.json"
   source_file="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/examples/05_shared_logic.sv"
   [[ -f "${source_file}" ]] || die "missing synthesis smoke fixture: ${source_file}"
 
@@ -93,7 +95,25 @@ main() {
     "${design_file}" >/dev/null \
     || die "design fetch did not return the synthesized design"
 
-  printf 'smoke-test: %s is healthy at commit %s (designs %s, %s with -noabc)\n' \
+  for mode in rtl lut4 lut6 ice40 ecp5 xilinx; do
+    jq --arg mode "${mode}" '.mode = $mode | del(.extra_args)' \
+      "${payload_file}" >"${matrix_payload_file}"
+    curl --fail-with-body --show-error --silent \
+      --connect-timeout 5 --max-time 75 \
+      --header 'content-type: application/json' \
+      --data-binary "@${matrix_payload_file}" \
+      --output "${matrix_file}" "${base_url}/api/synthesize"
+    matrix_design_id="$(jq --exit-status --raw-output --arg mode "${mode}" \
+      'select(.top == "shared_logic" and .mode == $mode) | .design_id | select(type == "string" and length == 12)' \
+      "${matrix_file}")" \
+      || die "${mode} synthesis did not contain the expected design"
+    jq --exit-status '.stats.num_cells | select(type == "number")' \
+      "${matrix_file}" >/dev/null \
+      || die "${mode} synthesis did not return a cell count"
+    printf 'smoke-test: %s mode passed with design %s\n' "${mode}" "${matrix_design_id}"
+  done
+
+  printf 'smoke-test: %s is healthy at commit %s; all modes passed (designs %s, %s with -noabc)\n' \
     "${base_url}" "${expected_commit}" "${design_id}" "${flags_design_id}"
 }
 

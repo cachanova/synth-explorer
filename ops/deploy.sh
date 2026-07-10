@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly RELEASE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly RELEASE_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 readonly BASE_DIR="${SYNTH_EXPLORER_BASE_DIR:-${RELEASE_DIR}}"
 readonly STATE_DIR="${SYNTH_EXPLORER_STATE_DIR:-${BASE_DIR}/state}"
 readonly CURRENT_LINK="${SYNTH_EXPLORER_CURRENT_LINK:-${BASE_DIR}/current}"
@@ -12,6 +12,7 @@ readonly PREVIOUS_FILE="${STATE_DIR}/.previous-image"
 readonly PREVIOUS_RELEASE_FILE="${STATE_DIR}/.previous-release"
 readonly LOCK_FILE="${STATE_DIR}/.deploy.lock"
 readonly PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://synthexplorer.dev}"
+readonly MIN_FREE_KIB=$((2 * 1024 * 1024))
 
 die() {
   printf 'deploy: %s\n' "$*" >&2
@@ -105,11 +106,11 @@ rollback() {
   local failed_ref=$1
   local previous_ref=$2
   local previous_release=$3
-  local previous_commit previous_smoke
+  local original_release previous_commit previous_smoke
 
   printf 'deploy: deployment failed; rolling back\n' >&2
+  original_release="$(current_release)"
   if valid_image_ref "${previous_ref}" && [[ -n "${previous_release}" && -d "${previous_release}" ]]; then
-    write_current_ref "${previous_ref}"
     previous_commit="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${previous_ref}" 2>/dev/null || true)"
     previous_smoke="${previous_release}/ops/smoke-test.sh"
     [[ -x "${previous_smoke}" ]] || previous_smoke="${SCRIPT_DIR}/smoke-test.sh"
@@ -117,27 +118,82 @@ rollback() {
       && IMAGE_REF="${previous_ref}" compose_in_release "${previous_release}" up --detach --remove-orphans --force-recreate \
       && wait_for_app "${previous_release}" "${previous_ref}" \
       && "${previous_smoke}" "${PUBLIC_BASE_URL}" "${previous_commit}"; then
+      write_current_ref "${previous_ref}"
       point_current_at "${previous_release}"
       printf 'deploy: restored %s from %s\n' "${previous_ref}" "${previous_release}" >&2
       return 0
+    fi
+    if valid_image_ref "${failed_ref}" \
+      && [[ -n "${original_release}" && -d "${original_release}" && "${original_release}" != "${previous_release}" ]] \
+      && IMAGE_REF="${failed_ref}" compose_in_release "${original_release}" up --detach --remove-orphans --force-recreate \
+      && wait_for_app "${original_release}" "${failed_ref}"; then
+      write_current_ref "${failed_ref}"
+      point_current_at "${original_release}"
+      printf 'deploy: previous release verification failed; restored current release state\n' >&2
     fi
     printf 'deploy: rollback to %s from %s failed\n' "${previous_ref}" "${previous_release}" >&2
     return 1
   fi
 
   IMAGE_REF="${failed_ref}" compose down >/dev/null 2>&1 || true
-  rm -f -- "${ENV_FILE}"
+  rm -f -- "${ENV_FILE}" "${CURRENT_LINK}"
   printf 'deploy: no previous image was available; stopped failed first deployment\n' >&2
   return 0
 }
 
+rollback_current() {
+  local current_ref previous_ref previous_release
+  current_ref="$(read_current_ref)"
+  [[ -n "${current_ref}" ]] || die "no current image is recorded"
+  valid_image_ref "${current_ref}" || die "current IMAGE_REF is not an immutable digest"
+  previous_ref="$(cat -- "${PREVIOUS_FILE}" 2>/dev/null || true)"
+  previous_release="$(cat -- "${PREVIOUS_RELEASE_FILE}" 2>/dev/null || true)"
+  valid_image_ref "${previous_ref}" \
+    || die "no previous image is available for rollback"
+  [[ -n "${previous_release}" && -d "${previous_release}" ]] \
+    || die "no previous release directory is available for rollback"
+
+  rollback "${current_ref}" "${previous_ref}" "${previous_release}" \
+    || die "rollback failed"
+  rm -f -- "${PREVIOUS_FILE}" "${PREVIOUS_RELEASE_FILE}"
+}
+
+check_disk_space() {
+  local available_kib
+  available_kib="$(df --output=avail "${BASE_DIR}" | awk 'NR == 2 { print $1 }')"
+  [[ "${available_kib}" =~ ^[0-9]+$ ]] || die "could not determine free disk space"
+  (( available_kib >= MIN_FREE_KIB )) \
+    || die "less than 2 GiB is free under ${BASE_DIR}"
+}
+
+prune_old_releases() {
+  local previous_release=$1 candidate
+  for candidate in "${BASE_DIR}/releases"/*; do
+    [[ -e "${candidate}" ]] || continue
+    if [[ "${candidate}" != "${RELEASE_DIR}" && "${candidate}" != "${previous_release}" ]]; then
+      rm -rf -- "${candidate}"
+    fi
+  done
+}
+
+prune_old_app_images() {
+  local current_ref=$1 previous_ref=$2 repository candidate
+  repository="${current_ref%@*}"
+  while IFS= read -r candidate; do
+    [[ "${candidate}" == "${repository}@sha256:"* ]] || continue
+    if [[ "${candidate}" != "${current_ref}" && "${candidate}" != "${previous_ref}" ]]; then
+      docker image rm -- "${candidate}" >/dev/null 2>&1 || true
+    fi
+  done < <(docker image ls --digests --no-trunc --format '{{.Repository}}@{{.Digest}}')
+}
+
 main() {
-  [[ $# -eq 1 ]] || die "usage: $0 <image-ref@sha256:digest>"
-  local new_ref=$1
-  valid_image_ref "${new_ref}" || die "image reference must include a sha256 digest"
+  [[ $# -eq 1 ]] || die "usage: $0 <image-ref@sha256:digest> | --rollback"
+  local requested=$1
 
   require_command docker
   require_command curl
+  require_command df
   require_command flock
   require_command jq
   require_command readlink
@@ -151,6 +207,14 @@ main() {
   exec 9>"${LOCK_FILE}"
   flock --nonblock 9 || die "another deployment is in progress"
 
+  if [[ "${requested}" == "--rollback" ]]; then
+    rollback_current
+    return
+  fi
+
+  local new_ref=${requested}
+  valid_image_ref "${new_ref}" || die "image reference must include a sha256 digest"
+
   local previous_ref previous_release expected_commit
   previous_ref="$(read_current_ref)"
   previous_release="$(current_release)"
@@ -162,20 +226,23 @@ main() {
   fi
 
   IMAGE_REF="${new_ref}" compose config --quiet
+  check_disk_space
   docker pull "${new_ref}"
   validate_caddy "${new_ref}"
   expected_commit="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${new_ref}")"
   [[ "${expected_commit}" =~ ^[a-f0-9]{40}$ ]] \
     || die "image revision label must be a full 40-character Git commit"
 
-  if [[ -n "${previous_ref}" && "${previous_ref}" != "${new_ref}" ]]; then
+  if [[ -n "${previous_ref}" ]]; then
     printf '%s\n' "${previous_ref}" >"${PREVIOUS_FILE}"
+  else
+    rm -f -- "${PREVIOUS_FILE}"
   fi
   if [[ -n "${previous_release}" ]]; then
     printf '%s\n' "${previous_release}" >"${PREVIOUS_RELEASE_FILE}"
+  else
+    rm -f -- "${PREVIOUS_RELEASE_FILE}"
   fi
-  write_current_ref "${new_ref}"
-
   if ! IMAGE_REF="${new_ref}" compose up --detach --remove-orphans --force-recreate; then
     rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
     die "docker compose failed"
@@ -189,12 +256,18 @@ main() {
       rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
       die "external smoke test failed"
     fi
+    write_current_ref "${new_ref}"
     point_current_at "${RELEASE_DIR}"
     die "external smoke test failed after first healthy deployment; stack left running for DNS/TLS retry"
   fi
 
+  write_current_ref "${new_ref}"
   point_current_at "${RELEASE_DIR}"
+  prune_old_releases "${previous_release}"
+  prune_old_app_images "${new_ref}" "${previous_ref}"
   printf 'deploy: deployed %s (%s) from %s\n' "${new_ref}" "${expected_commit}" "${RELEASE_DIR}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
