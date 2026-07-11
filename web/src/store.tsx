@@ -169,6 +169,8 @@ export interface Store {
   // editor / inputs
   files: DesignFile[]
   activeFileName: string
+  /** Bumped when file content is replaced outside the editor (example load). */
+  docRevision: number
   top: string
   mode: Mode
   extraArgs: string
@@ -234,6 +236,7 @@ export function useStore(): Store {
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [files, setFiles] = useState<DesignFile[]>([DEFAULT_FILE])
   const [activeFileName, setActiveFileNameState] = useState(DEFAULT_FILE.name)
+  const [docRevision, setDocRevision] = useState(0)
   const [top, setTopState] = useState('')
   const [mode, setModeState] = useState<Mode>('gates')
   const [extraArgs, setExtraArgsState] = useState('')
@@ -363,7 +366,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   analysisStateRef.current = analysisState
 
   useEffect(() => {
-    if (analysisState !== 'current') setEditorHighlight(null)
+    if (analysisState !== 'current') {
+      setEditorHighlight(null)
+    } else {
+      // A failure report is obsolete once the current input has a live
+      // analysis (e.g. the failing edit was undone, restoring the last good
+      // input).
+      setError(null)
+    }
   }, [analysisState])
 
   // Load examples once.
@@ -492,6 +502,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       topRef.current = nextTop
       markInputChanged()
       setFiles(nextFiles)
+      // Reloading the already-active example changes content without changing
+      // the active file name, so the editor needs an explicit reset signal.
+      setDocRevision((r) => r + 1)
       const firstFile = ex.files[0]?.name ?? DEFAULT_FILE.name
       setActiveFileNameState(firstFile)
       setSourceSelectionState({ file: firstFile, startLine: 1, endLine: 1 })
@@ -816,6 +829,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => ({
       files,
       activeFileName,
+      docRevision,
       top,
       mode,
       extraArgs,
@@ -856,6 +870,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [
       files,
       activeFileName,
+      docRevision,
       top,
       mode,
       extraArgs,

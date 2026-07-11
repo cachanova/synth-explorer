@@ -3,7 +3,7 @@ import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
-import { parseSrc } from '../../lib/src'
+import { designSrcSpans } from '../../lib/src'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
 import { useStore } from '../../store'
@@ -229,7 +229,7 @@ export function Graph({ active }: { active: boolean }) {
             onSelect={(node) => {
               if (!graphInteractive) return
               setSelected(node)
-              store.highlightSources(parseSrc(node?.src))
+              store.highlightSources(designSrcSpans(node?.src, store.files))
             }}
             onControlSelect={
               graphInteractive

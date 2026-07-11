@@ -58,6 +58,7 @@ interface NodeVisual {
 }
 
 interface PanState {
+  pointerId: number
   x: number
   y: number
   transform: ViewportTransform
@@ -613,8 +614,8 @@ export function GraphView({
   const onPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
       if (event.button !== 0) return
-      event.currentTarget.setPointerCapture?.(event.pointerId)
       panState.current = {
+        pointerId: event.pointerId,
         x: event.clientX,
         y: event.clientY,
         transform: transformRef.current,
@@ -628,12 +629,23 @@ export function GraphView({
   const onPointerMove = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
       const pan = panState.current
-      if (!pan) return
+      if (!pan || event.pointerId !== pan.pointerId) return
+      if (event.buttons === 0) {
+        // The release happened outside the svg before capture engaged; end
+        // the gesture instead of panning with no button held.
+        panState.current = null
+        event.currentTarget.classList.remove('panning')
+        return
+      }
       const dx = event.clientX - pan.x
       const dy = event.clientY - pan.y
       if (!pan.moved && Math.hypot(dx, dy) >= 2) {
         pan.moved = true
         userAdjusted.current = true
+        // Capture only once a pan actually starts. Capturing on pointerdown
+        // makes the browser retarget the eventual pointerup/click at the svg
+        // root, which silently drops the first click on a node.
+        event.currentTarget.setPointerCapture?.(event.pointerId)
       }
       if (pan.moved) applyTransform(panViewport(pan.transform, dx, dy))
     },

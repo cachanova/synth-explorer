@@ -87,10 +87,23 @@ export function srcLabel(span: SrcSpan): string {
   return `${span.file}:${span.startLine}`
 }
 
-/** Label for a whole src string (first fragment, "+N" if more). */
-export function srcSummary(src: string | undefined | null): string | null {
-  const spans = parseSrc(src)
+/** Label for a span list (first fragment, "+N" if more). */
+export function spansSummary(spans: SrcSpan[]): string | null {
   if (spans.length === 0) return null
   const first = srcLabel(spans[0])
   return spans.length > 1 ? `${first} +${spans.length - 1}` : first
+}
+
+/**
+ * Spans restricted to files of the current design. Yosys techmap libraries
+ * attach src attributes pointing at their own installation (for example
+ * /opt/yosys/share/yosys/xilinx/ff_map.v); those paths mean nothing to the
+ * user and leak server layout, so they are never shown.
+ */
+export function designSrcSpans(
+  src: string | undefined | null,
+  designFiles: ReadonlyArray<{ name: string }>,
+): SrcSpan[] {
+  const names = new Set(designFiles.map((file) => file.name))
+  return parseSrc(src).filter((span) => names.has(span.file))
 }

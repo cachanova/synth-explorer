@@ -1,18 +1,18 @@
 import { useStore } from '../store'
-import { parseSrc, srcSummary } from '../lib/src'
+import { designSrcSpans, spansSummary, srcLabel } from '../lib/src'
 
 /** A clickable yosys src reference that highlights the range in the editor. */
 export function SrcLink({ src }: { src?: string | null }) {
   const store = useStore()
-  const summary = srcSummary(src)
+  const spans = designSrcSpans(src, store.files)
+  const summary = spansSummary(spans)
   if (!summary) return null
   return (
     <a
       className="src-link"
-      title={src ?? undefined}
+      title={spans.map(srcLabel).join(', ')}
       onClick={(e) => {
         e.stopPropagation()
-        const spans = parseSrc(src)
         store.highlightSources(spans)
       }}
     >
