@@ -613,7 +613,6 @@ export function GraphView({
   const onPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
       if (event.button !== 0) return
-      event.currentTarget.setPointerCapture?.(event.pointerId)
       panState.current = {
         x: event.clientX,
         y: event.clientY,
@@ -634,6 +633,10 @@ export function GraphView({
       if (!pan.moved && Math.hypot(dx, dy) >= 2) {
         pan.moved = true
         userAdjusted.current = true
+        // Capture only once a pan actually starts. Capturing on pointerdown
+        // makes the browser retarget the eventual pointerup/click at the svg
+        // root, which silently drops the first click on a node.
+        event.currentTarget.setPointerCapture?.(event.pointerId)
       }
       if (pan.moved) applyTransform(panViewport(pan.transform, dx, dy))
     },

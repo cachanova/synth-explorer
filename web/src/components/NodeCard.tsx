@@ -1,4 +1,4 @@
-import { parseSrc, srcLabel } from '../lib/src'
+import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { useStore } from '../store'
 import type { GraphNode } from '../types'
@@ -14,7 +14,7 @@ export function NodeCard({
 }) {
   const store = useStore()
   const params = node.params ? Object.entries(node.params) : []
-  const spans = parseSrc(node.src)
+  const spans = designSrcSpans(node.src, store.files)
   const name = displayNodeName(node, drivingNet)
 
   return (

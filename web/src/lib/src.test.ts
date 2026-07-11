@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { parseSrc, parseSrcFragment, srcLabel, srcSummary } from './src'
+import {
+  designSrcSpans,
+  parseSrc,
+  parseSrcFragment,
+  srcLabel,
+  srcSummary,
+} from './src'
 
 describe('parseSrcFragment', () => {
   it('parses a full range', () => {
@@ -90,5 +96,28 @@ describe('srcLabel / srcSummary', () => {
 
   it('returns null for empty', () => {
     expect(srcSummary(undefined)).toBeNull()
+  })
+})
+
+describe('designSrcSpans', () => {
+  const files = [{ name: 'top.sv' }, { name: 'util.sv' }]
+
+  it('keeps spans from design files only', () => {
+    const spans = designSrcSpans('top.sv:12.1-14.9|util.sv:3.1-3.5', files)
+    expect(spans.map((s) => s.file)).toEqual(['top.sv', 'util.sv'])
+  })
+
+  it('drops yosys techmap library paths', () => {
+    const spans = designSrcSpans(
+      'top.sv:20.5-25.8|/opt/yosys/bin/../share/yosys/xilinx/ff_map.v:68.1-68.9',
+      files,
+    )
+    expect(spans.map((s) => s.file)).toEqual(['top.sv'])
+  })
+
+  it('returns empty when only library paths contribute', () => {
+    expect(
+      designSrcSpans('/opt/yosys/share/yosys/xilinx/lut_map.v:51.1-53.4', files),
+    ).toEqual([])
   })
 })

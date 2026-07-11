@@ -178,7 +178,8 @@ export function Editor() {
     }
   }, [])
 
-  // reset document when the active file identity changes
+  // reset document when the active file identity changes or its content is
+  // replaced outside the editor (docRevision covers reloading the same file)
   useEffect(() => {
     const view = viewRef.current
     if (!view) return
@@ -191,7 +192,7 @@ export function Editor() {
       })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store.activeFileName])
+  }, [store.activeFileName, store.docRevision])
 
   // apply cross-probe highlight
   useEffect(() => {
