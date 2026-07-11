@@ -150,16 +150,37 @@ test('graph viewport follows browser and pane resizing without resetting user zo
 
   await page.getByTitle('Fit to view').click()
   const beforeTabSwitch = await viewport.getAttribute('transform')
+  const beforeInactiveResize = await stage.boundingBox()
+  if (!beforeInactiveResize) throw new Error('graph stage is not visible')
+  const browserViewport = page.viewportSize()
+  if (!browserViewport) throw new Error('browser viewport size is unavailable')
+  const inactiveResize = { width: 120, height: 60 }
   await page.getByRole('button', { name: 'Overview', exact: true }).click()
-  const hiddenPaneResize = 48
-  const hiddenDividerBox = await dragDividerBy(page, divider, -hiddenPaneResize)
-  await expect
-    .poll(async () =>
-      hiddenDividerBox.x - ((await divider.boundingBox())?.x ?? hiddenDividerBox.x),
-    )
-    .toBeGreaterThan(hiddenPaneResize / 2)
+  await page.setViewportSize({
+    width: browserViewport.width + inactiveResize.width,
+    height: browserViewport.height + inactiveResize.height,
+  })
   await page.getByRole('button', { name: 'Graph', exact: true }).click()
   await expect(svg).toBeVisible()
+  await expect
+    .poll(async () => {
+      const afterInactiveResize = await stage.boundingBox()
+      if (!afterInactiveResize) return 0
+      return (
+        Math.abs(afterInactiveResize.width - beforeInactiveResize.width) +
+        Math.abs(afterInactiveResize.height - beforeInactiveResize.height)
+      )
+    })
+    .toBeGreaterThan(Math.min(inactiveResize.width, inactiveResize.height) / 2)
+  await expect
+    .poll(async () => {
+      const [stageBox, svgBox] = await Promise.all([
+        stage.boundingBox(),
+        svg.boundingBox(),
+      ])
+      return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
+    })
+    .toBeLessThan(1)
   await expect
     .poll(async () => await viewport.getAttribute('transform'))
     .not.toBe(beforeTabSwitch)
