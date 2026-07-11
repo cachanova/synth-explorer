@@ -3,6 +3,7 @@ use crate::netlist::{
     binary_string_to_u64, module_blackboxes,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::mem::size_of;
 
 pub type NodeId = u32;
 
@@ -61,6 +62,7 @@ pub struct Graph {
     pub net_aliases: HashMap<u32, Vec<String>>,
     pub cell_info: HashMap<NodeId, CellInfo>,
     pub blackboxes: Vec<NodeId>,
+    pub(crate) signal_fanout: HashMap<(NodeId, String, Option<u32>), usize>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +72,87 @@ pub enum GraphError {
 }
 
 impl Graph {
+    /// Deterministic estimate of heap allocation retained by this graph.
+    /// Counts collection capacities and owned string buffers, but is not an
+    /// allocator-exact RSS measurement.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let mut bytes = self.nodes.capacity().saturating_mul(size_of::<Node>());
+        for node in &self.nodes {
+            bytes = bytes
+                .saturating_add(node.name.capacity())
+                .saturating_add(node.raw_name.capacity())
+                .saturating_add(option_string_bytes(&node.cell_type))
+                .saturating_add(option_string_bytes(&node.src))
+                .saturating_add(btree_string_map_bytes(&node.params))
+                .saturating_add(option_string_bytes(&node.port))
+                .saturating_add(option_string_bytes(&node.const_value));
+        }
+        bytes = bytes.saturating_add(self.edges.capacity().saturating_mul(size_of::<Edge>()));
+        for edge in &self.edges {
+            bytes = bytes
+                .saturating_add(edge.from_port.capacity())
+                .saturating_add(edge.to_port.capacity())
+                .saturating_add(edge.net_name.capacity());
+        }
+        bytes = bytes
+            .saturating_add(nested_usize_vec_bytes(
+                &self.outgoing,
+                self.outgoing.capacity(),
+            ))
+            .saturating_add(nested_usize_vec_bytes(
+                &self.incoming,
+                self.incoming.capacity(),
+            ))
+            .saturating_add(self.top.capacity())
+            .saturating_add(
+                self.net_names
+                    .capacity()
+                    .saturating_mul(size_of::<(u32, String)>()),
+            );
+        for name in self.net_names.values() {
+            bytes = bytes.saturating_add(name.capacity());
+        }
+        bytes = bytes.saturating_add(
+            self.net_aliases
+                .capacity()
+                .saturating_mul(size_of::<(u32, Vec<String>)>()),
+        );
+        for aliases in self.net_aliases.values() {
+            bytes = bytes.saturating_add(aliases.capacity().saturating_mul(size_of::<String>()));
+            for alias in aliases {
+                bytes = bytes.saturating_add(alias.capacity());
+            }
+        }
+        bytes = bytes.saturating_add(
+            self.cell_info
+                .capacity()
+                .saturating_mul(size_of::<(NodeId, CellInfo)>()),
+        );
+        for info in self.cell_info.values() {
+            bytes = bytes
+                .saturating_add(yosys_bits_bytes(&info.q_bits, info.q_bits.capacity()))
+                .saturating_add(yosys_bits_bytes(&info.d_bits, info.d_bits.capacity()))
+                .saturating_add(option_string_bytes(&info.clock_net))
+                .saturating_add(string_set_bytes(&info.output_ports))
+                .saturating_add(string_set_bytes(&info.input_ports));
+        }
+        bytes = bytes
+            .saturating_add(
+                self.blackboxes
+                    .capacity()
+                    .saturating_mul(size_of::<NodeId>()),
+            )
+            .saturating_add(
+                self.signal_fanout
+                    .capacity()
+                    .saturating_mul(size_of::<((NodeId, String, Option<u32>), usize)>()),
+            );
+        for (_, port, _) in self.signal_fanout.keys() {
+            bytes = bytes.saturating_add(port.capacity());
+        }
+        bytes
+    }
+
     pub fn from_netlist(
         netlist: &YosysNetlist,
         top_name: &str,
@@ -94,11 +177,12 @@ impl Graph {
         let mut cell_nodes: HashMap<String, NodeId> = HashMap::new();
 
         for (port_name, port) in &module.ports {
-            for (idx, bit) in port.bits.iter().enumerate() {
-                let name = bit
-                    .net()
-                    .and_then(|net| builder.net_names.get(&net).cloned())
-                    .unwrap_or_else(|| bit_name(port_name, idx, port.bits.len()));
+            for (idx, _bit) in port.bits.iter().enumerate() {
+                // A port node represents the interface signal, even when Yosys
+                // aliases it directly to another port's bit (`assign y = a`).
+                // Using the canonical net name here would make output `y` appear
+                // as another node named `a` and erase the top-level identity.
+                let name = bit_name(port_name, idx, port.bits.len());
                 let id = builder.add_node(Node {
                     id: 0,
                     kind: NodeKind::PortBit,
@@ -171,8 +255,14 @@ impl Graph {
                 output_ports: output_ports.clone(),
                 input_ports: input_ports.clone(),
             };
-            for control_pin in CONTROL_PINS {
-                if let Some(bits) = cell.connections.get(*control_pin) {
+            // Endpoint metadata calls this field `clock`, but for latches it
+            // is the transparent gate. Never substitute an async reset/set
+            // merely because the primitive has no edge-triggered clock.
+            for control_pin in ["CLK", "C", "G", "E", "EN", "GE"] {
+                if let Some(bits) = cell.connections.get(control_pin) {
+                    if !is_control_pin_for_cell(&cell.cell_type, control_pin) {
+                        continue;
+                    }
                     if info.clock_net.is_none() {
                         info.clock_net = bits
                             .iter()
@@ -193,7 +283,7 @@ impl Graph {
             }
             if builder.nodes[node_id as usize].seq && info.d_bits.is_empty() {
                 for port in &input_ports {
-                    if is_control_pin(port) {
+                    if is_control_pin_for_cell(&cell.cell_type, port) {
                         continue;
                     }
                     if let Some(bits) = cell.connections.get(port) {
@@ -232,7 +322,7 @@ impl Graph {
                     continue;
                 };
                 for bit in bits {
-                    let control = is_control_pin(&input_port);
+                    let control = is_control_pin_for_cell(&cell.cell_type, &input_port);
                     let net_name = bit_to_name(bit, &builder.net_names);
                     for (driver_id, driver_port) in
                         resolve_drivers(bit, &drivers, &mut builder, &mut const_nodes)?
@@ -279,6 +369,7 @@ impl Graph {
             }
         }
 
+        let signal_fanout = build_signal_fanout(&builder.edges);
         Ok(Self {
             nodes: builder.nodes,
             edges: builder.edges,
@@ -289,6 +380,7 @@ impl Graph {
             net_aliases,
             cell_info: builder.cell_info,
             blackboxes: builder.blackboxes,
+            signal_fanout,
         })
     }
 
@@ -310,6 +402,64 @@ impl Graph {
             .get(id as usize)
             .is_some_and(|node| matches!(node.kind, NodeKind::Cell) && !node.seq)
     }
+
+    /// Number of sink pins driven by this exact output port and net bit.
+    /// Keeping this precomputed avoids quadratic scans for high-fanout controls.
+    pub fn signal_fanout(&self, edge: &Edge) -> usize {
+        self.signal_fanout
+            .get(&(edge.from, edge.from_port.clone(), edge.bit))
+            .copied()
+            .unwrap_or(1)
+    }
+}
+
+fn option_string_bytes(value: &Option<String>) -> usize {
+    value.as_ref().map_or(0, String::capacity)
+}
+
+fn btree_string_map_bytes(map: &BTreeMap<String, String>) -> usize {
+    let node_storage = map
+        .len()
+        .saturating_mul(size_of::<(String, String)>() + 3 * size_of::<usize>());
+    map.iter().fold(node_storage, |bytes, (key, value)| {
+        bytes
+            .saturating_add(key.capacity())
+            .saturating_add(value.capacity())
+    })
+}
+
+fn nested_usize_vec_bytes(values: &[Vec<usize>], outer_capacity: usize) -> usize {
+    values.iter().fold(
+        outer_capacity.saturating_mul(size_of::<Vec<usize>>()),
+        |bytes, value| bytes.saturating_add(value.capacity().saturating_mul(size_of::<usize>())),
+    )
+}
+
+fn yosys_bits_bytes(bits: &[YosysBit], capacity: usize) -> usize {
+    bits.iter().fold(
+        capacity.saturating_mul(size_of::<YosysBit>()),
+        |bytes, bit| match bit {
+            YosysBit::Net(_) => bytes,
+            YosysBit::Const(value) => bytes.saturating_add(value.capacity()),
+        },
+    )
+}
+
+fn string_set_bytes(values: &HashSet<String>) -> usize {
+    values.iter().fold(
+        values.capacity().saturating_mul(size_of::<String>()),
+        |bytes, value| bytes.saturating_add(value.capacity()),
+    )
+}
+
+fn build_signal_fanout(edges: &[Edge]) -> HashMap<(NodeId, String, Option<u32>), usize> {
+    let mut counts = HashMap::new();
+    for edge in edges {
+        *counts
+            .entry((edge.from, edge.from_port.clone(), edge.bit))
+            .or_default() += 1;
+    }
+    counts
 }
 
 struct GraphBuilder {
@@ -390,13 +540,35 @@ fn resolve_drivers(
 }
 
 pub const CONTROL_PINS: &[&str] = &[
-    "CLK", "C", "E", "EN", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST",
+    "CLK", "C", "G", "E", "EN", "GE", "R", "S", "ARST", "SRST", "CLR", "PRE", "CE", "RST", "LSR",
+    "SR", "SET", "T",
 ];
 
 pub fn is_control_pin(port: &str) -> bool {
-    CONTROL_PINS
-        .iter()
-        .any(|pin| pin.eq_ignore_ascii_case(port))
+    matches!(
+        port.to_ascii_uppercase().as_str(),
+        "CLK" | "EN" | "ARST" | "SRST" | "CLR" | "PRE" | "CE" | "RST" | "LSR" | "SR" | "SET"
+    )
+}
+
+pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
+    if is_control_pin(port) {
+        return true;
+    }
+    let upper_port = port.to_ascii_uppercase();
+    if matches!(upper_port.as_str(), "C" | "E" | "R" | "S") {
+        return is_sequential_type(cell_type);
+    }
+    if matches!(upper_port.as_str(), "G" | "GE") {
+        let upper_type = cell_type.to_ascii_uppercase();
+        return upper_type.contains("LATCH")
+            || matches!(upper_type.as_str(), "LDCE" | "LDPE" | "LDCPE");
+    }
+    upper_port == "T"
+        && matches!(
+            cell_type.to_ascii_uppercase().as_str(),
+            "OBUFT" | "IOBUF" | "SB_IO"
+        )
 }
 
 pub fn is_data_pin(port: &str) -> bool {
@@ -535,7 +707,11 @@ fn trim_params(params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
         let upper = key.to_ascii_uppercase();
         if upper == "LUT" {
             out.insert(key.clone(), value.clone());
-        } else if upper == "WIDTH" || upper.ends_with("_WIDTH") {
+        } else if upper == "WIDTH"
+            || upper.ends_with("_WIDTH")
+            || upper.ends_with("_POLARITY")
+            || (upper.starts_with("IS_") && upper.ends_with("_INVERTED"))
+        {
             let formatted = binary_string_to_u64(value)
                 .map(|num| num.to_string())
                 .unwrap_or_else(|| value.clone());
@@ -552,15 +728,40 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
         || cell_type.starts_with("$adff")
         || cell_type.starts_with("$aldff")
         || cell_type.starts_with("$dffe")
+        || cell_type.starts_with("$dlatch")
+        || cell_type.starts_with("$adlatch")
         || cell_type == "$ff"
+        || cell_type == "$sr"
         || cell_type.starts_with("$mem")
         || upper.starts_with("$_DFF")
         || upper.starts_with("$_SDFF")
         || upper.starts_with("$_ALDFF")
+        || upper.starts_with("$_DLATCH")
+        || upper.starts_with("$_SR_")
         || upper == "$_FF_"
-        || upper.starts_with("SB_DFF")
-        || upper == "TRELLIS_FF"
-        || is_xilinx_ff(&upper)
+        || matches!(
+            vendor_primitive_class(cell_type),
+            Some(VendorPrimitiveClass::Sequential)
+        )
+}
+
+/// True only for edge-triggered/latch storage whose output is a register value.
+/// Stateful memories and addressable shift-register LUTs remain traversal
+/// boundaries, but must not be presented as ordinary registers or registered
+/// top-level-output aliases.
+pub fn is_register_type(cell_type: &str) -> bool {
+    is_sequential_type(cell_type)
+        && !cell_type.starts_with("$mem")
+        && !is_addressable_sequential_type(cell_type)
+}
+
+/// Stateful primitives whose output also has a combinational address path.
+/// SRL D is a storage input, while A0..A4 select the current Q value.
+pub fn is_addressable_sequential_type(cell_type: &str) -> bool {
+    matches!(
+        cell_type.to_ascii_uppercase().as_str(),
+        "SRL16E" | "SRLC32E"
+    )
 }
 
 pub fn is_blackbox_cell(
@@ -568,41 +769,71 @@ pub fn is_blackbox_cell(
     blackbox_modules: &HashSet<String>,
     module_names: &HashSet<&str>,
 ) -> bool {
-    if blackbox_modules.contains(&cell.cell_type) || attr_truthy(&cell.attributes, "blackbox") {
+    if attr_truthy(&cell.attributes, "blackbox") {
+        return true;
+    }
+    if vendor_primitive_class(&cell.cell_type).is_some() {
+        return false;
+    }
+    if blackbox_modules.contains(&cell.cell_type) {
         return true;
     }
     if module_names.contains(cell.cell_type.as_str()) {
         return false;
     }
-    !cell.cell_type.starts_with('$') && !is_known_hardware_primitive(&cell.cell_type)
+    !cell.cell_type.starts_with('$')
 }
 
-fn is_xilinx_ff(upper: &str) -> bool {
-    matches!(upper, "FDRE" | "FDSE" | "FDCE" | "FDPE")
-        || (upper.starts_with("FD") && upper.len() <= 5)
-}
-
-fn is_known_hardware_primitive(cell_type: &str) -> bool {
-    let upper = cell_type.to_ascii_uppercase();
-    if is_sequential_type(cell_type) {
-        return true;
+pub fn cell_depth_weight(cell_type: &str) -> u32 {
+    match vendor_primitive_class(cell_type) {
+        Some(VendorPrimitiveClass::Combinational { depth_weight }) => depth_weight,
+        Some(VendorPrimitiveClass::Sequential) | None => 1,
     }
+}
+
+/// Cells that are useful implementation accounting detail but add no logical
+/// depth. Analysis views may collapse these into the net they buffer while the
+/// raw implementation statistics continue to count them.
+pub fn is_infrastructure_cell(cell_type: &str) -> bool {
     matches!(
-        upper.as_str(),
-        "SB_LUT4"
-            | "SB_CARRY"
-            | "LUT1"
-            | "LUT2"
-            | "LUT3"
-            | "LUT4"
-            | "LUT5"
-            | "LUT6"
-            | "CCU2C"
-            | "CARRY4"
-            | "MUXF7"
-            | "MUXF8"
-            | "IBUF"
-            | "OBUF"
-            | "BUFG"
+        vendor_primitive_class(cell_type),
+        Some(VendorPrimitiveClass::Combinational { depth_weight: 0 })
     )
+}
+
+/// Unconditional one-input buffers that preserve a data bit exactly. This is
+/// deliberately narrower than `is_infrastructure_cell`: tri-state and
+/// bidirectional IO primitives must not make an output look like a direct
+/// register alias.
+pub fn is_transparent_data_buffer(cell_type: &str) -> bool {
+    matches!(
+        cell_type.to_ascii_uppercase().as_str(),
+        "IBUF" | "OBUF" | "BUFG" | "BUFH" | "SB_GB" | "$_BUF_"
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VendorPrimitiveClass {
+    Combinational { depth_weight: u32 },
+    Sequential,
+}
+
+// Primitive classification shared by the Yosys Xilinx, iCE40, and ECP5 flows.
+// Anything not listed here remains a blackbox boundary when it is a non-$ cell.
+fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
+    let upper = cell_type.to_ascii_uppercase();
+    if upper.starts_with("SB_DFF") {
+        return Some(VendorPrimitiveClass::Sequential);
+    }
+    match upper.as_str() {
+        "FDRE" | "FDRE_1" | "FDSE" | "FDSE_1" | "FDCE" | "FDCE_1" | "FDPE" | "FDPE_1" | "FDCPE"
+        | "FDR" | "FDS" | "FDC" | "FDP" | "LDCE" | "LDPE" | "LDCPE" | "TRELLIS_FF" | "SRL16E"
+        | "SRLC32E" => Some(VendorPrimitiveClass::Sequential),
+        "LUT1" | "LUT2" | "LUT3" | "LUT4" | "LUT5" | "LUT6" | "SB_LUT4" | "PFUMX" | "L6MUX21"
+        | "CCU2C" | "CARRY4" | "CARRY8" | "MUXF7" | "MUXF8" | "MUXF9" | "INV" | "SB_CARRY"
+        | "XORCY" | "MUXCY" => Some(VendorPrimitiveClass::Combinational { depth_weight: 1 }),
+        "IBUF" | "OBUF" | "OBUFT" | "IOBUF" | "BUFG" | "BUFGCE" | "BUFGCTRL" | "BUFH" | "SB_GB"
+        | "$_BUF_" => Some(VendorPrimitiveClass::Combinational { depth_weight: 0 }),
+        _ => None,
+    }
 }

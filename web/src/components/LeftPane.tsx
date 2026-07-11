@@ -2,7 +2,6 @@ import { useStore } from '../store'
 import { Editor } from './Editor'
 import { ErrorStrip } from './ErrorStrip'
 import { FileTabs } from './FileTabs'
-import { ProbePanel } from './ProbePanel'
 import { Toolbar } from './Toolbar'
 
 export function LeftPane() {
@@ -12,20 +11,26 @@ export function LeftPane() {
     <div className="pane-left">
       <Toolbar />
       <FileTabs />
-      <div className="row" style={{ padding: '4px 8px', gap: 8 }}>
-        <button
-          disabled={!store.design}
-          title="Find synthesized nodes for the current line"
-          onClick={() => void store.runProbe()}
-        >
-          Probe line {store.cursor.line}
-        </button>
-        <span className="faint" style={{ fontSize: 11 }}>
-          {store.activeFileName}
+      <div className="row" style={{ padding: '4px 8px', gap: 8, fontSize: 11 }}>
+        <span className="mono faint">
+          {store.sourceSelection.file}:{store.sourceSelection.startLine}
+          {store.sourceSelection.endLine !== store.sourceSelection.startLine
+            ? `–${store.sourceSelection.endLine}`
+            : ''}
+        </span>
+        <span className="tag">
+          {store.analysisState === 'current'
+            ? 'mapping live'
+            : store.analysisState === 'refreshing'
+              ? 'refreshing'
+              : store.analysisState === 'stale'
+                ? 'mapping stale'
+                : store.analysisState === 'error'
+                  ? 'synthesis failed'
+                  : 'not synthesized'}
         </span>
       </div>
       <Editor />
-      <ProbePanel />
       <ErrorStrip />
     </div>
   )

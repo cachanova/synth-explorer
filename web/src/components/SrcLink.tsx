@@ -13,7 +13,7 @@ export function SrcLink({ src }: { src?: string | null }) {
       onClick={(e) => {
         e.stopPropagation()
         const spans = parseSrc(src)
-        if (spans[0]) store.highlightSrc(spans[0])
+        store.highlightSources(spans)
       }}
     >
       {summary}

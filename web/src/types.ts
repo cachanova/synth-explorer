@@ -9,6 +9,7 @@ export interface NodeRef {
   name: string // human name: cell name (cleaned), "a[3]" for port bits, "1'b0" for consts
   cell_type?: string // "$lut", "$_NAND_", "$add", "SB_LUT4", ... (kind === "cell")
   seq?: boolean // sequential cell (FF/memory/blackbox boundary)
+  register?: boolean // true only for ordinary register/latch storage, not memories/SRLs/blackboxes
   src?: string // yosys src attr, e.g. "design.sv:12.16-12.21" (may be absent)
 }
 
@@ -17,6 +18,21 @@ export interface GraphNode extends NodeRef {
   is_boundary?: boolean // traversal stopped here (startpoint/endpoint/limit)
   depth?: number // comb depth from startpoints (absent for seq/port nodes)
   params?: Record<string, string> // e.g. { "LUT": "0111...", "WIDTH": "4" }
+  controls?: ControlRef[] // omitted when the node has no labeled control connections
+}
+
+export type ControlRole = 'clock' | 'reset' | 'set' | 'enable' | 'other'
+
+export interface ControlRef {
+  role: ControlRole
+  pin: string
+  net_name: string
+  driver_id: number
+  fanout: number
+  active_low?: boolean
+  synchronous?: boolean
+  src?: string
+  generated?: boolean
 }
 
 export interface GraphEdge {
@@ -33,6 +49,18 @@ export interface Subgraph {
   nodes: GraphNode[]
   edges: GraphEdge[]
   truncated: boolean // hit max_nodes/max_depth; UI must say so
+}
+
+export type LineConeStatus =
+  | 'mapped'
+  | 'mapping_incomplete'
+  | 'optimized_or_absorbed'
+  | 'unmapped'
+
+export interface LineConeResponse {
+  status: LineConeStatus
+  control: boolean
+  graph: Subgraph
 }
 
 // --- POST /api/synthesize ---
@@ -58,7 +86,23 @@ export interface Stats {
   num_register_groups: number
   num_inputs: number // port bit counts
   num_outputs: number
-  max_depth: number // worst comb depth (cells) across all endpoints
+  max_depth: number // worst weighted structural logic depth across all endpoints
+  depths: DepthSummary
+  cell_categories: CellCategoryCounts
+}
+
+export interface DepthSummary {
+  input_to_register: number | null
+  register_to_register: number | null
+  register_to_output: number | null
+  input_to_output: number | null
+}
+
+export interface CellCategoryCounts {
+  logic: number
+  registers: number
+  carry_special: number
+  infrastructure: number
 }
 
 export interface SynthesizeResponse {
@@ -86,6 +130,18 @@ export interface RegisterEndpoint {
   src?: string
   worst_depth: number // max comb depth into any bit's D
   bits: EndpointBit[]
+  output_aliases: OutputAlias[]
+}
+
+export interface OutputAliasBit {
+  output_bit: number
+  register_bit: number
+}
+
+export interface OutputAlias {
+  name: string
+  width: number
+  bits: OutputAliasBit[]
 }
 
 export interface OutputEndpoint {
@@ -109,8 +165,22 @@ export interface EndpointsResponse {
 
 // --- GET /api/design/:id/paths ---
 
+export type EndpointKind = 'register' | 'output' | 'blackbox'
+
+export type PathClass =
+  | 'input_to_register'
+  | 'register_to_register'
+  | 'register_to_output'
+  | 'input_to_output'
+  | 'other'
+
 export interface TimingPath {
-  depth: number // comb cells on the path
+  depth: number // weighted structural logic levels on the path
+  class: PathClass
+  endpoint_group: string
+  endpoint_kind: EndpointKind
+  bits: number[] // endpoint bits sharing this depth and structural route
+  output_aliases: OutputAlias[]
   startpoint: NodeRef // input port bit / FF cell (Q) / blackbox
   endpoint: NodeRef // FF cell (D) / output port bit / blackbox
   endpoint_port: string // "D", output port name, ...
@@ -120,6 +190,7 @@ export interface TimingPath {
 export interface PathsResponse {
   paths: TimingPath[]
   comb_loops: string[] // names of nodes excluded due to comb cycles
+  truncated: boolean // response limit or bounded per-endpoint route sampling was hit
 }
 
 // --- GET /api/design/:id/fanout ---
@@ -147,9 +218,19 @@ export interface NodesResponse {
 
 // --- GET /api/design/:id/source-map ---
 
+export interface SourceRangeMapping {
+  file: string
+  start_line: number
+  end_line: number
+  node_ids: number[]
+  mapping_incomplete: boolean
+}
+
 export interface SourceMapResponse {
   files: string[] // filenames as submitted
   by_line: Record<string, number[]> // "file.sv:12" -> node ids
+  ranges: SourceRangeMapping[]
+  truncated: boolean
 }
 
 // --- GET /api/examples ---

@@ -1,29 +1,51 @@
 import { diffCellsByType, totalCellDelta } from '../../lib/diff'
+import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
+import { displayCellType, shortNetName } from '../../lib/prettyType'
 import { useStore } from '../../store'
 import type { Snapshot } from '../../store'
+import type { TimingPath } from '../../types'
+import { ModeName } from './Overview'
+import {
+  BitCohort,
+  OutputAliasName,
+  PathClassName,
+  PathEndpointName,
+} from './Paths'
 
 export function Compare() {
   const store = useStore()
-  const { snapshotA: a, snapshotB: b } = store
+  const { snapshotA, snapshotB } = store
 
   return (
     <div>
-      <div className="cmp-slots">
-        <SlotCard slot="A" snap={a} onTake={() => void store.takeSnapshot('A')} />
-        <SlotCard slot="B" snap={b} onTake={() => void store.takeSnapshot('B')} />
+      <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
+        {STRUCTURAL_DEPTH_CAVEAT}
       </div>
 
-      {!store.design && !a && !b && (
+      <div className="cmp-slots">
+        <SlotCard
+          slot="A"
+          snap={snapshotA}
+          onTake={() => void store.takeSnapshot('A')}
+        />
+        <SlotCard
+          slot="B"
+          snap={snapshotB}
+          onTake={() => void store.takeSnapshot('B')}
+        />
+      </div>
+
+      {!store.design && !snapshotA && !snapshotB && (
         <div className="empty-state">
           Synthesize a design, then snapshot it as A or B to compare two versions or
           synthesis modes.
         </div>
       )}
 
-      {a && b ? (
-        <DeltaTable a={a} b={b} />
+      {snapshotA && snapshotB ? (
+        <DeltaTables snapshotA={snapshotA} snapshotB={snapshotB} />
       ) : (
-        (a || b) && (
+        (snapshotA || snapshotB) && (
           <div className="faint">Take both snapshots to see the delta.</div>
         )
       )}
@@ -41,13 +63,21 @@ function SlotCard({
   onTake: () => void
 }) {
   const store = useStore()
+  const canSnapshot = Boolean(store.design) && store.analysisState === 'current'
+  const snapshotTitle = !store.design
+    ? 'Synthesize first'
+    : store.analysisState === 'refreshing'
+      ? 'Wait for synthesis to finish'
+      : store.analysisState === 'current'
+        ? 'Snapshot current design'
+        : 'Synthesize the current source before taking a snapshot'
   return (
     <div className="cmp-slot">
       <h4>Snapshot {slot}</h4>
       {snap ? (
         <div style={{ fontSize: 12 }}>
           <div className="mono">
-            {snap.top} · {snap.mode}
+            {snap.top} · <ModeName mode={snap.mode} />
           </div>
           <div className="faint mono" style={{ fontSize: 10 }}>
             {snap.design_id.slice(0, 16)}
@@ -63,12 +93,13 @@ function SlotCard({
         </div>
       )}
       <button
+        type="button"
         style={{ marginTop: 8 }}
-        disabled={!store.design}
+        disabled={!canSnapshot}
         onClick={onTake}
-        title={store.design ? 'Snapshot current design' : 'Synthesize first'}
+        title={snapshotTitle}
       >
-        {snap ? 'Re-snapshot current' : 'Snapshot as ' + slot}
+        {snap ? 'Re-snapshot current' : `Snapshot as ${slot}`}
       </button>
     </div>
   )
@@ -77,28 +108,37 @@ function SlotCard({
 function Delta({ value, lowerBetter = true }: { value: number; lowerBetter?: boolean }) {
   if (value === 0) return <span className="delta-zero">0</span>
   const improvement = lowerBetter ? value < 0 : value > 0
-  const cls = improvement ? 'delta-down' : 'delta-up'
+  const className = improvement ? 'delta-down' : 'delta-up'
   const sign = value > 0 ? '+' : ''
   return (
-    <span className={cls}>
+    <span className={className}>
       {sign}
       {value}
     </span>
   )
 }
 
-function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
-  const cd = diffCellsByType(a.stats.cells_by_type, b.stats.cells_by_type)
-  const pathRows = Math.max(a.paths.length, b.paths.length)
-  const foRows = Math.max(a.fanout.length, b.fanout.length)
+function DeltaTables({
+  snapshotA,
+  snapshotB,
+}: {
+  snapshotA: Snapshot
+  snapshotB: Snapshot
+}) {
+  const cellsA = readableCellCounts(snapshotA.stats.cells_by_type)
+  const cellsB = readableCellCounts(snapshotB.stats.cells_by_type)
+  const cellDelta = diffCellsByType(cellsA, cellsB)
+  const cellRows = [...cellDelta.added, ...cellDelta.removed, ...cellDelta.changed]
+  const pathRows = Math.max(snapshotA.paths.length, snapshotB.paths.length)
+  const fanoutRows = Math.max(snapshotA.fanout.length, snapshotB.fanout.length)
 
   return (
     <div>
-      <div className="section-title">Summary</div>
+      <div className="section-title">Structural logic depth</div>
       <table className="grid">
         <thead>
           <tr>
-            <th>Metric</th>
+            <th>Path class</th>
             <th className="num">A</th>
             <th className="num">B</th>
             <th className="num">Δ (B−A)</th>
@@ -106,26 +146,84 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
         </thead>
         <tbody>
           <MetricRow
-            label="Max depth"
-            a={a.stats.max_depth}
-            b={b.stats.max_depth}
+            label="Overall max"
+            a={snapshotA.stats.max_depth}
+            b={snapshotB.stats.max_depth}
           />
-          <MetricRow label="Cells" a={a.stats.num_cells} b={b.stats.num_cells} />
+          <MetricRow
+            label="Input → register"
+            a={snapshotA.stats.depths.input_to_register}
+            b={snapshotB.stats.depths.input_to_register}
+          />
+          <MetricRow
+            label="Register → register"
+            a={snapshotA.stats.depths.register_to_register}
+            b={snapshotB.stats.depths.register_to_register}
+          />
+          <MetricRow
+            label="Register → output"
+            a={snapshotA.stats.depths.register_to_output}
+            b={snapshotB.stats.depths.register_to_output}
+          />
+          <MetricRow
+            label="Input → output"
+            a={snapshotA.stats.depths.input_to_output}
+            b={snapshotB.stats.depths.input_to_output}
+          />
+        </tbody>
+      </table>
+
+      <div className="section-title">Cell categories</div>
+      <table className="grid">
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th className="num">A</th>
+            <th className="num">B</th>
+            <th className="num">Δ (B−A)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <MetricRow
+            label="Logic"
+            a={snapshotA.stats.cell_categories.logic}
+            b={snapshotB.stats.cell_categories.logic}
+          />
+          <MetricRow
+            label="Registers"
+            a={snapshotA.stats.cell_categories.registers}
+            b={snapshotB.stats.cell_categories.registers}
+          />
+          <MetricRow
+            label="Carry / special"
+            a={snapshotA.stats.cell_categories.carry_special}
+            b={snapshotB.stats.cell_categories.carry_special}
+          />
+          <MetricRow
+            label="Infrastructure"
+            a={snapshotA.stats.cell_categories.infrastructure}
+            b={snapshotB.stats.cell_categories.infrastructure}
+          />
+          <MetricRow
+            label="Total cells"
+            a={snapshotA.stats.num_cells}
+            b={snapshotB.stats.num_cells}
+          />
           <MetricRow
             label="Register bits"
-            a={a.stats.num_register_bits}
-            b={b.stats.num_register_bits}
+            a={snapshotA.stats.num_register_bits}
+            b={snapshotB.stats.num_register_bits}
           />
           <MetricRow
             label="Register groups"
-            a={a.stats.num_register_groups}
-            b={b.stats.num_register_groups}
+            a={snapshotA.stats.num_register_groups}
+            b={snapshotB.stats.num_register_groups}
           />
         </tbody>
       </table>
 
       <div className="section-title">
-        Cells by type ({totalCellDelta(cd)} cell delta)
+        Cells by readable type ({totalCellDelta(cellDelta)} changed cells)
       </div>
       <table className="grid">
         <thead>
@@ -137,27 +235,27 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
           </tr>
         </thead>
         <tbody>
-          {[...cd.added, ...cd.removed, ...cd.changed].length === 0 ? (
+          {cellRows.length === 0 ? (
             <tr>
               <td colSpan={4} className="faint">
                 No cell-type differences.
               </td>
             </tr>
           ) : (
-            [...cd.added, ...cd.removed, ...cd.changed].map((r) => (
-              <tr key={r.type}>
+            cellRows.map((row) => (
+              <tr key={row.type}>
                 <td className="mono">
-                  {r.type}{' '}
-                  {r.a === 0 ? (
+                  {row.type}{' '}
+                  {row.a === 0 ? (
                     <span className="tag delta-add">new</span>
-                  ) : r.b === 0 ? (
+                  ) : row.b === 0 ? (
                     <span className="tag delta-rm">gone</span>
                   ) : null}
                 </td>
-                <td className="num">{r.a}</td>
-                <td className="num">{r.b}</td>
+                <td className="num">{row.a}</td>
+                <td className="num">{row.b}</td>
                 <td className="num">
-                  <Delta value={r.delta} />
+                  <Delta value={row.delta} />
                 </td>
               </tr>
             ))
@@ -165,32 +263,38 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
         </tbody>
       </table>
 
-      <div className="section-title">Top-10 path depths</div>
+      <div className="section-title">
+        Top-10 structural path variants (ranked independently)
+      </div>
       <table className="grid">
         <thead>
           <tr>
             <th className="num">#</th>
             <th className="num">A depth</th>
+            <th>A logical endpoint</th>
             <th className="num">B depth</th>
+            <th>B logical endpoint</th>
             <th className="num">Δ</th>
-            <th>B endpoint</th>
           </tr>
         </thead>
         <tbody>
-          {Array.from({ length: Math.min(pathRows, 10) }, (_, i) => {
-            const pa = a.paths[i]
-            const pb = b.paths[i]
-            const da = pa?.depth ?? 0
-            const db = pb?.depth ?? 0
+          {Array.from({ length: Math.min(pathRows, 10) }, (_, index) => {
+            const pathA = snapshotA.paths[index]
+            const pathB = snapshotB.paths[index]
             return (
-              <tr key={i}>
-                <td className="num faint">{i + 1}</td>
-                <td className="num">{pa ? da : '—'}</td>
-                <td className="num">{pb ? db : '—'}</td>
+              <tr key={index}>
+                <td className="num faint">{index + 1}</td>
+                <td className="num">{pathA ? pathA.depth : '—'}</td>
+                <td>{pathA ? <PathEndpoint path={pathA} /> : '—'}</td>
+                <td className="num">{pathB ? pathB.depth : '—'}</td>
+                <td>{pathB ? <PathEndpoint path={pathB} /> : '—'}</td>
                 <td className="num">
-                  {pa && pb ? <Delta value={db - da} /> : '—'}
+                  {pathA && pathB ? (
+                    <Delta value={pathB.depth - pathA.depth} />
+                  ) : (
+                    '—'
+                  )}
                 </td>
-                <td className="mono faint">{pb?.endpoint.name ?? '—'}</td>
               </tr>
             )
           })}
@@ -209,18 +313,24 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
           </tr>
         </thead>
         <tbody>
-          {Array.from({ length: Math.min(foRows, 10) }, (_, i) => {
-            const fa = a.fanout[i]
-            const fb = b.fanout[i]
+          {Array.from({ length: Math.min(fanoutRows, 10) }, (_, index) => {
+            const fanoutA = snapshotA.fanout[index]
+            const fanoutB = snapshotB.fanout[index]
             return (
-              <tr key={i}>
-                <td className="num faint">{i + 1}</td>
-                <td className="num">{fa ? fa.fanout : '—'}</td>
-                <td className="num">{fb ? fb.fanout : '—'}</td>
+              <tr key={index}>
+                <td className="num faint">{index + 1}</td>
+                <td className="num">{fanoutA ? fanoutA.fanout : '—'}</td>
+                <td className="num">{fanoutB ? fanoutB.fanout : '—'}</td>
                 <td className="num">
-                  {fa && fb ? <Delta value={fb.fanout - fa.fanout} lowerBetter /> : '—'}
+                  {fanoutA && fanoutB ? (
+                    <Delta value={fanoutB.fanout - fanoutA.fanout} />
+                  ) : (
+                    '—'
+                  )}
                 </td>
-                <td className="mono faint">{fb?.net_name ?? '—'}</td>
+                <td className="mono faint">
+                  {fanoutB ? shortNetName(fanoutB.net_name) : '—'}
+                </td>
               </tr>
             )
           })}
@@ -230,14 +340,54 @@ function DeltaTable({ a, b }: { a: Snapshot; b: Snapshot }) {
   )
 }
 
-function MetricRow({ label, a, b }: { label: string; a: number; b: number }) {
+function PathEndpoint({ path }: { path: TimingPath }) {
+  return (
+    <div>
+      <span className="tag">
+        {path.endpoint_kind === 'register'
+          ? 'Register'
+          : path.endpoint_kind === 'output'
+            ? 'Top-level output'
+            : 'Boundary'}
+      </span>{' '}
+      <span className="mono"><PathEndpointName path={path} /></span>
+      <div className="faint" style={{ fontSize: 10 }}>
+        <PathClassName value={path.class} /> · bits <BitCohort bits={path.bits} />
+      </div>
+      {path.output_aliases.map((alias) => (
+        <div key={alias.name} className="faint" style={{ fontSize: 10 }}>
+          output <span className="mono"><OutputAliasName alias={alias} /></span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function readableCellCounts(cellsByType: Record<string, number>): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const [rawType, count] of Object.entries(cellsByType)) {
+    const label = displayCellType(rawType)
+    counts[label] = (counts[label] ?? 0) + count
+  }
+  return counts
+}
+
+function MetricRow({
+  label,
+  a,
+  b,
+}: {
+  label: string
+  a: number | null
+  b: number | null
+}) {
   return (
     <tr>
       <td>{label}</td>
-      <td className="num">{a}</td>
-      <td className="num">{b}</td>
+      <td className="num">{a ?? '—'}</td>
+      <td className="num">{b ?? '—'}</td>
       <td className="num">
-        <Delta value={b - a} />
+        {a === null || b === null ? '—' : <Delta value={b - a} />}
       </td>
     </tr>
   )

@@ -1,92 +1,207 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ApiRequestError, getCone, getNetlist } from '../../api'
-import { layoutSubgraph, MAX_LAYOUT_NODES, type LaidOutGraph } from '../../lib/layout'
+import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
+import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
+import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
+import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
+import { parseSrc } from '../../lib/src'
+import { sourceProbePresentation } from '../../lib/sourceProbe'
+import { controlLabel } from '../../lib/symbols'
 import { useStore } from '../../store'
-import type { GraphNode, Subgraph } from '../../types'
+import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
-export function Graph() {
-  const store = useStore()
-  const { design, coneReq, graphOptions } = store
+interface FetchedSubgraph {
+  designId: string
+  requestKey: string
+  graph: Subgraph
+}
 
-  const [sub, setSub] = useState<Subgraph | null>(null)
-  const [laid, setLaid] = useState<LaidOutGraph | null>(null)
+interface DisplayedGraph {
+  designId: string
+  requestKey: string
+  subgraph: Subgraph
+  graph: LaidOutGraph
+}
+
+export function Graph({ active }: { active: boolean }) {
+  const store = useStore()
+  const { analysisState, design, coneReq, graphOptions } = store
+
+  const [fetchedSubgraph, setFetchedSubgraph] = useState<FetchedSubgraph | null>(null)
+  const [displayedGraph, setDisplayedGraph] = useState<DisplayedGraph | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
+  const [sourceStatus, setSourceStatus] = useState<LineConeStatus | null>(null)
+  const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
+  const loadedRequestKey = useRef<string | null>(null)
+  const laidOutSubgraph = useRef<Subgraph | null>(null)
 
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}`
+  const requestDesignMismatch = Boolean(
+    design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
+  )
 
-  // fetch subgraph whenever the request or options change
+  // A request can change while analysis is stale. Clear the previous source
+  // classification immediately instead of showing it for the new selection.
   useEffect(() => {
+    setSourceStatus(null)
+    setSourceControl(false)
+  }, [analysisState, coneReq?.nonce])
+
+  // Fetch subgraphs only while Graph is visible. A completed request key is
+  // retained across tab switches so returning to Graph does not refetch or
+  // disturb its local view state.
+  useEffect(() => {
+    if (!active) return
     if (!design || !coneReq) {
-      setSub(null)
-      setLaid(null)
+      setFetchedSubgraph(null)
+      setDisplayedGraph(null)
+      loadedRequestKey.current = null
+      laidOutSubgraph.current = null
       return
     }
+    if (analysisState !== 'current') return
+    if (requestDesignMismatch) return
+    const requestDesignId = design.design_id
+    const requestKey = `${requestDesignId}|${coneReq.nonce}|${optsKey}`
+    if (loadedRequestKey.current === requestKey) return
+
     const myReq = ++reqSeq.current
+    const controller = new AbortController()
     setLoading(true)
     setError(null)
-    setSelected(null)
-    const fetchP = coneReq.netlist
-      ? getNetlist(design.design_id, graphOptions.maxNodes)
-      : getCone(design.design_id, {
-          node: coneReq.node,
-          dir: coneReq.dir,
-          max_depth: graphOptions.maxDepth,
-          max_nodes: graphOptions.maxNodes,
-          hide_control: graphOptions.hideControl,
-          hide_const: graphOptions.hideConst,
-        })
+    setSourceStatus(null)
+    setSourceControl(false)
+    if (coneReq.kind !== 'source') setSelected(null)
+    const fetchP =
+      coneReq.kind === 'netlist'
+        ? getNetlist(
+            requestDesignId,
+            graphOptions.maxNodes,
+            graphOptions.showInfrastructure,
+            controller.signal,
+          ).then((graph) => ({
+            graph,
+            status: null,
+            control: false,
+          }))
+        : coneReq.kind === 'source'
+          ? getLineCone(requestDesignId, {
+              file: coneReq.file,
+              start_line: coneReq.startLine,
+              end_line: coneReq.endLine,
+              max_nodes: graphOptions.maxNodes,
+              hide_control: graphOptions.hideControl,
+              hide_const: graphOptions.hideConst,
+              show_infrastructure: graphOptions.showInfrastructure,
+            }, controller.signal).then((response) => ({
+              graph: response.graph,
+              status: response.status,
+              control: response.control,
+            }))
+          : getCone(requestDesignId, {
+              node: coneReq.node,
+              dir: coneReq.dir,
+              max_depth: graphOptions.maxDepth,
+              max_nodes: graphOptions.maxNodes,
+              hide_control: graphOptions.hideControl,
+              hide_const: graphOptions.hideConst,
+              show_infrastructure: graphOptions.showInfrastructure,
+            }, controller.signal).then((graph) => ({
+              graph,
+              status: null,
+              control: false,
+            }))
     fetchP
-      .then((s) => {
-        if (myReq !== reqSeq.current) return
-        setSub(s)
+      .then(({ graph, status, control }) => {
+        if (controller.signal.aborted || myReq !== reqSeq.current) return
+        loadedRequestKey.current = requestKey
+        setSourceStatus(status)
+        setSourceControl(control)
+        const presentation = sourceProbePresentation(status)
+        // A partial mapping is still useful and replaces the prior selection.
+        // Truly unmapped/absorbed selections retain the last meaningful graph.
+        if (presentation.acceptReturnedGraph) {
+          setFetchedSubgraph({ designId: requestDesignId, requestKey, graph })
+          if (status != null) setSelected(null)
+        }
+        else setLoading(false)
       })
       .catch((e) => {
-        if (myReq !== reqSeq.current) return
+        if (controller.signal.aborted || myReq !== reqSeq.current) return
         setError(e instanceof ApiRequestError ? e.message : String(e))
-        setSub(null)
-        setLaid(null)
         setLoading(false)
       })
+    return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [design?.design_id, coneReq?.nonce, optsKey])
+  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch])
 
-  // lay out whenever the subgraph changes
+  // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
-    if (!sub) {
-      setLaid(null)
-      return
-    }
+    if (!active) return
+    if (!fetchedSubgraph) return
+    if (laidOutSubgraph.current === fetchedSubgraph.graph) return
+    const result = fetchedSubgraph
     let cancelled = false
+    const controller = new AbortController()
     setLoading(true)
-    layoutSubgraph(sub)
+    layoutSubgraph(result.graph, controller.signal)
       .then((g) => {
         if (cancelled) return
-        setLaid(g)
+        setDisplayedGraph({
+          designId: result.designId,
+          requestKey: result.requestKey,
+          subgraph: result.graph,
+          graph: g,
+        })
+        laidOutSubgraph.current = result.graph
         setLoading(false)
         setFitNonce((n) => n + 1)
       })
       .catch((e) => {
-        if (cancelled) return
+        if (cancelled || controller.signal.aborted) return
         setError(String(e instanceof Error ? e.message : e))
-        setLaid(null)
+        laidOutSubgraph.current = null
         setLoading(false)
       })
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [sub])
+  }, [active, fetchedSubgraph])
+
+  const sub = displayedGraph?.subgraph ?? null
+  const laid = displayedGraph?.graph ?? null
+  const displayedDesignCurrent = isDisplayedDesignCurrent(
+    design?.design_id,
+    displayedGraph?.designId,
+  )
+  const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
+  const graphInteractive = analysisState === 'current' && displayedDesignCurrent
+  const sourcePresentation = sourceProbePresentation(sourceStatus)
 
   const highlight = useMemo(
-    () => new Set(coneReq?.highlight ?? []),
-    [coneReq],
+    () =>
+      new Set([
+        ...(coneReq?.highlight ?? []),
+        ...(coneReq?.kind === 'source' && sourcePresentation.highlightRoots
+          ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
+          : []),
+      ]),
+    [coneReq, sourcePresentation.highlightRoots, sub],
   )
-  const rootId = coneReq?.netlist ? -1 : coneReq?.node ?? -1
+  const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
+
+  // Net driven by the selected node (first outgoing edge) — lets the detail
+  // card show a readable identity for hidden-name cells.
+  const selectedNet = useMemo(() => {
+    if (!sub || !selected) return null
+    return sub.edges.find((e) => e.from === selected.id)?.net_name ?? null
+  }, [sub, selected])
 
   if (!design) return <div className="empty-state">No design yet.</div>
   if (!coneReq)
@@ -102,15 +217,31 @@ export function Graph() {
 
   return (
     <div className="graph-tab">
-      <GraphToolbar />
+      <GraphToolbar graphInteractive={graphInteractive} />
       <div className="graph-stage-wrap" style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
         {laid && laid.nodes.length > 0 ? (
           <GraphView
             graph={laid}
             rootId={rootId}
             highlight={highlight}
-            selectedId={selected?.id ?? null}
-            onSelect={setSelected}
+            selectedId={graphInteractive ? (selected?.id ?? null) : null}
+            interactive={graphInteractive}
+            onSelect={(node) => {
+              if (!graphInteractive) return
+              setSelected(node)
+              store.highlightSources(parseSrc(node?.src))
+            }}
+            onControlSelect={
+              graphInteractive
+                ? (control) =>
+                    store.openControlCone({
+                      node: control.driver_id,
+                      label: controlLabel(control),
+                      generated: control.generated,
+                    })
+                : undefined
+            }
+            active={active}
             fitNonce={fitNonce}
           />
         ) : (
@@ -134,10 +265,41 @@ export function Graph() {
             </span>
           )}
           {error && <span className="msg err">{error}</span>}
+          {analysisState === 'stale' && (
+            <span className="msg">source changed — synthesize to refresh mapping</span>
+          )}
+          {analysisState === 'refreshing' && (
+            <span className="msg">refreshing analysis… showing the last valid graph</span>
+          )}
+          {analysisState === 'error' && (
+            <span className="msg err">analysis is stale; the last synthesis failed</span>
+          )}
+          {displayedDesignMismatch && (
+            <span className="msg">
+              showing a graph snapshot from the previous synthesis — interactions are disabled
+            </span>
+          )}
+          {requestDesignMismatch && !displayedDesignMismatch && (
+            <span className="msg">this cone belongs to the previous synthesis</span>
+          )}
+          {sourcePresentation.message && (
+            <span className="msg">{sourcePresentation.message}</span>
+          )}
+          {coneReq.kind === 'source' && sourcePresentation.retainsPreviousGraph && laid && (
+            <span className="msg">showing the previous mapped selection</span>
+          )}
+          {sourceControl && (
+            <span className="msg">
+              control path selection — reset/clock/enable connectivity is shown
+            </span>
+          )}
+          {coneReq.kind === 'source' && coneReq.selectionTruncated && (
+            <span className="msg">selection capped at 200 source lines</span>
+          )}
           {sub?.truncated && (
             <span className="msg">
-              truncated — {sub.nodes.length} nodes shown (raise max-depth / max-nodes to
-              see more, up to {MAX_LAYOUT_NODES})
+              truncated — {sub.nodes.length} nodes and {sub.edges.length} edges shown;
+              analysis limits omitted additional graph content
             </span>
           )}
           {sub && !sub.truncated && (
@@ -145,19 +307,28 @@ export function Graph() {
           )}
         </div>
 
-        {selected && <NodeCard node={selected} onClose={() => setSelected(null)} />}
+        {selected && graphInteractive && (
+          <NodeCard
+            node={selected}
+            drivingNet={selectedNet}
+            onClose={() => setSelected(null)}
+          />
+        )}
       </div>
     </div>
   )
 }
 
-function GraphToolbar() {
+function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
   const store = useStore()
-  const { coneReq, graphOptions } = store
+  const { coneReq, design, graphOptions } = store
+  const requestDesignMismatch = Boolean(
+    design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
+  )
   const setOpt = store.setGraphOptions
 
   const reissue = (dir: 'fanin' | 'fanout') => {
-    if (!coneReq || coneReq.netlist) return
+    if (coneReq?.kind !== 'cone') return
     store.openCone({ node: coneReq.node, dir, label: coneReq.label })
   }
 
@@ -168,17 +339,19 @@ function GraphToolbar() {
       </span>
       <span className="sep" />
 
-      {coneReq && !coneReq.netlist && (
+      {coneReq?.kind === 'cone' && (
         <>
           <div className="stepper" title="Cone direction">
             <button
               className={coneReq.dir === 'fanin' ? 'primary' : ''}
+              disabled={requestDesignMismatch || !graphInteractive}
               onClick={() => reissue('fanin')}
             >
               fanin
             </button>
             <button
               className={coneReq.dir === 'fanout' ? 'primary' : ''}
+              disabled={requestDesignMismatch || !graphInteractive}
               onClick={() => reissue('fanout')}
             >
               fanout
@@ -196,6 +369,11 @@ function GraphToolbar() {
             </div>
           </label>
 
+        </>
+      )}
+
+      {(coneReq?.kind === 'cone' || coneReq?.kind === 'source') && (
+        <>
           <label className="toggle">
             <input
               type="checkbox"
@@ -226,7 +404,12 @@ function GraphToolbar() {
           <span className="val">{graphOptions.maxNodes}</span>
           <button
             onClick={() =>
-              setOpt({ maxNodes: Math.min(2000, graphOptions.maxNodes + 100) })
+              setOpt({
+                maxNodes: Math.min(
+                  MAX_GRAPH_RENDER_NODES,
+                  graphOptions.maxNodes + 100,
+                ),
+              })
             }
           >
             +
@@ -234,7 +417,29 @@ function GraphToolbar() {
         </div>
       </label>
 
+      <label className="toggle" title="Show vendor IO and clock-buffer cells">
+        <input
+          type="checkbox"
+          checked={graphOptions.showInfrastructure}
+          onChange={(event) =>
+            setOpt({ showInfrastructure: event.target.checked })
+          }
+        />
+        infrastructure
+      </label>
+
       <span className="sep" />
+      <label
+        className="toggle"
+        title="Automatically synthesize three seconds after input changes"
+      >
+        <input
+          type="checkbox"
+          checked={store.autoSynthesize}
+          onChange={(event) => store.setAutoSynthesize(event.target.checked)}
+        />
+        auto synth
+      </label>
       <button onClick={() => store.openNetlist()} title="Render the full (capped) netlist">
         Full netlist
       </button>

@@ -35,12 +35,19 @@ export function RightPane() {
         ))}
       </div>
 
-      {active === 'graph' ? (
-        // Graph owns full height (no scroll padding).
-        <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-          <Graph />
-        </div>
-      ) : (
+      {/* Keep Graph mounted so pan, zoom, and node selection survive tab switches. */}
+      <div
+        aria-hidden={active !== 'graph'}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          display: active === 'graph' ? 'flex' : 'none',
+        }}
+      >
+        <Graph active={active === 'graph'} />
+      </div>
+
+      {active !== 'graph' && (
         <div className="tab-body">
           {active === 'overview' && <Overview />}
           {active === 'endpoints' && <Endpoints />}

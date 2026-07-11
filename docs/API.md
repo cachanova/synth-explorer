@@ -36,7 +36,8 @@ export interface NodeRef {
   name: string;         // human name: cell name (cleaned), "a[3]" for port bits, "1'b0" for consts
   cell_type?: string;   // "$lut", "$_NAND_", "$add", "SB_LUT4", ... (kind === "cell")
   seq?: boolean;        // sequential cell (FF/memory/blackbox boundary)
-  src?: string;         // yosys src attr, e.g. "design.sv:12.16-12.21" (may be absent)
+  register?: boolean;   // ordinary register/latch; false for memories/SRLs/blackboxes
+  src?: string;         // yosys or recovered alias provenance, separated by "|"
 }
 
 export interface GraphNode extends NodeRef {
@@ -44,6 +45,17 @@ export interface GraphNode extends NodeRef {
   is_boundary?: boolean;// traversal stopped here (startpoint/endpoint/limit)
   depth?: number;       // comb depth from startpoints (absent for seq/port nodes)
   params?: Record<string, string>; // e.g. { "LUT": "0111...", "WIDTH": "4" }
+  controls?: {
+    role: "clock" | "reset" | "set" | "enable" | "other";
+    pin: string;
+    net_name: string;
+    driver_id: number;
+    fanout: number;
+    active_low?: boolean;
+    synchronous?: boolean; // reset/set behavior when known from the primitive
+    src?: string;          // control-driver source attribution when available
+    generated?: boolean; // clock/reset/set is not a direct input/buffer-chain source
+  }[];                   // label-connected controls omitted from ordinary wiring
 }
 
 export interface GraphEdge {
@@ -60,7 +72,7 @@ export interface GraphEdge {
 export interface Subgraph {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  truncated: boolean;   // hit max_nodes/max_depth; UI must say so
+  truncated: boolean;   // hit a node/depth/merged-edge/projection-work cap
 }
 ```
 
@@ -97,16 +109,42 @@ Response `200`:
     num_register_groups: number;
     num_inputs: number;    // port bit counts
     num_outputs: number;
-    max_depth: number;     // worst comb depth (cells) across all endpoints
+    max_depth: number;     // worst weighted structural logic depth across all endpoints
+    depths: {
+      input_to_register: number | null;
+      register_to_register: number | null;
+      register_to_output: number | null;
+      input_to_output: number | null;
+    };
+    cell_categories: {
+      logic: number;
+      registers: number;
+      carry_special: number;
+      infrastructure: number;
+    };
   };
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
 }
 ```
 
-`400` on yosys failure (body includes yosys `log`), `422` on validation
-failure, `504` on timeout. The server runs one synthesis and queues at most two
-more; requests beyond that return `503` with `Retry-After: 5`.
+At most three distinct uncached `design_id` leaders are admitted: one complete
+Yosys/parse/analysis/cache pipeline runs while two wait. Concurrent requests for
+an existing in-flight id always subscribe to its server-owned task without
+consuming another slot, and an initiating client disconnect does not cancel the
+task. When all three distinct slots are occupied, a new distinct request gets
+one final TTL-aware cache lookup and then returns `503` with `Retry-After: 5`.
+
+Parsed designs are retained for 30 minutes from insertion in a 128 MiB
+byte-weighted FIFO cache. Each entry is charged at least 64 KiB; otherwise its
+weight is a deterministic estimate of retained allocation from owned
+collection/string capacities plus cache key/entry overhead, not exact RSS. A
+synthesized design whose charge exceeds the cache budget returns `507` rather
+than an id that subsequent analysis routes could not resolve.
+
+`400` on Yosys failure (body includes the Yosys `log`), `422` on validation
+failure, `503` when three distinct leaders are active or waiting, `504` on
+timeout, and `507` when one design cannot be retained in the cache.
 
 ## GET `/api/design/:id/endpoints`
 
@@ -120,8 +158,13 @@ more; requests beyond that return `503` with `Retry-After: 5`.
     src?: string;
     worst_depth: number; // max comb depth into any bit's D
     bits: { bit: number; node_id: number; depth: number }[]; // per-bit FF cells, index-ordered
+    output_aliases: {
+      name: string;      // top-level output directly driven by this register
+      width: number;     // declared output width
+      bits: { output_bit: number; register_bit: number }[];
+    }[];
   }[];
-  outputs: { name: string; width: number; worst_depth: number;
+  outputs: { name: string; width: number; worst_depth: number; // non-aliased bits only
              bits: { bit: number; node_id: number; depth: number }[] }[];
   inputs:  { name: string; width: number;
              bits: { bit: number; node_id: number }[] }[];
@@ -129,34 +172,68 @@ more; requests beyond that return `503` with `Retry-After: 5`.
 ```
 
 `node_id` for a register bit is the **FF cell node**; for an output bit the
-**port bit node**. Both are valid `node`/`to` params below.
+**port bit node**. Both are valid `node`/`to` params below. Output bits driven
+directly by register Q through wiring or unconditional zero-depth buffers are
+listed under that register's `output_aliases` and are not duplicated in
+`outputs`.
 
 ## GET `/api/design/:id/paths?limit=25&to=<node_id>`
 
-Ranked longest structural paths (deepest first). Without `to`: top paths across
-all endpoints (at most one path — the critical one — per endpoint bit). With
-`to`: paths into that endpoint node only (its per-bit critical paths if the id
-is an FF cell; ranked alternatives are future work).
+Ranked longest structural paths (deepest first). Paths with the same logical
+endpoint, depth, and normalized structural route are grouped into bit cohorts;
+different vector-bit routes remain separate. Direct registered-output aliases
+share the register endpoint and do not create a duplicate zero-depth path.
+With `to`, only variants ending at that node are returned.
 
 ```ts
 {
   paths: {
-    depth: number;               // comb cells on the path
+    depth: number;               // weighted structural logic levels
+    class: "input_to_register" | "register_to_register" |
+           "register_to_output" | "input_to_output" | "other";
+    endpoint_group: string;      // logical register/output/blackbox group
+    endpoint_kind: "register" | "output" | "blackbox";
+    bits: number[];              // structurally equivalent endpoint bits
+    output_aliases: {
+      name: string;
+      width: number;
+      bits: { output_bit: number; register_bit: number }[];
+    }[];
     startpoint: NodeRef;         // input port bit / FF cell (Q) / blackbox
     endpoint: NodeRef;           // FF cell (D) / output port bit / blackbox
     endpoint_port: string;       // "D", output port name, ...
-    nodes: NodeRef[];            // startpoint -> ... -> endpoint, in order
+    nodes: NodeRef[];            // startpoint -> ... -> endpoint, capped at 512
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
+  truncated: boolean;            // response limit or bounded route sampling hit
 }
 ```
 
-## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true`
+To keep wide designs bounded, the server retains at most 64 deepest bit targets
+per logical endpoint and examines at most `min(limit * 16, 8000)` targets overall
+before grouping route variants. Candidates are assigned one per logical
+endpoint, deepest groups first, before additional bits are selected round-robin.
+A returned route contains at most 512 nodes while retaining its actual
+startpoint and endpoint. Reconstructing candidates has a shared 65,536-node
+work budget per request; deepest logical endpoint representatives consume that
+budget before additional bit variants.
+`truncated` is true when endpoint variants or route nodes were omitted.
+
+## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
 
 Returns a `Subgraph` for rendering. Traversal stops at sequential cells, port
-bits, and consts (they appear as boundary nodes); `hide_control` drops
-clock/reset/enable edges into FFs; `hide_const` drops const drivers.
-`max_nodes` is clamped server-side to 2000.
+bits, and consts (they appear as boundary nodes). With `hide_control`, ordinary
+clock/reset/set nets and high-fanout enables are represented by `controls`
+labels instead of edges; local enables remain wired data dependencies.
+`hide_const` drops const drivers. With `show_infrastructure=false`, zero-depth
+IO/clock buffers are collapsed into edges but remain present in implementation
+statistics. Addressable shift-register LUTs are mixed boundaries: their stored
+data input stops at the primitive, while address inputs traverse through the
+primitive to preserve the selected address-to-output route and depth.
+`max_nodes` is clamped server-side to 2000. Every `Subgraph` response retains at
+most 10,000 merged edges. The same 10,000-item work budget bounds hidden
+infrastructure projection before rendering; `truncated` is true when a node,
+edge, or projection-work cap is reached.
 
 ## GET `/api/design/:id/fanout?limit=50`
 
@@ -173,23 +250,87 @@ clock/reset/enable edges into FFs; `hide_const` drops const drivers.
 }
 ```
 
-## GET `/api/design/:id/netlist?max_nodes=1500`
+## GET `/api/design/:id/netlist?max_nodes=1500&show_infrastructure=false`
 
 Full design as a `Subgraph` (same caps and shapes; `truncated` set if the
-design exceeds `max_nodes`). Used by the optional full-schematic view.
+design exceeds `max_nodes`). Label-connected controls omit ordinary control
+wires. Used by the optional full-schematic view.
 
 ## GET `/api/design/:id/source-map`
 
 ```ts
 {
   files: string[];                       // filenames as submitted
-  by_line: Record<string, number[]>;     // "file.sv:12" -> node ids
+  by_line: Record<string, number[]>;     // exact Yosys cell src only: "file.sv:12" -> node ids
+  ranges: {
+    file: string;
+    start_line: number;
+    end_line: number;
+    node_ids: number[];
+    mapping_incomplete: boolean;          // retained roots were capped for this interval
+  }[];                                   // recovered assign/declaration-alias intervals
+  truncated: boolean;
 }
 ```
 
+Recovered ranges are stored and queried as sparse intervals; a multiline span
+does not create one entry per line. The public response returns at most 10,000
+`by_line` entries with 20,000 total exact associations, plus at most 10,000
+ranges with 20,000 total recovered associations. The internal recovered index
+also retains at most 20,000 range-to-node associations globally.
+`mapping_incomplete` marks each interval affected by that global bound or its
+per-range root bound. `truncated` is true when either public response bound or
+an internal per-line/per-range/global root collection bound was hit.
+Internal line-cone and optimized/absorbed queries retain the complete sparse
+interval index and its per-interval completeness independently of this bounded
+response projection.
+
+## GET `/api/design/:id/line-cone?file=<name>&start_line=<n>&end_line=<n>&max_nodes=400&hide_control=true&hide_const=true&show_infrastructure=false`
+
+Source-range envelope: the register-boundary neighborhood of one to 200 RTL
+lines. Takes the cells whose `src` maps to the selected range, then
+returns the union of their fanin and fanout cones (traversal stops at
+sequential cells / ports / consts as usual) as a `Subgraph`. Selected cells
+have `is_root: true`. A selected register is allowed as the center so its
+upstream D and downstream Q neighborhoods are both visible without implying a
+combinational path through it. If selected roots drive control pins, control
+edges are included and `control` is true.
+
+```ts
+{
+  status: "mapped" | "mapping_incomplete" |
+          "optimized_or_absorbed" | "unmapped";
+  control: boolean;
+  graph: Subgraph;
+}
+```
+
+`mapping_incomplete` means a selected recovered interval exceeded provenance
+association bounds. The graph contains any retained roots, but is partial; this
+status takes priority over `mapped` and `optimized_or_absorbed` so capped
+provenance is never presented as logic proven to have been optimized away.
+`optimized_or_absorbed` means a pre-mapping synthesis object was attributed to
+the range but no final object retained that attribution; it deliberately does
+not claim whether the logic was removed, folded, shared, or absorbed. `422` for
+an unknown file, invalid range, or a range longer than 200 lines.
+Wire-only continuous assignments, which Yosys JSON does not source-attribute,
+are indexed as inclusive `assign` spans and declaration aliases such as
+`wire alias = value` in the selected top's live elaborated hierarchy, then
+resolved through the final LHS net aliases. Exact flattened instance scopes are
+derived from the reachable pre-flatten module-instance graph, so unreachable
+sibling modules cannot contribute aliases even on Yosys versions without
+post-flatten scope metadata.
+This recovered attribution is also returned by `/nodes` for graph-to-source
+probing as one `file:start-end` source span rather than one alias per line.
+Files containing conditional-preprocessor branches use only Yosys provenance
+to avoid attributing an inactive branch. If the LHS no longer exists, the span
+reports `optimized_or_absorbed`. Source-range root collection retains at most
+2,001 deterministic node ids so exceeding the 2,000-node graph ceiling is
+reported through `graph.truncated` without constructing an unbounded root set.
+
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 
-Resolve node ids to display metadata (used by the source-probe panel).
+Resolve node ids to display metadata.
 Returns `{ "nodes": NodeRef[] }` in request order; unknown ids are omitted.
 At most 200 ids per request (`422` above that).
 

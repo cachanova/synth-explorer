@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { getFanout } from '../../api'
 import { fuzzyFilter } from '../../lib/fuzzy'
-import { fanoutDriverLabel } from '../../lib/prettyType'
+import { fanoutDriverLabel, shortNetName } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
 import { useStore } from '../../store'
 import { SrcLink } from '../SrcLink'
@@ -56,11 +56,7 @@ export function Fanout() {
             <tr
               key={i}
               className="clickable"
-              title={
-                prettified
-                  ? `${d.driver.name} — open fanout cone in Graph`
-                  : 'Open fanout cone in Graph'
-              }
+              title="Open fanout cone in Graph"
               onClick={() =>
                 store.openCone({
                   node: d.driver.id,
@@ -73,7 +69,7 @@ export function Fanout() {
                 {label}
                 {!prettified && <span className="faint"> ·{d.port}</span>}
               </td>
-              <td className="mono faint">{d.net_name}</td>
+              <td className="mono faint">{shortNetName(d.net_name)}</td>
               <td className="num">
                 <span className="depth-chip">{d.fanout}</span>
               </td>
