@@ -1,9 +1,13 @@
 name: Deploy production
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
     branches:
       - main
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       publish_only:
@@ -14,26 +18,60 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
-  group: production
+  group: ${{ (((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_only == false) || (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.run_attempt == 1))) && 'production' || format('production-nondeploy-{0}-{1}', github.run_id, github.run_attempt) }}
   cancel-in-progress: false
 
 env:
+  DEPLOY_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
   IMAGE_NAME: ghcr.io/${{ github.repository }}
   PRODUCTION_URL: https://synthexplorer.dev
 
 jobs:
   build:
     name: Build and publish image
+    if: >-
+      ${{
+        (github.event_name == 'workflow_dispatch' &&
+         github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_run' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main' &&
+         github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.run_attempt == 1)
+      }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      packages: write
     outputs:
       image_ref: ${{ steps.digest.outputs.image_ref }}
     steps:
+      - name: Require successful CI for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh api --method GET \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+            -f branch=main \
+            -f event=push \
+            -f head_sha="${DEPLOY_SHA}" \
+            -f status=success \
+            -F per_page=1 \
+            --jq '.total_count')"
+          if [[ ! "${count}" =~ ^[0-9]+$ || "${count}" -lt 1 ]]; then
+            echo "No successful push-triggered CI run for ${DEPLOY_SHA}" >&2
+            exit 1
+          fi
+
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -62,9 +100,9 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ env.IMAGE_NAME }}:${{ env.DEPLOY_SHA }}
           build-args: |
-            BUILD_COMMIT=${{ github.sha }}
+            BUILD_COMMIT=${{ env.DEPLOY_SHA }}
             YOSYS_BUILD_JOBS=4
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -73,10 +111,10 @@ jobs:
         run: |
           docker run --detach --name synth-explorer-release \
             --publish 127.0.0.1:8787:8787 \
-            "${IMAGE_NAME}:${GITHUB_SHA}"
+            "${IMAGE_NAME}:${DEPLOY_SHA}"
 
       - name: Smoke-test production image
-        run: ./ops/smoke-test.sh http://127.0.0.1:8787 "${GITHUB_SHA}"
+        run: ./ops/smoke-test.sh http://127.0.0.1:8787 "${DEPLOY_SHA}"
 
       - name: Install browser smoke dependencies
         working-directory: web
@@ -99,14 +137,14 @@ jobs:
         run: docker rm --force synth-explorer-release >/dev/null 2>&1 || true
 
       - name: Publish commit tag
-        run: docker push "${IMAGE_NAME}:${GITHUB_SHA}"
+        run: docker push "${IMAGE_NAME}:${DEPLOY_SHA}"
 
       - name: Resolve immutable image digest
         id: digest
         shell: bash
         run: |
           digest="$({ docker buildx imagetools inspect \
-            "${IMAGE_NAME}:${GITHUB_SHA}" \
+            "${IMAGE_NAME}:${DEPLOY_SHA}" \
             --format '{{json .Manifest.Digest}}'; } | tr -d '"')"
           if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
             echo "Invalid image digest: $digest" >&2
@@ -122,12 +160,25 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
     environment:
       name: production
       url: https://synthexplorer.dev
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: Refuse to deploy a stale main commit
+        run: |
+          current_main="$(git ls-remote --exit-code origin refs/heads/main | cut -f1)"
+          if [[ "${current_main}" != "${DEPLOY_SHA}" ]]; then
+            echo "Refusing stale deployment: main is ${current_main}, requested ${DEPLOY_SHA}" >&2
+            exit 1
+          fi
 
       - name: Configure SSH
         env:
@@ -161,13 +212,13 @@ jobs:
         run: |
           : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
           : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
-          tar -czf "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
+          tar -czf "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
             compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
             examples/05_shared_logic.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            "/tmp/synth-explorer-${GITHUB_SHA}.tar.gz" \
-            "${PRODUCTION_USER}@${PRODUCTION_HOST}:/tmp/synth-explorer-${GITHUB_SHA}.tar.gz"
+            "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}:/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz"
 
       - name: Install bundle and deploy digest
         env:
@@ -181,7 +232,7 @@ jobs:
           ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
-            "IMAGE_REF='${IMAGE_REF}' COMMIT_SHA='${GITHUB_SHA}' RELEASE_ID='${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' bash -se" <<'REMOTE'
+            "IMAGE_REF='${IMAGE_REF}' COMMIT_SHA='${DEPLOY_SHA}' RELEASE_ID='${DEPLOY_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' bash -se" <<'REMOTE'
           set -eu
           base_dir=/opt/synth-explorer
           releases_dir="${base_dir}/releases"
@@ -208,9 +259,19 @@ jobs:
           SYNTH_EXPLORER_BASE_DIR="${base_dir}" ./ops/deploy.sh "${IMAGE_REF}"
           REMOTE
 
-      - name: Verify production from outside the host
+      - name: Verify production networking and synthesis
         id: external_verify
-        run: ./ops/edge-smoke.sh "$GITHUB_SHA"
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          response="$(ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" \
+            'curl --noproxy "*" --ipv6 --fail-with-body --silent --show-error --connect-timeout 5 --max-time 30 https://synthexplorer.dev/healthz')"
+          jq --exit-status --arg commit "${DEPLOY_SHA}" \
+            '.status == "ok" and .commit == $commit' <<<"${response}" >/dev/null
+          ./ops/edge-smoke.sh "${DEPLOY_SHA}"
 
       - name: Roll back failed external verification
         if: ${{ failure() && steps.external_verify.outcome == 'failure' }}

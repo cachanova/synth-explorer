@@ -13,6 +13,8 @@ readonly OLD_REF='ghcr.io/cachanova/synth-explorer@sha256:cccccccccccccccccccccc
 readonly EXPECTED_COMMIT='dddddddddddddddddddddddddddddddddddddddd'
 readonly CALL_LOG="${TEST_DIR}/calls.log"
 readonly SMOKE_LOG="${TEST_DIR}/smoke.log"
+WAIT_FAIL_RELEASE=
+PUBLIC_HEALTH_MODE=exact
 
 cleanup() {
   rm -rf -- "${TEST_DIR}"
@@ -65,6 +67,7 @@ compose_in_release() {
 
 wait_for_app() {
   printf 'wait_for_app %s\n' "$*" >>"${CALL_LOG}"
+  [[ "${1}" != "${WAIT_FAIL_RELEASE}" ]]
 }
 
 docker() {
@@ -76,7 +79,16 @@ docker() {
   fi
 }
 
+curl() {
+  if [[ "${PUBLIC_HEALTH_MODE}" == exact ]]; then
+    printf '{"status":"ok","commit":"%s"}\n' "${EXPECTED_COMMIT}"
+    return 0
+  fi
+  return 7
+}
+
 # A verified prior image and bundle are restored atomically.
+: >"${CALL_LOG}"
 printf 'IMAGE_REF=%s\n' "${CURRENT_REF}" >"${ENV_FILE}"
 printf '%s\n' "${PREVIOUS_REF}" >"${PREVIOUS_FILE}"
 printf '%s\n' "${PREVIOUS_RELEASE_FIXTURE}" >"${PREVIOUS_RELEASE_FILE}"
@@ -88,8 +100,11 @@ assert_file_equals "${ENV_FILE}" "IMAGE_REF=${PREVIOUS_REF}"
 [[ ! -e "${PREVIOUS_FILE}" && ! -e "${PREVIOUS_RELEASE_FILE}" ]] \
   || fail 'rollback metadata was not cleared'
 assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT}"
+grep -Fq "docker image rm -- ${CURRENT_REF}" "${CALL_LOG}" \
+  || fail 'successful rollback did not remove the failed digest'
 
 # Rollback without a verified prior release fails without disturbing current.
+: >"${CALL_LOG}"
 printf 'IMAGE_REF=%s\n' "${CURRENT_REF}" >"${ENV_FILE}"
 ln -sfn -- "${CURRENT_RELEASE_FIXTURE}" "${CURRENT_LINK}"
 if (rollback_current >/dev/null 2>&1); then
@@ -100,6 +115,7 @@ assert_file_equals "${ENV_FILE}" "IMAGE_REF=${CURRENT_REF}"
   || fail 'failed rollback changed the current symlink'
 
 # A prior release that fails verification cannot leave image/release state split.
+: >"${CALL_LOG}"
 printf '%s\n' '#!/usr/bin/env bash' 'exit 1' \
   >"${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh"
 chmod +x "${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh"
@@ -113,16 +129,65 @@ assert_file_equals "${PREVIOUS_FILE}" "${PREVIOUS_REF}"
 assert_file_equals "${PREVIOUS_RELEASE_FILE}" "${PREVIOUS_RELEASE_FIXTURE}"
 [[ "$(readlink -f -- "${CURRENT_LINK}")" == "${CURRENT_RELEASE_FIXTURE}" ]] \
   || fail 'failed previous-release verification split image and release state'
+if grep -Fq 'docker image rm --' "${CALL_LOG}"; then
+  fail 'failed rollback removed a recovery image'
+fi
+
+# If neither rollback nor current restoration verifies, fail closed and retain images.
+: >"${CALL_LOG}"
+WAIT_FAIL_RELEASE="${CURRENT_RELEASE_FIXTURE}"
+if (rollback_current >/dev/null 2>&1); then
+  fail 'rollback with failed current restoration unexpectedly succeeded'
+fi
+WAIT_FAIL_RELEASE=
+[[ ! -e "${ENV_FILE}" && ! -e "${CURRENT_LINK}" \
+  && ! -e "${PREVIOUS_FILE}" && ! -e "${PREVIOUS_RELEASE_FILE}" ]] \
+  || fail 'double rollback failure left active deployment state behind'
+grep -Fq "compose_in_release ${CURRENT_RELEASE_FIXTURE} down" "${CALL_LOG}" \
+  || fail 'double rollback failure did not stop the shared project'
+if grep -Fq 'docker image rm --' "${CALL_LOG}"; then
+  fail 'double rollback failure removed a recovery image'
+fi
 
 # A failed first deployment has no rollback target, so its stack and state stop.
-rm -f -- "${PREVIOUS_FILE}" "${PREVIOUS_RELEASE_FILE}"
+: >"${CALL_LOG}"
 rollback "${CURRENT_REF}" '' ''
 [[ ! -e "${ENV_FILE}" && ! -e "${CURRENT_LINK}" ]] \
   || fail 'failed first deployment left current state behind'
 grep -Fq 'compose down' "${CALL_LOG}" \
   || fail 'failed first deployment did not stop Compose'
+grep -Fq "docker image rm -- ${CURRENT_REF}" "${CALL_LOG}" \
+  || fail 'failed first deployment did not remove its image'
+
+# Reachable exact health means a first-deploy synthesis failure is real and stops.
+: >"${CALL_LOG}"
+PUBLIC_HEALTH_MODE=exact
+if (handle_first_deployment_smoke_failure "${CURRENT_REF}" "${EXPECTED_COMMIT}" >/dev/null 2>&1); then
+  fail 'first-deploy synthesis failure unexpectedly succeeded'
+fi
+[[ ! -e "${ENV_FILE}" && ! -e "${CURRENT_LINK}" ]] \
+  || fail 'first-deploy synthesis failure left active state behind'
+grep -Fq 'compose down' "${CALL_LOG}" \
+  || fail 'first-deploy synthesis failure did not stop Compose'
+
+# Unreachable public health leaves the locally healthy first stack for DNS/TLS.
+: >"${CALL_LOG}"
+PUBLIC_HEALTH_MODE=unreachable
+if (handle_first_deployment_smoke_failure "${CURRENT_REF}" "${EXPECTED_COMMIT}" >/dev/null 2>&1); then
+  fail 'unverifiable first deployment unexpectedly succeeded'
+fi
+assert_file_equals "${ENV_FILE}" "IMAGE_REF=${CURRENT_REF}"
+[[ "$(readlink -f -- "${CURRENT_LINK}")" == "${CURRENT_RELEASE_FIXTURE}" ]] \
+  || fail 'unverifiable first deployment did not retain the healthy stack'
+if grep -Fq 'compose down' "${CALL_LOG}" \
+  || grep -Fq 'docker image rm --' "${CALL_LOG}"; then
+  fail 'unverifiable first deployment was torn down before DNS/TLS convergence'
+fi
+clear_deployment_state
+PUBLIC_HEALTH_MODE=exact
 
 # Retention keeps exactly the active and previous release/image.
+: >"${CALL_LOG}"
 mkdir -p -- "${OLD_RELEASE_FIXTURE}"
 prune_old_releases "${PREVIOUS_RELEASE_FIXTURE}"
 [[ -d "${CURRENT_RELEASE_FIXTURE}" && -d "${PREVIOUS_RELEASE_FIXTURE}" ]] \
