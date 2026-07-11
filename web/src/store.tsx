@@ -366,13 +366,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   analysisStateRef.current = analysisState
 
   useEffect(() => {
-    if (analysisState !== 'current') setEditorHighlight(null)
-  }, [analysisState])
-
-  // A failure report is obsolete once the current input has a live analysis
-  // (e.g. the failing edit was undone, reverting to the last good input).
-  useEffect(() => {
-    if (analysisState === 'current') setError(null)
+    if (analysisState !== 'current') {
+      setEditorHighlight(null)
+    } else {
+      // A failure report is obsolete once the current input has a live
+      // analysis (e.g. the failing edit was undone, restoring the last good
+      // input).
+      setError(null)
+    }
   }, [analysisState])
 
   // Load examples once.

@@ -3,8 +3,8 @@ import {
   designSrcSpans,
   parseSrc,
   parseSrcFragment,
+  spansSummary,
   srcLabel,
-  srcSummary,
 } from './src'
 
 describe('parseSrcFragment', () => {
@@ -75,7 +75,7 @@ describe('parseSrc', () => {
   })
 })
 
-describe('srcLabel / srcSummary', () => {
+describe('srcLabel / spansSummary', () => {
   it('labels single line', () => {
     const [s] = parseSrc('design.sv:12.16-12.21')
     expect(srcLabel(s)).toBe('design.sv:12')
@@ -87,15 +87,15 @@ describe('srcLabel / srcSummary', () => {
   })
 
   it('summarizes multiple with +N', () => {
-    expect(srcSummary('a.sv:1.1-1.5|b.sv:9.2-9.8')).toBe('a.sv:1 +1')
+    expect(spansSummary(parseSrc('a.sv:1.1-1.5|b.sv:9.2-9.8'))).toBe('a.sv:1 +1')
   })
 
   it('summarizes single', () => {
-    expect(srcSummary('a.sv:1.1-1.5')).toBe('a.sv:1')
+    expect(spansSummary(parseSrc('a.sv:1.1-1.5'))).toBe('a.sv:1')
   })
 
   it('returns null for empty', () => {
-    expect(srcSummary(undefined)).toBeNull()
+    expect(spansSummary([])).toBeNull()
   })
 })
 

@@ -1,5 +1,5 @@
 import { useStore } from '../store'
-import { designSrcSpans, spansSummary } from '../lib/src'
+import { designSrcSpans, spansSummary, srcLabel } from '../lib/src'
 
 /** A clickable yosys src reference that highlights the range in the editor. */
 export function SrcLink({ src }: { src?: string | null }) {
@@ -10,7 +10,7 @@ export function SrcLink({ src }: { src?: string | null }) {
   return (
     <a
       className="src-link"
-      title={src ?? undefined}
+      title={spans.map(srcLabel).join(', ')}
       onClick={(e) => {
         e.stopPropagation()
         store.highlightSources(spans)

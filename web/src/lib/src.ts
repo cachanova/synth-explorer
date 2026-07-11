@@ -94,11 +94,6 @@ export function spansSummary(spans: SrcSpan[]): string | null {
   return spans.length > 1 ? `${first} +${spans.length - 1}` : first
 }
 
-/** Label for a whole src string (first fragment, "+N" if more). */
-export function srcSummary(src: string | undefined | null): string | null {
-  return spansSummary(parseSrc(src))
-}
-
 /**
  * Spans restricted to files of the current design. Yosys techmap libraries
  * attach src attributes pointing at their own installation (for example
