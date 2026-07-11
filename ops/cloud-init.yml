@@ -13,11 +13,8 @@ users:
   - default
   - name: deploy
     gecos: Synth Explorer deploy user
-    groups:
-      - sudo
     lock_passwd: true
     shell: /bin/bash
-    sudo: ALL=(ALL) NOPASSWD:ALL
 
 write_files:
   - path: /etc/apt/apt.conf.d/20auto-upgrades
@@ -50,8 +47,69 @@ runcmd:
   - [usermod, --append, --groups, docker, deploy]
   - [install, -d, -m, "0750", -o, deploy, -g, deploy, /opt/synth-explorer]
   - [install, -d, -m, "0700", -o, deploy, -g, deploy, /home/deploy/.ssh]
-  - [bash, -c, "if test -s /root/.ssh/authorized_keys; then install -m 0600 -o deploy -g deploy /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys; elif test -s /home/ubuntu/.ssh/authorized_keys; then install -m 0600 -o deploy -g deploy /home/ubuntu/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys; else echo 'no provisioned SSH key found; leaving root SSH enabled' >&2; exit 1; fi"]
-  - [bash, -c, "printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' 'PermitRootLogin no' 'AllowUsers deploy' 'MaxAuthTries 3' 'LoginGraceTime 30' > /etc/ssh/sshd_config.d/60-synth-explorer.conf"]
-  - [systemctl, reload, ssh]
+  - - bash
+    - -c
+    - |
+      set -Eeuo pipefail
+      key_source=
+      if test -s /root/.ssh/authorized_keys; then
+        key_source=/root/.ssh/authorized_keys
+      elif test -s /home/ubuntu/.ssh/authorized_keys; then
+        key_source=/home/ubuntu/.ssh/authorized_keys
+      else
+        echo 'no provisioned SSH key found; leaving root SSH enabled' >&2
+        exit 1
+      fi
+
+      key_temporary="$(mktemp /home/deploy/.ssh/.authorized_keys.XXXXXX)"
+      install -m 0600 -o deploy -g deploy "${key_source}" "${key_temporary}"
+      ssh-keygen -lf "${key_temporary}" >/dev/null
+      mv -- "${key_temporary}" /home/deploy/.ssh/authorized_keys
+
+      drop_in=/etc/ssh/sshd_config.d/00-synth-explorer.conf
+      config_temporary="$(mktemp /etc/ssh/sshd_config.d/.00-synth-explorer.XXXXXX)"
+      config_backup=
+      if test -f "${drop_in}"; then
+        config_backup="$(mktemp /etc/ssh/sshd_config.d/.00-synth-explorer.backup.XXXXXX)"
+        cp -a -- "${drop_in}" "${config_backup}"
+      fi
+      cleanup() {
+        status=$?
+        trap - EXIT
+        rm -f -- "${key_temporary}" "${config_temporary}"
+        if test -n "${config_backup}"; then
+          mv -- "${config_backup}" "${drop_in}"
+        else
+          rm -f -- "${drop_in}"
+        fi
+        exit "${status}"
+      }
+      trap cleanup EXIT
+      printf '%s\n' \
+        'PasswordAuthentication no' \
+        'KbdInteractiveAuthentication no' \
+        'PermitRootLogin no' \
+        'AllowUsers deploy' \
+        'MaxAuthTries 3' \
+        'LoginGraceTime 30' >"${config_temporary}"
+      chmod 0644 "${config_temporary}"
+      mv -- "${config_temporary}" "${drop_in}"
+      /usr/sbin/sshd -t
+      effective="$(/usr/sbin/sshd -T \
+        -C user=deploy,host=localhost,addr=127.0.0.1)"
+      for expected in \
+        'passwordauthentication no' \
+        'kbdinteractiveauthentication no' \
+        'permitrootlogin no' \
+        'allowusers deploy' \
+        'maxauthtries 3' \
+        'logingracetime 30'; do
+        grep -Fqx -- "${expected}" <<<"${effective}"
+      done
+      systemctl reload-or-restart ssh
+      trap - EXIT
+      if test -n "${config_backup}"; then
+        rm -f -- "${config_backup}"
+      fi
 
 final_message: "Synth Explorer host bootstrap completed in $UPTIME seconds"

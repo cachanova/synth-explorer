@@ -72,7 +72,11 @@ Hetzner project.
 Create a firewall. GitHub-hosted deployment runners do not have a stable source
 address, so SSH must remain reachable publicly for this deployment model. The
 host accepts keys only, disables root login, and uses a dedicated deployment
-key with strict host-key checking.
+key with strict host-key checking. Cloud-init validates the provisioned key and
+the effective sshd policy before disabling root access; a failure leaves the
+existing root policy in place for Hetzner-console recovery. The `deploy` user has
+Docker access but no sudo grant. Docker access is itself root-equivalent, so use
+it only through the checked-in deployment scripts.
 
 ```bash
 hcloud firewall create --name synth-explorer-prod
@@ -173,7 +177,8 @@ ssh-keygen -lf ./synth-explorer-known-hosts
 ```
 
 Delete the local deployment private key after GitHub stores it and a deployment
-succeeds. Keep an administrator key in the Hetzner project for recovery.
+succeeds. Root-only host maintenance uses the Hetzner console unless you
+separately provision a dedicated administrator account.
 
 ## GitHub production environment
 
@@ -205,8 +210,10 @@ gh variable set PRODUCTION_USER --env production --body deploy
 ```
 
 Protect `main` with the Backend, Frontend, and Production image CI checks. Block
-force pushes and require pull requests. The deployment workflow runs for each
-commit that reaches `main`.
+force pushes, require pull requests, require branches to be current, and apply
+the rule to administrators. A successful push-triggered CI run on `main` starts
+the deployment workflow for that exact commit; failed, cancelled, pull-request,
+and manually dispatched CI runs do not deploy.
 
 ## First deployment
 
@@ -220,11 +227,12 @@ The production workflow performs these steps:
 4. Uploads `compose.prod.yml`, `Caddyfile`, and the scripts under `ops/` over
    SSH.
 5. Calls `ops/deploy.sh <image-ref@sha256:digest>` on the host.
-6. Verifies public DNS, TLS, HTTP and `www` redirects, all synthesis modes, and
-   the deployed commit from a GitHub runner.
+6. Verifies the IPv6 HTTPS path from the host, then verifies public DNS, TLS,
+   HTTP and `www` redirects, all synthesis modes, and the deployed commit from a
+   GitHub runner.
 
-The first merge to `main` publishes and deploys automatically. To run it again
-manually:
+The first successful `main` CI run publishes and deploys automatically. To
+redeploy the current, already-CI-verified `main` commit manually:
 
 ```bash
 gh workflow run deploy-production.yml --ref main -f publish_only=false
@@ -240,12 +248,15 @@ symlink moves only after the public smoke test passes. If the new release fails,
 the script restores both the prior image reference and the prior release directory
 before returning an error. The host keeps the active and immediately previous
 release bundles and image digests; older Synth Explorer releases are removed
-after a successful deployment. Compose restarts use those local digests and do
-not need a persistent GHCR credential.
+after a successful deployment. A verified rollback clears obsolete transition
+metadata and removes only the failed digest; a rollback that cannot restore a
+verified stack retains both images for recovery. Compose restarts use local
+digests and do not need a persistent GHCR credential.
 
-On the first deployment, a locally healthy stack is left running if only the
-public DNS/TLS smoke test fails. That lets Caddy keep serving ACME challenges and
-lets the external check be retried without taking the service back down.
+On the first deployment, a locally healthy stack is left running only when its
+exact public health response cannot yet be verified. That lets Caddy keep
+serving ACME challenges while DNS/TLS converges. If exact public health works but
+the synthesis smoke fails, the script stops the stack and clears its state.
 
 Verify the release from an administrator workstation:
 
@@ -261,7 +272,13 @@ version.
 
 Merge through a pull request. CI checks Rust formatting, tests, Clippy,
 frontend tests, lint, types, the production build, and the production container
-smoke test. A push to `main` builds and deploys a new digest.
+smoke test. Only a successful push-triggered CI run for the exact `main` commit
+starts a production build and deployment; the deployment does not race ahead of
+the full CI result. A rerun of an old CI workflow never redeploys that old SHA.
+After a successful rerun for the current `main`, use the manual deployment
+command above; it independently requires a successful push CI result for that
+exact commit. A deployment that becomes stale while building exits before SSH
+or host mutation, allowing the newest green commit to deploy instead.
 
 Watch a deployment:
 
@@ -328,7 +345,9 @@ ssh deploy@SERVER_IPV4 'test ! -f /var/run/reboot-required || cat /var/run/reboo
 ```
 
 Before a planned reboot, confirm the current digest and a recent smoke test.
-Reboot from an administrator session, then rerun the external smoke test.
+Reboot from the Hetzner console or a separately provisioned administrator
+account, then rerun the external smoke test. The deployment account intentionally
+has no sudo grant.
 
 Dependabot opens weekly Cargo, npm, Docker, and GitHub Actions updates. Review
 and merge those pull requests through the same CI path. The workflow pins each

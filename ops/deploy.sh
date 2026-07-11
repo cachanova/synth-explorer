@@ -102,6 +102,38 @@ wait_for_app() {
   return 1
 }
 
+remove_inactive_image() {
+  local candidate_ref=$1 active_ref=${2:-}
+  if valid_image_ref "${candidate_ref}" && [[ "${candidate_ref}" != "${active_ref}" ]]; then
+    docker image rm -- "${candidate_ref}" >/dev/null 2>&1 || true
+  fi
+}
+
+clear_deployment_state() {
+  rm -f -- "${ENV_FILE}" "${CURRENT_LINK}" \
+    "${PREVIOUS_FILE}" "${PREVIOUS_RELEASE_FILE}"
+}
+
+public_health_matches() {
+  local expected_commit=$1 response
+  response="$(curl --fail --silent --show-error \
+    --connect-timeout 5 --max-time 15 \
+    "${PUBLIC_BASE_URL%/}/healthz")" || return 1
+  jq --exit-status --arg commit "${expected_commit}" \
+    '.status == "ok" and .commit == $commit' <<<"${response}" >/dev/null
+}
+
+handle_first_deployment_smoke_failure() {
+  local new_ref=$1 expected_commit=$2
+  if public_health_matches "${expected_commit}"; then
+    rollback "${new_ref}" '' '' || true
+    die "synthesis smoke test failed after first deployment"
+  fi
+  write_current_ref "${new_ref}"
+  point_current_at "${RELEASE_DIR}"
+  die "public health could not verify the first healthy deployment; stack left running for DNS/TLS retry"
+}
+
 rollback() {
   local failed_ref=$1
   local previous_ref=$2
@@ -120,6 +152,8 @@ rollback() {
       && "${previous_smoke}" "${PUBLIC_BASE_URL}" "${previous_commit}"; then
       write_current_ref "${previous_ref}"
       point_current_at "${previous_release}"
+      rm -f -- "${PREVIOUS_FILE}" "${PREVIOUS_RELEASE_FILE}"
+      remove_inactive_image "${failed_ref}" "${previous_ref}"
       printf 'deploy: restored %s from %s\n' "${previous_ref}" "${previous_release}" >&2
       return 0
     fi
@@ -130,13 +164,23 @@ rollback() {
       write_current_ref "${failed_ref}"
       point_current_at "${original_release}"
       printf 'deploy: previous release verification failed; restored current release state\n' >&2
+      printf 'deploy: rollback to %s from %s failed\n' "${previous_ref}" "${previous_release}" >&2
+      return 1
     fi
+    if [[ -n "${original_release}" && -d "${original_release}" ]]; then
+      IMAGE_REF="${failed_ref}" compose_in_release "${original_release}" down >/dev/null 2>&1 || true
+    else
+      IMAGE_REF="${previous_ref}" compose_in_release "${previous_release}" down >/dev/null 2>&1 || true
+    fi
+    clear_deployment_state
+    printf 'deploy: rollback and current-release restoration both failed; stopped the shared project\n' >&2
     printf 'deploy: rollback to %s from %s failed\n' "${previous_ref}" "${previous_release}" >&2
     return 1
   fi
 
   IMAGE_REF="${failed_ref}" compose down >/dev/null 2>&1 || true
-  rm -f -- "${ENV_FILE}" "${CURRENT_LINK}"
+  clear_deployment_state
+  remove_inactive_image "${failed_ref}" ''
   printf 'deploy: no previous image was available; stopped failed first deployment\n' >&2
   return 0
 }
@@ -155,7 +199,6 @@ rollback_current() {
 
   rollback "${current_ref}" "${previous_ref}" "${previous_release}" \
     || die "rollback failed"
-  rm -f -- "${PREVIOUS_FILE}" "${PREVIOUS_RELEASE_FILE}"
 }
 
 check_disk_space() {
@@ -256,9 +299,7 @@ main() {
       rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
       die "external smoke test failed"
     fi
-    write_current_ref "${new_ref}"
-    point_current_at "${RELEASE_DIR}"
-    die "external smoke test failed after first healthy deployment; stack left running for DNS/TLS retry"
+    handle_first_deployment_smoke_failure "${new_ref}" "${expected_commit}"
   fi
 
   write_current_ref "${new_ref}"
