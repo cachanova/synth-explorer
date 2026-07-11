@@ -1,4 +1,16 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+
+async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
+  const box = await divider.boundingBox()
+  if (!box) throw new Error('divider is not visible')
+  const startX = box.x + box.width / 2
+  const y = box.y + 30
+  await page.mouse.move(startX, y)
+  await page.mouse.down()
+  await page.mouse.move(startX + deltaX, y)
+  await page.mouse.up()
+  return box
+}
 
 test('synthesizes from the webpage with the entered Yosys flags', async ({
   page,
@@ -68,17 +80,33 @@ test('graph viewport follows browser and pane resizing without resetting user zo
     })
     .toBeLessThan(1)
 
-  const beforeDivider = (await stage.boundingBox())!.width
   const divider = page.locator('.divider')
-  const dividerBox = await divider.boundingBox()
-  expect(dividerBox).not.toBeNull()
-  await page.mouse.move(dividerBox!.x + dividerBox!.width / 2, dividerBox!.y + 30)
-  await page.mouse.down()
-  await page.mouse.move(300, dividerBox!.y + 30)
-  await page.mouse.up()
+  const beforeDividerStage = (await stage.boundingBox())!.width
+  const beforeDividerSvg = (await svg.boundingBox())!.width
+  const paneResize = 64
+  const meaningfulResize = paneResize / 2
+  const dividerBox = await dragDividerBy(page, divider, -paneResize)
+  await expect
+    .poll(
+      async () =>
+        dividerBox.x - ((await divider.boundingBox())?.x ?? dividerBox.x),
+    )
+    .toBeGreaterThan(meaningfulResize)
   await expect
     .poll(async () => (await stage.boundingBox())?.width ?? 0)
-    .toBeGreaterThan(beforeDivider + 100)
+    .toBeGreaterThan(beforeDividerStage + meaningfulResize)
+  await expect
+    .poll(async () => (await svg.boundingBox())?.width ?? 0)
+    .toBeGreaterThan(beforeDividerSvg + meaningfulResize)
+  await expect
+    .poll(async () => {
+      const [stageBox, svgBox] = await Promise.all([
+        stage.boundingBox(),
+        svg.boundingBox(),
+      ])
+      return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
+    })
+    .toBeLessThan(1)
 
   const beforeZoom = await viewport.getAttribute('transform')
   await page.getByTitle('Zoom in').click()
@@ -87,19 +115,29 @@ test('graph viewport follows browser and pane resizing without resetting user zo
     .not.toBe(beforeZoom)
   const userTransform = await viewport.getAttribute('transform')
 
-  const beforeSecondDivider = (await stage.boundingBox())!.width
-  const secondDividerBox = await divider.boundingBox()
-  expect(secondDividerBox).not.toBeNull()
-  await page.mouse.move(
-    secondDividerBox!.x + secondDividerBox!.width / 2,
-    secondDividerBox!.y + 30,
-  )
-  await page.mouse.down()
-  await page.mouse.move(500, secondDividerBox!.y + 30)
-  await page.mouse.up()
+  const beforeSecondStage = (await stage.boundingBox())!.width
+  const beforeSecondSvg = (await svg.boundingBox())!.width
+  const secondDividerBox = await dragDividerBy(page, divider, paneResize)
   await expect
-    .poll(async () => (await stage.boundingBox())?.width ?? 0)
-    .toBeLessThan(beforeSecondDivider - 100)
+    .poll(
+      async () =>
+        ((await divider.boundingBox())?.x ?? secondDividerBox.x) -
+        secondDividerBox.x,
+    )
+    .toBeGreaterThan(meaningfulResize)
+  await expect
+    .poll(
+      async () =>
+        beforeSecondStage -
+        ((await stage.boundingBox())?.width ?? beforeSecondStage),
+    )
+    .toBeGreaterThan(meaningfulResize)
+  await expect
+    .poll(
+      async () =>
+        beforeSecondSvg - ((await svg.boundingBox())?.width ?? beforeSecondSvg),
+    )
+    .toBeGreaterThan(meaningfulResize)
   await page.evaluate(
     () =>
       new Promise<void>((resolve) =>
@@ -113,15 +151,13 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await page.getByTitle('Fit to view').click()
   const beforeTabSwitch = await viewport.getAttribute('transform')
   await page.getByRole('button', { name: 'Overview', exact: true }).click()
-  const hiddenDividerBox = await divider.boundingBox()
-  expect(hiddenDividerBox).not.toBeNull()
-  await page.mouse.move(
-    hiddenDividerBox!.x + hiddenDividerBox!.width / 2,
-    hiddenDividerBox!.y + 30,
-  )
-  await page.mouse.down()
-  await page.mouse.move(350, hiddenDividerBox!.y + 30)
-  await page.mouse.up()
+  const hiddenPaneResize = 48
+  const hiddenDividerBox = await dragDividerBy(page, divider, -hiddenPaneResize)
+  await expect
+    .poll(async () =>
+      hiddenDividerBox.x - ((await divider.boundingBox())?.x ?? hiddenDividerBox.x),
+    )
+    .toBeGreaterThan(hiddenPaneResize / 2)
   await page.getByRole('button', { name: 'Graph', exact: true }).click()
   await expect(svg).toBeVisible()
   await expect
