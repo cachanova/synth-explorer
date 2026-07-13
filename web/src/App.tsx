@@ -33,7 +33,6 @@ function App() {
             Synth <span className="accent">Explorer</span>
           </span>
         </span>
-        <span className="tagline">Compiler Explorer for RTL — synthesize & explore the netlist</span>
       </header>
       <div className="split">
         <div

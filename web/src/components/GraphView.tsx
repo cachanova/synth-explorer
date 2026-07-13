@@ -151,7 +151,7 @@ function SchematicOutline({
   // A grouped (width>=2) node is a vector, so draw offset silhouettes behind it
   // — a stack-of-sheets cue that a bus of cells collapsed into one symbol.
   const groupWidth = node.width ?? 0
-  const stackOffsets = groupWidth >= 2 ? (groupWidth >= 4 ? [11, 5.5] : [6]) : []
+  const stackOffsets = groupWidth >= 2 ? (groupWidth >= 4 ? [6, 3] : [3.5]) : []
   const ghostProps = {
     fill: visual.fill,
     stroke: visual.stroke,

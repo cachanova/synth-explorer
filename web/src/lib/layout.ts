@@ -209,40 +209,93 @@ export function toElkGraph(
   nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
 ): ElkNode {
   assertRenderableSubgraph(sub)
+
+  // Distinct input/output pin names per node, so every component's edges route
+  // to spread-out pins on the west/east sides instead of collapsing to the box
+  // centre. Sorted for a stable top-to-bottom pin order.
+  const inPins = new Map<number, string[]>()
+  const outPins = new Map<number, string[]>()
+  const addPin = (map: Map<number, string[]>, id: number, pin: string) => {
+    let arr = map.get(id)
+    if (!arr) {
+      arr = []
+      map.set(id, arr)
+    }
+    if (!arr.includes(pin)) arr.push(pin)
+  }
+  for (const e of sub.edges) {
+    addPin(outPins, e.from, e.from_port)
+    addPin(inPins, e.to, e.to_port)
+  }
+  for (const arr of inPins.values()) arr.sort()
+  for (const arr of outPins.values()) arr.sort()
+
   const regIds = new Set<number>()
   const children: ElkNode[] = sub.nodes.map((n) => {
     const { width, height } = nodeDimensions(n)
-    if (!isRegKind(n)) return { id: String(n.id), width, height }
-    regIds.add(n.id)
-    // Fixed D (west) and Q (east) ports so elk routes the data edges to the
-    // real pins instead of the box centre, which coincides with the clock notch.
-    const body = Math.min(height, REG_BODY_HEIGHT)
+    if (isRegKind(n)) {
+      regIds.add(n.id)
+      // Fixed D (west) and Q (east) ports so elk routes the data edges to the
+      // real pins instead of the box centre (which is the clock notch).
+      const body = Math.min(height, REG_BODY_HEIGHT)
+      return {
+        id: String(n.id),
+        width,
+        height,
+        layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+        ports: [
+          {
+            id: `${n.id}#in`,
+            x: 0,
+            y: body * REG_DATA_IN_Y_FRAC,
+            layoutOptions: { 'elk.port.side': 'WEST' },
+          },
+          {
+            id: `${n.id}#out`,
+            x: width,
+            y: body * REG_DATA_OUT_Y_FRAC,
+            layoutOptions: { 'elk.port.side': 'EAST' },
+          },
+        ],
+      }
+    }
+    const ins = inPins.get(n.id) ?? []
+    const outs = outPins.get(n.id) ?? []
+    if (ins.length === 0 && outs.length === 0) return { id: String(n.id), width, height }
+    const ports = [
+      ...ins.map((pin, i) => ({
+        id: `${n.id}#i:${pin}`,
+        x: 0,
+        y: ((i + 1) * height) / (ins.length + 1),
+        layoutOptions: { 'elk.port.side': 'WEST' },
+      })),
+      ...outs.map((pin, j) => ({
+        id: `${n.id}#o:${pin}`,
+        x: width,
+        y: ((j + 1) * height) / (outs.length + 1),
+        layoutOptions: { 'elk.port.side': 'EAST' },
+      })),
+    ]
     return {
       id: String(n.id),
       width,
       height,
       layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
-      ports: [
-        {
-          id: `${n.id}#in`,
-          x: 0,
-          y: body * REG_DATA_IN_Y_FRAC,
-          layoutOptions: { 'elk.port.side': 'WEST' },
-        },
-        {
-          id: `${n.id}#out`,
-          x: width,
-          y: body * REG_DATA_OUT_Y_FRAC,
-          layoutOptions: { 'elk.port.side': 'EAST' },
-        },
-      ],
+      ports,
     }
   })
 
+  const pinId = (
+    map: Map<number, string[]>,
+    id: number,
+    pin: string,
+    prefix: 'i' | 'o',
+  ): string => (map.get(id)?.includes(pin) ? `${id}#${prefix}:${pin}` : String(id))
+
   const edges: ElkExtendedEdge[] = sub.edges.map((e, i) => ({
     id: `e${i}`,
-    sources: [regIds.has(e.from) ? `${e.from}#out` : String(e.from)],
-    targets: [regIds.has(e.to) ? `${e.to}#in` : String(e.to)],
+    sources: [regIds.has(e.from) ? `${e.from}#out` : pinId(outPins, e.from, e.from_port, 'o')],
+    targets: [regIds.has(e.to) ? `${e.to}#in` : pinId(inPins, e.to, e.to_port, 'i')],
   }))
 
   return {

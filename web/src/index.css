@@ -144,11 +144,6 @@ a:hover {
 .app-header .logo .accent {
   color: var(--accent);
 }
-.app-header .tagline {
-  color: var(--text-faint);
-  font-size: 12px;
-}
-
 .split {
   display: flex;
   flex: 1 1 auto;

@@ -116,9 +116,14 @@ describe('schematic layout sizing', () => {
     // the D edge targets the register's in-port; the Q edge leaves its out-port
     expect(graph.edges?.[0].targets).toEqual(['2#in'])
     expect(graph.edges?.[1].sources).toEqual(['2#out'])
-    // a non-register node keeps plain node-id endpoints and no ports
-    expect(graph.children?.find((c) => c.id === '1')?.ports).toBeUndefined()
-    expect(graph.edges?.[0].sources).toEqual(['1'])
+    // non-register nodes now expose a fixed port per distinct pin, so their
+    // edges route to spread-out pins rather than the box centre
+    const mux = graph.children?.find((c) => c.id === '1')
+    expect(mux?.ports?.map((p) => p.id)).toEqual(['1#o:Y'])
+    expect(mux?.layoutOptions?.['elk.portConstraints']).toBe('FIXED_POS')
+    expect(graph.edges?.[0].sources).toEqual(['1#o:Y'])
+    // the sink port node routes the Q edge to its A input pin
+    expect(graph.edges?.[1].targets).toEqual(['3#i:A'])
   })
 
   it('picks robust placement for large or dense graphs, tight for small', () => {
