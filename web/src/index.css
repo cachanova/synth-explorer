@@ -314,8 +314,13 @@ a:hover {
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  /* Narrow viewports: scroll the tab row inside the pane instead of
+     widening the page. */
+  min-width: 0;
+  overflow-x: auto;
 }
 .tab {
+  flex: 0 0 auto;
   padding: 6px 12px;
   border: 1px solid transparent;
   border-bottom: none;
