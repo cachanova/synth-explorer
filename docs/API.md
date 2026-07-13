@@ -198,6 +198,13 @@ directly by register Q through wiring or unconditional zero-depth buffers are
 listed under that register's `output_aliases` and are not duplicated in
 `outputs`.
 
+Register `name` prefers the driven Q-net name; when synthesis destroys every
+RTL name on a flip-flop (ABC restructuring plus vendor techmap can), it falls
+back through visible Q- then D-net aliases, a directly driven output port, the
+instance name, and a design-file `file:line` label, ending with a
+deterministic `<cell_type>·<node_id>`. Names never surface hidden `$`-names,
+and no two register groups share a displayed name.
+
 ## GET `/api/design/:id/paths?limit=25&to=<node_id>`
 
 Ranked longest structural paths (deepest first). Paths with the same logical

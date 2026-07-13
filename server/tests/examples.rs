@@ -357,6 +357,69 @@ fn word_level_set_reset_cells_are_state_boundaries() {
 }
 
 #[tokio::test]
+async fn xilinx_register_endpoints_are_named_even_when_yosys_names_are_hidden() {
+    // Write-first block-RAM inference makes memory_libmap re-emit the
+    // transparency bypass registers with fresh `$auto$ff.cc:...:slice` names,
+    // library-file src (ff_map.v), and no surviving user Q-net alias — the
+    // same failure StreamingHistogram.v shows at scale. Naming must recover
+    // from D-net aliases or fall back to a deterministic per-node label.
+    let source = r#"
+module hidden_regs (
+    input  wire        clk,
+    input  wire        we,
+    input  wire [9:0]  waddr,
+    input  wire [9:0]  raddr,
+    input  wire [15:0] wdata,
+    output reg  [15:0] rdata
+);
+  (* ram_style = "block" *) reg [15:0] mem [0:1023];
+  always @(posedge clk) begin
+    rdata <= mem[raddr];
+    if (we && (waddr == raddr))
+      rdata <= wdata;
+    if (we)
+      mem[waddr] <= wdata;
+  end
+endmodule
+"#;
+    let (graph, analysis) =
+        analyze_source("hidden_regs.sv", source, "hidden_regs", SynthMode::Xilinx).await;
+    assert!(
+        graph.nodes.iter().any(|node| {
+            node.cell_type.as_deref().is_some_and(|t| t.starts_with("FD"))
+                && node.name.starts_with('$')
+        }),
+        "fixture must contain flip-flops whose yosys names are hidden"
+    );
+
+    let endpoints = analysis.endpoints();
+    assert!(!endpoints.registers.is_empty());
+    let mut seen = std::collections::BTreeSet::new();
+    for register in &endpoints.registers {
+        assert!(
+            !register.name.starts_with('$'),
+            "register endpoint fell back to a hidden yosys name: {}",
+            register.name
+        );
+        assert!(
+            seen.insert(register.name.clone()),
+            "two register endpoints share the displayed name {}",
+            register.name
+        );
+    }
+    // The bypass data registers recover their identity from the D-net alias.
+    assert!(
+        endpoints.registers.iter().any(|group| group.name == "wdata"),
+        "expected a D-net-alias-derived group, got {:?}",
+        endpoints
+            .registers
+            .iter()
+            .map(|group| (&group.name, group.width))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn latches_are_register_endpoints_in_rtl_and_xilinx_modes() {
     let source = r#"
 module latch_demo (

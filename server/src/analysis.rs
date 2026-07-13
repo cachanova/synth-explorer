@@ -570,7 +570,7 @@ impl Analysis {
             node_startpoint,
         } = compute_depths(graph, &loop_set);
         let (endpoints, endpoint_targets) =
-            discover_endpoints(graph, &node_depth, &node_startpoint);
+            discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
         let source_map = build_source_map(graph, source_files);
         let stats = build_stats(graph, &endpoints, &endpoint_targets);
         let warnings = build_warnings(graph, &comb_loops);
@@ -1897,7 +1897,9 @@ fn discover_endpoints(
     graph: &Graph,
     node_depth: &[Option<u32>],
     node_startpoint: &[Option<NodeId>],
+    source_files: &[String],
 ) -> (EndpointsResponse, Vec<EndpointTarget>) {
+    let design_files: HashSet<&str> = source_files.iter().map(String::as_str).collect();
     let mut targets = Vec::new();
     let mut register_map: BTreeMap<String, RegisterGroup> = BTreeMap::new();
     let mut register_bits: HashMap<(NodeId, Option<u32>), (String, usize)> = HashMap::new();
@@ -1910,13 +1912,7 @@ fn discover_endpoints(
             continue;
         };
         let q_width = info.q_bits.len().max(1);
-        let group_name = info
-            .q_bits
-            .iter()
-            .find_map(|bit| bit.net())
-            .and_then(|net| register_q_name(graph, net))
-            .map(|name| strip_bit_suffix(name).to_owned())
-            .unwrap_or_else(|| node.name.clone());
+        let group_name = register_group_name(graph, node, info, &design_files);
         let cell_type = node.cell_type.clone().unwrap_or_default();
         let mut bits = Vec::new();
         let data_edges = endpoint_data_edges(graph, node.id, info, q_width);
@@ -2919,6 +2915,14 @@ fn parse_src_loc(loc: &str) -> Option<(String, usize, usize)> {
 }
 
 fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
+    best_net_alias(graph, net, false)
+}
+
+fn visible_net_name(graph: &Graph, net: u32) -> Option<&str> {
+    best_net_alias(graph, net, true)
+}
+
+fn best_net_alias(graph: &Graph, net: u32, require_visible: bool) -> Option<&str> {
     let aliases = graph.net_aliases.get(&net)?;
     let mut best: Option<&str> = None;
     for candidate in aliases {
@@ -2927,6 +2931,9 @@ fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
             .strip_prefix("$iopadmap$")
             .filter(|name| !name.is_empty())
             .unwrap_or(raw_candidate);
+        if require_visible && is_hidden_name(candidate) {
+            continue;
+        }
         let candidate_depth = bracket_depth(candidate);
         let replace = best.is_none_or(|current| {
             let current_depth = bracket_depth(current);
@@ -2937,7 +2944,111 @@ fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
             best = Some(candidate);
         }
     }
-    best.or_else(|| graph.net_names.get(&net).map(String::as_str))
+    best.or_else(|| {
+        graph
+            .net_names
+            .get(&net)
+            .map(String::as_str)
+            .filter(|name| !require_visible || !is_hidden_name(name))
+    })
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('$')
+}
+
+/// Displayed endpoint-group name for a register cell. ABC restructuring and
+/// library techmaps (for example xilinx `ff_map.v`) can destroy every RTL name
+/// on a flip-flop, so after today's Q-net name the chain falls back through
+/// visible Q- and D-net aliases, an output port reached through transparent
+/// buffers, a visible instance name, and a design-file src label before a
+/// deterministic per-node label. Register rows therefore never render as
+/// identical bare cell-type entries.
+fn register_group_name(
+    graph: &Graph,
+    node: &crate::graph::Node,
+    info: &crate::graph::CellInfo,
+    design_files: &HashSet<&str>,
+) -> String {
+    if let Some(name) = info
+        .q_bits
+        .iter()
+        .find_map(|bit| bit.net())
+        .and_then(|net| register_q_name(graph, net))
+        .filter(|name| !is_hidden_name(name))
+    {
+        return strip_bit_suffix(name).to_owned();
+    }
+    for bits in [&info.q_bits, &info.d_bits] {
+        if let Some(name) = bits
+            .iter()
+            .filter_map(|bit| bit.net())
+            .find_map(|net| visible_net_name(graph, net))
+        {
+            return strip_bit_suffix(name).to_owned();
+        }
+    }
+    if let Some(port) = forwarded_output_port(graph, node.id) {
+        return port;
+    }
+    if !is_hidden_name(&node.name) {
+        return node.name.clone();
+    }
+    let cell_type = node.cell_type.as_deref().unwrap_or_default();
+    if let Some(label) = node
+        .src
+        .as_deref()
+        .and_then(|src| design_src_label(src, design_files))
+    {
+        return format!("{cell_type} @ {label}");
+    }
+    format!("{cell_type}·{}", node.id)
+}
+
+/// Follow a register's outputs forward through unconditional data buffers to
+/// a top-level output port, mirroring `direct_register_driver`.
+fn forwarded_output_port(graph: &Graph, register: NodeId) -> Option<String> {
+    let mut queue: VecDeque<NodeId> = VecDeque::from([register]);
+    let mut visited: HashSet<NodeId> = HashSet::from([register]);
+    while let Some(id) = queue.pop_front() {
+        for edge_idx in &graph.outgoing[id as usize] {
+            let edge = &graph.edges[*edge_idx];
+            let Some(sink) = graph.nodes.get(edge.to as usize) else {
+                continue;
+            };
+            if sink.kind == NodeKind::PortBit
+                && matches!(
+                    sink.port_dir,
+                    Some(PortDirection::Output | PortDirection::Inout)
+                )
+                && let Some(port) = &sink.port
+            {
+                return Some(port.clone());
+            }
+            if sink.kind == NodeKind::Cell
+                && sink
+                    .cell_type
+                    .as_deref()
+                    .is_some_and(is_transparent_data_buffer)
+                && visited.insert(sink.id)
+            {
+                queue.push_back(sink.id);
+            }
+        }
+    }
+    None
+}
+
+/// First src fragment that points at a submitted design file, as `file:line`.
+/// Library techmap sources (for example `ff_map.v`) are never design files and
+/// would mislabel the endpoint.
+fn design_src_label(src: &str, design_files: &HashSet<&str>) -> Option<String> {
+    src.split('|').find_map(|loc| {
+        let (file, start_line, _) = parse_src_loc(loc)?;
+        design_files
+            .contains(file.as_str())
+            .then(|| format!("{file}:{start_line}"))
+    })
 }
 
 fn bracket_depth(name: &str) -> usize {
