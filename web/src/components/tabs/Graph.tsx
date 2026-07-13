@@ -130,17 +130,20 @@ export function Graph({ active }: { active: boolean }) {
       .then(({ graph, status, control }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         loadedRequestKey.current = requestKey
-        setSourceStatus(status)
         setSourceControl(control)
         const presentation = sourceProbePresentation(status)
         // A partial mapping is still useful and replaces the prior selection.
         if (presentation.acceptReturnedGraph) {
+          setSourceStatus(status)
           setFetchedSubgraph({ designId: requestDesignId, requestKey, graph })
           if (status != null) setSelected(null)
         }
         // Nothing synthesizable maps to this selection — fall back to the full
         // netlist instead of a bare message, keeping a schematic on screen.
+        // Clear the status here so the unmapped message never flashes over the
+        // netlist we are about to open.
         else {
+          setSourceStatus(null)
           setLoading(false)
           const reason =
             status === 'optimized_or_absorbed' ? 'optimized away' : 'no mapped logic'
@@ -365,9 +368,6 @@ export function Graph({ active }: { active: boolean }) {
           )}
           {sourcePresentation.message && (
             <span className="msg">{sourcePresentation.message}</span>
-          )}
-          {coneReq.kind === 'source' && sourcePresentation.retainsPreviousGraph && laid && (
-            <span className="msg">showing the previous mapped selection</span>
           )}
           {sourceControl && (
             <span className="msg">
