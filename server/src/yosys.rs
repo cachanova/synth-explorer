@@ -46,10 +46,7 @@ pub enum ResourceKind {
 /// Classify a failed yosys exit as a sandbox resource kill when possible.
 /// bad_alloc in the log identifies an address-space kill even when the abort
 /// unwinds into a normal-looking exit.
-pub fn classify_failure(
-    status: &std::process::ExitStatus,
-    log: &str,
-) -> Option<ResourceKind> {
+pub fn classify_failure(status: &std::process::ExitStatus, log: &str) -> Option<ResourceKind> {
     if log.contains("std::bad_alloc") {
         return Some(ResourceKind::Memory);
     }

@@ -379,7 +379,10 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
             in_always = false;
             continue;
         }
-        if matches!(token, "always" | "always_ff" | "always_comb" | "always_latch") {
+        if matches!(
+            token,
+            "always" | "always_ff" | "always_comb" | "always_latch"
+        ) {
             in_always = current_module.is_some();
             always_begin_depth = 0;
             always_has_begin = false;
@@ -560,10 +563,7 @@ fn procedural_assignment_lhs(statement: &str) -> Option<Vec<String>> {
         match byte {
             b'(' | b'[' | b'{' => nesting += 1,
             b')' | b']' | b'}' => nesting = nesting.saturating_sub(1),
-            b'<' if nesting == 0
-                && previous != b'<'
-                && bytes.get(offset + 1) == Some(&b'=') =>
-            {
+            b'<' if nesting == 0 && previous != b'<' && bytes.get(offset + 1) == Some(&b'=') => {
                 let lhs = identifiers(&statement[..offset]);
                 return (!lhs.is_empty()).then_some(lhs);
             }
