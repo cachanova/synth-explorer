@@ -2781,10 +2781,21 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
     let hidden: HashSet<NodeId> = subgraph
         .nodes
         .iter()
-        .filter(|node| node.is_root != Some(true))
         .filter_map(|node| {
             let cell_type = graph.nodes[node.node.id as usize].cell_type.as_deref()?;
-            is_infrastructure_cell(cell_type).then_some(node.node.id)
+            if !is_infrastructure_cell(cell_type) {
+                return None;
+            }
+            // Cone roots are normally kept even when infrastructure, so an
+            // explicitly requested node never vanishes. But a transparent data
+            // buffer (IBUF/OBUF/BUFG) that a source line happens to map to must
+            // still collapse when infrastructure is hidden — it bridges cleanly
+            // to the real net, and leaving it visible is exactly the "IBUF shows
+            // with infrastructure off" bug.
+            if node.is_root == Some(true) && !is_transparent_data_buffer(cell_type) {
+                return None;
+            }
+            Some(node.node.id)
         })
         .collect();
     if hidden.is_empty() {
@@ -3443,6 +3454,70 @@ mod tests {
         assert!(first.truncated);
         assert!(first.edges.len() <= MAX_SUBGRAPH_EDGES);
         assert_eq!(edge_signature(&first), edge_signature(&second));
+    }
+
+    #[test]
+    fn transparent_buffer_collapses_even_as_a_cone_root() {
+        // n0 ($and) -> n1 (OBUF, cone root) -> n2 ($and). A source line can map
+        // straight onto the OBUF, making it a root; hiding infrastructure must
+        // still collapse the buffer and bridge n0 -> n2 rather than leaving the
+        // OBUF on screen ("IBUF shows with infrastructure off").
+        let graph = graph_from_parts(
+            "buf",
+            vec![
+                combinational_node(0, "$and", None),
+                combinational_node(1, "OBUF", None),
+                combinational_node(2, "$and", None),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 3],
+            vec![Vec::new(); 3],
+        );
+        let mk = |id: NodeId, root: bool| GraphNode {
+            node: node_ref(&graph, id),
+            is_root: root.then_some(true),
+            is_boundary: None,
+            depth: None,
+            params: BTreeMap::new(),
+            controls: Vec::new(),
+            width: None,
+            members: None,
+        };
+        let subgraph = Subgraph {
+            nodes: vec![mk(0, false), mk(1, true), mk(2, false)],
+            edges: vec![
+                GraphEdge {
+                    from: 0,
+                    to: 1,
+                    from_port: "Y".to_owned(),
+                    to_port: "I".to_owned(),
+                    net_name: "a".to_owned(),
+                    bits: vec![0],
+                    control: None,
+                },
+                GraphEdge {
+                    from: 1,
+                    to: 2,
+                    from_port: "O".to_owned(),
+                    to_port: "A".to_owned(),
+                    net_name: "y".to_owned(),
+                    bits: vec![0],
+                    control: None,
+                },
+            ],
+            truncated: false,
+        };
+
+        let out = collapse_infrastructure(&graph, subgraph);
+
+        assert!(
+            out.nodes.iter().all(|n| n.node.id != 1),
+            "the root OBUF must collapse when infrastructure is hidden"
+        );
+        assert!(
+            out.edges.iter().any(|e| e.from == 0 && e.to == 2),
+            "n0 must bridge directly to n2 through the hidden buffer"
+        );
     }
 
     #[test]
