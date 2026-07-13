@@ -699,7 +699,8 @@ table.grid tr.expanded td {
   pointer-events: none;
   flex-wrap: wrap;
 }
-.graph-banner .msg {
+.graph-banner .msg,
+.stale-chip {
   pointer-events: auto;
   /* Solid background — banners overlay the schematic, so edges must not
      show through the text. */
@@ -709,6 +710,12 @@ table.grid tr.expanded td {
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 12px;
+}
+.stale-chip {
+  display: inline-block;
+}
+.stale-chip-row {
+  margin-bottom: 8px;
 }
 .graph-banner .msg.err {
   background: color-mix(in srgb, var(--red) 12%, var(--bg));

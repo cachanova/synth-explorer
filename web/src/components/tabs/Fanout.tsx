@@ -6,6 +6,7 @@ import { fanoutDriverLabel, shortNetName } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
 import { useStore } from '../../store'
 import { SrcLink } from '../SrcLink'
+import { StaleResultsChip } from '../StaleResultsChip'
 
 export function Fanout() {
   const store = useStore()
@@ -39,6 +40,7 @@ export function Fanout() {
 
   return (
     <div>
+      <StaleResultsChip state={store.analysisState} />
       <input
         className="filter-input"
         placeholder="Filter drivers / nets…"
