@@ -53,6 +53,22 @@ describe('filterSubgraph', () => {
     expect(out.nodes.map((n) => n.id)).toEqual([1])
     expect(out.edges).toEqual([])
   })
+
+  it('keeps a grouped node when any of its members is in the keep set', () => {
+    // A grouped vector node has a synthetic id but carries its member bit ids;
+    // highlighting one bit must retain the whole group (spec C).
+    const grouped: Subgraph = {
+      nodes: [
+        node(100, { width: 8, members: [10, 11, 12] }),
+        node(2, { kind: 'port' }),
+        node(3),
+      ],
+      edges: [edge(2, 100), edge(100, 3)],
+      truncated: false,
+    }
+    const out = filterSubgraph(grouped, new Set([11]))
+    expect(out.nodes.map((n) => n.id).sort((a, b) => a - b)).toEqual([2, 100])
+  })
 })
 
 describe('focusKeepSet', () => {

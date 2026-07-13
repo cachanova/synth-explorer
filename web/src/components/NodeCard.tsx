@@ -34,6 +34,14 @@ export function NodeCard({
             <span className="v">{node.depth}</span>
           </>
         )}
+        {node.width != null && node.width >= 2 && (
+          <>
+            <span className="k">width</span>
+            <span className="v">{node.width}</span>
+            <span className="k">members</span>
+            <span className="v">{node.members?.length ?? node.width} bits</span>
+          </>
+        )}
         {node.seq && (
           <>
             <span className="k">seq</span>

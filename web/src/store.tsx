@@ -86,6 +86,7 @@ export interface GraphOptions {
   hideConst: boolean
   showInfrastructure: boolean
   focus: boolean
+  groupVectors: boolean
 }
 
 export interface EditorHighlight {
@@ -141,6 +142,7 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideConst: true,
   showInfrastructure: false,
   focus: false,
+  groupVectors: true,
 }
 
 function sourceGraphRequest(

@@ -163,15 +163,24 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
     }
   })()
   const controls = controlsFor(node)
-  if (controls.length === 0) return base
-  const controlWidth = controls.reduce(
-    (max, control) => Math.max(max, controlLabel(control).length * 6.2 + PAD_X),
-    0,
-  )
-  return {
-    width: Math.max(base.width, Math.round(controlWidth)),
-    height: base.height + controls.length * 13,
+  let width = base.width
+  let height = base.height
+  if (controls.length > 0) {
+    const controlWidth = controls.reduce(
+      (max, control) => Math.max(max, controlLabel(control).length * 6.2 + PAD_X),
+      0,
+    )
+    width = Math.max(width, Math.round(controlWidth))
+    height = base.height + controls.length * 13
   }
+  // Grouped vector nodes reserve an extra row and room for a "×N" bit badge.
+  const groupWidth = node.width ?? 0
+  if (groupWidth >= 2) {
+    const badge = `×${groupWidth}`
+    width = Math.max(width, Math.round(badge.length * CHAR_WIDTH + PAD_X))
+    height += 14
+  }
+  return { width, height }
 }
 
 /** Build the ELK graph description from a Subgraph. */

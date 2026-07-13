@@ -235,9 +235,18 @@ function NodeContents({
   const maxChars = Math.max(4, Math.floor(width / 6.2))
   const primaryHeight = kind === 'reg' ? Math.min(height, 58) : height
 
+  const groupWidth = node.width ?? 0
+  const groupBadge =
+    groupWidth >= 2 ? (
+      <text className="g-group-badge" x={width - 4} y={11} textAnchor="end">
+        ×{groupWidth}
+      </text>
+    ) : null
+
   if (kind === 'arith') {
     return (
       <>
+        {groupBadge}
         <text className="g-operator-glyph" x={width / 2} y={primaryHeight / 2 + 7} textAnchor="middle">
           {arithGlyph(node.cell_type) ?? label}
         </text>
@@ -262,6 +271,7 @@ function NodeContents({
 
   return (
     <>
+      {groupBadge}
       {isBox && (
         <text className="g-boundary-badge" x={width / 2} y={11} textAnchor="middle">
           {boxBadge(node)}
@@ -753,20 +763,35 @@ export function GraphView({
                 ]
               }
             }
-            const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${highlighted ? ' hl' : ''}`
+            const bits = laidOutEdge.edge.bits.length
+            const isBus = bits > 1
+            const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
+            const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
             return (
-              <path
-                key={index}
-                className={className}
-                d={pathD(points)}
-                markerEnd={`url(#${highlighted ? 'arrow-hl' : 'arrow'})`}
-              >
-                <title>
-                  {shortNetName(laidOutEdge.edge.net_name)} ({laidOutEdge.edge.bits.length} bit
-                  {laidOutEdge.edge.bits.length === 1 ? '' : 's'}): {laidOutEdge.edge.from_port}→
-                  {laidOutEdge.edge.to_port}
-                </title>
-              </path>
+              <g key={index}>
+                <path
+                  className={className}
+                  d={pathD(points)}
+                  markerEnd={`url(#${highlighted ? 'arrow-hl' : 'arrow'})`}
+                >
+                  <title>
+                    {shortNetName(laidOutEdge.edge.net_name)} ({bits} bit
+                    {isBus ? 's' : ''}): {laidOutEdge.edge.from_port}→
+                    {laidOutEdge.edge.to_port}
+                  </title>
+                </path>
+                {isBus && mid && (
+                  <text
+                    className="g-bus-label"
+                    x={mid.x}
+                    y={mid.y - 3}
+                    textAnchor="middle"
+                    aria-hidden="true"
+                  >
+                    {bits}
+                  </text>
+                )}
+              </g>
             )
           })}
 

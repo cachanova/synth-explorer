@@ -84,12 +84,16 @@ export function getPaths(
 
 export interface ConeOptions {
   node: number
+  // Multi-root cone: when present (and non-empty) overrides `node`, unioning
+  // every root's cone under one budget. Serialized as nodes=1,2,3.
+  nodes?: number[]
   dir: 'fanin' | 'fanout'
   max_depth?: number
   max_nodes?: number
   hide_control?: boolean
   hide_const?: boolean
   show_infrastructure?: boolean
+  group_vectors?: boolean
 }
 
 export function getCone(
@@ -98,7 +102,11 @@ export function getCone(
   signal?: AbortSignal,
 ): Promise<Subgraph> {
   const p = new URLSearchParams()
-  p.set('node', String(opts.node))
+  if (opts.nodes && opts.nodes.length > 0) {
+    p.set('nodes', opts.nodes.join(','))
+  } else {
+    p.set('node', String(opts.node))
+  }
   p.set('dir', opts.dir)
   if (opts.max_depth != null) p.set('max_depth', String(opts.max_depth))
   if (opts.max_nodes != null) p.set('max_nodes', String(opts.max_nodes))
@@ -107,6 +115,7 @@ export function getCone(
   if (opts.show_infrastructure != null) {
     p.set('show_infrastructure', String(opts.show_infrastructure))
   }
+  if (opts.group_vectors != null) p.set('group_vectors', String(opts.group_vectors))
   return getJson<Subgraph>(
     `/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`,
     signal,
@@ -121,6 +130,7 @@ export interface LineConeOptions {
   hide_control?: boolean
   hide_const?: boolean
   show_infrastructure?: boolean
+  group_vectors?: boolean
 }
 
 export function getLineCone(
@@ -138,6 +148,7 @@ export function getLineCone(
   if (opts.show_infrastructure != null) {
     p.set('show_infrastructure', String(opts.show_infrastructure))
   }
+  if (opts.group_vectors != null) p.set('group_vectors', String(opts.group_vectors))
   return getJson<LineConeResponse>(
     `/api/design/${encodeURIComponent(id)}/line-cone?${p.toString()}`,
     signal,
@@ -154,10 +165,11 @@ export function getNetlist(
   id: string,
   maxNodes = DEFAULT_GRAPH_MAX_NODES,
   showInfrastructure = false,
+  groupVectors = false,
   signal?: AbortSignal,
 ): Promise<Subgraph> {
   return getJson<Subgraph>(
-    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}`,
+    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}&group_vectors=${groupVectors}`,
     signal,
   )
 }

@@ -21,7 +21,13 @@ export function filterSubgraph(
   if (keep.size === 0) return sub
   const byId = new Map(sub.nodes.map((node) => [node.id, node]))
   const kept = new Set<number>()
-  for (const node of sub.nodes) if (keep.has(node.id)) kept.add(node.id)
+  // A grouped vector node has a synthetic id but keeps its member bit ids;
+  // it is kept when the group id or any member bit is in the keep set.
+  for (const node of sub.nodes) {
+    if (keep.has(node.id) || node.members?.some((member) => keep.has(member))) {
+      kept.add(node.id)
+    }
+  }
   for (let hop = 0; hop < boundaryHops; hop++) {
     const added: number[] = []
     for (const edge of sub.edges) {

@@ -41,7 +41,7 @@ export function Graph({ active }: { active: boolean }) {
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
 
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
@@ -84,6 +84,7 @@ export function Graph({ active }: { active: boolean }) {
             requestDesignId,
             graphOptions.maxNodes,
             graphOptions.showInfrastructure,
+            graphOptions.groupVectors,
             controller.signal,
           ).then((graph) => ({
             graph,
@@ -99,6 +100,7 @@ export function Graph({ active }: { active: boolean }) {
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
               show_infrastructure: graphOptions.showInfrastructure,
+              group_vectors: graphOptions.groupVectors,
             }, controller.signal).then((response) => ({
               graph: response.graph,
               status: response.status,
@@ -112,6 +114,7 @@ export function Graph({ active }: { active: boolean }) {
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
               show_infrastructure: graphOptions.showInfrastructure,
+              group_vectors: graphOptions.groupVectors,
             }, controller.signal).then((graph) => ({
               graph,
               status: null,
@@ -435,6 +438,18 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           }
         />
         infrastructure
+      </label>
+
+      <label
+        className="toggle"
+        title="Collapse bit-parallel vectors into one node per bus"
+      >
+        <input
+          type="checkbox"
+          checked={graphOptions.groupVectors}
+          onChange={(event) => setOpt({ groupVectors: event.target.checked })}
+        />
+        group buses
       </label>
 
       <label

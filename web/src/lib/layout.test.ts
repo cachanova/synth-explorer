@@ -36,6 +36,18 @@ describe('schematic layout sizing', () => {
     expect(controlled.width).toBeGreaterThanOrEqual(plain.width)
   })
 
+  it('adds a badge row and width for grouped vector nodes', () => {
+    const plain = nodeDimensions(node(1, 'FDRE'))
+    const grouped = nodeDimensions(
+      node(2, 'FDRE', { width: 8, members: [1, 2, 3, 4, 5, 6, 7, 8] }),
+    )
+    // A grouped node reserves an extra row for its "×N" badge.
+    expect(grouped.height).toBe(plain.height + 14)
+    expect(grouped.width).toBeGreaterThanOrEqual(plain.width)
+    // A single-bit node (width 1) is not treated as grouped.
+    expect(nodeDimensions(node(3, 'FDRE', { width: 1 }))).toEqual(plain)
+  })
+
   it('reserves one row for every label-connected control', () => {
     const controlledNode = node(2, 'FDRE', {
       controls: [

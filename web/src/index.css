@@ -802,9 +802,23 @@ table.grid tr.expanded td {
   stroke-dasharray: 4 3;
   opacity: 0.65;
 }
+.g-edge.bus {
+  stroke-width: 2.4;
+}
 .g-edge.hl {
   stroke: var(--accent);
   stroke-width: 2.2;
+}
+.g-bus-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  fill: var(--text-dim);
+  paint-order: stroke;
+  stroke: var(--bg-1);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 .g-node-label {
   font-family: var(--mono);
@@ -851,6 +865,13 @@ table.grid tr.expanded td {
   font-size: 7px;
   letter-spacing: 0.7px;
   fill: var(--text-faint);
+  pointer-events: none;
+}
+.g-group-badge {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  fill: var(--accent);
   pointer-events: none;
 }
 .g-pin-labels {
