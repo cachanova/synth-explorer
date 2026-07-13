@@ -93,6 +93,18 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
   })
 
+  it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
+    const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
+    expect(
+      toElkGraph(sub).layoutOptions?.['elk.layered.nodePlacement.strategy'],
+    ).toBe('NETWORK_SIMPLEX')
+    expect(
+      toElkGraph(sub, 'BRANDES_KOEPF').layoutOptions?.[
+        'elk.layered.nodePlacement.strategy'
+      ],
+    ).toBe('BRANDES_KOEPF')
+  })
+
   it('enforces the 2000-node renderer cap before starting ELK', async () => {
     expect(MAX_GRAPH_RENDER_NODES).toBe(2000)
     const oversized: Subgraph = {

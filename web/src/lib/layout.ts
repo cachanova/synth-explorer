@@ -184,7 +184,16 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 }
 
 /** Build the ELK graph description from a Subgraph. */
-export function toElkGraph(sub: Subgraph): ElkNode {
+// NETWORK_SIMPLEX gives the tightest alignment but recurses in elkjs and blows
+// the stack on very deep DAGs (e.g. a wide adder tree). BRANDES_KOEPF is the
+// robust fallback: slightly looser, never overflows. layoutSubgraph retries
+// with it when the premium strategy fails.
+export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+
+export function toElkGraph(
+  sub: Subgraph,
+  nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
+): ElkNode {
   assertRenderableSubgraph(sub)
   const children: ElkNode[] = sub.nodes.map((n) => {
     const { width, height } = nodeDimensions(n)
@@ -207,7 +216,7 @@ export function toElkGraph(sub: Subgraph): ElkNode {
       'elk.spacing.nodeNode': '30',
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
-      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.nodePlacement.strategy': nodePlacement,
     },
     children,
     edges,
@@ -317,14 +326,10 @@ function getWorker(): Worker {
 }
 
 /** Lay out a Subgraph in the worker. Rejects before worker/SVG work at either cap. */
-export async function layoutSubgraph(
-  sub: Subgraph,
-  signal?: AbortSignal,
-): Promise<LaidOutGraph> {
-  const graph = toElkGraph(sub)
+function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
   const w = getWorker()
   const id = ++seq
-  const result = await new Promise<ElkNode>((resolve, reject) => {
+  return new Promise<ElkNode>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
@@ -345,5 +350,34 @@ export async function layoutSubgraph(
     const req: ElkRequest = { id, graph }
     w.postMessage(req)
   })
+}
+
+// Above this size NETWORK_SIMPLEX becomes unsafe in elkjs: on deep datapath
+// cones it either overflows the stack or spins for tens of seconds. The robust
+// placement is chosen upfront so a large schematic never hangs on a spinner;
+// small graphs (the common case) keep the tighter alignment. The catch below is
+// a backstop for anything under the threshold that still fails fast.
+const NETWORK_SIMPLEX_NODE_LIMIT = 120
+const NETWORK_SIMPLEX_EDGE_LIMIT = 240
+
+export async function layoutSubgraph(
+  sub: Subgraph,
+  signal?: AbortSignal,
+): Promise<LaidOutGraph> {
+  const robust =
+    sub.nodes.length > NETWORK_SIMPLEX_NODE_LIMIT ||
+    sub.edges.length > NETWORK_SIMPLEX_EDGE_LIMIT
+  let result: ElkNode
+  if (robust) {
+    result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
+  } else {
+    try {
+      result = await runLayout(toElkGraph(sub, 'NETWORK_SIMPLEX'), signal)
+    } catch (error) {
+      // Never retry an aborted (superseded) request.
+      if (signal?.aborted) throw error
+      result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
+    }
+  }
   return interpretResult(sub, result)
 }
