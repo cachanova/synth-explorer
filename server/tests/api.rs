@@ -653,7 +653,11 @@ endmodule
         .filter(|node| node.get("width").is_some())
         .collect();
     // The register bus plus the d/q port buses each collapse to one width node.
-    assert_eq!(group_nodes.len(), 3, "register bus and both port buses collapse");
+    assert_eq!(
+        group_nodes.len(),
+        3,
+        "register bus and both port buses collapse"
+    );
     assert_eq!(
         group_nodes
             .iter()

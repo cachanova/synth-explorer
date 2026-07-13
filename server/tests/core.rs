@@ -119,9 +119,7 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
     let ports: Vec<_> = grouped
         .nodes
         .iter()
-        .filter(|node| {
-            matches!(node.node.kind, ApiNodeKind::Port) && node.width == Some(8)
-        })
+        .filter(|node| matches!(node.node.kind, ApiNodeKind::Port) && node.width == Some(8))
         .collect();
     assert_eq!(ports.len(), 2, "d and y ports each become one bus node");
 

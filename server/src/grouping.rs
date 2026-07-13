@@ -766,11 +766,23 @@ mod tests {
             nodes.push(port_bit(bit as NodeId, "a", bit, 4, PortDirection::Input));
         }
         for bit in 0..4 {
-            nodes.push(port_bit(4 + bit as NodeId, "b", bit, 4, PortDirection::Input));
+            nodes.push(port_bit(
+                4 + bit as NodeId,
+                "b",
+                bit,
+                4,
+                PortDirection::Input,
+            ));
         }
         nodes.push(port_bit(8, "sel", 0, 1, PortDirection::Input));
         for bit in 0..4 {
-            nodes.push(port_bit(9 + bit as NodeId, "y", bit, 4, PortDirection::Output));
+            nodes.push(port_bit(
+                9 + bit as NodeId,
+                "y",
+                bit,
+                4,
+                PortDirection::Output,
+            ));
         }
         let graph = graph_from_nodes("top", nodes);
 
@@ -784,10 +796,7 @@ mod tests {
             assert!(group.cell_type.is_empty());
         }
         let labels: BTreeSet<&str> = partition.groups.iter().map(|g| g.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["a[3:0]", "b[3:0]", "y[3:0]"].into_iter().collect()
-        );
+        assert_eq!(labels, ["a[3:0]", "b[3:0]", "y[3:0]"].into_iter().collect());
         assert_eq!(partition.group_of.len(), 12);
         assert!(!partition.group_of.contains_key(&8));
     }
@@ -897,9 +906,11 @@ mod tests {
         let y = &partition.groups[1];
         assert_eq!(y.members, vec![12, 13, 14, 15]);
         assert_eq!(y.label, "y[3:0]");
-        assert!(partition.groups[2..]
-            .iter()
-            .all(|g| g.kind == GroupKind::Port));
+        assert!(
+            partition.groups[2..]
+                .iter()
+                .all(|g| g.kind == GroupKind::Port)
+        );
     }
 
     #[test]
