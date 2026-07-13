@@ -344,6 +344,9 @@ a:hover {
 .tab-body {
   flex: 1 1 auto;
   min-height: 0;
+  /* Let the analysis content (toolbar, schematic) shrink instead of forcing
+     the pane wider, which would steal width from the editor at narrow sizes. */
+  min-width: 0;
   overflow: auto;
   padding: 12px;
 }
