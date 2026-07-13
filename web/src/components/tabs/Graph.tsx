@@ -240,7 +240,11 @@ export function Graph({ active }: { active: boolean }) {
     (node: GraphNode) => {
       if (!designId) return
       const ids = node.members ?? [node.id]
-      const owner = loadedRequestKey.current
+      // Guard on the last-started request sequence (bumped when a new base
+      // fetch begins), not the last-completed key — otherwise an expansion that
+      // resolves while a new base cone is still in-flight would leak stale nodes
+      // into it, and setExpansionGraph(null) at fetch start would not clear them.
+      const owner = reqSeq.current
       const shared = {
         node: ids[0],
         nodes: ids.length > 1 ? ids : undefined,
@@ -256,8 +260,8 @@ export function Graph({ active }: { active: boolean }) {
         getCone(designId, { ...shared, dir: 'fanout' }),
       ])
         .then(([fanin, fanout]) => {
-          // Drop stale results if the base graph changed while fetching.
-          if (loadedRequestKey.current !== owner) return
+          // Drop stale results if a new base fetch started while fetching.
+          if (reqSeq.current !== owner) return
           // A depth-1 neighborhood is deliberately shallow, so its truncated
           // flag (hit the depth limit) is expected and must not mark the whole
           // view truncated — only the base cone and render cap do that.
