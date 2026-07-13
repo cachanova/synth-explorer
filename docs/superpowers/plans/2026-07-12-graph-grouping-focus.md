@@ -570,3 +570,23 @@ subgraphs into the displayed graph before layout), `web/src/api.ts`
 the pan `suppressClick` guard, or the first-click pointer-capture fix — a
 double-click is two clicks; ensure select-then-expand reads cleanly and a drag
 never triggers expansion.
+
+---
+
+### Task N4: Declutter the flip-flop box label
+
+**Filed 2026-07-12 (user request), do next:**
+- Drop the reset-value annotation from FF labels: `DFF (rst→0)` → `DFF`
+  (and the analogous `(arst→…)`, `(rst→…, en)` decorations). The reset/set/
+  enable are already conveyed by the R/S/EN pins and the CLK/RST control rows,
+  so the arrow encoding on the type label is noise. Source: the FF-type decoder
+  and the `dffe`/`sdff…` label map in `web/src/lib/prettyType.ts` (~lines 30-93).
+  Keep the family word (`DFF`/`SDFF`/`LATCH`) and the group `×N` badge.
+- Remove the register **name sublabel** (`q[7:0]`) from the FF box body: with a
+  labeled `Q` pin, the `×N` badge, and the driven net visible on the wire, the
+  in-box net name is redundant. Suppress `nodeSublabel` for `reg`/`latch` kinds
+  in `NodeContents` (`web/src/components/GraphView.tsx`); the full identity
+  stays available in the node card and on hover.
+- Tests: update `prettyType.test.ts` label expectations; a `symbols`/render
+  test that a register box carries no sublabel. Verify on `01_reg_mux` (clean
+  `DFF ×8` box) and a vendor mode (FDRE/TRELLIS_FF stay readable).
