@@ -10,6 +10,4 @@ docs
 web/dist
 web/coverage
 
-compose*.yml
-Caddyfile
-ops
+deploy

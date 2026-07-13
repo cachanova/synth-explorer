@@ -110,7 +110,7 @@ hcloud server create \
   --firewall synth-explorer-prod \
   --enable-protection delete \
   --enable-protection rebuild \
-  --user-data-from-file ops/cloud-init.yml
+  --user-data-from-file deploy/ops/cloud-init.yml
 ```
 
 The command creates a billable server. Record its IPv4 and IPv6 information:
@@ -262,7 +262,7 @@ Verify the release from an administrator workstation:
 
 ```bash
 curl --fail --silent --show-error https://synthexplorer.dev/healthz | jq
-./ops/smoke-test.sh https://synthexplorer.dev "$(git rev-parse origin/main)"
+./deploy/ops/smoke-test.sh https://synthexplorer.dev "$(git rev-parse origin/main)"
 ```
 
 The health response must report `status: ok`, the deployed commit, and a Yosys
@@ -407,7 +407,7 @@ recovery cost. Delete the snapshot after the service passes its smoke test.
 
 Replace a lost VM with this procedure:
 
-1. Create the firewall and CX33 from `ops/cloud-init.yml`.
+1. Create the firewall and CX33 from `deploy/ops/cloud-init.yml`.
 2. Confirm Docker, SSH, and `/opt/synth-explorer`.
 3. Install a new dedicated deployment key and update the two GitHub environment
    secrets.

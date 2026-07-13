@@ -42,8 +42,19 @@ main() {
   flags_payload_file="${temporary_dir}/payload-flags.json"
   matrix_payload_file="${temporary_dir}/payload-matrix.json"
   matrix_file="${temporary_dir}/synthesize-matrix.json"
-  source_file="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/examples/05_shared_logic.sv"
-  [[ -f "${source_file}" ]] || die "missing synthesis smoke fixture: ${source_file}"
+  # examples/ sits next to this script's parent on the host release dir
+  # (ops/ + examples/ siblings) but one level higher in the repo, where the
+  # script lives under deploy/ops/ and examples/ stays at the root.
+  local script_dir candidate
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  source_file=""
+  for candidate in "${script_dir}/.." "${script_dir}/../.."; do
+    if [[ -f "${candidate}/examples/05_shared_logic.sv" ]]; then
+      source_file="$(cd -- "${candidate}" && pwd)/examples/05_shared_logic.sv"
+      break
+    fi
+  done
+  [[ -n "${source_file}" ]] || die "missing synthesis smoke fixture: examples/05_shared_logic.sv"
 
   curl --fail-with-body --show-error --silent --location \
     --retry 20 --retry-all-errors --retry-delay 3 \
