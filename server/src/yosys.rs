@@ -27,6 +27,32 @@ const CHILD_OPEN_FILES_LIMIT: libc::rlim_t = 128;
 #[cfg(target_os = "linux")]
 const CHILD_CPU_SECONDS_LIMIT: libc::rlim_t = 65;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Memory,
+    Cpu,
+    OutputSize,
+}
+
+/// Classify a failed yosys exit as a sandbox resource kill when possible.
+/// bad_alloc in the log identifies an address-space kill even when the abort
+/// unwinds into a normal-looking exit.
+pub fn classify_failure(
+    status: &std::process::ExitStatus,
+    log: &str,
+) -> Option<ResourceKind> {
+    if log.contains("std::bad_alloc") {
+        return Some(ResourceKind::Memory);
+    }
+    use std::os::unix::process::ExitStatusExt;
+    match status.signal() {
+        Some(libc::SIGABRT) => Some(ResourceKind::Memory),
+        Some(libc::SIGXCPU) | Some(libc::SIGKILL) => Some(ResourceKind::Cpu),
+        Some(libc::SIGXFSZ) => Some(ResourceKind::OutputSize),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
     pub name: String,
@@ -92,6 +118,8 @@ pub enum YosysError {
     Timeout { log: String },
     #[error("yosys failed")]
     Yosys { log: String },
+    #[error("synthesis exceeded sandbox limits")]
+    ResourceLimit { kind: ResourceKind, log: String },
     #[error("failed to run yosys: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid yosys output: {0}")]
@@ -231,6 +259,9 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
 
     let log = read_log_tail(&log_path).await.unwrap_or_default();
     if !status.success() {
+        if let Some(kind) = classify_failure(&status, &log) {
+            return Err(YosysError::ResourceLimit { kind, log });
+        }
         return Err(YosysError::Yosys { log });
     }
 
@@ -524,6 +555,49 @@ mod tests {
             build_script(&input),
             "read_verilog -sv design.sv\nhierarchy -top top\nproc\nwrite_json source-netlist.json\ndesign -reset\nread_verilog -sv design.sv\nsynth -top top -flatten -nofsm -noabc\nwrite_json netlist.json\n"
         );
+    }
+
+    #[test]
+    fn classifies_bad_alloc_as_memory_kill() {
+        use std::os::unix::process::ExitStatusExt;
+        let aborted = std::process::ExitStatus::from_raw(libc::SIGABRT);
+        assert_eq!(
+            classify_failure(
+                &aborted,
+                "terminate called after throwing an instance of 'std::bad_alloc'"
+            ),
+            Some(ResourceKind::Memory)
+        );
+        // bad_alloc in the log wins even when yosys exits with a plain error code
+        let failed = std::process::ExitStatus::from_raw(1 << 8);
+        assert_eq!(
+            classify_failure(&failed, "...std::bad_alloc..."),
+            Some(ResourceKind::Memory)
+        );
+    }
+
+    #[test]
+    fn classifies_cpu_and_output_kills() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            classify_failure(&std::process::ExitStatus::from_raw(libc::SIGXCPU), ""),
+            Some(ResourceKind::Cpu)
+        );
+        assert_eq!(
+            classify_failure(&std::process::ExitStatus::from_raw(libc::SIGKILL), ""),
+            Some(ResourceKind::Cpu)
+        );
+        assert_eq!(
+            classify_failure(&std::process::ExitStatus::from_raw(libc::SIGXFSZ), ""),
+            Some(ResourceKind::OutputSize)
+        );
+    }
+
+    #[test]
+    fn ordinary_failures_are_not_resource_kills() {
+        use std::os::unix::process::ExitStatusExt;
+        let failed = std::process::ExitStatus::from_raw(1 << 8); // exit code 1
+        assert_eq!(classify_failure(&failed, "ERROR: syntax error"), None);
     }
 
     #[test]

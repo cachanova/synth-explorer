@@ -5,7 +5,7 @@ use crate::analysis::{
 use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
-use crate::yosys::{SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
+use crate::yosys::{ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
@@ -1036,6 +1036,20 @@ fn map_yosys_error(err: YosysError) -> ApiError {
         }
         YosysError::Yosys { log } => {
             ApiError::with_log(StatusCode::BAD_REQUEST, "yosys failed", log)
+        }
+        YosysError::ResourceLimit { kind, log } => {
+            let message = match kind {
+                ResourceKind::Memory => {
+                    "synthesis exceeded the sandbox memory limit — large memories cannot be \
+                     flattened to gates; try RTL or a vendor mode, or reduce memory sizes"
+                }
+                ResourceKind::Cpu => {
+                    "synthesis exceeded the sandbox CPU limit — simplify the design or use a \
+                     lighter mode"
+                }
+                ResourceKind::OutputSize => "synthesis output exceeded the sandbox size limit",
+            };
+            ApiError::with_log(StatusCode::BAD_REQUEST, message, log)
         }
         YosysError::Io(err) => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
