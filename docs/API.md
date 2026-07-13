@@ -277,8 +277,10 @@ edge, or projection-work cap is reached.
 With `group_vectors=true`, bit-parallel register and logic vectors collapse
 into single nodes carrying `width` and `members` (see `GraphNode`), and the
 `max_nodes` budget counts group-or-singleton units rather than member bits, so a
-wide datapath fits in far fewer nodes. Bus edges between groups merge into one
-edge carrying every bit and the vector net name. Grouped nodes use synthetic ids
+wide datapath fits in far fewer nodes. Multi-bit I/O ports collapse the same
+way: bits sharing a port name become one bus node (`kind: "port"`, `width`,
+`members`), while scalar ports stay per-bit. Bus edges between groups merge into
+one edge carrying every bit and the vector net name. Grouped nodes use synthetic ids
 `>= graph node count`; those ids are display-only and are rejected by `/nodes`
 and by `node=`/`nodes=` (which address real per-bit ids). Defaults to `false`.
 
