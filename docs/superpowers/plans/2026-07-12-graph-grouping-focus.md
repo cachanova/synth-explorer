@@ -487,3 +487,86 @@ Verification: vitest + tsc + lint + visual spot-check at 500px and on a xilinx a
 - Lanes: SERVER = F1→F2→E1→D1(server half)→A1→A2 in `graph-grouping-focus`; FRONTEND = C1→R1→P1→N1(investigation may need server change — if so it moves to the server lane) in worktree `schematic-ui` branched from `graph-grouping-focus` after F2 lands, merged back by the coordinator; D1 frontend half and B1 run after both lanes converge.
 - Every task: TDD, run the listed checks, commit on green. Reviewer gate between tasks (coordinator).
 - Final: full-stack verify with `examples/` + `~/code/interviews/hrt/StreamingHistogram.v` (all modes), Playwright, then PR with the three independent reviews per Repo.md.
+
+---
+
+### Task N2: Proper flip-flop schematic symbol (D / clock-triangle / R / Q)
+
+**Discovered in hands-on testing (2026-07-12):** the register symbol draws the
+clock triangle notch at 72% down the left edge, but the data-input edge from
+elk connects to the left-vertical-center of the box, so the D data arrow
+visually points at the clock notch, and no D/Q/R pin labels exist. A flip-flop
+should read as a box with **D** (data in, left), the **clock triangle** (clk,
+left, clearly distinct from D), **R** (reset in, left/bottom), and **Q** (data
+out, right).
+
+**Files:**
+- `web/src/lib/symbols.ts` (`registerClockPath`, and a new port-geometry helper)
+- `web/src/lib/layout.ts` (`toElkGraph`: give `reg` nodes explicit ELK ports —
+  D and R on WEST, Q on EAST — so edges route to the right pins; `interpretResult`
+  reads port-relative edge endpoints; `nodeDimensions` keeps enough height for
+  the pin rows)
+- `web/src/components/GraphView.tsx` (register `SchematicNode`: render `D`, `R`,
+  `Q` pin glyphs/labels at the port positions; keep the clock triangle at the
+  clock port as the recognizable notch, not on the data line)
+- `web/src/index.css` if a pin-label class is added
+- Tests: `web/src/lib/symbols.test.ts` / `layout.test.ts` for port geometry;
+  visual confirmation in the browser on `01_reg_mux` and `08_fsm`.
+
+**Approach:** With `hide_control` on (default), CLK and RST are already shown as
+labeled control rows; the only routed data edge is D→(box)→Q. Define ELK ports
+on register nodes: a WEST `D` port (upper-left) and an EAST `Q` port
+(right-center) so elk routes the data edges to them; place the clock triangle at
+a fixed lower-west clock-pin position with a small `clk` tick, and render `D`/`Q`
+letters at their ports. Show `R` at a west reset-pin position (wired when reset
+is a data edge, else a labeled stub consistent with the control-label styling).
+Keep grouped register nodes (`width ≥ 2`) using the same symbol with the `×N`
+badge. Verify the D arrow lands on the D pin and never on the clock notch.
+
+**Generalization (user, 2026-07-12):** this applies to EVERY flip-flop-equivalent
+symbol — `$_DFF_*`, `$dff`, Xilinx `FDRE`/`FDSE`/`FDCE`, ECP5 `TRELLIS_FF`, iCE40
+`SB_DFF*`, latches — all of which already map to `symbolKind === 'reg'`/`'latch'`.
+Render the data `D` / clock-triangle / `Q` pins uniformly, and derive the
+remaining control pins from `controlsFor(node)` roles "with their relative
+considerations": reset→`R`, set→`S`, enable→`CE`/`E`, so an FDRE shows its clock
+enable while a plain DFF shows its reset. Do not hardcode a fixed R pin.
+
+**Scope note:** ELK ports are the canonical fix (edges route to real pins) and
+also improve every other multi-pin symbol; if port plumbing proves too large for
+this pass, the fallback is to move the clock triangle to the bottom-west corner
+and label the center-west input `D` so the data arrow no longer reads as the
+clock — but prefer the ports solution.
+
+---
+
+### Task N3: Double-click a schematic node to expand its connections
+
+**Filed 2026-07-12 (user request):** double-clicking a component in the
+schematic should additively render that node's other input/output connections
+(its immediate fanin and fanout neighbors) into the current view, so a user can
+explore outward from a node without losing the surrounding context.
+
+**Design questions to resolve first (brainstorm before building):**
+- **Additive vs re-center:** the request says "rendered too" → additive. Merge
+  the double-clicked node's 1-hop fanin+fanout neighborhood into the currently
+  displayed subgraph, then re-layout, rather than replacing the view with a new
+  cone. Confirm depth (1 hop vs configurable) and a node-budget cap so expansion
+  can't blow past `MAX_GRAPH_RENDER_NODES`.
+- **Grouping interaction:** double-clicking a grouped bus node expands the
+  group's neighbors (union over members), consistent with `nodes=` cones.
+- **State model:** track an "expanded node set" on the cone request; each
+  double-click adds the node's neighbors (fetched via `getCone` depth-1 both
+  directions, or a new endpoint) and merges into the displayed graph, deduped by
+  id, with truncation surfaced honestly.
+
+**Files (likely):** `web/src/store.tsx` (expansion state on the graph request +
+an `expandNode` action), `web/src/components/GraphView.tsx` (double-click
+handler on `SchematicNode`, distinct from single-click select and from
+pan/suppressClick), `web/src/components/tabs/Graph.tsx` (merge fetched neighbor
+subgraphs into the displayed graph before layout), `web/src/api.ts`
+(depth-1 both-direction fetch), tests for the merge/dedup helper.
+
+**Interaction care:** must not conflict with the existing single-click select,
+the pan `suppressClick` guard, or the first-click pointer-capture fix — a
+double-click is two clicks; ensure select-then-expand reads cleanly and a drag
+never triggers expansion.

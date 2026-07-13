@@ -892,6 +892,29 @@ table.grid tr.expanded td {
   stroke-width: 2.5px;
   stroke-linejoin: round;
 }
+.g-reg-pins {
+  pointer-events: none;
+}
+.g-reg-pin-tick {
+  stroke: var(--accent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.g-reg-pin {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  fill: var(--text);
+  paint-order: stroke;
+  stroke: var(--bg-2);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+.g-reg-ctrl-pin {
+  font-size: 7px;
+  font-weight: 600;
+  fill: var(--text-dim);
+}
 .g-control-label rect {
   fill: var(--bg-3);
   stroke: var(--seq);

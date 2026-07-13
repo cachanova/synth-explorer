@@ -190,20 +190,59 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 // with it when the premium strategy fails.
 export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
 
+// A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
+// triangle lower-west, and the data output (Q) at the east. These fractions of
+// the primary body height are shared with GraphView so the routed data edges
+// land exactly on the rendered D and Q pins (and never on the clock notch).
+export const REG_BODY_HEIGHT = 58
+export const REG_DATA_IN_Y_FRAC = 0.32
+export const REG_DATA_OUT_Y_FRAC = 0.5
+export const REG_CLOCK_Y_FRAC = 0.72
+
+function isRegKind(node: GraphNode): boolean {
+  const kind = symbolKind(node)
+  return kind === 'reg' || kind === 'latch'
+}
+
 export function toElkGraph(
   sub: Subgraph,
   nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
 ): ElkNode {
   assertRenderableSubgraph(sub)
+  const regIds = new Set<number>()
   const children: ElkNode[] = sub.nodes.map((n) => {
     const { width, height } = nodeDimensions(n)
-    return { id: String(n.id), width, height }
+    if (!isRegKind(n)) return { id: String(n.id), width, height }
+    regIds.add(n.id)
+    // Fixed D (west) and Q (east) ports so elk routes the data edges to the
+    // real pins instead of the box centre, which coincides with the clock notch.
+    const body = Math.min(height, REG_BODY_HEIGHT)
+    return {
+      id: String(n.id),
+      width,
+      height,
+      layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+      ports: [
+        {
+          id: `${n.id}#in`,
+          x: 0,
+          y: body * REG_DATA_IN_Y_FRAC,
+          layoutOptions: { 'elk.port.side': 'WEST' },
+        },
+        {
+          id: `${n.id}#out`,
+          x: width,
+          y: body * REG_DATA_OUT_Y_FRAC,
+          layoutOptions: { 'elk.port.side': 'EAST' },
+        },
+      ],
+    }
   })
 
   const edges: ElkExtendedEdge[] = sub.edges.map((e, i) => ({
     id: `e${i}`,
-    sources: [String(e.from)],
-    targets: [String(e.to)],
+    sources: [regIds.has(e.from) ? `${e.from}#out` : String(e.from)],
+    targets: [regIds.has(e.to) ? `${e.to}#in` : String(e.to)],
   }))
 
   return {
@@ -221,6 +260,12 @@ export function toElkGraph(
     children,
     edges,
   }
+}
+
+/** Node id from an elk endpoint that may be a `<id>#in`/`<id>#out` port. */
+function endpointNodeId(endpoint: string): number {
+  const hash = endpoint.indexOf('#')
+  return Number(hash === -1 ? endpoint : endpoint.slice(0, hash))
 }
 
 function assertRenderableSubgraph(sub: Subgraph): void {
@@ -265,8 +310,8 @@ function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       points.push(section.endPoint)
     }
     return {
-      from: Number(e.sources[0]),
-      to: Number(e.targets[0]),
+      from: endpointNodeId(e.sources[0]),
+      to: endpointNodeId(e.targets[0]),
       points,
       edge: src,
     }

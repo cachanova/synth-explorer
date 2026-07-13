@@ -93,6 +93,31 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
   })
 
+  it('routes flip-flop data edges to D and Q ports, not the box centre', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_MUX_', { seq: false }),
+        node(2, '$_DFF_P_', { seq: true }),
+        node(3, 'port', { kind: 'port' }),
+      ],
+      edges: [
+        { from: 1, to: 2, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [0] },
+        { from: 2, to: 3, from_port: 'Q', to_port: 'A', net_name: 'q', bits: [0] },
+      ],
+      truncated: false,
+    }
+    const graph = toElkGraph(sub)
+    const reg = graph.children?.find((c) => c.id === '2')
+    expect(reg?.ports?.map((p) => p.id)).toEqual(['2#in', '2#out'])
+    expect(reg?.layoutOptions?.['elk.portConstraints']).toBe('FIXED_POS')
+    // the D edge targets the register's in-port; the Q edge leaves its out-port
+    expect(graph.edges?.[0].targets).toEqual(['2#in'])
+    expect(graph.edges?.[1].sources).toEqual(['2#out'])
+    // a non-register node keeps plain node-id endpoints and no ports
+    expect(graph.children?.find((c) => c.id === '1')?.ports).toBeUndefined()
+    expect(graph.edges?.[0].sources).toEqual(['1'])
+  })
+
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
     const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
     expect(

@@ -2,6 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   fitViewportToContent,
   panViewport,
+  REG_DATA_IN_Y_FRAC,
+  REG_DATA_OUT_Y_FRAC,
   viewportTransformAttribute,
   zoomViewportAt,
   type LaidOutGraph,
@@ -318,6 +320,63 @@ function PinLabels({ pins, width, height }: { pins: NodePins; width: number; hei
   )
 }
 
+/** Short pin letter for a flip-flop control, per primitive: R/S/E/EN. */
+function controlPinLetter(role: ControlNetRef['role']): string | null {
+  switch (role) {
+    case 'reset':
+      return 'R'
+    case 'set':
+      return 'S'
+    case 'enable':
+      return 'EN'
+    default:
+      return null
+  }
+}
+
+// Every flip-flop / latch draws the same recognizable pins: D data-in (upper
+// west), the clock triangle (lower west), Q data-out (east), and a letter per
+// remaining control (R/S/EN) so an FDRE shows its enable while a plain DFF
+// shows its reset. The data edges are routed to the D and Q ports in layout.ts,
+// so the arrows land on these pins and never on the clock notch.
+function RegisterPins({
+  node,
+  width,
+  bodyHeight,
+}: {
+  node: GraphNode
+  width: number
+  bodyHeight: number
+}) {
+  const dInY = bodyHeight * REG_DATA_IN_Y_FRAC
+  const qY = bodyHeight * REG_DATA_OUT_Y_FRAC
+  const controlLetters = controlsFor(node)
+    .map((control) => controlPinLetter(control.role))
+    .filter((letter): letter is string => letter !== null)
+  return (
+    <g className="g-reg-pins" aria-hidden="true">
+      <line className="g-reg-pin-tick" x1={0} x2={7} y1={dInY} y2={dInY} />
+      <text className="g-reg-pin" x={9} y={dInY + 3}>
+        D
+      </text>
+      <line className="g-reg-pin-tick" x1={width - 7} x2={width} y1={qY} y2={qY} />
+      <text className="g-reg-pin" x={width - 9} y={qY + 3} textAnchor="end">
+        Q
+      </text>
+      {controlLetters.map((letter, index) => (
+        <text
+          className="g-reg-pin g-reg-ctrl-pin"
+          key={letter}
+          x={9}
+          y={bodyHeight * 0.5 + 3 + index * 11}
+        >
+          {letter}
+        </text>
+      ))}
+    </g>
+  )
+}
+
 function ControlLabels({
   node,
   width,
@@ -469,7 +528,14 @@ const SchematicNode = memo(function SchematicNode({
         height={bodyHeight}
         name={name}
       />
-      {showPins && (
+      {(kind === 'reg' || kind === 'latch') && (
+        <RegisterPins
+          node={node}
+          width={laidOutNode.width}
+          bodyHeight={bodyHeight}
+        />
+      )}
+      {showPins && kind !== 'reg' && kind !== 'latch' && (
         <PinLabels
           pins={pins}
           width={laidOutNode.width}
