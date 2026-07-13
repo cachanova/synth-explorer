@@ -56,6 +56,8 @@ export interface GraphNode extends NodeRef {
     src?: string;          // control-driver source attribution when available
     generated?: boolean; // clock/reset/set is not a direct input/buffer-chain source
   }[];                   // label-connected controls omitted from ordinary wiring
+  width?: number;        // grouped bus node: member-bit count (group_vectors only)
+  members?: number[];    // grouped bus node: the real per-bit ids it collapses
 }
 
 export interface GraphEdge {
@@ -270,6 +272,14 @@ most 10,000 merged edges. The same 10,000-item work budget bounds hidden
 infrastructure projection before rendering; `truncated` is true when a node,
 edge, or projection-work cap is reached.
 
+With `group_vectors=true`, bit-parallel register and logic vectors collapse
+into single nodes carrying `width` and `members` (see `GraphNode`), and the
+`max_nodes` budget counts group-or-singleton units rather than member bits, so a
+wide datapath fits in far fewer nodes. Bus edges between groups merge into one
+edge carrying every bit and the vector net name. Grouped nodes use synthetic ids
+`>= graph node count`; those ids are display-only and are rejected by `/nodes`
+and by `node=`/`nodes=` (which address real per-bit ids). Defaults to `false`.
+
 ## GET `/api/design/:id/fanout?limit=50`
 
 ```ts
@@ -289,7 +299,8 @@ edge, or projection-work cap is reached.
 
 Full design as a `Subgraph` (same caps and shapes; `truncated` set if the
 design exceeds `max_nodes`). Label-connected controls omit ordinary control
-wires. Used by the optional full-schematic view.
+wires. Used by the optional full-schematic view. Accepts `group_vectors=true`
+(same grouping semantics as `/cone`, budget counts units).
 
 ## GET `/api/design/:id/source-map`
 
@@ -329,7 +340,8 @@ sequential cells / ports / consts as usual) as a `Subgraph`. Selected cells
 have `is_root: true`. A selected register is allowed as the center so its
 upstream D and downstream Q neighborhoods are both visible without implying a
 combinational path through it. If selected roots drive control pins, control
-edges are included and `control` is true.
+edges are included and `control` is true. Accepts `group_vectors=true` (same
+grouping semantics as `/cone`); a group is a root when any member is a root.
 
 ```ts
 {

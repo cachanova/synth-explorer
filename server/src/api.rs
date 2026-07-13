@@ -3,6 +3,7 @@ use crate::analysis::{
     SourceLineIndex, SourceMapResponse, Stats, Subgraph,
 };
 use crate::graph::Graph;
+use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
 use crate::yosys::{
@@ -306,6 +307,7 @@ struct Design {
     graph: Graph,
     analysis: Analysis,
     source_index: SourceLineIndex,
+    grouping: GroupPartition,
 }
 
 impl Design {
@@ -316,6 +318,7 @@ impl Design {
             .saturating_add(self.graph.estimated_heap_bytes())
             .saturating_add(self.analysis.estimated_heap_bytes())
             .saturating_add(self.source_index.estimated_heap_bytes())
+            .saturating_add(self.grouping.estimated_heap_bytes())
     }
 }
 
@@ -624,11 +627,13 @@ async fn synthesize_uncached(
         log: output.log,
         memories_abstracted,
     };
+    let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
     let design = Arc::new(Design {
         response: response.clone(),
         graph,
         analysis,
         source_index,
+        grouping,
     });
     let cache_estimated_bytes = design_cache_weight(design_id, &design);
     let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
@@ -744,6 +749,7 @@ struct ConeQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 async fn cone(
@@ -763,27 +769,28 @@ async fn cone(
                 "dir must be fanin or fanout",
             )
         })?;
-    let roots = match &query.nodes {
-        Some(nodes) => {
-            let ids = parse_node_ids(nodes)?;
-            if ids.is_empty() {
-                return Err(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "nodes must contain at least one node id",
-                ));
+    let roots =
+        match &query.nodes {
+            Some(nodes) => {
+                let ids = parse_node_ids(nodes)?;
+                if ids.is_empty() {
+                    return Err(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "nodes must contain at least one node id",
+                    ));
+                }
+                if ids.len() > 200 {
+                    return Err(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "at most 200 nodes may be requested",
+                    ));
+                }
+                ids
             }
-            if ids.len() > 200 {
-                return Err(ApiError::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "at most 200 nodes may be requested",
-                ));
-            }
-            ids
-        }
-        None => vec![query.node.ok_or_else(|| {
-            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required")
-        })?],
-    };
+            None => vec![query.node.ok_or_else(|| {
+                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required")
+            })?],
+        };
     let subgraph = design
         .analysis
         .multi_root_cone(
@@ -797,6 +804,7 @@ async fn cone(
                 hide_const: query.hide_const.unwrap_or(true),
                 show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
+            grouping_for(&design, query.group_vectors),
         )
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown node"))?;
     Ok(Json(subgraph))
@@ -811,6 +819,7 @@ struct LineConeQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -856,12 +865,7 @@ async fn line_cone(
     }
     let roots = design
         .analysis
-        .source_nodes_range(
-            &design.graph,
-            &file,
-            start_line as usize,
-            end_line as usize,
-        )
+        .source_nodes_range(&design.graph, &file, start_line as usize, end_line as usize)
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
     let control = roots.iter().any(|root| {
         design.graph.outgoing[*root as usize]
@@ -882,6 +886,7 @@ async fn line_cone(
                 hide_const: query.hide_const.unwrap_or(true),
                 show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
+            grouping_for(&design, query.group_vectors),
         )
         .expect("source map contains only valid graph node ids");
     let mapping_incomplete = design
@@ -938,6 +943,7 @@ async fn fanout(
 struct NetlistQuery {
     max_nodes: Option<usize>,
     show_infrastructure: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 async fn netlist(
@@ -950,7 +956,15 @@ async fn netlist(
         &design.graph,
         query.max_nodes.unwrap_or(1500),
         query.show_infrastructure.unwrap_or(false),
+        grouping_for(&design, query.group_vectors),
     )))
+}
+
+/// The design's cached partition when the caller opted into grouping, else
+/// `None` (per-bit projection). Grouping defaults off at the API for contract
+/// compatibility; the UI opts in.
+fn grouping_for(design: &Design, group_vectors: Option<bool>) -> Option<&GroupPartition> {
+    group_vectors.unwrap_or(false).then_some(&design.grouping)
 }
 
 async fn source_map(
@@ -1155,6 +1169,7 @@ mod tests {
         let graph = Graph::from_netlist(&netlist, top, module).unwrap();
         let analysis = Analysis::new(&graph, vec!["test.sv".to_owned()]);
         let source_index = SourceLineIndex::from_module(module, vec!["test.sv".to_owned()]);
+        let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
         Arc::new(Design {
             response: SynthesizeResponse {
                 design_id: design_id.to_owned(),
@@ -1168,6 +1183,7 @@ mod tests {
             graph,
             analysis,
             source_index,
+            grouping,
         })
     }
 

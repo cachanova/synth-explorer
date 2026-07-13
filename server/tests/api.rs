@@ -288,7 +288,10 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
 async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register() {
     let source = std::fs::read_to_string("../examples/02_priority_encoder.sv").unwrap();
     // The always_ff block spans lines 59-67; line 61 assigns only `idx`.
-    assert_eq!(source.lines().nth(58).unwrap().trim(), "always_ff @(posedge clk) begin");
+    assert_eq!(
+        source.lines().nth(58).unwrap().trim(),
+        "always_ff @(posedge clk) begin"
+    );
     assert_eq!(source.lines().nth(60).unwrap().trim(), "idx   <= 5'd0;");
     let mut app = app(AppState::default());
     let response = app
@@ -567,7 +570,10 @@ endmodule
         (
             format!(
                 "/api/design/{design_id}/cone?nodes={}&dir=fanin",
-                (0..201).map(|id| id.to_string()).collect::<Vec<_>>().join(",")
+                (0..201)
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             ),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
@@ -579,6 +585,124 @@ endmodule
         let response = get_response(&mut app, &uri).await;
         assert_eq!(response.status(), expected, "unexpected status for {uri}");
     }
+}
+
+#[tokio::test]
+async fn group_vectors_collapses_buses_and_rejects_synthetic_ids() {
+    let source = r#"
+module bus_regs (
+    input  logic       clk,
+    input  logic [7:0] d,
+    output logic [7:0] q
+);
+  always_ff @(posedge clk) q <= d;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "bus_regs.sv", "content": source}],
+                        "top": "bus_regs",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let design_id = body_json(response).await["design_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Without grouping the eight register bits render as eight per-bit nodes,
+    // none carrying a width.
+    let plain = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=1500"),
+    )
+    .await;
+    assert!(
+        plain["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node.get("width").is_none()),
+        "width must be absent without group_vectors"
+    );
+
+    // With grouping the bus collapses to one width-8 register node.
+    let grouped = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=1500&group_vectors=true"),
+    )
+    .await;
+    let group_nodes: Vec<_> = grouped["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node.get("width").is_some())
+        .collect();
+    assert_eq!(group_nodes.len(), 1, "the register bus is one group node");
+    let group = group_nodes[0];
+    assert_eq!(group["width"].as_u64(), Some(8));
+    assert_eq!(group["members"].as_array().unwrap().len(), 8);
+    let synthetic_id = group["id"].as_u64().unwrap();
+    let members: Vec<u64> = group["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    assert!(
+        members.iter().all(|member| *member < synthetic_id),
+        "synthetic group ids sit above every real member id"
+    );
+
+    // group_vectors also applies to cone and line-cone envelopes.
+    let cone = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/cone?node={}&dir=fanin&group_vectors=true",
+            members[0]
+        ),
+    )
+    .await;
+    assert!(
+        cone["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"].as_u64() == Some(synthetic_id)
+                && node["is_root"].as_bool() == Some(true)),
+        "a member cone lands on its group node as root"
+    );
+
+    // Synthetic group ids are not addressable through the per-bit APIs.
+    let rejected = get_response(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node={synthetic_id}&dir=fanin"),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+    let nodes_rejected = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/nodes?ids={synthetic_id}"),
+    )
+    .await;
+    assert!(
+        nodes_rejected["nodes"].as_array().unwrap().is_empty(),
+        "/nodes ignores synthetic group ids"
+    );
 }
 
 #[tokio::test]

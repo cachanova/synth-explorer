@@ -3,7 +3,9 @@ use synth_explorer_server::graph::{
     Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell, is_sequential_type,
 };
 use synth_explorer_server::netlist::{parse_value, select_top};
-use synth_explorer_server::yosys::{MemoryHandling, SourceFile, SynthMode, SynthRequest, run_yosys};
+use synth_explorer_server::yosys::{
+    MemoryHandling, SourceFile, SynthMode, SynthRequest, run_yosys,
+};
 
 async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Analysis) {
     let path = std::path::Path::new("../examples").join(name);
@@ -180,6 +182,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                     hide_const: true,
                     show_infrastructure: false,
                 },
+                None,
             )
             .expect("valid output node should have a fanin cone");
         let cell_types: Vec<&str> = cone
@@ -214,6 +217,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                             show_infrastructure: false,
                         }
                     },
+                    None,
                 )
                 .unwrap();
             assert!(
@@ -386,7 +390,9 @@ endmodule
         analyze_source("hidden_regs.sv", source, "hidden_regs", SynthMode::Xilinx).await;
     assert!(
         graph.nodes.iter().any(|node| {
-            node.cell_type.as_deref().is_some_and(|t| t.starts_with("FD"))
+            node.cell_type
+                .as_deref()
+                .is_some_and(|t| t.starts_with("FD"))
                 && node.name.starts_with('$')
         }),
         "fixture must contain flip-flops whose yosys names are hidden"
@@ -409,7 +415,10 @@ endmodule
     }
     // The bypass data registers recover their identity from the D-net alias.
     assert!(
-        endpoints.registers.iter().any(|group| group.name == "wdata"),
+        endpoints
+            .registers
+            .iter()
+            .any(|group| group.name == "wdata"),
         "expected a D-net-alias-derived group, got {:?}",
         endpoints
             .registers
@@ -487,7 +496,7 @@ endmodule
             .any(|register| register.bits.iter().any(|bit| bit.node_id == ff.id))
     );
     let clock = analysis
-        .full_netlist(&graph, 100, false)
+        .full_netlist(&graph, 100, false, None)
         .nodes
         .into_iter()
         .find(|node| node.node.id == ff.id)
@@ -540,7 +549,7 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
                 .all(|edge| !edge.control)
         );
 
-        let schematic = analysis.full_netlist(&graph, 2000, false);
+        let schematic = analysis.full_netlist(&graph, 2000, false, None);
         let rendered_ff = schematic
             .nodes
             .iter()

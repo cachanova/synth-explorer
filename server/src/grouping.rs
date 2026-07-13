@@ -37,6 +37,29 @@ pub struct GroupPartition {
 const MAX_REFINEMENT_ROUNDS: usize = 8;
 
 impl GroupPartition {
+    /// Deterministic estimate of retained allocation for cache weighting.
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let mut bytes =
+            self.groups
+                .capacity()
+                .saturating_mul(std::mem::size_of::<Group>())
+                .saturating_add(self.group_of.capacity().saturating_mul(
+                    std::mem::size_of::<NodeId>() + std::mem::size_of::<GroupId>(),
+                ));
+        for group in &self.groups {
+            bytes = bytes
+                .saturating_add(group.label.capacity())
+                .saturating_add(group.cell_type.capacity())
+                .saturating_add(
+                    group
+                        .members
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<NodeId>()),
+                );
+        }
+        bytes
+    }
+
     /// Near-linear: bounded partition refinement (max 8 rounds) + 1:1 check.
     /// Register groups seed from the endpoint analysis; each refinement round
     /// costs O(edges) and hashes full signatures to class ids, so no all-pairs
@@ -68,8 +91,13 @@ impl GroupPartition {
         candidates.sort_by_key(|members| members[0]);
 
         for members in candidates {
-            if !bit_correspondence_holds(graph, &partition.group_of, &classes, &mut interner, &members)
-            {
+            if !bit_correspondence_holds(
+                graph,
+                &partition.group_of,
+                &classes,
+                &mut interner,
+                &members,
+            ) {
                 continue;
             }
             let group_id = partition.groups.len() as GroupId;
@@ -283,7 +311,10 @@ fn bit_correspondence_holds(
                 if class == own {
                     return false;
                 }
-                local.entry((is_incoming, class)).or_default().insert(neighbor);
+                local
+                    .entry((is_incoming, class))
+                    .or_default()
+                    .insert(neighbor);
             }
         }
         for (key, neighbors) in local {
@@ -337,7 +368,10 @@ fn comb_label(graph: &Graph, members: &[NodeId], cell_type: &str) -> String {
             }
             let stem = strip_bit_suffix(name);
             members_by_stem.entry(stem).or_default().insert(member);
-            bits_by_stem.entry(stem).or_default().insert(bit_index(name));
+            bits_by_stem
+                .entry(stem)
+                .or_default()
+                .insert(bit_index(name));
         }
     }
     let mut dominant: Option<(&str, usize)> = None;
@@ -449,7 +483,14 @@ mod tests {
         }
     }
 
-    fn link(graph: &mut Graph, from: NodeId, to: NodeId, from_port: &str, to_port: &str, net: &str) {
+    fn link(
+        graph: &mut Graph,
+        from: NodeId,
+        to: NodeId,
+        from_port: &str,
+        to_port: &str,
+        net: &str,
+    ) {
         let idx = graph.edges.len();
         graph.edges.push(Edge {
             from,
@@ -527,7 +568,13 @@ mod tests {
             nodes.push(port_bit(i as NodeId, "a", i, width, PortDirection::Input));
         }
         for i in 0..width {
-            nodes.push(port_bit((width + i) as NodeId, "b", i, width, PortDirection::Input));
+            nodes.push(port_bit(
+                (width + i) as NodeId,
+                "b",
+                i,
+                width,
+                PortDirection::Input,
+            ));
         }
         nodes.push(port_bit(16, "s", 0, 1, PortDirection::Input));
         for i in 0..width {
@@ -541,7 +588,14 @@ mod tests {
             link(&mut graph, i, 17 + i, "a", "A", &format!("a[{i}]"));
             link(&mut graph, 8 + i, 17 + i, "b", "B", &format!("b[{i}]"));
             link(&mut graph, 16, 17 + i, "s", "S", "s");
-            link(&mut graph, 17 + i, 25 + i, "Y", "D", &format!("next_q[{i}]"));
+            link(
+                &mut graph,
+                17 + i,
+                25 + i,
+                "Y",
+                "D",
+                &format!("next_q[{i}]"),
+            );
         }
         let bits: Vec<(usize, NodeId)> = (0..width).map(|i| (i, (25 + i) as NodeId)).collect();
         (graph, vec![register_group("q", &bits)])
@@ -596,10 +650,22 @@ mod tests {
             nodes.push(comb_cell((8 + i) as NodeId, "$_AND_"));
         }
         for i in 0..4 {
-            nodes.push(port_bit((16 + i) as NodeId, "x", i, 4, PortDirection::Output));
+            nodes.push(port_bit(
+                (16 + i) as NodeId,
+                "x",
+                i,
+                4,
+                PortDirection::Output,
+            ));
         }
         for i in 0..4 {
-            nodes.push(port_bit((20 + i) as NodeId, "y", i, 4, PortDirection::Output));
+            nodes.push(port_bit(
+                (20 + i) as NodeId,
+                "y",
+                i,
+                4,
+                PortDirection::Output,
+            ));
         }
         let mut graph = graph_from_nodes("divergent", nodes);
         for i in 0..8u32 {
