@@ -4,8 +4,11 @@ import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
   fitViewportToContent,
   layoutSubgraph,
+  NETWORK_SIMPLEX_EDGE_LIMIT,
+  NETWORK_SIMPLEX_NODE_LIMIT,
   nodeDimensions,
   panViewport,
+  placementForLayout,
   toElkGraph,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -116,6 +119,38 @@ describe('schematic layout sizing', () => {
     // a non-register node keeps plain node-id endpoints and no ports
     expect(graph.children?.find((c) => c.id === '1')?.ports).toBeUndefined()
     expect(graph.edges?.[0].sources).toEqual(['1'])
+  })
+
+  it('picks robust placement for large or dense graphs, tight for small', () => {
+    const small: Subgraph = {
+      nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
+      edges: [],
+      truncated: false,
+    }
+    expect(placementForLayout(small)).toBe('NETWORK_SIMPLEX')
+
+    const manyNodes: Subgraph = {
+      nodes: Array.from({ length: NETWORK_SIMPLEX_NODE_LIMIT + 1 }, (_, i) =>
+        node(i, '$_AND_'),
+      ),
+      edges: [],
+      truncated: false,
+    }
+    expect(placementForLayout(manyNodes)).toBe('BRANDES_KOEPF')
+
+    const denseEdges: Subgraph = {
+      nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
+      edges: Array.from({ length: NETWORK_SIMPLEX_EDGE_LIMIT + 1 }, () => ({
+        from: 1,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'A',
+        net_name: 'n',
+        bits: [1],
+      })),
+      truncated: false,
+    }
+    expect(placementForLayout(denseEdges)).toBe('BRANDES_KOEPF')
   })
 
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {

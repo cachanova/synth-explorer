@@ -598,3 +598,52 @@ async fn mux_select_is_a_data_dependency_not_a_set_reset_control() {
     assert!(!select_edges.is_empty());
     assert!(select_edges.iter().all(|edge| !edge.control));
 }
+
+#[tokio::test]
+async fn abstract_memory_handling_keeps_mem_cells_unmapped_in_generic_modes() {
+    // The abstract retry path runs the generic pipeline while leaving memories
+    // as `$mem_v2` cells. Exercised directly (not through an OOM) so it is
+    // deterministic across Yosys versions and sandbox limits.
+    let source = r#"
+module mem_top (
+    input  wire        clk,
+    input  wire        we,
+    input  wire [9:0]  waddr,
+    input  wire [31:0] wdata,
+    input  wire [9:0]  raddr,
+    output reg  [31:0] rdata
+);
+  reg [31:0] mem [0:1023];
+  always @(posedge clk) begin
+    if (we) mem[waddr] <= wdata;
+    rdata <= mem[raddr];
+  end
+endmodule
+"#;
+    let request = SynthRequest {
+        files: vec![SourceFile {
+            name: "mem_top.v".to_owned(),
+            content: source.to_owned(),
+        }],
+        top: Some("mem_top".to_owned()),
+        mode: SynthMode::Gates,
+        extra_args: None,
+    }
+    .validate()
+    .unwrap();
+
+    let abstract_out = run_yosys(&request, MemoryHandling::Abstract).await.unwrap();
+    let netlist = parse_value(abstract_out.json).unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    assert!(
+        graph
+            .nodes
+            .iter()
+            .any(|node| node
+                .cell_type
+                .as_deref()
+                .is_some_and(|cell_type| cell_type.starts_with("$mem"))),
+        "abstract handling must retain a $mem cell in generic mode"
+    );
+}

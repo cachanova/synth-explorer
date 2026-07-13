@@ -402,18 +402,24 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
 // placement is chosen upfront so a large schematic never hangs on a spinner;
 // small graphs (the common case) keep the tighter alignment. The catch below is
 // a backstop for anything under the threshold that still fails fast.
-const NETWORK_SIMPLEX_NODE_LIMIT = 120
-const NETWORK_SIMPLEX_EDGE_LIMIT = 240
+export const NETWORK_SIMPLEX_NODE_LIMIT = 120
+export const NETWORK_SIMPLEX_EDGE_LIMIT = 240
+
+/** The safe upfront node placement for a subgraph's size. */
+export function placementForLayout(sub: Subgraph): NodePlacement {
+  return sub.nodes.length > NETWORK_SIMPLEX_NODE_LIMIT ||
+    sub.edges.length > NETWORK_SIMPLEX_EDGE_LIMIT
+    ? 'BRANDES_KOEPF'
+    : 'NETWORK_SIMPLEX'
+}
 
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
 ): Promise<LaidOutGraph> {
-  const robust =
-    sub.nodes.length > NETWORK_SIMPLEX_NODE_LIMIT ||
-    sub.edges.length > NETWORK_SIMPLEX_EDGE_LIMIT
+  const placement = placementForLayout(sub)
   let result: ElkNode
-  if (robust) {
+  if (placement === 'BRANDES_KOEPF') {
     result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
   } else {
     try {

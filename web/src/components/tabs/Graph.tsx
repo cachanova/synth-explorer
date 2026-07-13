@@ -41,7 +41,10 @@ export function Graph({ active }: { active: boolean }) {
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
 
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
+  // `focus` is intentionally absent: it is a client-side view filter applied in
+  // the layout effect, so it must not force a server refetch. Every other option
+  // here changes what the server returns.
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}`
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
