@@ -3,7 +3,7 @@ use synth_explorer_server::graph::{
     Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell, is_sequential_type,
 };
 use synth_explorer_server::netlist::{parse_value, select_top};
-use synth_explorer_server::yosys::{SourceFile, SynthMode, SynthRequest, run_yosys};
+use synth_explorer_server::yosys::{MemoryHandling, SourceFile, SynthMode, SynthRequest, run_yosys};
 
 async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Analysis) {
     let path = std::path::Path::new("../examples").join(name);
@@ -20,7 +20,7 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
     }
     .validate()
     .unwrap();
-    let output = run_yosys(&request).await.unwrap();
+    let output = run_yosys(&request, MemoryHandling::Map).await.unwrap();
     let netlist = parse_value(output.json).unwrap();
     let (resolved_top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, resolved_top, module).unwrap();
@@ -40,7 +40,7 @@ async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) ->
     }
     .validate()
     .unwrap();
-    let output = run_yosys(&request).await.unwrap();
+    let output = run_yosys(&request, MemoryHandling::Map).await.unwrap();
     let netlist = parse_value(output.json).unwrap();
     let (resolved_top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, resolved_top, module).unwrap();

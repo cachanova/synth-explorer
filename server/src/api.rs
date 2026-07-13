@@ -5,7 +5,9 @@ use crate::analysis::{
 use crate::graph::Graph;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
-use crate::yosys::{ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
+use crate::yosys::{
+    MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys,
+};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
@@ -325,6 +327,9 @@ pub struct SynthesizeResponse {
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub log: String,
+    /// True when generic synthesis hit the sandbox memory limit and succeeded
+    /// on the abstract-memory retry, leaving `$mem_v2` cells unmapped.
+    pub memories_abstracted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -533,7 +538,7 @@ async fn synthesize_uncached(
         return Ok(design);
     }
     let started = Instant::now();
-    let output = run_yosys(validated).await.map_err(|err| {
+    let synthesis_failed = |err: &YosysError| {
         tracing::warn!(
             design_id,
             mode,
@@ -541,8 +546,27 @@ async fn synthesize_uncached(
             error = %err,
             "synthesis_failed"
         );
-        map_yosys_error(err)
-    })?;
+    };
+    let (output, memories_abstracted) = match run_yosys(validated, MemoryHandling::Map).await {
+        Ok(output) => (output, false),
+        Err(YosysError::ResourceLimit {
+            kind: ResourceKind::Memory,
+            ..
+        }) if validated.mode.is_generic() => {
+            tracing::info!(design_id, mode, "synthesis_memory_retry");
+            let output = run_yosys(validated, MemoryHandling::Abstract)
+                .await
+                .map_err(|err| {
+                    synthesis_failed(&err);
+                    map_yosys_error(err)
+                })?;
+            (output, true)
+        }
+        Err(err) => {
+            synthesis_failed(&err);
+            return Err(map_yosys_error(err));
+        }
+    };
     let parsed = parse_value(output.json).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -596,6 +620,7 @@ async fn synthesize_uncached(
         stats: analysis.stats(),
         warnings: analysis.warnings(),
         log: output.log,
+        memories_abstracted,
     };
     let design = Arc::new(Design {
         response: response.clone(),
@@ -1112,6 +1137,7 @@ mod tests {
                 stats: analysis.stats(),
                 warnings: analysis.warnings(),
                 log: String::new(),
+                memories_abstracted: false,
             },
             graph,
             analysis,

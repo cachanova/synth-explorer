@@ -125,8 +125,19 @@ Response `200`:
   };
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
+  memories_abstracted: boolean; // true when a generic mode hit the sandbox
+                           // memory limit and succeeded on a retry that keeps
+                           // inferred memories as $mem_v2 cells instead of
+                           // flattening them to gates
 }
 ```
+
+Generic modes (`gates`, `lut4`, `lut6`) first synthesize exactly as before.
+When that attempt is killed by the sandbox memory limit, the server retries
+once with a script that stops `synth` before `memory_map` and replays the fine
+stage without it, so large inferred memories survive as abstract `$mem_v2`
+cells (rendered as MEM nodes, treated as sequential boundaries). The response
+then carries `memories_abstracted: true`. RTL and vendor modes never retry.
 
 At most three distinct uncached `design_id` leaders are admitted: one complete
 Yosys/parse/analysis/cache pipeline runs while two wait. Concurrent requests for
@@ -145,6 +156,16 @@ than an id that subsequent analysis routes could not resolve.
 `400` on Yosys failure (body includes the Yosys `log`), `422` on validation
 failure, `503` when three distinct leaders are active or waiting, `504` on
 timeout, and `507` when one design cannot be retained in the cache.
+
+Sandbox resource kills return `400` with a kind-specific `error` instead of
+the generic "yosys failed":
+
+- memory: `synthesis exceeded the sandbox memory limit — large memories cannot
+  be flattened to gates; try RTL or a vendor mode, or reduce memory sizes`
+  (only after the abstract-memory retry also failed, for generic modes)
+- CPU: `synthesis exceeded the sandbox CPU limit — simplify the design or use
+  a lighter mode`
+- output size: `synthesis output exceeded the sandbox size limit`
 
 ## GET `/api/design/:id/endpoints`
 

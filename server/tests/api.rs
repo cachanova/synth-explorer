@@ -859,6 +859,78 @@ async fn high_fanout_memory_registers_are_grouped_by_array_element() {
 }
 
 #[tokio::test]
+async fn gates_mode_keeps_oversized_memories_abstract() {
+    // Small as text, but 8 write ports on a 4096x48 memory explode past the
+    // 2 GiB sandbox cap when memory_map flattens them to gates.
+    let source = r#"
+module big_mem (
+    input  wire        clk,
+    input  wire        we,
+    input  wire [11:0] waddr,
+    input  wire [47:0] wdata,
+    input  wire [11:0] raddr,
+    output reg  [47:0] rdata
+);
+  reg [47:0] mem [0:4095];
+  genvar i;
+  generate
+    for (i = 0; i < 8; i = i + 1) begin : g
+      always @(posedge clk) if (we) mem[waddr ^ i] <= wdata;
+    end
+  endgenerate
+  always @(posedge clk) rdata <= mem[raddr];
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let synth_body = json!({
+        "files": [{"name": "big_mem.v", "content": source}],
+        "top": "big_mem",
+        "mode": "gates"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&synth_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    assert_eq!(synth["memories_abstracted"], true);
+    assert!(
+        synth["stats"]["num_cells"]
+            .as_u64()
+            .is_some_and(|count| count >= 1)
+    );
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    // 122 port bits precede the cells in netlist order, so use a cap that
+    // covers the whole design.
+    let netlist = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=400"),
+    )
+    .await;
+    assert!(
+        netlist["nodes"].as_array().unwrap().iter().any(|node| {
+            node["cell_type"]
+                .as_str()
+                .is_some_and(|cell_type| cell_type.starts_with("$mem"))
+        }),
+        "abstract retry should leave a $mem cell in the netlist"
+    );
+
+    // The cached design reproduces the flag on reload.
+    let design = get_json(&mut app, &format!("/api/design/{design_id}")).await;
+    assert_eq!(design["memories_abstracted"], true);
+}
+
+#[tokio::test]
 async fn blackbox_input_paths_contribute_to_stats_max_depth() {
     let source = std::fs::read_to_string("../examples/07_blackbox.sv").unwrap();
     let mut app = app(AppState::default());

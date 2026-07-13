@@ -112,6 +112,9 @@ export interface SynthesizeResponse {
   stats: Stats
   warnings: string[]
   log: string // yosys log (tail, capped)
+  // true when a generic mode hit the sandbox memory limit and succeeded on a
+  // retry that keeps inferred memories abstract ($mem_v2) instead of gates
+  memories_abstracted?: boolean
 }
 
 // --- GET /api/design/:id/endpoints ---
