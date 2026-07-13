@@ -58,5 +58,6 @@ rollback, monitoring, and recovery instructions.
   cone viewer.
 - `examples/` — small validation designs (adder chains, priority encoders,
   high-fanout enables, FSMs, blackboxes) used by tests and the examples menu.
-- `PLAN.md` — full design rationale and architecture.
-- `AGENTS.md` / `FABLE.md` — operating policy for coding agents in this repo.
+- `docs/` — [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (design rationale and
+  stack decisions), [`API.md`](docs/API.md) (the server/client contract), and
+  [`OPERATIONS.md`](docs/OPERATIONS.md) (production/deployment).

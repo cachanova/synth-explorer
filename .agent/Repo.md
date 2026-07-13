@@ -16,7 +16,7 @@ interactive circuit explorer, not a full-schematic renderer.
   and API.
 - `web/`: React, TypeScript, Vite, and the elkjs cone viewer.
 - `examples/`: validation designs used by tests and the UI.
-- `PLAN.md`: architecture and design rationale.
+- `docs/ARCHITECTURE.md`: architecture and design rationale.
 - `docs/API.md`: server and client contract. Treat changes as cross-cutting.
 
 Analysis is structural and logical, not post-place-and-route timing. Keep that

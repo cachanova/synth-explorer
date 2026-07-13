@@ -1,4 +1,4 @@
-# Synth Explorer — Design & Implementation Plan
+# Synth Explorer — Architecture
 
 Compiler Explorer for RTL. Paste Verilog/SystemVerilog, synthesize with Yosys
 (generic gates, LUT4/LUT6, or FPGA target flows), then **explore the synthesized
@@ -157,15 +157,6 @@ register shows only its driver cone; blackbox breaks paths at its boundary.
   graph transforms).
 - **E2E:** drive Chrome against the built stack — synthesize each example, walk
   endpoints → cone → paths → fanout → source probe → compare.
-
-## Milestones
-
-1. Workspace + repo + docs + scaffold + contracts (lead).
-2. Backend implementation (Codex): runner → parser → graph → analyses → API,
-   tests green.
-3. Frontend implementation (Opus): full UI against the contract, build green.
-4. Integration + Chrome E2E + fixes (lead coordinates, delegates fixes).
-5. Review agents on the diff, cleanup, push to `cachanova/synth-explorer`.
 
 ## Future (explicitly out of scope now)
 
