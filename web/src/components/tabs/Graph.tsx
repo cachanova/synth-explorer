@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
+import { filterSubgraph, focusKeepSet } from '../../lib/filterSubgraph'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
@@ -40,7 +41,7 @@ export function Graph({ active }: { active: boolean }) {
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
 
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}`
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
@@ -149,13 +150,16 @@ export function Graph({ active }: { active: boolean }) {
     let cancelled = false
     const controller = new AbortController()
     setLoading(true)
-    layoutSubgraph(result.graph, controller.signal)
+    const keep =
+      graphOptions.focus && coneReq ? focusKeepSet(coneReq, result.graph) : null
+    const toLayout = keep ? filterSubgraph(result.graph, keep) : result.graph
+    layoutSubgraph(toLayout, controller.signal)
       .then((g) => {
         if (cancelled) return
         setDisplayedGraph({
           designId: result.designId,
           requestKey: result.requestKey,
-          subgraph: result.graph,
+          subgraph: toLayout,
           graph: g,
         })
         laidOutSubgraph.current = result.graph
@@ -172,7 +176,7 @@ export function Graph({ active }: { active: boolean }) {
       cancelled = true
       controller.abort()
     }
-  }, [active, fetchedSubgraph])
+  }, [active, fetchedSubgraph, graphOptions.focus, coneReq])
 
   const sub = displayedGraph?.subgraph ?? null
   const laid = displayedGraph?.graph ?? null
@@ -325,6 +329,11 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
+  // Mirrors focusKeepSet: source probes always have roots to focus on;
+  // cone/netlist views focus only when something is highlighted.
+  const focusAvailable = Boolean(
+    coneReq && (coneReq.kind === 'source' || coneReq.highlight.length > 0),
+  )
   const setOpt = store.setGraphOptions
 
   const reissue = (dir: 'fanin' | 'fanout') => {
@@ -426,6 +435,23 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           }
         />
         infrastructure
+      </label>
+
+      <label
+        className="toggle"
+        title={
+          focusAvailable
+            ? 'Render only the selection-relevant components'
+            : 'Focus applies to source selections and highlighted paths'
+        }
+      >
+        <input
+          type="checkbox"
+          checked={graphOptions.focus}
+          disabled={!focusAvailable}
+          onChange={(event) => setOpt({ focus: event.target.checked })}
+        />
+        focus
       </label>
 
       <span className="sep" />
