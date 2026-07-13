@@ -56,7 +56,7 @@ export function Fanout() {
             <tr
               key={i}
               className="clickable"
-              title="Open fanout cone in Graph"
+              title="Open fanout cone in Schematic"
               onClick={() =>
                 store.openCone({
                   node: d.driver.id,

@@ -55,7 +55,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
   expect((await responsePromise).ok()).toBe(true)
 
-  await page.getByRole('button', { name: 'Graph', exact: true }).click()
+  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
   await page.getByRole('button', { name: 'Full netlist', exact: true }).click()
 
   const stage = page.locator('.graph-stage')
@@ -160,7 +160,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
     width: browserViewport.width + inactiveResize.width,
     height: browserViewport.height + inactiveResize.height,
   })
-  await page.getByRole('button', { name: 'Graph', exact: true }).click()
+  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
   await expect(svg).toBeVisible()
   await expect
     .poll(async () => {

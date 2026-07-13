@@ -257,7 +257,7 @@ export function Graph({ active }: { active: boolean }) {
                   ? ''
                   : sub && sub.nodes.length === 0
                     ? 'Empty cone — nothing drives/loads this node within the limits.'
-                    : 'No graph.'}
+                    : 'No schematic.'}
             </div>
           </div>
         )}
@@ -273,14 +273,14 @@ export function Graph({ active }: { active: boolean }) {
             <span className="msg">source changed — synthesize to refresh mapping</span>
           )}
           {analysisState === 'refreshing' && (
-            <span className="msg">refreshing analysis… showing the last valid graph</span>
+            <span className="msg">refreshing analysis… showing the last valid schematic</span>
           )}
           {analysisState === 'error' && (
             <span className="msg err">analysis is stale; the last synthesis failed</span>
           )}
           {displayedDesignMismatch && (
             <span className="msg">
-              showing a graph snapshot from the previous synthesis — interactions are disabled
+              showing a schematic snapshot from the previous synthesis — interactions are disabled
             </span>
           )}
           {requestDesignMismatch && !displayedDesignMismatch && (
@@ -303,7 +303,7 @@ export function Graph({ active }: { active: boolean }) {
           {sub?.truncated && (
             <span className="msg">
               truncated — {sub.nodes.length} nodes and {sub.edges.length} edges shown;
-              analysis limits omitted additional graph content
+              analysis limits omitted additional schematic content
             </span>
           )}
           {sub && !sub.truncated && (
