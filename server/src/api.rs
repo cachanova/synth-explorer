@@ -737,6 +737,7 @@ async fn paths(
 #[derive(Debug, Deserialize)]
 struct ConeQuery {
     node: Option<u32>,
+    nodes: Option<String>,
     dir: Option<String>,
     max_depth: Option<u32>,
     max_nodes: Option<usize>,
@@ -762,14 +763,32 @@ async fn cone(
                 "dir must be fanin or fanout",
             )
         })?;
-    let node = query
-        .node
-        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required"))?;
+    let roots = match &query.nodes {
+        Some(nodes) => {
+            let ids = parse_node_ids(nodes)?;
+            if ids.is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "nodes must contain at least one node id",
+                ));
+            }
+            if ids.len() > 200 {
+                return Err(ApiError::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "at most 200 nodes may be requested",
+                ));
+            }
+            ids
+        }
+        None => vec![query.node.ok_or_else(|| {
+            ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required")
+        })?],
+    };
     let subgraph = design
         .analysis
-        .cone(
+        .multi_root_cone(
             &design.graph,
-            node,
+            &roots,
             ConeOptions {
                 dir,
                 max_depth: query.max_depth.unwrap_or(64),

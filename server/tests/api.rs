@@ -458,6 +458,130 @@ endmodule
 }
 
 #[tokio::test]
+async fn cone_accepts_multiple_roots_under_one_shared_budget() {
+    let source = r#"
+module two_regs (
+    input  logic clk,
+    input  logic a,
+    input  logic b,
+    output logic q0,
+    output logic q1
+);
+  logic r0;
+  logic r1;
+  always_ff @(posedge clk) begin
+    r0 <= a & b;
+    r1 <= a ^ b;
+  end
+  assign q0 = r0 & a;
+  assign q1 = r1 | b;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "two_regs.sv", "content": source}],
+                        "top": "two_regs",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let register_id = |name: &str| -> u64 {
+        endpoints["registers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"] == name)
+            .unwrap_or_else(|| panic!("expected register group {name}"))["bits"][0]["node_id"]
+            .as_u64()
+            .unwrap()
+    };
+    let r0 = register_id("r0");
+    let r1 = register_id("r1");
+    assert_ne!(r0, r1);
+
+    // `nodes=` overrides `node` and unions both fanin cones in one response.
+    let cone = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node=999999&nodes={r0},{r1},{r0}&dir=fanin"),
+    )
+    .await;
+    let nodes = cone["nodes"].as_array().unwrap();
+    for root in [r0, r1] {
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node["id"].as_u64() == Some(root)
+                    && node["is_root"].as_bool() == Some(true)),
+            "expected root {root} in multi-root cone"
+        );
+        assert!(
+            cone["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["to"].as_u64() == Some(root)),
+            "expected fanin edges into root {root}"
+        );
+    }
+    let ids: BTreeSet<u64> = nodes
+        .iter()
+        .map(|node| node["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), nodes.len(), "duplicate roots must be deduped");
+
+    // Both cones share a single node cap.
+    let capped = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?nodes={r0},{r1}&dir=fanin&max_nodes=2"),
+    )
+    .await;
+    assert!(capped["nodes"].as_array().unwrap().len() <= 2);
+    assert_eq!(capped["truncated"], true);
+
+    for (uri, expected) in [
+        (
+            format!("/api/design/{design_id}/cone?nodes=abc&dir=fanin"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/design/{design_id}/cone?nodes=&dir=fanin"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!(
+                "/api/design/{design_id}/cone?nodes={}&dir=fanin",
+                (0..201).map(|id| id.to_string()).collect::<Vec<_>>().join(",")
+            ),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/design/{design_id}/cone?nodes=999999&dir=fanin"),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let response = get_response(&mut app, &uri).await;
+        assert_eq!(response.status(), expected, "unexpected status for {uri}");
+    }
+}
+
+#[tokio::test]
 async fn line_cone_distinguishes_optimized_logic_from_non_synthesizable_lines() {
     let source = "module optimized(\n  input logic a,\n  input logic b,\n  output logic y\n);\n  wire unused = a & b;\n  assign y = a;\nendmodule\n";
     let mut app = app(AppState::default());

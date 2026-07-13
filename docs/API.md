@@ -242,6 +242,13 @@ budget before additional bit variants.
 
 ## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
 
+Also accepts `nodes=<id,id,...>` for a multi-root cone: the union of every
+root's cone traversed under the same single node/edge budget, with each root
+marked `is_root`. When `nodes` is present it overrides `node`; duplicate ids
+are deduplicated, at most 200 ids may be requested (`422` above that, `422`
+for an empty or non-numeric list), and an unknown id yields `404`. Endpoint
+rows use this to open one fanin graph covering every bit of a register group.
+
 Returns a `Subgraph` for rendering. Traversal stops at sequential cells, port
 bits, and consts (they appear as boundary nodes). With `hide_control`, ordinary
 clock/reset/set nets and high-fanout enables are represented by `controls`
