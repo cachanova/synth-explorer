@@ -84,7 +84,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       - name: Test deployment state transitions
-        run: ./ops/tests/deploy-test.sh
+        run: ./deploy/ops/tests/deploy-test.sh
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -97,6 +97,7 @@ jobs:
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
+          file: deploy/Dockerfile
           platforms: linux/amd64
           load: true
           push: false
@@ -114,7 +115,7 @@ jobs:
             "${IMAGE_NAME}:${DEPLOY_SHA}"
 
       - name: Smoke-test production image
-        run: ./ops/smoke-test.sh http://127.0.0.1:8787 "${DEPLOY_SHA}"
+        run: ./deploy/ops/smoke-test.sh http://127.0.0.1:8787 "${DEPLOY_SHA}"
 
       - name: Install browser smoke dependencies
         working-directory: web
@@ -212,9 +213,12 @@ jobs:
         run: |
           : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
           : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
+          # Bundle the deploy files with flat archive paths (compose.prod.yml,
+          # Caddyfile, ops/...) so the on-host release layout is unchanged even
+          # though they live under deploy/ in the repo.
           tar -czf "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
-            compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
-            examples/05_shared_logic.sv
+            -C deploy compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
+            -C "${GITHUB_WORKSPACE}" examples/05_shared_logic.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
@@ -271,7 +275,7 @@ jobs:
             'curl --noproxy "*" --ipv6 --fail-with-body --silent --show-error --connect-timeout 5 --max-time 30 https://synthexplorer.dev/healthz')"
           jq --exit-status --arg commit "${DEPLOY_SHA}" \
             '.status == "ok" and .commit == $commit' <<<"${response}" >/dev/null
-          ./ops/edge-smoke.sh "${DEPLOY_SHA}"
+          ./deploy/ops/edge-smoke.sh "${DEPLOY_SHA}"
 
       - name: Roll back failed external verification
         if: ${{ failure() && steps.external_verify.outcome == 'failure' }}

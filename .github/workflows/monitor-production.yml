@@ -54,4 +54,4 @@ jobs:
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Run synthesis smoke test
-        run: ./ops/smoke-test.sh "$PRODUCTION_URL" "${{ steps.health.outputs.commit }}"
+        run: ./deploy/ops/smoke-test.sh "$PRODUCTION_URL" "${{ steps.health.outputs.commit }}"
