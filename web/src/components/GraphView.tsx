@@ -526,7 +526,9 @@ const SchematicNode = memo(function SchematicNode({
         kind={kind}
         width={laidOutNode.width}
         height={bodyHeight}
-        name={name}
+        // A flip-flop's net name repeats its Q pin and downstream wire, so it
+        // is dropped from the box body; the identity stays in the node card.
+        name={kind === 'reg' || kind === 'latch' ? null : name}
       />
       {(kind === 'reg' || kind === 'latch') && (
         <RegisterPins
