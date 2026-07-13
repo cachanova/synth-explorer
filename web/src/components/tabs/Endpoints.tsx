@@ -16,6 +16,7 @@ import type {
   RegisterEndpoint,
 } from '../../types'
 import { SrcLink } from '../SrcLink'
+import { StaleResultsChip } from '../StaleResultsChip'
 
 type EndpointFilter = 'all' | 'register' | 'registered_output' | 'output'
 
@@ -73,6 +74,7 @@ export function Endpoints() {
 
   return (
     <div>
+      <StaleResultsChip state={store.analysisState} />
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
         {STRUCTURAL_DEPTH_CAVEAT} Registered top-level outputs are aliases of their
         driving register and are counted once.

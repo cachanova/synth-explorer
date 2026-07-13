@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { getFanout } from '../../api'
 import { fuzzyFilter } from '../../lib/fuzzy'
+import { naturalCompare } from '../../lib/naturalCompare'
 import { fanoutDriverLabel, shortNetName } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
 import { useStore } from '../../store'
 import { SrcLink } from '../SrcLink'
+import { StaleResultsChip } from '../StaleResultsChip'
 
 export function Fanout() {
   const store = useStore()
@@ -12,15 +14,23 @@ export function Fanout() {
   const { data, loading, error } = useDesignData(id, (i) => getFanout(i, 50))
   const [filter, setFilter] = useState('')
 
-  const drivers = useMemo(
-    () =>
-      fuzzyFilter(
-        data?.drivers ?? [],
-        filter,
-        (d) => `${d.driver.name} ${d.net_name} ${d.port}`,
-      ),
-    [data, filter],
-  )
+  const drivers = useMemo(() => {
+    // Equal-fanout rows sort by their displayed label in natural order
+    // ("d_in[2]" before "d_in[10]").
+    const sorted = [...(data?.drivers ?? [])].sort(
+      (a, b) =>
+        b.fanout - a.fanout ||
+        naturalCompare(
+          fanoutDriverLabel(a.driver, a.net_name),
+          fanoutDriverLabel(b.driver, b.net_name),
+        ),
+    )
+    return fuzzyFilter(
+      sorted,
+      filter,
+      (d) => `${d.driver.name} ${d.net_name} ${d.port}`,
+    )
+  }, [data, filter])
 
   if (!store.design) return <div className="empty-state">No design yet.</div>
   if (loading && !data) return <div className="empty-state">Loading fanout…</div>
@@ -30,6 +40,7 @@ export function Fanout() {
 
   return (
     <div>
+      <StaleResultsChip state={store.analysisState} />
       <input
         className="filter-input"
         placeholder="Filter drivers / nets…"
@@ -56,7 +67,7 @@ export function Fanout() {
             <tr
               key={i}
               className="clickable"
-              title="Open fanout cone in Graph"
+              title="Open fanout cone in Schematic"
               onClick={() =>
                 store.openCone({
                   node: d.driver.id,

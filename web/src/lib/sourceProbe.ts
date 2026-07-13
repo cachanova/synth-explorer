@@ -31,7 +31,7 @@ export function sourceProbePresentation(
         highlightRoots: true,
         retainsPreviousGraph: false,
         message:
-          'Source mapping is incomplete because provenance limits were reached; the graph shows only retained associations.',
+          'Source mapping is incomplete because provenance limits were reached; the schematic shows only retained associations.',
       }
     case 'optimized_or_absorbed':
       return {

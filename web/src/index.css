@@ -314,8 +314,13 @@ a:hover {
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  /* Narrow viewports: scroll the tab row inside the pane instead of
+     widening the page. */
+  min-width: 0;
+  overflow-x: auto;
 }
 .tab {
+  flex: 0 0 auto;
   padding: 6px 12px;
   border: 1px solid transparent;
   border-bottom: none;
@@ -699,17 +704,26 @@ table.grid tr.expanded td {
   pointer-events: none;
   flex-wrap: wrap;
 }
-.graph-banner .msg {
+.graph-banner .msg,
+.stale-chip {
   pointer-events: auto;
-  background: rgba(210, 153, 34, 0.15);
+  /* Solid background — banners overlay the schematic, so edges must not
+     show through the text. */
+  background: color-mix(in srgb, var(--amber) 15%, var(--bg));
   border: 1px solid var(--amber);
   color: var(--amber);
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 12px;
 }
+.stale-chip {
+  display: inline-block;
+}
+.stale-chip-row {
+  margin-bottom: 8px;
+}
 .graph-banner .msg.err {
-  background: rgba(248, 81, 73, 0.12);
+  background: color-mix(in srgb, var(--red) 12%, var(--bg));
   border-color: var(--red);
   color: var(--red);
 }
