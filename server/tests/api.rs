@@ -285,6 +285,97 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
 }
 
 #[tokio::test]
+async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register() {
+    let source = std::fs::read_to_string("../examples/02_priority_encoder.sv").unwrap();
+    // The always_ff block spans lines 59-67; line 61 assigns only `idx`.
+    assert_eq!(source.lines().nth(58).unwrap().trim(), "always_ff @(posedge clk) begin");
+    assert_eq!(source.lines().nth(60).unwrap().trim(), "idx   <= 5'd0;");
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "02_priority_encoder.sv", "content": source}],
+                        "top": "priority_encoder",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let register_ids = |name: &str| -> BTreeSet<u64> {
+        endpoints["registers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"] == name)
+            .unwrap_or_else(|| panic!("expected register group {name}"))["bits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bit| bit["node_id"].as_u64().unwrap())
+            .collect()
+    };
+    let idx_ids = register_ids("idx");
+    let valid_ids = register_ids("valid");
+
+    let line_roots = |response: &serde_json::Value| -> BTreeSet<u64> {
+        response["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["is_root"].as_bool() == Some(true))
+            .map(|node| node["id"].as_u64().unwrap())
+            .collect()
+    };
+
+    let single = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=02_priority_encoder.sv&start_line=61&end_line=61"
+        ),
+    )
+    .await;
+    assert_eq!(single["status"], "mapped");
+    let single_roots = line_roots(&single);
+    assert!(
+        single_roots.iter().any(|id| idx_ids.contains(id)),
+        "probing `idx <= 5'd0;` must root the idx register: {single_roots:?}"
+    );
+    assert!(
+        single_roots.iter().all(|id| !valid_ids.contains(id)),
+        "probing `idx <= 5'd0;` must not root the valid register: {single_roots:?}"
+    );
+
+    let block = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=02_priority_encoder.sv&start_line=59&end_line=67"
+        ),
+    )
+    .await;
+    assert_eq!(block["status"], "mapped");
+    let block_roots = line_roots(&block);
+    assert!(block_roots.iter().any(|id| idx_ids.contains(id)));
+    assert!(
+        block_roots.iter().any(|id| valid_ids.contains(id)),
+        "selecting the whole always block still probes every register: {block_roots:?}"
+    );
+}
+
+#[tokio::test]
 async fn depth_classes_and_registered_output_aliases_are_reported_once() {
     let source = r#"
 module depth_classes (

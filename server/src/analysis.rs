@@ -427,6 +427,7 @@ pub struct Analysis {
     source_map: SourceMapResponse,
     source_ranges: BTreeMap<String, SourceRangeIndex>,
     synthetic_src: HashMap<NodeId, BTreeSet<String>>,
+    procedural_targets: HashMap<(String, usize), Vec<NodeId>>,
     stats: Stats,
     warnings: Vec<String>,
 }
@@ -542,6 +543,16 @@ impl Analysis {
                 bytes = bytes.saturating_add(source.capacity());
             }
         }
+        bytes = bytes.saturating_add(
+            self.procedural_targets
+                .capacity()
+                .saturating_mul(size_of::<((String, usize), Vec<NodeId>)>()),
+        );
+        for ((file, _), ids) in &self.procedural_targets {
+            bytes = bytes
+                .saturating_add(file.capacity())
+                .saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+        }
         bytes = bytes.saturating_add(stats_heap_bytes(&self.stats));
         bytes = bytes.saturating_add(self.warnings.capacity().saturating_mul(size_of::<String>()));
         for warning in &self.warnings {
@@ -572,9 +583,17 @@ impl Analysis {
             source_map,
             source_ranges: BTreeMap::new(),
             synthetic_src: HashMap::new(),
+            procedural_targets: HashMap::new(),
             stats,
             warnings,
         }
+    }
+
+    /// Install per-line procedural assignment targets recovered from the
+    /// submitted sources so `source_nodes_range` can narrow block-attributed
+    /// probes to the assigned signals.
+    pub fn set_procedural_targets(&mut self, targets: HashMap<(String, usize), Vec<NodeId>>) {
+        self.procedural_targets = targets;
     }
 
     pub fn endpoints(&self) -> EndpointsResponse {
@@ -713,6 +732,7 @@ impl Analysis {
 
     pub fn source_nodes_range(
         &self,
+        graph: &Graph,
         file: &str,
         start_line: usize,
         end_line: usize,
@@ -721,28 +741,123 @@ impl Analysis {
             return None;
         }
         let mut ids = BTreeSet::new();
+        'collect: {
+            for line in start_line..=end_line {
+                if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
+                    for id in line_ids {
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
+                        }
+                    }
+                }
+            }
+            if let Some(index) = self.source_ranges.get(file) {
+                for range in index.overlapping(start_line, end_line) {
+                    if range.end_line < start_line {
+                        continue;
+                    }
+                    for id in &range.node_ids {
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
+                        }
+                    }
+                }
+            }
+        }
+        let roots: Vec<NodeId> = ids.into_iter().collect();
+        Some(self.narrow_to_assignment_targets(graph, file, start_line, end_line, roots))
+    }
+
+    /// Yosys attributes procedural cells to whole `always` blocks, so a
+    /// single-line probe inside a block would otherwise root every register in
+    /// it. When every selected line that contributed a block-attributed root
+    /// (a root with a covering src span extending outside the selection) has
+    /// parsed assignment targets, keep only targeted roots plus roots whose
+    /// covering spans lie fully inside the selection. Any parsing or
+    /// resolution gap falls back to the unfiltered attribution.
+    fn narrow_to_assignment_targets(
+        &self,
+        graph: &Graph,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+        roots: Vec<NodeId>,
+    ) -> Vec<NodeId> {
+        if roots.is_empty() || self.procedural_targets.is_empty() {
+            return roots;
+        }
+        let block_roots: HashSet<NodeId> = roots
+            .iter()
+            .copied()
+            .filter(|id| self.is_block_attributed(graph, *id, file, start_line, end_line))
+            .collect();
+        if block_roots.is_empty() {
+            return roots;
+        }
+        let overlapping = self
+            .source_ranges
+            .get(file)
+            .map_or(&[][..], |index| index.overlapping(start_line, end_line));
+        let mut targets: HashSet<NodeId> = HashSet::new();
         for line in start_line..=end_line {
-            if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
-                for id in line_ids {
-                    if insert_bounded_node(&mut ids, *id) {
-                        return Some(ids.into_iter().collect());
-                    }
-                }
+            let line_targets = self.procedural_targets.get(&(file.to_owned(), line));
+            if let Some(ids) = line_targets {
+                targets.extend(ids.iter().copied());
+            }
+            let contributed_block_root = self
+                .source_map
+                .by_line
+                .get(&format!("{file}:{line}"))
+                .is_some_and(|ids| ids.iter().any(|id| block_roots.contains(id)))
+                || overlapping.iter().any(|range| {
+                    range.start_line <= line
+                        && line <= range.end_line
+                        && range.node_ids.iter().any(|id| block_roots.contains(id))
+                });
+            if contributed_block_root && line_targets.is_none_or(|ids| ids.is_empty()) {
+                return roots;
             }
         }
-        if let Some(index) = self.source_ranges.get(file) {
-            for range in index.overlapping(start_line, end_line) {
-                if range.end_line < start_line {
-                    continue;
-                }
-                for id in &range.node_ids {
-                    if insert_bounded_node(&mut ids, *id) {
-                        return Some(ids.into_iter().collect());
-                    }
-                }
-            }
+        if targets.is_empty() {
+            return roots;
         }
-        Some(ids.into_iter().collect())
+        let narrowed: Vec<NodeId> = roots
+            .iter()
+            .copied()
+            .filter(|id| targets.contains(id) || !block_roots.contains(id))
+            .collect();
+        if narrowed.is_empty() { roots } else { narrowed }
+    }
+
+    /// A root is block-attributed for a selection when any of its covering src
+    /// spans in `file` overlaps the selection but extends outside it.
+    fn is_block_attributed(
+        &self,
+        graph: &Graph,
+        id: NodeId,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> bool {
+        let spans_outside = |src: &str| {
+            src.split('|').any(|loc| {
+                parse_src_loc(loc).is_some_and(|(span_file, span_start, span_end)| {
+                    span_file == file
+                        && span_start <= end_line
+                        && span_end >= start_line
+                        && (span_start < start_line || span_end > end_line)
+                })
+            })
+        };
+        graph
+            .nodes
+            .get(id as usize)
+            .and_then(|node| node.src.as_deref())
+            .is_some_and(spans_outside)
+            || self
+                .synthetic_src
+                .get(&id)
+                .is_some_and(|sources| sources.iter().any(|src| spans_outside(src)))
     }
 
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
@@ -3107,7 +3222,7 @@ mod tests {
     fn source_range_roots_use_a_sentinel_and_propagate_truncation() {
         let graph = sourced_node_graph(SOURCE_ROOT_COLLECTION_CAP + 500);
         let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
-        let roots = analysis.source_nodes_range("source.sv", 1, 1).unwrap();
+        let roots = analysis.source_nodes_range(&graph, "source.sv", 1, 1).unwrap();
 
         assert_eq!(roots.len(), SOURCE_ROOT_COLLECTION_CAP);
         assert_eq!(roots.first(), Some(&0));
@@ -3151,7 +3266,7 @@ mod tests {
         analysis.extend_source_ranges(vec![range.clone()], false);
 
         assert_eq!(
-            analysis.source_nodes_range("sparse.sv", 500_000, 500_000),
+            analysis.source_nodes_range(&graph, "sparse.sv", 500_000, 500_000),
             Some(vec![0])
         );
         assert!(analysis.source_map.by_line.is_empty());

@@ -343,6 +343,15 @@ sibling modules cannot contribute aliases even on Yosys versions without
 post-flatten scope metadata.
 This recovered attribution is also returned by `/nodes` for graph-to-source
 probing as one `file:start-end` source span rather than one alias per line.
+Yosys attributes procedural cells to whole `always` blocks, so recovery also
+indexes per-line assignment targets (`<lhs> <=` and leading `<lhs> =`
+statements) resolved through the same scope and net-alias machinery. When
+every selected line whose roots carry block-wide src spans has resolved
+targets, the envelope roots are narrowed to those targets plus cells whose
+src spans lie fully inside the selection: probing `idx <= 5'd0;` roots only
+the `idx` register (its fanin cone still follows), while selecting the whole
+block, or any line whose targets cannot be parsed or resolved, keeps today's
+full block attribution.
 Files containing conditional-preprocessor branches use only Yosys provenance
 to avoid attributing an inactive branch. If the LHS no longer exists, the span
 reports `optimized_or_absorbed`. Source-range root collection retains at most

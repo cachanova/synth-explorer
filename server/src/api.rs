@@ -600,6 +600,7 @@ async fn synthesize_uncached(
     let SourceAliasProvenance {
         ranges,
         truncated: source_ranges_truncated,
+        procedural_targets,
     } = continuous_assign_provenance(
         &graph,
         &source_parsed,
@@ -613,6 +614,7 @@ async fn synthesize_uncached(
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
     source_index.extend_ranges(&ranges);
     analysis.extend_source_ranges(ranges, source_ranges_truncated);
+    analysis.set_procedural_targets(procedural_targets);
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
@@ -835,7 +837,12 @@ async fn line_cone(
     }
     let roots = design
         .analysis
-        .source_nodes_range(&file, start_line as usize, end_line as usize)
+        .source_nodes_range(
+            &design.graph,
+            &file,
+            start_line as usize,
+            end_line as usize,
+        )
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
     let control = roots.iter().any(|root| {
         design.graph.outgoing[*root as usize]
