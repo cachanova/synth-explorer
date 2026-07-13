@@ -38,6 +38,8 @@ interface Props {
   onSelect: (node: GraphNode | null) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  /** Double-click a node to additively render its fanin/fanout connections. */
+  onExpand?: (node: GraphNode) => void
   active: boolean
   fitNonce: number
 }
@@ -474,6 +476,7 @@ interface SchematicNodeProps {
   suppressClick: { current: boolean }
   onSelect: (node: GraphNode | null) => void
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  onExpand?: (node: GraphNode) => void
 }
 
 // Hover state belongs to one node, so revealing pin labels never reconciles
@@ -490,6 +493,7 @@ const SchematicNode = memo(function SchematicNode({
   suppressClick,
   onSelect,
   onControlSelect,
+  onExpand,
 }: SchematicNodeProps) {
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -523,6 +527,10 @@ const SchematicNode = memo(function SchematicNode({
           return
         }
         onSelect(node)
+      } : undefined}
+      onDoubleClick={interactive && onExpand ? (event) => {
+        event.stopPropagation()
+        onExpand(node)
       } : undefined}
       onKeyDown={interactive ? (event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return
@@ -580,6 +588,7 @@ export function GraphView({
   interactive,
   onSelect,
   onControlSelect,
+  onExpand,
   active,
   fitNonce,
 }: Props) {
@@ -893,6 +902,7 @@ export function GraphView({
               suppressClick={suppressClick}
               onSelect={onSelect}
               onControlSelect={onControlSelect}
+              onExpand={onExpand}
             />
           ))}
         </g>
