@@ -1,7 +1,7 @@
 use std::collections::HashSet;
-use synth_explorer_server::analysis::{Analysis, ConeDir, ConeOptions};
+use synth_explorer_server::analysis::{Analysis, ApiNodeKind, ConeDir, ConeOptions};
 use synth_explorer_server::graph::{Graph, NodeKind};
-use synth_explorer_server::grouping::GroupPartition;
+use synth_explorer_server::grouping::{GroupKind, GroupPartition};
 use synth_explorer_server::netlist::{parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
@@ -75,7 +75,16 @@ fn cone_options(max_nodes: usize) -> ConeOptions {
 #[test]
 fn grouped_netlist_collapses_register_banks_into_group_nodes() {
     let (graph, analysis, partition) = grouped_register_banks();
-    assert_eq!(partition.groups.len(), 2);
+    // Two register banks (q, y) plus the d/y bus ports; scalar clk stays.
+    assert_eq!(partition.groups.len(), 4);
+    assert_eq!(
+        partition
+            .groups
+            .iter()
+            .filter(|g| g.kind == GroupKind::Register)
+            .count(),
+        2
+    );
     let base = graph.nodes.len() as u32;
 
     let plain = analysis.full_netlist(&graph, 2000, false, None);
@@ -89,23 +98,32 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
 
     let grouped = analysis.full_netlist(&graph, 2000, false, Some(&partition));
     assert!(!grouped.truncated);
-    let groups: Vec<_> = grouped
+    // Register banks seed first (ids base+0, base+1); ports follow.
+    let banks: Vec<_> = grouped
         .nodes
         .iter()
-        .filter(|node| node.width.is_some())
+        .filter(|node| node.node.seq == Some(true))
         .collect();
-    assert_eq!(groups.len(), 2);
-    for (idx, node) in groups.iter().enumerate() {
+    assert_eq!(banks.len(), 2);
+    for (idx, node) in banks.iter().enumerate() {
         assert_eq!(node.node.id, base + idx as u32);
         assert_eq!(node.width, Some(8));
         let members = node.members.as_ref().unwrap();
         assert_eq!(members.len(), 8);
         assert!(members.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(node.node.seq, Some(true));
         assert_eq!(node.node.cell_type.as_deref(), Some("$_DFF_P_"));
     }
-    let labels: Vec<&str> = groups.iter().map(|node| node.node.name.as_str()).collect();
+    let labels: Vec<&str> = banks.iter().map(|node| node.node.name.as_str()).collect();
     assert_eq!(labels, vec!["q[7:0]", "y[7:0]"]);
+    // Both multibit ports collapse to width-8 bus port nodes.
+    let ports: Vec<_> = grouped
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(node.node.kind, ApiNodeKind::Port) && node.width == Some(8)
+        })
+        .collect();
+    assert_eq!(ports.len(), 2, "d and y ports each become one bus node");
 
     let member_ids: HashSet<u32> = partition
         .groups
@@ -143,8 +161,9 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
 fn grouped_budgets_count_units_not_member_bits() {
     let (graph, analysis, partition) = grouped_register_banks();
     let base = graph.nodes.len() as u32;
-    // 33 raw nodes collapse to 17 singleton port bits plus 2 register groups.
-    let units = graph.nodes.len() - 16 + 2;
+    // 33 raw nodes (17 port bits + 16 DFF cells) collapse to 5 units: the q and
+    // y register banks, the d and y bus ports, and the lone scalar clk port bit.
+    let units = 5;
 
     let full = analysis.full_netlist(&graph, units, false, Some(&partition));
     assert!(!full.truncated, "a cap of one per unit must fit everything");

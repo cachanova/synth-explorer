@@ -652,8 +652,20 @@ endmodule
         .iter()
         .filter(|node| node.get("width").is_some())
         .collect();
-    assert_eq!(group_nodes.len(), 1, "the register bus is one group node");
-    let group = group_nodes[0];
+    // The register bus plus the d/q port buses each collapse to one width node.
+    assert_eq!(group_nodes.len(), 3, "register bus and both port buses collapse");
+    assert_eq!(
+        group_nodes
+            .iter()
+            .filter(|node| node["kind"] == "port")
+            .count(),
+        2,
+        "d and q ports each become one bus node"
+    );
+    let group = group_nodes
+        .iter()
+        .find(|node| node["kind"] == "cell")
+        .expect("the register bus is a cell group node");
     assert_eq!(group["width"].as_u64(), Some(8));
     assert_eq!(group["members"].as_array().unwrap().len(), 8);
     let synthetic_id = group["id"].as_u64().unwrap();
