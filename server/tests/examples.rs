@@ -637,13 +637,10 @@ endmodule
     let (top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     assert!(
-        graph
-            .nodes
-            .iter()
-            .any(|node| node
-                .cell_type
-                .as_deref()
-                .is_some_and(|cell_type| cell_type.starts_with("$mem"))),
+        graph.nodes.iter().any(|node| node
+            .cell_type
+            .as_deref()
+            .is_some_and(|cell_type| cell_type.starts_with("$mem"))),
         "abstract handling must retain a $mem cell in generic mode"
     );
 }
