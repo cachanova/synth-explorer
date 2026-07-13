@@ -147,8 +147,33 @@ function SchematicOutline({
     vectorEffect: 'non-scaling-stroke' as const,
   }
 
+  // A grouped (width>=2) node is a vector, so draw offset silhouettes behind it
+  // — a stack-of-sheets cue that a bus of cells collapsed into one symbol.
+  const groupWidth = node.width ?? 0
+  const stackOffsets = groupWidth >= 2 ? (groupWidth >= 4 ? [7, 3.5] : [4]) : []
+  const ghostProps = {
+    fill: visual.fill,
+    stroke: visual.stroke,
+    strokeWidth,
+    vectorEffect: 'non-scaling-stroke' as const,
+  }
+
   return (
     <>
+      {stackOffsets.map((d) => (
+        <g
+          key={`stack-${d}`}
+          className="g-symbol-stack"
+          transform={`translate(${d},${-d})`}
+          aria-hidden="true"
+        >
+          {path ? (
+            <path d={path} {...ghostProps} />
+          ) : (
+            <rect width={width} height={height} rx={rx} {...ghostProps} />
+          )}
+        </g>
+      ))}
       {path ? (
         <path className="g-symbol-outline" d={path} {...common} />
       ) : (
