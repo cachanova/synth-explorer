@@ -106,7 +106,11 @@ export function NodeCard({
       <div className="actions">
         <button
           onClick={() =>
-            store.openCone({ node: node.id, dir: 'fanin', label: `${name} (fanin)` })
+            store.openCone({
+              nodes: node.members ?? [node.id],
+              dir: 'fanin',
+              label: `${name} (fanin)`,
+            })
           }
         >
           Fanin cone
@@ -114,7 +118,7 @@ export function NodeCard({
         <button
           onClick={() =>
             store.openCone({
-              node: node.id,
+              nodes: node.members ?? [node.id],
               dir: 'fanout',
               label: `${name} (fanout)`,
             })

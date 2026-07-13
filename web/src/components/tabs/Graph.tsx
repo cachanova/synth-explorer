@@ -108,6 +108,7 @@ export function Graph({ active }: { active: boolean }) {
             }))
           : getCone(requestDesignId, {
               node: coneReq.node,
+              nodes: coneReq.nodes.length > 1 ? coneReq.nodes : undefined,
               dir: coneReq.dir,
               max_depth: graphOptions.maxDepth,
               max_nodes: graphOptions.maxNodes,
@@ -341,7 +342,12 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
 
   const reissue = (dir: 'fanin' | 'fanout') => {
     if (coneReq?.kind !== 'cone') return
-    store.openCone({ node: coneReq.node, dir, label: coneReq.label })
+    store.openCone({
+      nodes: coneReq.nodes,
+      dir,
+      label: coneReq.label,
+      highlight: coneReq.highlight,
+    })
   }
 
   return (

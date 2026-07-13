@@ -48,7 +48,8 @@ export type TabId =
 export interface ConeGraphRequest {
   kind: 'cone'
   designId: string
-  node: number
+  node: number // primary root (nodes[0]); drives root highlighting
+  nodes: number[] // all cone roots (>= 1); union under one budget
   dir: 'fanin' | 'fanout'
   label: string // human description for the graph header
   // node ids to highlight (e.g. a path); empty for plain cones
@@ -207,7 +208,13 @@ export interface Store {
   coneReq: GraphRequest | null
   graphOptions: GraphOptions
   setGraphOptions: (patch: Partial<GraphOptions>) => void
-  openCone: (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => void
+  openCone: (opts: {
+    node?: number
+    nodes?: number[]
+    dir: 'fanin' | 'fanout'
+    label: string
+    highlight?: number[]
+  }) => void
   openControlCone: (opts: {
     node: number
     label: string
@@ -680,15 +687,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const openCone = useCallback(
-    (opts: { node: number; dir: 'fanin' | 'fanout'; label: string }) => {
+    (opts: {
+      node?: number
+      nodes?: number[]
+      dir: 'fanin' | 'fanout'
+      label: string
+      highlight?: number[]
+    }) => {
       if (analysisStateRef.current !== 'current') return
+      const nodes =
+        opts.nodes && opts.nodes.length > 0
+          ? opts.nodes
+          : opts.node != null
+            ? [opts.node]
+            : []
+      if (nodes.length === 0) return
       setConeReq({
         kind: 'cone',
         designId: designRef.current?.design_id ?? '',
-        node: opts.node,
+        node: nodes[0],
+        nodes,
         dir: opts.dir,
         label: opts.label,
-        highlight: [],
+        highlight: opts.highlight ?? [],
         nonce: nextNonce(),
       })
       setActiveTab('graph')
@@ -702,6 +723,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       kind: 'cone',
       designId: designRef.current?.design_id ?? '',
       node: path.endpoint.id,
+      nodes: [path.endpoint.id],
       dir: 'fanin',
       label: `Path → ${displayNodeName(path.endpoint)} (depth ${path.depth})`,
       highlight: path.nodes.map((n) => n.id),
@@ -727,6 +749,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         kind: 'cone',
         designId: designRef.current?.design_id ?? '',
         node,
+        nodes: [node],
         dir,
         label: `${label} (${generated ? 'generated control fanin' : 'control fanout'})`,
         highlight: [],
