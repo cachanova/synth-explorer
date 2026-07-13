@@ -25,49 +25,33 @@ const GATE_DISPLAY: Record<string, string> = {
  * applicable. Only non-default (negedge) clock polarity is surfaced.
  */
 function decodeHardFF(family: string, flags: string): string | null {
-  const parts: string[] = []
+  // Reset/set/enable/aload details are shown by the box's R/S/EN pins and the
+  // control-label rows, so the type label is just the family word (plus a
+  // negedge marker, which nothing else conveys). "aload" is the one feature
+  // with no dedicated pin, so it stays.
   let clocked = true
   let base = 'DFF'
+  let aload = false
 
   switch (family) {
     case 'FF':
       return 'FF'
     case 'DFF':
-      if (flags.length === 3) parts.push(`arst→${flags[2]}`)
-      break
     case 'DFFE':
-      if (flags.length === 2) parts.push('en')
-      else if (flags.length === 4) parts.push(`arst→${flags[2]}`, 'en')
-      break
     case 'SDFF':
-      if (flags.length === 3) parts.push(`rst→${flags[2]}`)
-      break
     case 'SDFFE':
     case 'SDFFCE':
-      if (flags.length === 4) parts.push(`rst→${flags[2]}`, 'en')
+    case 'DFFSR':
+    case 'DFFSRE':
       break
     case 'ALDFF':
-      parts.push('aload')
-      if (flags.length === 3) parts.push('en')
-      break
     case 'ALDFFE':
-      parts.push('aload', 'en')
-      break
-    case 'DFFSR':
-      parts.push('set/rst')
-      break
-    case 'DFFSRE':
-      parts.push('set/rst', 'en')
+      aload = true
       break
     case 'DLATCH':
-      base = 'LATCH'
-      clocked = false
-      if (flags.length === 3) parts.push(`rst→${flags[2]}`)
-      break
     case 'DLATCHSR':
       base = 'LATCH'
       clocked = false
-      parts.push('set/rst')
       break
     case 'SR':
       return 'SR'
@@ -76,29 +60,30 @@ function decodeHardFF(family: string, flags: string): string | null {
   }
 
   let out = base
-  if (parts.length > 0) out += ` (${parts.join(', ')})`
+  if (aload) out += ' (aload)'
   if (clocked && flags[0] === 'N') out += ' ↓clk'
   return out
 }
 
-// Word-level sequential cells ($sdff etc. — reset value lives in params, so
-// no →V decode here).
+// Word-level sequential cells ($sdff etc.). Reset/set/enable are shown by the
+// box's R/S/EN pins, so the label is just the family word; "aload" (async load)
+// has no pin and stays.
 const WORD_SEQ: Record<string, string> = {
   ff: 'FF',
   dff: 'DFF',
-  dffe: 'DFF (en)',
-  sdff: 'DFF (rst)',
-  sdffe: 'DFF (rst, en)',
-  sdffce: 'DFF (rst, en)',
-  adff: 'DFF (arst)',
-  adffe: 'DFF (arst, en)',
+  dffe: 'DFF',
+  sdff: 'DFF',
+  sdffe: 'DFF',
+  sdffce: 'DFF',
+  adff: 'DFF',
+  adffe: 'DFF',
   aldff: 'DFF (aload)',
-  aldffe: 'DFF (aload, en)',
-  dffsr: 'DFF (set/rst)',
-  dffsre: 'DFF (set/rst, en)',
+  aldffe: 'DFF (aload)',
+  dffsr: 'DFF',
+  dffsre: 'DFF',
   dlatch: 'LATCH',
-  adlatch: 'LATCH (arst)',
-  dlatchsr: 'LATCH (set/rst)',
+  adlatch: 'LATCH',
+  dlatchsr: 'LATCH',
   sr: 'SR',
 }
 
@@ -108,8 +93,8 @@ const WORD_SEQ: Record<string, string> = {
  * wherever this is rendered.
  *
  *   "$_ANDNOT_"     -> "AND-NOT"
- *   "$_SDFF_PP0_"   -> "DFF (rst→0)"
- *   "$_SDFFE_NP0P_" -> "DFF (rst→0, en) ↓clk"
+ *   "$_SDFF_PP0_"   -> "DFF"
+ *   "$_SDFFE_NP0P_" -> "DFF ↓clk"
  *   "$lut" + WIDTH  -> "LUT4"
  *   "$add"          -> "ADD"
  *   "FDRE"/"SB_LUT4"-> unchanged (vendor names are already meaningful)

@@ -106,36 +106,37 @@ describe('displayCellType', () => {
   it('decodes hard FF types', () => {
     expect(displayCellType('$_DFF_P_')).toBe('DFF')
     expect(displayCellType('$_DFF_N_')).toBe('DFF ↓clk')
-    expect(displayCellType('$_SDFF_PP0_')).toBe('DFF (rst→0)')
-    expect(displayCellType('$_SDFF_PP1_')).toBe('DFF (rst→1)')
-    expect(displayCellType('$_SDFF_NP0_')).toBe('DFF (rst→0) ↓clk')
-    expect(displayCellType('$_SDFFE_PP0P_')).toBe('DFF (rst→0, en)')
-    expect(displayCellType('$_SDFFCE_PP0P_')).toBe('DFF (rst→0, en)')
-    expect(displayCellType('$_DFFE_PP_')).toBe('DFF (en)')
-    expect(displayCellType('$_DFFE_NP_')).toBe('DFF (en) ↓clk')
-    expect(displayCellType('$_DFF_PP0_')).toBe('DFF (arst→0)')
-    expect(displayCellType('$_DFFE_PP1P_')).toBe('DFF (arst→1, en)')
+    // Reset/set/enable/value details are shown by the box pins, not the label.
+    expect(displayCellType('$_SDFF_PP0_')).toBe('DFF')
+    expect(displayCellType('$_SDFF_PP1_')).toBe('DFF')
+    expect(displayCellType('$_SDFF_NP0_')).toBe('DFF ↓clk')
+    expect(displayCellType('$_SDFFE_PP0P_')).toBe('DFF')
+    expect(displayCellType('$_SDFFCE_PP0P_')).toBe('DFF')
+    expect(displayCellType('$_DFFE_PP_')).toBe('DFF')
+    expect(displayCellType('$_DFFE_NP_')).toBe('DFF ↓clk')
+    expect(displayCellType('$_DFF_PP0_')).toBe('DFF')
+    expect(displayCellType('$_DFFE_PP1P_')).toBe('DFF')
     expect(displayCellType('$_ALDFF_PP_')).toBe('DFF (aload)')
-    expect(displayCellType('$_DFFSR_PPP_')).toBe('DFF (set/rst)')
-    expect(displayCellType('$_DFFSRE_PPPP_')).toBe('DFF (set/rst, en)')
+    expect(displayCellType('$_DFFSR_PPP_')).toBe('DFF')
+    expect(displayCellType('$_DFFSRE_PPPP_')).toBe('DFF')
     expect(displayCellType('$_FF_')).toBe('FF')
   })
 
   it('decodes latches and SR', () => {
     expect(displayCellType('$_DLATCH_P_')).toBe('LATCH')
-    expect(displayCellType('$_DLATCH_PP0_')).toBe('LATCH (rst→0)')
-    expect(displayCellType('$_DLATCHSR_PPP_')).toBe('LATCH (set/rst)')
+    expect(displayCellType('$_DLATCH_PP0_')).toBe('LATCH')
+    expect(displayCellType('$_DLATCHSR_PPP_')).toBe('LATCH')
     expect(displayCellType('$_SR_PP_')).toBe('SR')
   })
 
   it('decodes word-level FF types the same way', () => {
     expect(displayCellType('$dff')).toBe('DFF')
-    expect(displayCellType('$dffe')).toBe('DFF (en)')
-    expect(displayCellType('$sdff')).toBe('DFF (rst)')
-    expect(displayCellType('$sdffe')).toBe('DFF (rst, en)')
-    expect(displayCellType('$adff')).toBe('DFF (arst)')
+    expect(displayCellType('$dffe')).toBe('DFF')
+    expect(displayCellType('$sdff')).toBe('DFF')
+    expect(displayCellType('$sdffe')).toBe('DFF')
+    expect(displayCellType('$adff')).toBe('DFF')
     expect(displayCellType('$aldff')).toBe('DFF (aload)')
-    expect(displayCellType('$dffsr')).toBe('DFF (set/rst)')
+    expect(displayCellType('$dffsr')).toBe('DFF')
     expect(displayCellType('$dlatch')).toBe('LATCH')
   })
 
@@ -189,7 +190,7 @@ describe('displayNodeName', () => {
       cell_type: '$_SDFF_PP0_',
       seq: true,
     }
-    expect(displayNodeName(n)).toBe('DFF (rst→0)')
+    expect(displayNodeName(n)).toBe('DFF')
   })
 
   it('never yields a blifparse path', () => {
