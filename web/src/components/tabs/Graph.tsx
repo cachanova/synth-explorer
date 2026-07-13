@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
-import { filterSubgraph, focusKeepSet } from '../../lib/filterSubgraph'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
@@ -45,9 +44,7 @@ export function Graph({ active }: { active: boolean }) {
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
 
-  // `focus` is intentionally absent: it is a client-side view filter applied in
-  // the layout effect, so it must not force a server refetch. Every other option
-  // here changes what the server returns.
+  // Every option here changes what the server returns, so a change refetches.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}`
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
@@ -133,16 +130,25 @@ export function Graph({ active }: { active: boolean }) {
       .then(({ graph, status, control }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         loadedRequestKey.current = requestKey
-        setSourceStatus(status)
         setSourceControl(control)
         const presentation = sourceProbePresentation(status)
         // A partial mapping is still useful and replaces the prior selection.
-        // Truly unmapped/absorbed selections retain the last meaningful graph.
         if (presentation.acceptReturnedGraph) {
+          setSourceStatus(status)
           setFetchedSubgraph({ designId: requestDesignId, requestKey, graph })
           if (status != null) setSelected(null)
         }
-        else setLoading(false)
+        // Nothing synthesizable maps to this selection — fall back to the full
+        // netlist instead of a bare message, keeping a schematic on screen.
+        // Clear the status here so the unmapped message never flashes over the
+        // netlist we are about to open.
+        else {
+          setSourceStatus(null)
+          setLoading(false)
+          const reason =
+            status === 'optimized_or_absorbed' ? 'optimized away' : 'no mapped logic'
+          store.openNetlist(`${coneReq.label} — ${reason}; showing full netlist`)
+        }
       })
       .catch((e) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
@@ -153,16 +159,13 @@ export function Graph({ active }: { active: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch])
 
-  // The rendered subgraph is the fetched base (optionally focus-filtered) with
-  // every double-click expansion merged on top. Memoized so a tab switch does
-  // not rebuild it and force a needless relayout.
+  // The rendered subgraph is the fetched base with every double-click expansion
+  // merged on top. Memoized so a tab switch does not rebuild it and force a
+  // needless relayout.
   const combinedSubgraph = useMemo(() => {
     if (!fetchedSubgraph) return null
-    const keep =
-      graphOptions.focus && coneReq ? focusKeepSet(coneReq, fetchedSubgraph.graph) : null
-    const base = keep ? filterSubgraph(fetchedSubgraph.graph, keep) : fetchedSubgraph.graph
-    return mergeSubgraphs(base, expansionGraph, MAX_GRAPH_RENDER_NODES)
-  }, [fetchedSubgraph, expansionGraph, graphOptions.focus, coneReq])
+    return mergeSubgraphs(fetchedSubgraph.graph, expansionGraph, MAX_GRAPH_RENDER_NODES)
+  }, [fetchedSubgraph, expansionGraph])
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
@@ -366,9 +369,6 @@ export function Graph({ active }: { active: boolean }) {
           {sourcePresentation.message && (
             <span className="msg">{sourcePresentation.message}</span>
           )}
-          {coneReq.kind === 'source' && sourcePresentation.retainsPreviousGraph && laid && (
-            <span className="msg">showing the previous mapped selection</span>
-          )}
           {sourceControl && (
             <span className="msg">
               control path selection — reset/clock/enable connectivity is shown
@@ -406,11 +406,6 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
   const { coneReq, design, graphOptions } = store
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
-  )
-  // Mirrors focusKeepSet: source probes always have roots to focus on;
-  // cone/netlist views focus only when something is highlighted.
-  const focusAvailable = Boolean(
-    coneReq && (coneReq.kind === 'source' || coneReq.highlight.length > 0),
   )
   const setOpt = store.setGraphOptions
 
@@ -530,23 +525,6 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           onChange={(event) => setOpt({ groupVectors: event.target.checked })}
         />
         group buses
-      </label>
-
-      <label
-        className="toggle"
-        title={
-          focusAvailable
-            ? 'Render only the selection-relevant components'
-            : 'Focus applies to source selections and highlighted paths'
-        }
-      >
-        <input
-          type="checkbox"
-          checked={graphOptions.focus}
-          disabled={!focusAvailable}
-          onChange={(event) => setOpt({ focus: event.target.checked })}
-        />
-        focus
       </label>
 
       <span className="sep" />

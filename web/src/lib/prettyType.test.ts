@@ -3,11 +3,42 @@ import {
   displayCellType,
   displayNodeName,
   fanoutDriverLabel,
+  groupBadgeText,
   isHiddenName,
   nodeSublabel,
   shortNetName,
 } from './prettyType'
-import type { NodeRef } from '../types'
+import type { GraphNode, NodeRef } from '../types'
+
+describe('groupBadgeText', () => {
+  const grouped = (over: Partial<GraphNode>): GraphNode => ({
+    id: 1,
+    kind: 'cell',
+    name: 'n',
+    width: 8,
+    ...over,
+  })
+
+  it('returns null for ungrouped nodes', () => {
+    expect(groupBadgeText({ id: 1, kind: 'cell', name: 'foo' })).toBeNull()
+    expect(groupBadgeText(grouped({ width: 1 }))).toBeNull()
+  })
+
+  it('suppresses the badge when the label already shows a bit range', () => {
+    // port label is the name itself
+    expect(groupBadgeText(grouped({ kind: 'port', name: 'a[7:0]' }))).toBeNull()
+    // reg: cell-type label is "DFF" but the register name carries the range
+    expect(groupBadgeText(grouped({ cell_type: '$_DFF_P_', name: 'q[7:0]' }))).toBeNull()
+  })
+
+  it('suppresses the badge when the name already shows a ×N count', () => {
+    expect(groupBadgeText(grouped({ cell_type: '$mux', name: 'sel ×3' }))).toBeNull()
+  })
+
+  it('keeps ×N when the visible text carries no width (hidden vector name)', () => {
+    expect(groupBadgeText(grouped({ cell_type: '$_AND_', name: '$_AND_ ×8' }))).toBe('×8')
+  })
+})
 
 describe('isHiddenName', () => {
   it('flags $-prefixed and empty names', () => {

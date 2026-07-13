@@ -138,6 +138,22 @@ export function nodeLabel(node: GraphNode | NodeRef): string {
   return displayCellType(node.cell_type, (node as GraphNode).params)
 }
 
+/**
+ * "×N" bit-count badge for a grouped (width>=2) node, or null when the width is
+ * already visible in the node's own label/name as a "[hi:lo]" range or "×N"
+ * suffix — the common case (`q[7:0]`, `a[7:0]`, `sum ×3`) where the badge would
+ * just repeat what the label says. Kept only for grouped nodes whose visible
+ * text carries no width (e.g. a hidden-name logic vector).
+ */
+export function groupBadgeText(node: GraphNode | NodeRef): string | null {
+  const width = (node as GraphNode).width ?? 0
+  if (width < 2) return null
+  const showsWidth = (s: string) => /\[\d+:\d+\]/.test(s) || s.includes('×')
+  if (showsWidth(nodeLabel(node))) return null
+  if (node.name && !isHiddenName(node.name) && showsWidth(node.name)) return null
+  return `×${width}`
+}
+
 /** Category used for styling. */
 export type NodeCategory = 'input' | 'output' | 'const' | 'seq' | 'comb'
 

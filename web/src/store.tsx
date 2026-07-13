@@ -86,7 +86,6 @@ export interface GraphOptions {
   hideControl: boolean
   hideConst: boolean
   showInfrastructure: boolean
-  focus: boolean
   groupVectors: boolean
 }
 
@@ -142,7 +141,6 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideControl: true,
   hideConst: true,
   showInfrastructure: false,
-  focus: false,
   groupVectors: true,
 }
 
@@ -221,7 +219,7 @@ export interface Store {
     generated?: boolean
   }) => void
   showPathInGraph: (path: TimingPath) => void
-  openNetlist: () => void
+  openNetlist: (label?: string) => void
 
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
@@ -760,10 +758,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const openNetlist = useCallback(() => {
+  const openNetlist = useCallback((label = 'Full netlist') => {
     setConeReq({
       kind: 'netlist',
-      label: 'Full netlist',
+      label,
       highlight: [],
       nonce: nextNonce(),
     })
