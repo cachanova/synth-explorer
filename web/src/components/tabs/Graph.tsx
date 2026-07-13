@@ -192,16 +192,20 @@ export function Graph({ active }: { active: boolean }) {
   const graphInteractive = analysisState === 'current' && displayedDesignCurrent
   const sourcePresentation = sourceProbePresentation(sourceStatus)
 
-  const highlight = useMemo(
-    () =>
-      new Set([
-        ...(coneReq?.highlight ?? []),
-        ...(coneReq?.kind === 'source' && sourcePresentation.highlightRoots
-          ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
-          : []),
-      ]),
-    [coneReq, sourcePresentation.highlightRoots, sub],
-  )
+  const highlight = useMemo(() => {
+    const ids = new Set<number>([
+      ...(coneReq?.highlight ?? []),
+      ...(coneReq?.kind === 'source' && sourcePresentation.highlightRoots
+        ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
+        : []),
+    ])
+    // A grouped bus node collapses per-bit ids the highlight set names, so it
+    // must highlight when any of its members does (e.g. a path through a bus).
+    for (const node of sub?.nodes ?? []) {
+      if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
+    }
+    return ids
+  }, [coneReq, sourcePresentation.highlightRoots, sub])
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
   // Net driven by the selected node (first outgoing edge) — lets the detail
