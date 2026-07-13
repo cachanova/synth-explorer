@@ -314,8 +314,13 @@ a:hover {
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  /* Narrow viewports: scroll the tab row inside the pane instead of
+     widening the page. */
+  min-width: 0;
+  overflow-x: auto;
 }
 .tab {
+  flex: 0 0 auto;
   padding: 6px 12px;
   border: 1px solid transparent;
   border-bottom: none;
@@ -339,6 +344,9 @@ a:hover {
 .tab-body {
   flex: 1 1 auto;
   min-height: 0;
+  /* Let the analysis content (toolbar, schematic) shrink instead of forcing
+     the pane wider, which would steal width from the editor at narrow sizes. */
+  min-width: 0;
   overflow: auto;
   padding: 12px;
 }
@@ -699,17 +707,26 @@ table.grid tr.expanded td {
   pointer-events: none;
   flex-wrap: wrap;
 }
-.graph-banner .msg {
+.graph-banner .msg,
+.stale-chip {
   pointer-events: auto;
-  background: rgba(210, 153, 34, 0.15);
+  /* Solid background — banners overlay the schematic, so edges must not
+     show through the text. */
+  background: color-mix(in srgb, var(--amber) 15%, var(--bg));
   border: 1px solid var(--amber);
   color: var(--amber);
   padding: 4px 10px;
   border-radius: 6px;
   font-size: 12px;
 }
+.stale-chip {
+  display: inline-block;
+}
+.stale-chip-row {
+  margin-bottom: 8px;
+}
 .graph-banner .msg.err {
-  background: rgba(248, 81, 73, 0.12);
+  background: color-mix(in srgb, var(--red) 12%, var(--bg));
   border-color: var(--red);
   color: var(--red);
 }
@@ -788,9 +805,23 @@ table.grid tr.expanded td {
   stroke-dasharray: 4 3;
   opacity: 0.65;
 }
+.g-edge.bus {
+  stroke-width: 2.4;
+}
 .g-edge.hl {
   stroke: var(--accent);
   stroke-width: 2.2;
+}
+.g-bus-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  fill: var(--text-dim);
+  paint-order: stroke;
+  stroke: var(--bg-1);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+  pointer-events: none;
 }
 .g-node-label {
   font-family: var(--mono);
@@ -839,6 +870,13 @@ table.grid tr.expanded td {
   fill: var(--text-faint);
   pointer-events: none;
 }
+.g-group-badge {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 600;
+  fill: var(--accent);
+  pointer-events: none;
+}
 .g-pin-labels {
   pointer-events: none;
 }
@@ -856,6 +894,29 @@ table.grid tr.expanded td {
   stroke: var(--bg-2);
   stroke-width: 2.5px;
   stroke-linejoin: round;
+}
+.g-reg-pins {
+  pointer-events: none;
+}
+.g-reg-pin-tick {
+  stroke: var(--accent);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+.g-reg-pin {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 700;
+  fill: var(--text);
+  paint-order: stroke;
+  stroke: var(--bg-2);
+  stroke-width: 2.5px;
+  stroke-linejoin: round;
+}
+.g-reg-ctrl-pin {
+  font-size: 7px;
+  font-weight: 600;
+  fill: var(--text-dim);
 }
 .g-control-label rect {
   fill: var(--bg-3);

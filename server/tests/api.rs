@@ -285,6 +285,100 @@ async fn line_cone_returns_assign_envelope_and_validates_source_location() {
 }
 
 #[tokio::test]
+async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register() {
+    let source = std::fs::read_to_string("../examples/02_priority_encoder.sv").unwrap();
+    // The always_ff block spans lines 59-67; line 61 assigns only `idx`.
+    assert_eq!(
+        source.lines().nth(58).unwrap().trim(),
+        "always_ff @(posedge clk) begin"
+    );
+    assert_eq!(source.lines().nth(60).unwrap().trim(), "idx   <= 5'd0;");
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "02_priority_encoder.sv", "content": source}],
+                        "top": "priority_encoder",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let register_ids = |name: &str| -> BTreeSet<u64> {
+        endpoints["registers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"] == name)
+            .unwrap_or_else(|| panic!("expected register group {name}"))["bits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bit| bit["node_id"].as_u64().unwrap())
+            .collect()
+    };
+    let idx_ids = register_ids("idx");
+    let valid_ids = register_ids("valid");
+
+    let line_roots = |response: &serde_json::Value| -> BTreeSet<u64> {
+        response["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|node| node["is_root"].as_bool() == Some(true))
+            .map(|node| node["id"].as_u64().unwrap())
+            .collect()
+    };
+
+    let single = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=02_priority_encoder.sv&start_line=61&end_line=61"
+        ),
+    )
+    .await;
+    assert_eq!(single["status"], "mapped");
+    let single_roots = line_roots(&single);
+    assert!(
+        single_roots.iter().any(|id| idx_ids.contains(id)),
+        "probing `idx <= 5'd0;` must root the idx register: {single_roots:?}"
+    );
+    assert!(
+        single_roots.iter().all(|id| !valid_ids.contains(id)),
+        "probing `idx <= 5'd0;` must not root the valid register: {single_roots:?}"
+    );
+
+    let block = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=02_priority_encoder.sv&start_line=59&end_line=67"
+        ),
+    )
+    .await;
+    assert_eq!(block["status"], "mapped");
+    let block_roots = line_roots(&block);
+    assert!(block_roots.iter().any(|id| idx_ids.contains(id)));
+    assert!(
+        block_roots.iter().any(|id| valid_ids.contains(id)),
+        "selecting the whole always block still probes every register: {block_roots:?}"
+    );
+}
+
+#[tokio::test]
 async fn depth_classes_and_registered_output_aliases_are_reported_once() {
     let source = r#"
 module depth_classes (
@@ -364,6 +458,251 @@ endmodule
         })
         .count();
     assert_eq!(direct_path_groups, 1);
+}
+
+#[tokio::test]
+async fn cone_accepts_multiple_roots_under_one_shared_budget() {
+    let source = r#"
+module two_regs (
+    input  logic clk,
+    input  logic a,
+    input  logic b,
+    output logic q0,
+    output logic q1
+);
+  logic r0;
+  logic r1;
+  always_ff @(posedge clk) begin
+    r0 <= a & b;
+    r1 <= a ^ b;
+  end
+  assign q0 = r0 & a;
+  assign q1 = r1 | b;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "two_regs.sv", "content": source}],
+                        "top": "two_regs",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let register_id = |name: &str| -> u64 {
+        endpoints["registers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"] == name)
+            .unwrap_or_else(|| panic!("expected register group {name}"))["bits"][0]["node_id"]
+            .as_u64()
+            .unwrap()
+    };
+    let r0 = register_id("r0");
+    let r1 = register_id("r1");
+    assert_ne!(r0, r1);
+
+    // `nodes=` overrides `node` and unions both fanin cones in one response.
+    let cone = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node=999999&nodes={r0},{r1},{r0}&dir=fanin"),
+    )
+    .await;
+    let nodes = cone["nodes"].as_array().unwrap();
+    for root in [r0, r1] {
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node["id"].as_u64() == Some(root)
+                    && node["is_root"].as_bool() == Some(true)),
+            "expected root {root} in multi-root cone"
+        );
+        assert!(
+            cone["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|edge| edge["to"].as_u64() == Some(root)),
+            "expected fanin edges into root {root}"
+        );
+    }
+    let ids: BTreeSet<u64> = nodes
+        .iter()
+        .map(|node| node["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(ids.len(), nodes.len(), "duplicate roots must be deduped");
+
+    // Both cones share a single node cap.
+    let capped = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?nodes={r0},{r1}&dir=fanin&max_nodes=2"),
+    )
+    .await;
+    assert!(capped["nodes"].as_array().unwrap().len() <= 2);
+    assert_eq!(capped["truncated"], true);
+
+    for (uri, expected) in [
+        (
+            format!("/api/design/{design_id}/cone?nodes=abc&dir=fanin"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/design/{design_id}/cone?nodes=&dir=fanin"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!(
+                "/api/design/{design_id}/cone?nodes={}&dir=fanin",
+                (0..201)
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/design/{design_id}/cone?nodes=999999&dir=fanin"),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let response = get_response(&mut app, &uri).await;
+        assert_eq!(response.status(), expected, "unexpected status for {uri}");
+    }
+}
+
+#[tokio::test]
+async fn group_vectors_collapses_buses_and_rejects_synthetic_ids() {
+    let source = r#"
+module bus_regs (
+    input  logic       clk,
+    input  logic [7:0] d,
+    output logic [7:0] q
+);
+  always_ff @(posedge clk) q <= d;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "bus_regs.sv", "content": source}],
+                        "top": "bus_regs",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let design_id = body_json(response).await["design_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Without grouping the eight register bits render as eight per-bit nodes,
+    // none carrying a width.
+    let plain = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=1500"),
+    )
+    .await;
+    assert!(
+        plain["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node.get("width").is_none()),
+        "width must be absent without group_vectors"
+    );
+
+    // With grouping the bus collapses to one width-8 register node.
+    let grouped = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=1500&group_vectors=true"),
+    )
+    .await;
+    let group_nodes: Vec<_> = grouped["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node.get("width").is_some())
+        .collect();
+    assert_eq!(group_nodes.len(), 1, "the register bus is one group node");
+    let group = group_nodes[0];
+    assert_eq!(group["width"].as_u64(), Some(8));
+    assert_eq!(group["members"].as_array().unwrap().len(), 8);
+    let synthetic_id = group["id"].as_u64().unwrap();
+    let members: Vec<u64> = group["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    assert!(
+        members.iter().all(|member| *member < synthetic_id),
+        "synthetic group ids sit above every real member id"
+    );
+
+    // group_vectors also applies to cone and line-cone envelopes.
+    let cone = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/cone?node={}&dir=fanin&group_vectors=true",
+            members[0]
+        ),
+    )
+    .await;
+    assert!(
+        cone["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"].as_u64() == Some(synthetic_id)
+                && node["is_root"].as_bool() == Some(true)),
+        "a member cone lands on its group node as root"
+    );
+
+    // Synthetic group ids are not addressable through the per-bit APIs.
+    let rejected = get_response(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node={synthetic_id}&dir=fanin"),
+    )
+    .await;
+    assert_eq!(rejected.status(), StatusCode::NOT_FOUND);
+    let nodes_rejected = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/nodes?ids={synthetic_id}"),
+    )
+    .await;
+    assert!(
+        nodes_rejected["nodes"].as_array().unwrap().is_empty(),
+        "/nodes ignores synthetic group ids"
+    );
 }
 
 #[tokio::test]
@@ -856,6 +1195,82 @@ async fn high_fanout_memory_registers_are_grouped_by_array_element() {
         .collect();
     let expected: BTreeSet<_> = (0..16).map(|idx| format!("regs[{idx}]")).collect();
     assert_eq!(names, expected);
+}
+
+#[tokio::test]
+async fn gates_mode_synthesizes_oversized_memories() {
+    // 8 write ports on a 4096x48 memory. Whether flattening to gates exceeds the
+    // 2 GiB sandbox cap depends on the Yosys version, so this asserts the
+    // version-independent contract: gates-mode synthesis succeeds and yields a
+    // usable netlist. When the abstract-memory retry does fire, the memory
+    // survives as a `$mem` cell — the deterministic proof of the abstract script
+    // itself lives in tests/examples.rs.
+    let source = r#"
+module big_mem (
+    input  wire        clk,
+    input  wire        we,
+    input  wire [11:0] waddr,
+    input  wire [47:0] wdata,
+    input  wire [11:0] raddr,
+    output reg  [47:0] rdata
+);
+  reg [47:0] mem [0:4095];
+  genvar i;
+  generate
+    for (i = 0; i < 8; i = i + 1) begin : g
+      always @(posedge clk) if (we) mem[waddr ^ i] <= wdata;
+    end
+  endgenerate
+  always @(posedge clk) rdata <= mem[raddr];
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let synth_body = json!({
+        "files": [{"name": "big_mem.v", "content": source}],
+        "top": "big_mem",
+        "mode": "gates"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&synth_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let abstracted = synth["memories_abstracted"] == serde_json::json!(true);
+    assert!(
+        synth["stats"]["num_cells"]
+            .as_u64()
+            .is_some_and(|count| count >= 1)
+    );
+    let design_id = synth["design_id"].as_str().unwrap();
+
+    // 122 port bits precede the cells in netlist order, so use a cap that
+    // covers the whole design.
+    let netlist = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?max_nodes=400"),
+    )
+    .await;
+    let has_mem = netlist["nodes"].as_array().unwrap().iter().any(|node| {
+        node["cell_type"]
+            .as_str()
+            .is_some_and(|cell_type| cell_type.starts_with("$mem"))
+    });
+    if abstracted {
+        assert!(has_mem, "an abstract retry must leave a $mem cell");
+    }
+
+    // The cached design reproduces the flag on reload.
+    let design = get_json(&mut app, &format!("/api/design/{design_id}")).await;
+    assert_eq!(design["memories_abstracted"], synth["memories_abstracted"]);
 }
 
 #[tokio::test]

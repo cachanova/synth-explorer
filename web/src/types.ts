@@ -19,6 +19,10 @@ export interface GraphNode extends NodeRef {
   depth?: number // comb depth from startpoints (absent for seq/port nodes)
   params?: Record<string, string> // e.g. { "LUT": "0111...", "WIDTH": "4" }
   controls?: ControlRef[] // omitted when the node has no labeled control connections
+  // Vector grouping (group_vectors): a synthetic node collapsing width>=2
+  // bit-parallel cells. `members` are the real per-bit node ids it stands for.
+  width?: number
+  members?: number[]
 }
 
 export type ControlRole = 'clock' | 'reset' | 'set' | 'enable' | 'other'
@@ -112,6 +116,9 @@ export interface SynthesizeResponse {
   stats: Stats
   warnings: string[]
   log: string // yosys log (tail, capped)
+  // true when a generic mode hit the sandbox memory limit and succeeded on a
+  // retry that keeps inferred memories abstract ($mem_v2) instead of gates
+  memories_abstracted?: boolean
 }
 
 // --- GET /api/design/:id/endpoints ---

@@ -27,6 +27,38 @@ const CHILD_OPEN_FILES_LIMIT: libc::rlim_t = 128;
 #[cfg(target_os = "linux")]
 const CHILD_CPU_SECONDS_LIMIT: libc::rlim_t = 65;
 
+/// How generic synthesis treats inferred memories. `Map` is today's default
+/// pipeline; `Abstract` stops `synth` before `memory_map` and replays the fine
+/// stage without it, so `$mem_v2` cells survive into the netlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryHandling {
+    Map,
+    Abstract,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Memory,
+    Cpu,
+    OutputSize,
+}
+
+/// Classify a failed yosys exit as a sandbox resource kill when possible.
+/// bad_alloc in the log identifies an address-space kill even when the abort
+/// unwinds into a normal-looking exit.
+pub fn classify_failure(status: &std::process::ExitStatus, log: &str) -> Option<ResourceKind> {
+    if log.contains("std::bad_alloc") {
+        return Some(ResourceKind::Memory);
+    }
+    use std::os::unix::process::ExitStatusExt;
+    match status.signal() {
+        Some(libc::SIGABRT) => Some(ResourceKind::Memory),
+        Some(libc::SIGXCPU) | Some(libc::SIGKILL) => Some(ResourceKind::Cpu),
+        Some(libc::SIGXFSZ) => Some(ResourceKind::OutputSize),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceFile {
     pub name: String,
@@ -43,6 +75,14 @@ pub enum SynthMode {
     Ice40,
     Ecp5,
     Xilinx,
+}
+
+impl SynthMode {
+    /// Generic technology-neutral modes that share the `synth` pipeline and
+    /// support the abstract-memory retry.
+    pub fn is_generic(&self) -> bool {
+        matches!(self, Self::Gates | Self::Lut4 | Self::Lut6)
+    }
 }
 
 impl fmt::Display for SynthMode {
@@ -92,12 +132,27 @@ pub enum YosysError {
     Timeout { log: String },
     #[error("yosys failed")]
     Yosys { log: String },
+    #[error("synthesis exceeded sandbox limits")]
+    ResourceLimit { kind: ResourceKind, log: String },
     #[error("failed to run yosys: {0}")]
     Io(#[from] std::io::Error),
     #[error("invalid yosys output: {0}")]
     Json(#[from] serde_json::Error),
     #[error("invalid yosys netlist: {0}")]
     Netlist(#[from] NetlistError),
+}
+
+impl YosysError {
+    /// True when synthesis died from exhausting a sandbox bound — memory, CPU,
+    /// output size, or the wall-clock timeout. Flattening a huge memory to
+    /// gates blows any of these depending on the Yosys version, so all four
+    /// are the signal to retry with memories kept abstract.
+    pub fn is_resource_exhaustion(&self) -> bool {
+        matches!(
+            self,
+            YosysError::ResourceLimit { .. } | YosysError::Timeout { .. }
+        )
+    }
 }
 
 impl SynthRequest {
@@ -185,13 +240,16 @@ pub async fn preflight_yosys() -> Result<String, YosysError> {
     Ok(version)
 }
 
-pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError> {
+pub async fn run_yosys(
+    input: &ValidatedSynth,
+    memory: MemoryHandling,
+) -> Result<YosysOutput, YosysError> {
     let temp = TempDir::new()?;
     for file in &input.files {
         fs::write(temp.path().join(&file.name), &file.content).await?;
     }
 
-    let script = build_script(input);
+    let script = build_script(input, memory);
     let script_path = temp.path().join("script.ys");
     let log_path = temp.path().join("log.txt");
     let json_path = temp.path().join("netlist.json");
@@ -231,6 +289,9 @@ pub async fn run_yosys(input: &ValidatedSynth) -> Result<YosysOutput, YosysError
 
     let log = read_log_tail(&log_path).await.unwrap_or_default();
     if !status.success() {
+        if let Some(kind) = classify_failure(&status, &log) {
+            return Err(YosysError::ResourceLimit { kind, log });
+        }
         return Err(YosysError::Yosys { log });
     }
 
@@ -321,7 +382,7 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-fn build_script(input: &ValidatedSynth) -> String {
+fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
     let mut script = String::new();
     push_read_verilog(&mut script, input);
     script.push_str(&format!(
@@ -339,14 +400,34 @@ fn build_script(input: &ValidatedSynth) -> String {
         SynthMode::Rtl => {
             script.push_str(&format!("prep {top_args}{extra}\nflatten\n"));
         }
-        SynthMode::Gates => {
-            script.push_str(&format!("synth {top_args} -flatten{extra}\n"));
-        }
-        SynthMode::Lut4 => {
-            script.push_str(&format!("synth {top_args} -flatten -lut 4{extra}\n"));
-        }
-        SynthMode::Lut6 => {
-            script.push_str(&format!("synth {top_args} -flatten -lut 6{extra}\n"));
+        SynthMode::Gates | SynthMode::Lut4 | SynthMode::Lut6 => {
+            let lut = match input.mode {
+                SynthMode::Lut4 => " -lut 4",
+                SynthMode::Lut6 => " -lut 6",
+                _ => "",
+            };
+            match memory {
+                MemoryHandling::Map => {
+                    script.push_str(&format!("synth {top_args} -flatten{lut}{extra}\n"));
+                }
+                MemoryHandling::Abstract => {
+                    // Stop `synth` before `fine` (whose first pass is
+                    // `memory_map`), then replay fine without it so `$mem_v2`
+                    // cells survive. Validated against yosys 0.64.
+                    script.push_str(&format!(
+                        "synth {top_args} -flatten{lut}{extra} -run begin:fine\n"
+                    ));
+                    script.push_str("opt -fast -full\ntechmap\nopt -fast\n");
+                    if !input.extra_args.iter().any(|arg| arg == "-noabc") {
+                        if lut.is_empty() {
+                            script.push_str("abc\n");
+                        } else {
+                            script.push_str(&format!("abc{lut}\n"));
+                        }
+                        script.push_str("opt -fast\n");
+                    }
+                }
+            }
         }
         SynthMode::Ice40 => {
             if input.top.is_none() {
@@ -476,6 +557,32 @@ fn parse_extra_args(extra_args: Option<&str>) -> Result<Vec<String>, YosysError>
 mod tests {
     use super::*;
 
+    fn validated(
+        files: &[&str],
+        top: Option<&str>,
+        mode: SynthMode,
+        extra_args: &str,
+    ) -> ValidatedSynth {
+        SynthRequest {
+            files: files
+                .iter()
+                .map(|name| SourceFile {
+                    name: (*name).to_owned(),
+                    content: String::new(),
+                })
+                .collect(),
+            top: top.map(str::to_owned),
+            mode,
+            extra_args: if extra_args.is_empty() {
+                None
+            } else {
+                Some(extra_args.to_owned())
+            },
+        }
+        .validate()
+        .unwrap()
+    }
+
     #[test]
     fn validation_rejects_traversal_filename() {
         let request = SynthRequest {
@@ -521,9 +628,102 @@ mod tests {
 
         assert_eq!(input.extra_args, ["-nofsm", "-noabc"]);
         assert_eq!(
-            build_script(&input),
+            build_script(&input, MemoryHandling::Map),
             "read_verilog -sv design.sv\nhierarchy -top top\nproc\nwrite_json source-netlist.json\ndesign -reset\nread_verilog -sv design.sv\nsynth -top top -flatten -nofsm -noabc\nwrite_json netlist.json\n"
         );
+    }
+
+    #[test]
+    fn abstract_memory_script_stops_before_memory_map() {
+        let input = validated(&["design.sv"], Some("top"), SynthMode::Gates, "");
+        let script = build_script(&input, MemoryHandling::Abstract);
+        assert!(script.contains("synth -top top -flatten -run begin:fine\n"));
+        assert!(!script.contains("memory_map"));
+        assert!(script.contains("\nopt -fast -full\ntechmap\nopt -fast\nabc\nopt -fast\n"));
+        assert!(script.ends_with("write_json netlist.json\n"));
+        // lut mode replays abc -lut
+        let lut = validated(&["design.sv"], Some("top"), SynthMode::Lut6, "");
+        assert!(build_script(&lut, MemoryHandling::Abstract).contains("abc -lut 6"));
+        // -noabc suppresses the abc replay
+        let noabc = validated(&["design.sv"], Some("top"), SynthMode::Gates, "-noabc");
+        assert!(!build_script(&noabc, MemoryHandling::Abstract).contains("\nabc\n"));
+    }
+
+    #[test]
+    fn rtl_and_vendor_modes_ignore_abstract_memory_handling() {
+        for mode in [
+            SynthMode::Rtl,
+            SynthMode::Ice40,
+            SynthMode::Ecp5,
+            SynthMode::Xilinx,
+        ] {
+            let input = validated(&["design.sv"], Some("top"), mode, "");
+            assert_eq!(
+                build_script(&input, MemoryHandling::Map),
+                build_script(&input, MemoryHandling::Abstract),
+            );
+        }
+    }
+
+    #[test]
+    fn classifies_bad_alloc_as_memory_kill() {
+        use std::os::unix::process::ExitStatusExt;
+        let aborted = std::process::ExitStatus::from_raw(libc::SIGABRT);
+        assert_eq!(
+            classify_failure(
+                &aborted,
+                "terminate called after throwing an instance of 'std::bad_alloc'"
+            ),
+            Some(ResourceKind::Memory)
+        );
+        // bad_alloc in the log wins even when yosys exits with a plain error code
+        let failed = std::process::ExitStatus::from_raw(1 << 8);
+        assert_eq!(
+            classify_failure(&failed, "...std::bad_alloc..."),
+            Some(ResourceKind::Memory)
+        );
+    }
+
+    #[test]
+    fn classifies_cpu_and_output_kills() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            classify_failure(&std::process::ExitStatus::from_raw(libc::SIGXCPU), ""),
+            Some(ResourceKind::Cpu)
+        );
+        assert_eq!(
+            classify_failure(&std::process::ExitStatus::from_raw(libc::SIGKILL), ""),
+            Some(ResourceKind::Cpu)
+        );
+        assert_eq!(
+            classify_failure(&std::process::ExitStatus::from_raw(libc::SIGXFSZ), ""),
+            Some(ResourceKind::OutputSize)
+        );
+    }
+
+    #[test]
+    fn ordinary_failures_are_not_resource_kills() {
+        use std::os::unix::process::ExitStatusExt;
+        let failed = std::process::ExitStatus::from_raw(1 << 8); // exit code 1
+        assert_eq!(classify_failure(&failed, "ERROR: syntax error"), None);
+    }
+
+    #[test]
+    fn resource_exhaustion_covers_limits_and_timeout_but_not_syntax_errors() {
+        let mem = YosysError::ResourceLimit {
+            kind: ResourceKind::Memory,
+            log: String::new(),
+        };
+        let cpu = YosysError::ResourceLimit {
+            kind: ResourceKind::Cpu,
+            log: String::new(),
+        };
+        let timeout = YosysError::Timeout { log: String::new() };
+        let syntax = YosysError::Yosys { log: String::new() };
+        assert!(mem.is_resource_exhaustion());
+        assert!(cpu.is_resource_exhaustion());
+        assert!(timeout.is_resource_exhaustion());
+        assert!(!syntax.is_resource_exhaustion());
     }
 
     #[test]

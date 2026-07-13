@@ -56,6 +56,8 @@ export interface GraphNode extends NodeRef {
     src?: string;          // control-driver source attribution when available
     generated?: boolean; // clock/reset/set is not a direct input/buffer-chain source
   }[];                   // label-connected controls omitted from ordinary wiring
+  width?: number;        // grouped bus node: member-bit count (group_vectors only)
+  members?: number[];    // grouped bus node: the real per-bit ids it collapses
 }
 
 export interface GraphEdge {
@@ -125,8 +127,21 @@ Response `200`:
   };
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
+  memories_abstracted: boolean; // true when a generic mode exhausted a sandbox
+                           // bound and succeeded on a retry that keeps inferred
+                           // memories as $mem_v2 cells instead of flattening
+                           // them to gates
 }
 ```
+
+Generic modes (`gates`, `lut4`, `lut6`) first synthesize exactly as before.
+When that attempt exhausts a sandbox bound — memory, CPU, output size, or the
+wall-clock timeout, since flattening a huge memory blows any of them depending
+on the Yosys version — the server retries once with a script that stops `synth`
+before `memory_map` and replays the fine stage without it, so large inferred
+memories survive as abstract `$mem_v2` cells (rendered as MEM nodes, treated as
+sequential boundaries). The response then carries `memories_abstracted: true`.
+RTL and vendor modes never retry.
 
 At most three distinct uncached `design_id` leaders are admitted: one complete
 Yosys/parse/analysis/cache pipeline runs while two wait. Concurrent requests for
@@ -145,6 +160,16 @@ than an id that subsequent analysis routes could not resolve.
 `400` on Yosys failure (body includes the Yosys `log`), `422` on validation
 failure, `503` when three distinct leaders are active or waiting, `504` on
 timeout, and `507` when one design cannot be retained in the cache.
+
+Sandbox resource kills return `400` with a kind-specific `error` instead of
+the generic "yosys failed":
+
+- memory: `synthesis exceeded the sandbox memory limit — large memories cannot
+  be flattened to gates; try RTL or a vendor mode, or reduce memory sizes`
+  (only after the abstract-memory retry also failed, for generic modes)
+- CPU: `synthesis exceeded the sandbox CPU limit — simplify the design or use
+  a lighter mode`
+- output size: `synthesis output exceeded the sandbox size limit`
 
 ## GET `/api/design/:id/endpoints`
 
@@ -176,6 +201,13 @@ timeout, and `507` when one design cannot be retained in the cache.
 directly by register Q through wiring or unconditional zero-depth buffers are
 listed under that register's `output_aliases` and are not duplicated in
 `outputs`.
+
+Register `name` prefers the driven Q-net name; when synthesis destroys every
+RTL name on a flip-flop (ABC restructuring plus vendor techmap can), it falls
+back through visible Q- then D-net aliases, a directly driven output port, the
+instance name, and a design-file `file:line` label, ending with a
+deterministic `<cell_type>·<node_id>`. Names never surface hidden `$`-names,
+and no two register groups share a displayed name.
 
 ## GET `/api/design/:id/paths?limit=25&to=<node_id>`
 
@@ -221,6 +253,13 @@ budget before additional bit variants.
 
 ## GET `/api/design/:id/cone?node=<id>&dir=fanin|fanout&max_depth=64&max_nodes=300&hide_control=true&hide_const=true&show_infrastructure=false`
 
+Also accepts `nodes=<id,id,...>` for a multi-root cone: the union of every
+root's cone traversed under the same single node/edge budget, with each root
+marked `is_root`. When `nodes` is present it overrides `node`; duplicate ids
+are deduplicated, at most 200 ids may be requested (`422` above that, `422`
+for an empty or non-numeric list), and an unknown id yields `404`. Endpoint
+rows use this to open one fanin graph covering every bit of a register group.
+
 Returns a `Subgraph` for rendering. Traversal stops at sequential cells, port
 bits, and consts (they appear as boundary nodes). With `hide_control`, ordinary
 clock/reset/set nets and high-fanout enables are represented by `controls`
@@ -234,6 +273,14 @@ primitive to preserve the selected address-to-output route and depth.
 most 10,000 merged edges. The same 10,000-item work budget bounds hidden
 infrastructure projection before rendering; `truncated` is true when a node,
 edge, or projection-work cap is reached.
+
+With `group_vectors=true`, bit-parallel register and logic vectors collapse
+into single nodes carrying `width` and `members` (see `GraphNode`), and the
+`max_nodes` budget counts group-or-singleton units rather than member bits, so a
+wide datapath fits in far fewer nodes. Bus edges between groups merge into one
+edge carrying every bit and the vector net name. Grouped nodes use synthetic ids
+`>= graph node count`; those ids are display-only and are rejected by `/nodes`
+and by `node=`/`nodes=` (which address real per-bit ids). Defaults to `false`.
 
 ## GET `/api/design/:id/fanout?limit=50`
 
@@ -254,7 +301,8 @@ edge, or projection-work cap is reached.
 
 Full design as a `Subgraph` (same caps and shapes; `truncated` set if the
 design exceeds `max_nodes`). Label-connected controls omit ordinary control
-wires. Used by the optional full-schematic view.
+wires. Used by the optional full-schematic view. Accepts `group_vectors=true`
+(same grouping semantics as `/cone`, budget counts units).
 
 ## GET `/api/design/:id/source-map`
 
@@ -294,7 +342,8 @@ sequential cells / ports / consts as usual) as a `Subgraph`. Selected cells
 have `is_root: true`. A selected register is allowed as the center so its
 upstream D and downstream Q neighborhoods are both visible without implying a
 combinational path through it. If selected roots drive control pins, control
-edges are included and `control` is true.
+edges are included and `control` is true. Accepts `group_vectors=true` (same
+grouping semantics as `/cone`); a group is a root when any member is a root.
 
 ```ts
 {
@@ -322,6 +371,15 @@ sibling modules cannot contribute aliases even on Yosys versions without
 post-flatten scope metadata.
 This recovered attribution is also returned by `/nodes` for graph-to-source
 probing as one `file:start-end` source span rather than one alias per line.
+Yosys attributes procedural cells to whole `always` blocks, so recovery also
+indexes per-line assignment targets (`<lhs> <=` and leading `<lhs> =`
+statements) resolved through the same scope and net-alias machinery. When
+every selected line whose roots carry block-wide src spans has resolved
+targets, the envelope roots are narrowed to those targets plus cells whose
+src spans lie fully inside the selection: probing `idx <= 5'd0;` roots only
+the `idx` register (its fanin cone still follows), while selecting the whole
+block, or any line whose targets cannot be parsed or resolved, keeps today's
+full block attribution.
 Files containing conditional-preprocessor branches use only Yosys provenance
 to avoid attributing an inactive branch. If the LHS no longer exists, the span
 reports `optimized_or_absorbed`. Source-range root collection retains at most

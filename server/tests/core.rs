@@ -1,7 +1,8 @@
 use std::collections::HashSet;
 use synth_explorer_server::analysis::{Analysis, ConeDir, ConeOptions};
 use synth_explorer_server::graph::{Graph, NodeKind};
-use synth_explorer_server::netlist::{parse_str, select_top};
+use synth_explorer_server::grouping::GroupPartition;
+use synth_explorer_server::netlist::{parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
     let json = std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap();
@@ -10,6 +11,192 @@ fn fixture(name: &str) -> (Graph, Analysis) {
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     let analysis = Analysis::new(&graph, vec!["fixture.sv".to_owned()]);
     (graph, analysis)
+}
+
+/// Two chained 8-bit register banks built from single-bit `$_DFF_P_` cells:
+/// `d[i] -> q_i -> y_i -> y[i]`, so the endpoint analysis yields register
+/// groups `q` and `y` of width 8 spanning eight cells each.
+fn grouped_register_banks() -> (Graph, Analysis, GroupPartition) {
+    let mut cells = serde_json::Map::new();
+    for bit in 0u32..8 {
+        cells.insert(
+            format!("q_{bit}"),
+            serde_json::json!({
+                "type": "$_DFF_P_",
+                "port_directions": { "C": "input", "D": "input", "Q": "output" },
+                "connections": { "C": [2], "D": [3 + bit], "Q": [11 + bit] }
+            }),
+        );
+        cells.insert(
+            format!("y_{bit}"),
+            serde_json::json!({
+                "type": "$_DFF_P_",
+                "port_directions": { "C": "input", "D": "input", "Q": "output" },
+                "connections": { "C": [2], "D": [11 + bit], "Q": [19 + bit] }
+            }),
+        );
+    }
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "clk": { "direction": "input", "bits": [2] },
+                "d":   { "direction": "input", "bits": (3u32..11).collect::<Vec<_>>() },
+                "y":   { "direction": "output", "bits": (19u32..27).collect::<Vec<_>>() }
+            },
+            "cells": cells,
+            "netnames": {
+                "clk": { "bits": [2] },
+                "d": { "bits": (3u32..11).collect::<Vec<_>>() },
+                "q": { "bits": (11u32..19).collect::<Vec<_>>() },
+                "y": { "bits": (19u32..27).collect::<Vec<_>>() }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["banks.sv".to_owned()]);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers);
+    (graph, analysis, partition)
+}
+
+fn cone_options(max_nodes: usize) -> ConeOptions {
+    ConeOptions {
+        dir: ConeDir::Fanin,
+        max_depth: 64,
+        max_nodes,
+        hide_control: true,
+        hide_const: true,
+        show_infrastructure: false,
+    }
+}
+
+#[test]
+fn grouped_netlist_collapses_register_banks_into_group_nodes() {
+    let (graph, analysis, partition) = grouped_register_banks();
+    assert_eq!(partition.groups.len(), 2);
+    let base = graph.nodes.len() as u32;
+
+    let plain = analysis.full_netlist(&graph, 2000, false, None);
+    assert!(
+        plain
+            .nodes
+            .iter()
+            .all(|node| node.width.is_none() && node.members.is_none()),
+        "width/members must not appear without grouping"
+    );
+
+    let grouped = analysis.full_netlist(&graph, 2000, false, Some(&partition));
+    assert!(!grouped.truncated);
+    let groups: Vec<_> = grouped
+        .nodes
+        .iter()
+        .filter(|node| node.width.is_some())
+        .collect();
+    assert_eq!(groups.len(), 2);
+    for (idx, node) in groups.iter().enumerate() {
+        assert_eq!(node.node.id, base + idx as u32);
+        assert_eq!(node.width, Some(8));
+        let members = node.members.as_ref().unwrap();
+        assert_eq!(members.len(), 8);
+        assert!(members.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(node.node.seq, Some(true));
+        assert_eq!(node.node.cell_type.as_deref(), Some("$_DFF_P_"));
+    }
+    let labels: Vec<&str> = groups.iter().map(|node| node.node.name.as_str()).collect();
+    assert_eq!(labels, vec!["q[7:0]", "y[7:0]"]);
+
+    let member_ids: HashSet<u32> = partition
+        .groups
+        .iter()
+        .flat_map(|group| group.members.iter().copied())
+        .collect();
+    assert!(
+        grouped
+            .nodes
+            .iter()
+            .all(|node| !member_ids.contains(&node.node.id)),
+        "grouped members must not appear as raw nodes"
+    );
+
+    let bus = grouped
+        .edges
+        .iter()
+        .find(|edge| edge.from == base && edge.to == base + 1)
+        .expect("expected one merged bank-to-bank bus edge");
+    assert_eq!(bus.from_port, "Q");
+    assert_eq!(bus.to_port, "D");
+    assert_eq!(bus.bits.len(), 8);
+    assert_eq!(bus.net_name, "q");
+    assert_eq!(
+        grouped
+            .edges
+            .iter()
+            .filter(|edge| edge.from == base && edge.to == base + 1)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn grouped_budgets_count_units_not_member_bits() {
+    let (graph, analysis, partition) = grouped_register_banks();
+    let base = graph.nodes.len() as u32;
+    // 33 raw nodes collapse to 17 singleton port bits plus 2 register groups.
+    let units = graph.nodes.len() - 16 + 2;
+
+    let full = analysis.full_netlist(&graph, units, false, Some(&partition));
+    assert!(!full.truncated, "a cap of one per unit must fit everything");
+    assert_eq!(full.nodes.len(), units);
+
+    let capped = analysis.full_netlist(&graph, units - 1, false, Some(&partition));
+    assert!(capped.truncated);
+    assert!(capped.nodes.len() < units);
+
+    // Two roots in different groups under max_nodes=1: one group survives.
+    let q_root = partition.groups[0].members[0];
+    let y_root = partition.groups[1].members[0];
+    let cone = analysis
+        .multi_root_cone(&graph, &[q_root, y_root], cone_options(1), Some(&partition))
+        .unwrap();
+    assert!(cone.truncated);
+    assert_eq!(cone.nodes.len(), 1);
+    assert_eq!(cone.nodes[0].node.id, base);
+    assert_eq!(cone.nodes[0].is_root, Some(true));
+    assert_eq!(cone.nodes[0].width, Some(1));
+}
+
+#[test]
+fn grouped_cone_from_member_lands_on_its_group_root() {
+    let (graph, analysis, partition) = grouped_register_banks();
+    let base = graph.nodes.len() as u32;
+    let member = partition.groups[1].members[0];
+
+    let cone = analysis
+        .cone(&graph, member, cone_options(300), Some(&partition))
+        .unwrap();
+
+    let root = cone
+        .nodes
+        .iter()
+        .find(|node| node.node.id == base + 1)
+        .expect("the requested member must land on its group node");
+    assert_eq!(root.is_root, Some(true));
+    assert_eq!(root.width, Some(1));
+    assert_eq!(root.members.as_deref(), Some(&[member][..]));
+    let feeding = cone
+        .nodes
+        .iter()
+        .find(|node| node.node.id == base)
+        .expect("the driving bank must appear as its group node");
+    assert_eq!(feeding.is_boundary, Some(true));
+    assert!(cone.nodes.iter().all(|node| node.node.id != member));
+    assert!(
+        cone.edges
+            .iter()
+            .any(|edge| edge.from == base && edge.to == base + 1)
+    );
 }
 
 #[test]
@@ -47,6 +234,7 @@ fn cone_stops_at_boundary_nodes() {
                 hide_const: true,
                 show_infrastructure: false,
             },
+            None,
         )
         .unwrap();
     assert!(cone.nodes.iter().any(|node| node.is_root == Some(true)));
@@ -76,7 +264,7 @@ fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
         hide_const: true,
         show_infrastructure: false,
     };
-    let envelope = analysis.envelope(&graph, &roots, options).unwrap();
+    let envelope = analysis.envelope(&graph, &roots, options, None).unwrap();
     assert!(!envelope.truncated);
     assert!(envelope.nodes.len() <= options.max_nodes);
     assert!(roots.iter().all(|root| {
@@ -111,7 +299,9 @@ fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
         max_nodes: roots.len() + 2,
         ..options
     };
-    let capped = analysis.envelope(&graph, &roots, capped_options).unwrap();
+    let capped = analysis
+        .envelope(&graph, &roots, capped_options, None)
+        .unwrap();
     assert!(capped.nodes.len() <= capped_options.max_nodes);
     assert!(capped.truncated);
     assert!(capped.edges.iter().any(|edge| roots.contains(&edge.to)));
@@ -134,7 +324,7 @@ fn fanout_counts_direct_sinks() {
 #[test]
 fn full_netlist_caps_nodes() {
     let (graph, analysis) = fixture("and_chain_rtl.json");
-    let subgraph = analysis.full_netlist(&graph, 2, false);
+    let subgraph = analysis.full_netlist(&graph, 2, false, None);
     assert_eq!(subgraph.nodes.len(), 2);
     assert!(subgraph.truncated);
 }
@@ -207,7 +397,7 @@ fn xilinx_latch_gate_and_inverted_control_metadata_are_preserved() {
         .unwrap();
     assert_eq!(endpoint.clock.as_deref(), Some("g"));
 
-    let subgraph = analysis.full_netlist(&graph, 100, false);
+    let subgraph = analysis.full_netlist(&graph, 100, false, None);
     let reset = subgraph
         .nodes
         .iter()
@@ -338,6 +528,7 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
                 hide_const: true,
                 show_infrastructure: false,
             },
+            None,
         )
         .unwrap();
     assert!(cone.nodes.iter().all(|node| node.node.name != "address"));
@@ -380,7 +571,7 @@ fn word_level_sr_set_and_clear_are_control_pins() {
         .map(|edge| &graph.edges[*edge])
         .collect();
     assert!(incoming.iter().all(|edge| edge.control));
-    let subgraph = analysis.full_netlist(&graph, 100, false);
+    let subgraph = analysis.full_netlist(&graph, 100, false, None);
     let controls = &subgraph
         .nodes
         .into_iter()

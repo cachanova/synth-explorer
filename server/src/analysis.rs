@@ -2,6 +2,7 @@ use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
     is_infrastructure_cell, is_register_type, is_transparent_data_buffer, strip_bit_suffix,
 };
+use crate::grouping::{GroupId, GroupKind, GroupPartition};
 use crate::netlist::{PortDirection, YosysModule, YosysNetlist};
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
@@ -55,6 +56,14 @@ pub struct GraphNode {
     pub params: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<ControlRef>,
+    /// Number of member bits collapsed into this node; present only on grouped
+    /// vector nodes (`group_vectors=true`). Equals the members carried here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Real graph node ids collapsed into this group; present only on grouped
+    /// vector nodes. These are the per-bit ids `/nodes` still addresses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<u32>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -427,6 +436,7 @@ pub struct Analysis {
     source_map: SourceMapResponse,
     source_ranges: BTreeMap<String, SourceRangeIndex>,
     synthetic_src: HashMap<NodeId, BTreeSet<String>>,
+    procedural_targets: HashMap<(String, usize), Vec<NodeId>>,
     stats: Stats,
     warnings: Vec<String>,
 }
@@ -542,6 +552,16 @@ impl Analysis {
                 bytes = bytes.saturating_add(source.capacity());
             }
         }
+        bytes = bytes.saturating_add(
+            self.procedural_targets
+                .capacity()
+                .saturating_mul(size_of::<((String, usize), Vec<NodeId>)>()),
+        );
+        for ((file, _), ids) in &self.procedural_targets {
+            bytes = bytes
+                .saturating_add(file.capacity())
+                .saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+        }
         bytes = bytes.saturating_add(stats_heap_bytes(&self.stats));
         bytes = bytes.saturating_add(self.warnings.capacity().saturating_mul(size_of::<String>()));
         for warning in &self.warnings {
@@ -559,7 +579,7 @@ impl Analysis {
             node_startpoint,
         } = compute_depths(graph, &loop_set);
         let (endpoints, endpoint_targets) =
-            discover_endpoints(graph, &node_depth, &node_startpoint);
+            discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
         let source_map = build_source_map(graph, source_files);
         let stats = build_stats(graph, &endpoints, &endpoint_targets);
         let warnings = build_warnings(graph, &comb_loops);
@@ -572,9 +592,17 @@ impl Analysis {
             source_map,
             source_ranges: BTreeMap::new(),
             synthetic_src: HashMap::new(),
+            procedural_targets: HashMap::new(),
             stats,
             warnings,
         }
+    }
+
+    /// Install per-line procedural assignment targets recovered from the
+    /// submitted sources so `source_nodes_range` can narrow block-attributed
+    /// probes to the assigned signals.
+    pub fn set_procedural_targets(&mut self, targets: HashMap<(String, usize), Vec<NodeId>>) {
+        self.procedural_targets = targets;
     }
 
     pub fn endpoints(&self) -> EndpointsResponse {
@@ -713,6 +741,7 @@ impl Analysis {
 
     pub fn source_nodes_range(
         &self,
+        graph: &Graph,
         file: &str,
         start_line: usize,
         end_line: usize,
@@ -721,28 +750,123 @@ impl Analysis {
             return None;
         }
         let mut ids = BTreeSet::new();
+        'collect: {
+            for line in start_line..=end_line {
+                if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
+                    for id in line_ids {
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
+                        }
+                    }
+                }
+            }
+            if let Some(index) = self.source_ranges.get(file) {
+                for range in index.overlapping(start_line, end_line) {
+                    if range.end_line < start_line {
+                        continue;
+                    }
+                    for id in &range.node_ids {
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
+                        }
+                    }
+                }
+            }
+        }
+        let roots: Vec<NodeId> = ids.into_iter().collect();
+        Some(self.narrow_to_assignment_targets(graph, file, start_line, end_line, roots))
+    }
+
+    /// Yosys attributes procedural cells to whole `always` blocks, so a
+    /// single-line probe inside a block would otherwise root every register in
+    /// it. When every selected line that contributed a block-attributed root
+    /// (a root with a covering src span extending outside the selection) has
+    /// parsed assignment targets, keep only targeted roots plus roots whose
+    /// covering spans lie fully inside the selection. Any parsing or
+    /// resolution gap falls back to the unfiltered attribution.
+    fn narrow_to_assignment_targets(
+        &self,
+        graph: &Graph,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+        roots: Vec<NodeId>,
+    ) -> Vec<NodeId> {
+        if roots.is_empty() || self.procedural_targets.is_empty() {
+            return roots;
+        }
+        let block_roots: HashSet<NodeId> = roots
+            .iter()
+            .copied()
+            .filter(|id| self.is_block_attributed(graph, *id, file, start_line, end_line))
+            .collect();
+        if block_roots.is_empty() {
+            return roots;
+        }
+        let overlapping = self
+            .source_ranges
+            .get(file)
+            .map_or(&[][..], |index| index.overlapping(start_line, end_line));
+        let mut targets: HashSet<NodeId> = HashSet::new();
         for line in start_line..=end_line {
-            if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
-                for id in line_ids {
-                    if insert_bounded_node(&mut ids, *id) {
-                        return Some(ids.into_iter().collect());
-                    }
-                }
+            let line_targets = self.procedural_targets.get(&(file.to_owned(), line));
+            if let Some(ids) = line_targets {
+                targets.extend(ids.iter().copied());
+            }
+            let contributed_block_root = self
+                .source_map
+                .by_line
+                .get(&format!("{file}:{line}"))
+                .is_some_and(|ids| ids.iter().any(|id| block_roots.contains(id)))
+                || overlapping.iter().any(|range| {
+                    range.start_line <= line
+                        && line <= range.end_line
+                        && range.node_ids.iter().any(|id| block_roots.contains(id))
+                });
+            if contributed_block_root && line_targets.is_none_or(|ids| ids.is_empty()) {
+                return roots;
             }
         }
-        if let Some(index) = self.source_ranges.get(file) {
-            for range in index.overlapping(start_line, end_line) {
-                if range.end_line < start_line {
-                    continue;
-                }
-                for id in &range.node_ids {
-                    if insert_bounded_node(&mut ids, *id) {
-                        return Some(ids.into_iter().collect());
-                    }
-                }
-            }
+        if targets.is_empty() {
+            return roots;
         }
-        Some(ids.into_iter().collect())
+        let narrowed: Vec<NodeId> = roots
+            .iter()
+            .copied()
+            .filter(|id| targets.contains(id) || !block_roots.contains(id))
+            .collect();
+        if narrowed.is_empty() { roots } else { narrowed }
+    }
+
+    /// A root is block-attributed for a selection when any of its covering src
+    /// spans in `file` overlaps the selection but extends outside it.
+    fn is_block_attributed(
+        &self,
+        graph: &Graph,
+        id: NodeId,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> bool {
+        let spans_outside = |src: &str| {
+            src.split('|').any(|loc| {
+                parse_src_loc(loc).is_some_and(|(span_file, span_start, span_end)| {
+                    span_file == file
+                        && span_start <= end_line
+                        && span_end >= start_line
+                        && (span_start < start_line || span_end > end_line)
+                })
+            })
+        };
+        graph
+            .nodes
+            .get(id as usize)
+            .and_then(|node| node.src.as_deref())
+            .is_some_and(spans_outside)
+            || self
+                .synthetic_src
+                .get(&id)
+                .is_some_and(|sources| sources.iter().any(|src| spans_outside(src)))
     }
 
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
@@ -881,8 +1005,14 @@ impl Analysis {
         }
     }
 
-    pub fn cone(&self, graph: &Graph, root: NodeId, options: ConeOptions) -> Option<Subgraph> {
-        self.multi_root_cone(graph, &[root], options)
+    pub fn cone(
+        &self,
+        graph: &Graph,
+        root: NodeId,
+        options: ConeOptions,
+        grouping: Option<&GroupPartition>,
+    ) -> Option<Subgraph> {
+        self.multi_root_cone(graph, &[root], options, grouping)
     }
 
     pub fn multi_root_cone(
@@ -890,8 +1020,9 @@ impl Analysis {
         graph: &Graph,
         roots: &[NodeId],
         options: ConeOptions,
+        grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
-        self.multi_root_subgraph(graph, roots, &[options.dir], options)
+        self.multi_root_subgraph(graph, roots, &[options.dir], options, grouping)
     }
 
     pub fn envelope(
@@ -899,8 +1030,15 @@ impl Analysis {
         graph: &Graph,
         roots: &[NodeId],
         options: ConeOptions,
+        grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
-        self.multi_root_subgraph(graph, roots, &[ConeDir::Fanin, ConeDir::Fanout], options)
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[ConeDir::Fanin, ConeDir::Fanout],
+            options,
+            grouping,
+        )
     }
 
     fn multi_root_subgraph(
@@ -909,6 +1047,7 @@ impl Analysis {
         roots: &[NodeId],
         directions: &[ConeDir],
         options: ConeOptions,
+        grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
         if roots
             .iter()
@@ -917,8 +1056,13 @@ impl Analysis {
             return None;
         }
 
+        // With grouping the node budget counts distinct group-or-singleton
+        // units, not member bits, so a wide bus costs one unit. `seen_units`
+        // tracks the paid units; without grouping it mirrors `seen` exactly.
+        let base = graph.nodes.len() as u32;
         let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
         let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut seen_units: HashSet<u32> = HashSet::new();
         let mut unique_roots: HashSet<NodeId> = HashSet::new();
         let mut included_root_ids = Vec::new();
         let mut boundary_nodes: HashSet<NodeId> = HashSet::new();
@@ -927,10 +1071,12 @@ impl Analysis {
 
         for root in roots {
             if unique_roots.insert(*root) {
-                if seen.len() >= cap {
+                let unit = unit_id(grouping, base, *root);
+                if !seen_units.contains(&unit) && seen_units.len() >= cap {
                     truncated = true;
                     continue;
                 }
+                seen_units.insert(unit);
                 seen.insert(*root);
                 included_root_ids.push(*root);
             }
@@ -1021,10 +1167,12 @@ impl Analysis {
                         ConeDir::Fanout => edge.to,
                     };
                     if !seen.contains(&next) {
-                        if seen.len() >= cap {
+                        let unit = unit_id(grouping, base, next);
+                        if !seen_units.contains(&unit) && seen_units.len() >= cap {
                             truncated = true;
                             break;
                         }
+                        seen_units.insert(unit);
                         seen.insert(next);
                     }
                     let stop_at_state_input = traversal.dir == ConeDir::Fanout
@@ -1047,7 +1195,7 @@ impl Analysis {
             }
         }
 
-        Some(self.subgraph_from_sets(
+        let subgraph = self.subgraph_from_sets(
             graph,
             &seen,
             &edge_set,
@@ -1057,7 +1205,11 @@ impl Analysis {
                 truncated,
                 show_infrastructure: options.show_infrastructure,
             },
-        ))
+        );
+        Some(match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph,
+        })
     }
 
     pub fn full_netlist(
@@ -1065,11 +1217,26 @@ impl Analysis {
         graph: &Graph,
         max_nodes: usize,
         show_infrastructure: bool,
+        grouping: Option<&GroupPartition>,
     ) -> Subgraph {
+        let base = graph.nodes.len() as u32;
         let cap = max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
+        // Take the first `cap` group-or-singleton units in node order. A group's
+        // members can be non-contiguous, so keep scanning to admit every member
+        // of an already-counted unit rather than breaking at the cap.
         let mut seen = HashSet::new();
-        for node in graph.nodes.iter().take(cap) {
-            seen.insert(node.id);
+        let mut seen_units: HashSet<u32> = HashSet::new();
+        let mut truncated = false;
+        for node in &graph.nodes {
+            let unit = unit_id(grouping, base, node.id);
+            if seen_units.contains(&unit) {
+                seen.insert(node.id);
+            } else if seen_units.len() < cap {
+                seen_units.insert(unit);
+                seen.insert(node.id);
+            } else {
+                truncated = true;
+            }
         }
         let edge_set: HashSet<usize> = graph
             .edges
@@ -1083,17 +1250,21 @@ impl Analysis {
             .map(|(idx, _)| idx)
             .collect();
         let empty = HashSet::new();
-        self.subgraph_from_sets(
+        let subgraph = self.subgraph_from_sets(
             graph,
             &seen,
             &edge_set,
             SubgraphProjection {
                 roots: &empty,
                 boundary_nodes: &empty,
-                truncated: graph.nodes.len() > cap,
+                truncated,
                 show_infrastructure,
             },
-        )
+        );
+        match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph,
+        }
     }
 
     pub fn fanout(&self, graph: &Graph, limit: usize) -> FanoutResponse {
@@ -1246,6 +1417,8 @@ impl Analysis {
                         .flatten(),
                     params: node.params.clone(),
                     controls: node_controls(graph, id),
+                    width: None,
+                    members: None,
                 }
             })
             .collect();
@@ -1542,6 +1715,146 @@ impl ConeDir {
     }
 }
 
+/// The rendering unit a raw node belongs to: its group's synthetic id
+/// (`base + group_id`, where `base = graph.nodes.len()`) when grouped, else the
+/// node's own id. Synthetic ids never collide with real ids because real ids
+/// are `< base`. With no partition every node is its own unit.
+fn unit_id(grouping: Option<&GroupPartition>, base: u32, id: NodeId) -> u32 {
+    match grouping.and_then(|partition| partition.group_of.get(&id)) {
+        Some(group_id) => base + group_id,
+        None => id,
+    }
+}
+
+/// Collapse a per-bit subgraph into its group quotient: every group's member
+/// nodes become one synthetic node, edges are re-merged across the resulting
+/// unit ids, and intra-group edges vanish. Singletons pass through unchanged.
+/// Runs after infrastructure collapse and edge capping, so synthetic ids are
+/// never indexed back into `graph.nodes`.
+fn quotient_subgraph(graph: &Graph, subgraph: Subgraph, partition: &GroupPartition) -> Subgraph {
+    const MAX_MERGED_SRC_FRAGMENTS: usize = 8;
+    let base = graph.nodes.len() as u32;
+
+    struct GroupAcc {
+        members: Vec<u32>,
+        is_root: bool,
+        is_boundary: bool,
+        depth: Option<u32>,
+        controls: Vec<ControlRef>,
+    }
+
+    let mut group_accs: BTreeMap<GroupId, GroupAcc> = BTreeMap::new();
+    let mut nodes: Vec<GraphNode> = Vec::new();
+    for node in subgraph.nodes {
+        let Some(group_id) = partition.group_of.get(&node.node.id).copied() else {
+            nodes.push(node);
+            continue;
+        };
+        let acc = group_accs.entry(group_id).or_insert_with(|| GroupAcc {
+            members: Vec::new(),
+            is_root: false,
+            is_boundary: false,
+            depth: None,
+            controls: Vec::new(),
+        });
+        acc.members.push(node.node.id);
+        acc.is_root |= node.is_root == Some(true);
+        acc.is_boundary |= node.is_boundary == Some(true);
+        if let Some(depth) = node.depth {
+            acc.depth = Some(acc.depth.map_or(depth, |current| current.max(depth)));
+        }
+        for control in node.controls {
+            if !acc
+                .controls
+                .iter()
+                .any(|kept| kept.role == control.role && kept.net_name == control.net_name)
+            {
+                acc.controls.push(control);
+            }
+        }
+    }
+
+    for (group_id, acc) in group_accs {
+        let group = &partition.groups[group_id as usize];
+        let mut members = acc.members;
+        members.sort_unstable();
+        let register = matches!(group.kind, GroupKind::Register);
+        let mut src_fragments: Vec<String> = Vec::new();
+        for member in &members {
+            if let Some(src) = graph.nodes[*member as usize].src.as_deref() {
+                for fragment in src.split('|') {
+                    if !fragment.is_empty()
+                        && !src_fragments.iter().any(|kept| kept == fragment)
+                        && src_fragments.len() < MAX_MERGED_SRC_FRAGMENTS
+                    {
+                        src_fragments.push(fragment.to_owned());
+                    }
+                }
+            }
+        }
+        let is_root = acc.is_root;
+        nodes.push(GraphNode {
+            node: NodeRef {
+                id: base + group_id,
+                kind: ApiNodeKind::Cell,
+                name: group.label.clone(),
+                cell_type: Some(group.cell_type.clone()),
+                seq: register.then_some(true),
+                register: register.then(|| is_register_type(&group.cell_type)),
+                src: (!src_fragments.is_empty()).then(|| src_fragments.join("|")),
+            },
+            is_root: is_root.then_some(true),
+            is_boundary: (!is_root && acc.is_boundary).then_some(true),
+            depth: acc.depth,
+            params: BTreeMap::new(),
+            controls: acc.controls,
+            width: Some(members.len() as u32),
+            members: Some(members),
+        });
+    }
+    nodes.sort_by_key(|node| node.node.id);
+
+    // Re-merge edges across unit ids: intra-group edges (same unit both ends)
+    // vanish; parallel bus edges collapse to one carrying every bit.
+    let mut merged: BTreeMap<(u32, u32, String, String), GraphEdge> = BTreeMap::new();
+    for edge in subgraph.edges {
+        let from = unit_id(Some(partition), base, edge.from);
+        let to = unit_id(Some(partition), base, edge.to);
+        if from == to {
+            continue;
+        }
+        let key = (from, to, edge.from_port.clone(), edge.to_port.clone());
+        let entry = merged.entry(key).or_insert_with(|| GraphEdge {
+            from,
+            to,
+            from_port: edge.from_port.clone(),
+            to_port: edge.to_port.clone(),
+            // A bus edge carries the vector net, not one bit's `name[k]`.
+            net_name: strip_bit_suffix(&edge.net_name).to_owned(),
+            bits: Vec::new(),
+            control: edge.control,
+        });
+        entry.bits.extend_from_slice(&edge.bits);
+        if edge.control == Some(true) {
+            entry.control = Some(true);
+        }
+    }
+    let edges = merged
+        .into_values()
+        .map(|mut edge| {
+            edge.bits.sort_unstable();
+            edge.bits.dedup();
+            edge
+        })
+        .collect();
+
+    Subgraph {
+        nodes,
+        edges,
+        truncated: subgraph.truncated,
+    }
+}
+
 pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
     let node = &graph.nodes[id as usize];
     let kind = match node.kind {
@@ -1782,7 +2095,9 @@ fn discover_endpoints(
     graph: &Graph,
     node_depth: &[Option<u32>],
     node_startpoint: &[Option<NodeId>],
+    source_files: &[String],
 ) -> (EndpointsResponse, Vec<EndpointTarget>) {
+    let design_files: HashSet<&str> = source_files.iter().map(String::as_str).collect();
     let mut targets = Vec::new();
     let mut register_map: BTreeMap<String, RegisterGroup> = BTreeMap::new();
     let mut register_bits: HashMap<(NodeId, Option<u32>), (String, usize)> = HashMap::new();
@@ -1795,13 +2110,7 @@ fn discover_endpoints(
             continue;
         };
         let q_width = info.q_bits.len().max(1);
-        let group_name = info
-            .q_bits
-            .iter()
-            .find_map(|bit| bit.net())
-            .and_then(|net| register_q_name(graph, net))
-            .map(|name| strip_bit_suffix(name).to_owned())
-            .unwrap_or_else(|| node.name.clone());
+        let group_name = register_group_name(graph, node, info, &design_files);
         let cell_type = node.cell_type.clone().unwrap_or_default();
         let mut bits = Vec::new();
         let data_edges = endpoint_data_edges(graph, node.id, info, q_width);
@@ -2804,6 +3113,14 @@ fn parse_src_loc(loc: &str) -> Option<(String, usize, usize)> {
 }
 
 fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
+    best_net_alias(graph, net, false)
+}
+
+fn visible_net_name(graph: &Graph, net: u32) -> Option<&str> {
+    best_net_alias(graph, net, true)
+}
+
+fn best_net_alias(graph: &Graph, net: u32, require_visible: bool) -> Option<&str> {
     let aliases = graph.net_aliases.get(&net)?;
     let mut best: Option<&str> = None;
     for candidate in aliases {
@@ -2812,6 +3129,9 @@ fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
             .strip_prefix("$iopadmap$")
             .filter(|name| !name.is_empty())
             .unwrap_or(raw_candidate);
+        if require_visible && is_hidden_name(candidate) {
+            continue;
+        }
         let candidate_depth = bracket_depth(candidate);
         let replace = best.is_none_or(|current| {
             let current_depth = bracket_depth(current);
@@ -2822,7 +3142,111 @@ fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
             best = Some(candidate);
         }
     }
-    best.or_else(|| graph.net_names.get(&net).map(String::as_str))
+    best.or_else(|| {
+        graph
+            .net_names
+            .get(&net)
+            .map(String::as_str)
+            .filter(|name| !require_visible || !is_hidden_name(name))
+    })
+}
+
+fn is_hidden_name(name: &str) -> bool {
+    name.starts_with('$')
+}
+
+/// Displayed endpoint-group name for a register cell. ABC restructuring and
+/// library techmaps (for example xilinx `ff_map.v`) can destroy every RTL name
+/// on a flip-flop, so after today's Q-net name the chain falls back through
+/// visible Q- and D-net aliases, an output port reached through transparent
+/// buffers, a visible instance name, and a design-file src label before a
+/// deterministic per-node label. Register rows therefore never render as
+/// identical bare cell-type entries.
+fn register_group_name(
+    graph: &Graph,
+    node: &crate::graph::Node,
+    info: &crate::graph::CellInfo,
+    design_files: &HashSet<&str>,
+) -> String {
+    if let Some(name) = info
+        .q_bits
+        .iter()
+        .find_map(|bit| bit.net())
+        .and_then(|net| register_q_name(graph, net))
+        .filter(|name| !is_hidden_name(name))
+    {
+        return strip_bit_suffix(name).to_owned();
+    }
+    for bits in [&info.q_bits, &info.d_bits] {
+        if let Some(name) = bits
+            .iter()
+            .filter_map(|bit| bit.net())
+            .find_map(|net| visible_net_name(graph, net))
+        {
+            return strip_bit_suffix(name).to_owned();
+        }
+    }
+    if let Some(port) = forwarded_output_port(graph, node.id) {
+        return port;
+    }
+    if !is_hidden_name(&node.name) {
+        return node.name.clone();
+    }
+    let cell_type = node.cell_type.as_deref().unwrap_or_default();
+    if let Some(label) = node
+        .src
+        .as_deref()
+        .and_then(|src| design_src_label(src, design_files))
+    {
+        return format!("{cell_type} @ {label}");
+    }
+    format!("{cell_type}·{}", node.id)
+}
+
+/// Follow a register's outputs forward through unconditional data buffers to
+/// a top-level output port, mirroring `direct_register_driver`.
+fn forwarded_output_port(graph: &Graph, register: NodeId) -> Option<String> {
+    let mut queue: VecDeque<NodeId> = VecDeque::from([register]);
+    let mut visited: HashSet<NodeId> = HashSet::from([register]);
+    while let Some(id) = queue.pop_front() {
+        for edge_idx in &graph.outgoing[id as usize] {
+            let edge = &graph.edges[*edge_idx];
+            let Some(sink) = graph.nodes.get(edge.to as usize) else {
+                continue;
+            };
+            if sink.kind == NodeKind::PortBit
+                && matches!(
+                    sink.port_dir,
+                    Some(PortDirection::Output | PortDirection::Inout)
+                )
+                && let Some(port) = &sink.port
+            {
+                return Some(port.clone());
+            }
+            if sink.kind == NodeKind::Cell
+                && sink
+                    .cell_type
+                    .as_deref()
+                    .is_some_and(is_transparent_data_buffer)
+                && visited.insert(sink.id)
+            {
+                queue.push_back(sink.id);
+            }
+        }
+    }
+    None
+}
+
+/// First src fragment that points at a submitted design file, as `file:line`.
+/// Library techmap sources (for example `ff_map.v`) are never design files and
+/// would mislabel the endpoint.
+fn design_src_label(src: &str, design_files: &HashSet<&str>) -> Option<String> {
+    src.split('|').find_map(|loc| {
+        let (file, start_line, _) = parse_src_loc(loc)?;
+        design_files
+            .contains(file.as_str())
+            .then(|| format!("{file}:{start_line}"))
+    })
 }
 
 fn bracket_depth(name: &str) -> usize {
@@ -2996,8 +3420,8 @@ mod tests {
         let graph = dense_dag_graph(150);
         let analysis = Analysis::new(&graph, vec!["dense.sv".to_owned()]);
 
-        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true);
-        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true);
+        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, None);
+        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, None);
 
         assert_eq!(first.edges.len(), MAX_SUBGRAPH_EDGES);
         assert!(first.truncated);
@@ -3054,6 +3478,8 @@ mod tests {
                 depth: None,
                 params: BTreeMap::new(),
                 controls: Vec::new(),
+                width: None,
+                members: None,
             })
             .collect();
         let edge = |from, to, bits: Vec<u32>| GraphEdge {
@@ -3107,7 +3533,9 @@ mod tests {
     fn source_range_roots_use_a_sentinel_and_propagate_truncation() {
         let graph = sourced_node_graph(SOURCE_ROOT_COLLECTION_CAP + 500);
         let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
-        let roots = analysis.source_nodes_range("source.sv", 1, 1).unwrap();
+        let roots = analysis
+            .source_nodes_range(&graph, "source.sv", 1, 1)
+            .unwrap();
 
         assert_eq!(roots.len(), SOURCE_ROOT_COLLECTION_CAP);
         assert_eq!(roots.first(), Some(&0));
@@ -3125,6 +3553,7 @@ mod tests {
                     hide_const: true,
                     show_infrastructure: true,
                 },
+                None,
             )
             .unwrap();
         assert_eq!(envelope.nodes.len(), 400);
@@ -3151,7 +3580,7 @@ mod tests {
         analysis.extend_source_ranges(vec![range.clone()], false);
 
         assert_eq!(
-            analysis.source_nodes_range("sparse.sv", 500_000, 500_000),
+            analysis.source_nodes_range(&graph, "sparse.sv", 500_000, 500_000),
             Some(vec![0])
         );
         assert!(analysis.source_map.by_line.is_empty());
@@ -3481,6 +3910,8 @@ mod tests {
                 depth: None,
                 params: BTreeMap::new(),
                 controls: Vec::new(),
+                width: None,
+                members: None,
             })
             .collect();
         let mut edges = Vec::new();
@@ -3543,6 +3974,8 @@ mod tests {
                 depth: None,
                 params: BTreeMap::new(),
                 controls: Vec::new(),
+                width: None,
+                members: None,
             })
             .collect();
         let mut edges = Vec::with_capacity(1 + 2 * branches);

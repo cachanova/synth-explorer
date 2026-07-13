@@ -3,7 +3,9 @@ use synth_explorer_server::graph::{
     Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell, is_sequential_type,
 };
 use synth_explorer_server::netlist::{parse_value, select_top};
-use synth_explorer_server::yosys::{SourceFile, SynthMode, SynthRequest, run_yosys};
+use synth_explorer_server::yosys::{
+    MemoryHandling, SourceFile, SynthMode, SynthRequest, run_yosys,
+};
 
 async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Analysis) {
     let path = std::path::Path::new("../examples").join(name);
@@ -20,7 +22,7 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
     }
     .validate()
     .unwrap();
-    let output = run_yosys(&request).await.unwrap();
+    let output = run_yosys(&request, MemoryHandling::Map).await.unwrap();
     let netlist = parse_value(output.json).unwrap();
     let (resolved_top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, resolved_top, module).unwrap();
@@ -40,7 +42,7 @@ async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) ->
     }
     .validate()
     .unwrap();
-    let output = run_yosys(&request).await.unwrap();
+    let output = run_yosys(&request, MemoryHandling::Map).await.unwrap();
     let netlist = parse_value(output.json).unwrap();
     let (resolved_top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, resolved_top, module).unwrap();
@@ -180,6 +182,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                     hide_const: true,
                     show_infrastructure: false,
                 },
+                None,
             )
             .expect("valid output node should have a fanin cone");
         let cell_types: Vec<&str> = cone
@@ -214,6 +217,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                             show_infrastructure: false,
                         }
                     },
+                    None,
                 )
                 .unwrap();
             assert!(
@@ -357,6 +361,74 @@ fn word_level_set_reset_cells_are_state_boundaries() {
 }
 
 #[tokio::test]
+async fn xilinx_register_endpoints_are_named_even_when_yosys_names_are_hidden() {
+    // Write-first block-RAM inference makes memory_libmap re-emit the
+    // transparency bypass registers with fresh `$auto$ff.cc:...:slice` names,
+    // library-file src (ff_map.v), and no surviving user Q-net alias — the
+    // same failure StreamingHistogram.v shows at scale. Naming must recover
+    // from D-net aliases or fall back to a deterministic per-node label.
+    let source = r#"
+module hidden_regs (
+    input  wire        clk,
+    input  wire        we,
+    input  wire [9:0]  waddr,
+    input  wire [9:0]  raddr,
+    input  wire [15:0] wdata,
+    output reg  [15:0] rdata
+);
+  (* ram_style = "block" *) reg [15:0] mem [0:1023];
+  always @(posedge clk) begin
+    rdata <= mem[raddr];
+    if (we && (waddr == raddr))
+      rdata <= wdata;
+    if (we)
+      mem[waddr] <= wdata;
+  end
+endmodule
+"#;
+    let (graph, analysis) =
+        analyze_source("hidden_regs.sv", source, "hidden_regs", SynthMode::Xilinx).await;
+    assert!(
+        graph.nodes.iter().any(|node| {
+            node.cell_type
+                .as_deref()
+                .is_some_and(|t| t.starts_with("FD"))
+                && node.name.starts_with('$')
+        }),
+        "fixture must contain flip-flops whose yosys names are hidden"
+    );
+
+    let endpoints = analysis.endpoints();
+    assert!(!endpoints.registers.is_empty());
+    let mut seen = std::collections::BTreeSet::new();
+    for register in &endpoints.registers {
+        assert!(
+            !register.name.starts_with('$'),
+            "register endpoint fell back to a hidden yosys name: {}",
+            register.name
+        );
+        assert!(
+            seen.insert(register.name.clone()),
+            "two register endpoints share the displayed name {}",
+            register.name
+        );
+    }
+    // The bypass data registers recover their identity from the D-net alias.
+    assert!(
+        endpoints
+            .registers
+            .iter()
+            .any(|group| group.name == "wdata"),
+        "expected a D-net-alias-derived group, got {:?}",
+        endpoints
+            .registers
+            .iter()
+            .map(|group| (&group.name, group.width))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn latches_are_register_endpoints_in_rtl_and_xilinx_modes() {
     let source = r#"
 module latch_demo (
@@ -424,7 +496,7 @@ endmodule
             .any(|register| register.bits.iter().any(|bit| bit.node_id == ff.id))
     );
     let clock = analysis
-        .full_netlist(&graph, 100, false)
+        .full_netlist(&graph, 100, false, None)
         .nodes
         .into_iter()
         .find(|node| node.node.id == ff.id)
@@ -477,7 +549,7 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
                 .all(|edge| !edge.control)
         );
 
-        let schematic = analysis.full_netlist(&graph, 2000, false);
+        let schematic = analysis.full_netlist(&graph, 2000, false, None);
         let rendered_ff = schematic
             .nodes
             .iter()
@@ -525,4 +597,50 @@ async fn mux_select_is_a_data_dependency_not_a_set_reset_control() {
         .collect();
     assert!(!select_edges.is_empty());
     assert!(select_edges.iter().all(|edge| !edge.control));
+}
+
+#[tokio::test]
+async fn abstract_memory_handling_keeps_mem_cells_unmapped_in_generic_modes() {
+    // The abstract retry path runs the generic pipeline while leaving memories
+    // as `$mem_v2` cells. Exercised directly (not through an OOM) so it is
+    // deterministic across Yosys versions and sandbox limits.
+    let source = r#"
+module mem_top (
+    input  wire        clk,
+    input  wire        we,
+    input  wire [9:0]  waddr,
+    input  wire [31:0] wdata,
+    input  wire [9:0]  raddr,
+    output reg  [31:0] rdata
+);
+  reg [31:0] mem [0:1023];
+  always @(posedge clk) begin
+    if (we) mem[waddr] <= wdata;
+    rdata <= mem[raddr];
+  end
+endmodule
+"#;
+    let request = SynthRequest {
+        files: vec![SourceFile {
+            name: "mem_top.v".to_owned(),
+            content: source.to_owned(),
+        }],
+        top: Some("mem_top".to_owned()),
+        mode: SynthMode::Gates,
+        extra_args: None,
+    }
+    .validate()
+    .unwrap();
+
+    let abstract_out = run_yosys(&request, MemoryHandling::Abstract).await.unwrap();
+    let netlist = parse_value(abstract_out.json).unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    assert!(
+        graph.nodes.iter().any(|node| node
+            .cell_type
+            .as_deref()
+            .is_some_and(|cell_type| cell_type.starts_with("$mem"))),
+        "abstract handling must retain a $mem cell in generic mode"
+    );
 }

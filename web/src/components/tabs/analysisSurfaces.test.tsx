@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { TimingPath } from '../../types'
+import { StaleResultsChip } from '../StaleResultsChip'
 import { ModeName } from './Overview'
 import {
   BitCohort,
@@ -66,5 +67,18 @@ describe('analysis surface labels', () => {
     }
 
     expect(renderToStaticMarkup(<PathEndpointName path={path} />)).toBe('DFF')
+  })
+
+  it('flags non-current analysis results with a stale chip', () => {
+    for (const state of ['refreshing', 'stale', 'error'] as const) {
+      expect(renderToStaticMarkup(<StaleResultsChip state={state} />)).toContain(
+        'showing previous results — refreshing',
+      )
+    }
+  })
+
+  it('renders no stale chip when the analysis is current', () => {
+    expect(renderToStaticMarkup(<StaleResultsChip state="current" />)).toBe('')
+    expect(renderToStaticMarkup(<StaleResultsChip state="none" />)).toBe('')
   })
 })

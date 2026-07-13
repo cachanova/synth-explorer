@@ -3,9 +3,12 @@ use crate::analysis::{
     SourceLineIndex, SourceMapResponse, Stats, Subgraph,
 };
 use crate::graph::Graph;
+use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
-use crate::yosys::{SourceFile, SynthMode, SynthRequest, YosysError, run_yosys};
+use crate::yosys::{
+    MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys,
+};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
@@ -304,6 +307,7 @@ struct Design {
     graph: Graph,
     analysis: Analysis,
     source_index: SourceLineIndex,
+    grouping: GroupPartition,
 }
 
 impl Design {
@@ -314,6 +318,7 @@ impl Design {
             .saturating_add(self.graph.estimated_heap_bytes())
             .saturating_add(self.analysis.estimated_heap_bytes())
             .saturating_add(self.source_index.estimated_heap_bytes())
+            .saturating_add(self.grouping.estimated_heap_bytes())
     }
 }
 
@@ -325,6 +330,9 @@ pub struct SynthesizeResponse {
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub log: String,
+    /// True when generic synthesis hit the sandbox memory limit and succeeded
+    /// on the abstract-memory retry, leaving `$mem_v2` cells unmapped.
+    pub memories_abstracted: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -533,7 +541,7 @@ async fn synthesize_uncached(
         return Ok(design);
     }
     let started = Instant::now();
-    let output = run_yosys(validated).await.map_err(|err| {
+    let synthesis_failed = |err: &YosysError| {
         tracing::warn!(
             design_id,
             mode,
@@ -541,8 +549,27 @@ async fn synthesize_uncached(
             error = %err,
             "synthesis_failed"
         );
-        map_yosys_error(err)
-    })?;
+    };
+    let (output, memories_abstracted) = match run_yosys(validated, MemoryHandling::Map).await {
+        Ok(output) => (output, false),
+        // A too-large memory flatten exhausts memory, CPU, or the wall clock
+        // depending on the Yosys version; any of them is worth one retry that
+        // keeps memories abstract.
+        Err(err) if validated.mode.is_generic() && err.is_resource_exhaustion() => {
+            tracing::info!(design_id, mode, "synthesis_memory_retry");
+            let output = run_yosys(validated, MemoryHandling::Abstract)
+                .await
+                .map_err(|retry_err| {
+                    synthesis_failed(&retry_err);
+                    map_yosys_error(retry_err)
+                })?;
+            (output, true)
+        }
+        Err(err) => {
+            synthesis_failed(&err);
+            return Err(map_yosys_error(err));
+        }
+    };
     let parsed = parse_value(output.json).map_err(|err| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -576,6 +603,7 @@ async fn synthesize_uncached(
     let SourceAliasProvenance {
         ranges,
         truncated: source_ranges_truncated,
+        procedural_targets,
     } = continuous_assign_provenance(
         &graph,
         &source_parsed,
@@ -589,6 +617,7 @@ async fn synthesize_uncached(
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
     source_index.extend_ranges(&ranges);
     analysis.extend_source_ranges(ranges, source_ranges_truncated);
+    analysis.set_procedural_targets(procedural_targets);
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
@@ -596,12 +625,15 @@ async fn synthesize_uncached(
         stats: analysis.stats(),
         warnings: analysis.warnings(),
         log: output.log,
+        memories_abstracted,
     };
+    let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
     let design = Arc::new(Design {
         response: response.clone(),
         graph,
         analysis,
         source_index,
+        grouping,
     });
     let cache_estimated_bytes = design_cache_weight(design_id, &design);
     let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
@@ -710,12 +742,14 @@ async fn paths(
 #[derive(Debug, Deserialize)]
 struct ConeQuery {
     node: Option<u32>,
+    nodes: Option<String>,
     dir: Option<String>,
     max_depth: Option<u32>,
     max_nodes: Option<usize>,
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 async fn cone(
@@ -735,14 +769,33 @@ async fn cone(
                 "dir must be fanin or fanout",
             )
         })?;
-    let node = query
-        .node
-        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required"))?;
+    let roots =
+        match &query.nodes {
+            Some(nodes) => {
+                let ids = parse_node_ids(nodes)?;
+                if ids.is_empty() {
+                    return Err(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "nodes must contain at least one node id",
+                    ));
+                }
+                if ids.len() > 200 {
+                    return Err(ApiError::new(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "at most 200 nodes may be requested",
+                    ));
+                }
+                ids
+            }
+            None => vec![query.node.ok_or_else(|| {
+                ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required")
+            })?],
+        };
     let subgraph = design
         .analysis
-        .cone(
+        .multi_root_cone(
             &design.graph,
-            node,
+            &roots,
             ConeOptions {
                 dir,
                 max_depth: query.max_depth.unwrap_or(64),
@@ -751,6 +804,7 @@ async fn cone(
                 hide_const: query.hide_const.unwrap_or(true),
                 show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
+            grouping_for(&design, query.group_vectors),
         )
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown node"))?;
     Ok(Json(subgraph))
@@ -765,6 +819,7 @@ struct LineConeQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -810,7 +865,7 @@ async fn line_cone(
     }
     let roots = design
         .analysis
-        .source_nodes_range(&file, start_line as usize, end_line as usize)
+        .source_nodes_range(&design.graph, &file, start_line as usize, end_line as usize)
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
     let control = roots.iter().any(|root| {
         design.graph.outgoing[*root as usize]
@@ -831,6 +886,7 @@ async fn line_cone(
                 hide_const: query.hide_const.unwrap_or(true),
                 show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
+            grouping_for(&design, query.group_vectors),
         )
         .expect("source map contains only valid graph node ids");
     let mapping_incomplete = design
@@ -887,6 +943,7 @@ async fn fanout(
 struct NetlistQuery {
     max_nodes: Option<usize>,
     show_infrastructure: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 async fn netlist(
@@ -899,7 +956,15 @@ async fn netlist(
         &design.graph,
         query.max_nodes.unwrap_or(1500),
         query.show_infrastructure.unwrap_or(false),
+        grouping_for(&design, query.group_vectors),
     )))
+}
+
+/// The design's cached partition when the caller opted into grouping, else
+/// `None` (per-bit projection). Grouping defaults off at the API for contract
+/// compatibility; the UI opts in.
+fn grouping_for(design: &Design, group_vectors: Option<bool>) -> Option<&GroupPartition> {
+    group_vectors.unwrap_or(false).then_some(&design.grouping)
 }
 
 async fn source_map(
@@ -1037,6 +1102,20 @@ fn map_yosys_error(err: YosysError) -> ApiError {
         YosysError::Yosys { log } => {
             ApiError::with_log(StatusCode::BAD_REQUEST, "yosys failed", log)
         }
+        YosysError::ResourceLimit { kind, log } => {
+            let message = match kind {
+                ResourceKind::Memory => {
+                    "synthesis exceeded the sandbox memory limit — large memories cannot be \
+                     flattened to gates; try RTL or a vendor mode, or reduce memory sizes"
+                }
+                ResourceKind::Cpu => {
+                    "synthesis exceeded the sandbox CPU limit — simplify the design or use a \
+                     lighter mode"
+                }
+                ResourceKind::OutputSize => "synthesis output exceeded the sandbox size limit",
+            };
+            ApiError::with_log(StatusCode::BAD_REQUEST, message, log)
+        }
         YosysError::Io(err) => ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("failed to run yosys: {err}"),
@@ -1090,6 +1169,7 @@ mod tests {
         let graph = Graph::from_netlist(&netlist, top, module).unwrap();
         let analysis = Analysis::new(&graph, vec!["test.sv".to_owned()]);
         let source_index = SourceLineIndex::from_module(module, vec!["test.sv".to_owned()]);
+        let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
         Arc::new(Design {
             response: SynthesizeResponse {
                 design_id: design_id.to_owned(),
@@ -1098,10 +1178,12 @@ mod tests {
                 stats: analysis.stats(),
                 warnings: analysis.warnings(),
                 log: String::new(),
+                memories_abstracted: false,
             },
             graph,
             analysis,
             source_index,
+            grouping,
         })
     }
 

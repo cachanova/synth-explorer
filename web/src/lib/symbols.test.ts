@@ -63,6 +63,13 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('mystery', { seq: true, is_boundary: true }))).toBe('box')
   })
 
+  it('keeps the base symbol for grouped vector nodes', () => {
+    // A grouped node carries width/members but still draws as its base kind.
+    expect(symbolKind(cell('FDRE', { width: 8, members: [1, 2, 3] }))).toBe('reg')
+    expect(symbolKind(cell('$lut', { width: 4, members: [1, 2] }))).toBe('lut')
+    expect(symbolKind(cell('$mux', { width: 8, members: [1, 2] }))).toBe('mux')
+  })
+
   it('uses directional symbols for top-level ports', () => {
     const port: NodeRef = { id: 7, kind: 'port', name: 'valid' }
     expect(symbolKind(port, 'input')).toBe('port-in')

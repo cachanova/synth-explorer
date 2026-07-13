@@ -182,11 +182,15 @@ export function isHiddenName(name: string | undefined): boolean {
   return !name || name.startsWith('$')
 }
 
+// Bare autoindex number at the start of a segment ("1866.genblk…", "3763").
+const AUTOINDEX_PREFIX = /^\d+([./]|$)/
+
 /**
  * Shorten an auto-generated net name to its last meaningful segment:
- *   "$abc$240$new_n27"  -> "new_n27"
- *   "$auto$123"         -> "123"
- *   "sum[3]"            -> "sum[3]" (human names pass through)
+ *   "$abc$240$new_n27"    -> "new_n27"
+ *   "$abc$9$3763.A[4]"    -> "A[4]"  (bare autoindex numbers are stripped)
+ *   "$auto$123"           -> ""      (nothing meaningful — callers suppress)
+ *   "sum[3]"              -> "sum[3]" (human names pass through)
  */
 export function shortNetName(net: string): string {
   if (!net.startsWith('$')) return net
@@ -194,7 +198,11 @@ export function shortNetName(net: string): string {
   if (segs.length === 0) return net
   // Drop path-like segments ("auto$blifparse.cc:397:parse_blif") entirely;
   // the last segment is the local identity.
-  return segs[segs.length - 1]
+  let short = segs[segs.length - 1]
+  for (let m = AUTOINDEX_PREFIX.exec(short); m; m = AUTOINDEX_PREFIX.exec(short)) {
+    short = short.slice(m[0].length)
+  }
+  return short
 }
 
 /**
@@ -204,7 +212,9 @@ export function shortNetName(net: string): string {
  */
 export function fanoutDriverLabel(driver: NodeRef, netName: string): string {
   if (driver.kind === 'cell' && !driver.seq && isHiddenName(driver.name)) {
-    return `${displayCellType(driver.cell_type)} · ${shortNetName(netName)}`
+    const short = shortNetName(netName)
+    const type = displayCellType(driver.cell_type)
+    return short ? `${type} · ${short}` : type
   }
   // Hidden FF/port names fall back to the (short) net name they drive.
   return displayNodeName(driver, netName)

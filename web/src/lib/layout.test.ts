@@ -4,8 +4,11 @@ import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
   fitViewportToContent,
   layoutSubgraph,
+  NETWORK_SIMPLEX_EDGE_LIMIT,
+  NETWORK_SIMPLEX_NODE_LIMIT,
   nodeDimensions,
   panViewport,
+  placementForLayout,
   toElkGraph,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -34,6 +37,18 @@ describe('schematic layout sizing', () => {
     const controlled = nodeDimensions(controlledNode)
     expect(controlled.height).toBeGreaterThan(plain.height)
     expect(controlled.width).toBeGreaterThanOrEqual(plain.width)
+  })
+
+  it('adds a badge row and width for grouped vector nodes', () => {
+    const plain = nodeDimensions(node(1, 'FDRE'))
+    const grouped = nodeDimensions(
+      node(2, 'FDRE', { width: 8, members: [1, 2, 3, 4, 5, 6, 7, 8] }),
+    )
+    // A grouped node reserves an extra row for its "×N" badge.
+    expect(grouped.height).toBe(plain.height + 14)
+    expect(grouped.width).toBeGreaterThanOrEqual(plain.width)
+    // A single-bit node (width 1) is not treated as grouped.
+    expect(nodeDimensions(node(3, 'FDRE', { width: 1 }))).toEqual(plain)
   })
 
   it('reserves one row for every label-connected control', () => {
@@ -79,6 +94,75 @@ describe('schematic layout sizing', () => {
       nodeDimensions(sub.nodes[1]),
     ])
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
+  })
+
+  it('routes flip-flop data edges to D and Q ports, not the box centre', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_MUX_', { seq: false }),
+        node(2, '$_DFF_P_', { seq: true }),
+        node(3, 'port', { kind: 'port' }),
+      ],
+      edges: [
+        { from: 1, to: 2, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [0] },
+        { from: 2, to: 3, from_port: 'Q', to_port: 'A', net_name: 'q', bits: [0] },
+      ],
+      truncated: false,
+    }
+    const graph = toElkGraph(sub)
+    const reg = graph.children?.find((c) => c.id === '2')
+    expect(reg?.ports?.map((p) => p.id)).toEqual(['2#in', '2#out'])
+    expect(reg?.layoutOptions?.['elk.portConstraints']).toBe('FIXED_POS')
+    // the D edge targets the register's in-port; the Q edge leaves its out-port
+    expect(graph.edges?.[0].targets).toEqual(['2#in'])
+    expect(graph.edges?.[1].sources).toEqual(['2#out'])
+    // a non-register node keeps plain node-id endpoints and no ports
+    expect(graph.children?.find((c) => c.id === '1')?.ports).toBeUndefined()
+    expect(graph.edges?.[0].sources).toEqual(['1'])
+  })
+
+  it('picks robust placement for large or dense graphs, tight for small', () => {
+    const small: Subgraph = {
+      nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
+      edges: [],
+      truncated: false,
+    }
+    expect(placementForLayout(small)).toBe('NETWORK_SIMPLEX')
+
+    const manyNodes: Subgraph = {
+      nodes: Array.from({ length: NETWORK_SIMPLEX_NODE_LIMIT + 1 }, (_, i) =>
+        node(i, '$_AND_'),
+      ),
+      edges: [],
+      truncated: false,
+    }
+    expect(placementForLayout(manyNodes)).toBe('BRANDES_KOEPF')
+
+    const denseEdges: Subgraph = {
+      nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
+      edges: Array.from({ length: NETWORK_SIMPLEX_EDGE_LIMIT + 1 }, () => ({
+        from: 1,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'A',
+        net_name: 'n',
+        bits: [1],
+      })),
+      truncated: false,
+    }
+    expect(placementForLayout(denseEdges)).toBe('BRANDES_KOEPF')
+  })
+
+  it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
+    const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
+    expect(
+      toElkGraph(sub).layoutOptions?.['elk.layered.nodePlacement.strategy'],
+    ).toBe('NETWORK_SIMPLEX')
+    expect(
+      toElkGraph(sub, 'BRANDES_KOEPF').layoutOptions?.[
+        'elk.layered.nodePlacement.strategy'
+      ],
+    ).toBe('BRANDES_KOEPF')
   })
 
   it('enforces the 2000-node renderer cap before starting ELK', async () => {

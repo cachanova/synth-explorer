@@ -263,7 +263,7 @@ function PathRow({
               onShow()
             }}
           >
-            graph
+            schematic
           </a>
         </td>
       </tr>

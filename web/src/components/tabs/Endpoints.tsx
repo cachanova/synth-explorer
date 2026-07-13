@@ -16,6 +16,7 @@ import type {
   RegisterEndpoint,
 } from '../../types'
 import { SrcLink } from '../SrcLink'
+import { StaleResultsChip } from '../StaleResultsChip'
 
 type EndpointFilter = 'all' | 'register' | 'registered_output' | 'output'
 
@@ -73,6 +74,7 @@ export function Endpoints() {
 
   return (
     <div>
+      <StaleResultsChip state={store.analysisState} />
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
         {STRUCTURAL_DEPTH_CAVEAT} Registered top-level outputs are aliases of their
         driving register and are counted once.
@@ -179,12 +181,6 @@ function endpointSearchText(row: LogicalEndpoint): string {
     endpoint.output_aliases.map((alias) => alias.name).join(' '),
     endpoint.output_aliases.length > 0 ? 'registered output' : 'register',
   ].join(' ')
-}
-
-/** Bit with the deepest fanin cone — the default graph target for a group. */
-function worstBit(bits: EndpointBit[]): EndpointBit | undefined {
-  if (bits.length === 0) return undefined
-  return bits.reduce((a, b) => (b.depth > a.depth ? b : a), bits[0])
 }
 
 function bitLabel(name: string, width: number, bit: number): string {
@@ -352,7 +348,6 @@ function RegisterRow({
   onOpen: Opener
 }) {
   const [open, setOpen] = useState(false)
-  const worst = worstBit(endpoint.bits)
   const aliases = endpoint.output_aliases
   const name = registerDisplayName(endpoint)
   return (
@@ -360,14 +355,15 @@ function RegisterRow({
       <tr
         className={`clickable${open ? ' expanded' : ''}`}
         onClick={() =>
-          worst &&
+          endpoint.bits.length > 0 &&
           onOpen({
-            node: worst.node_id,
+            nodes: endpoint.bits.map((bit) => bit.node_id),
             dir: 'fanin',
-            label: `${bitLabel(name, endpoint.width, worst.bit)} (fanin)`,
+            highlight: endpoint.bits.map((bit) => bit.node_id),
+            label: `${name} (fanin)`,
           })
         }
-        title="Open the D-input fanin cone of the deepest register bit"
+        title="Open the D-input fanin cone of the whole register"
       >
         <td>
           <span className="mono">{name}</span>
@@ -418,21 +414,21 @@ function OutputRow({
   onOpen: Opener
 }) {
   const [open, setOpen] = useState(false)
-  const worst = worstBit(endpoint.bits)
   const reportedBits = endpoint.bits.length
   return (
     <>
       <tr
         className={`clickable${open ? ' expanded' : ''}`}
         onClick={() =>
-          worst &&
+          endpoint.bits.length > 0 &&
           onOpen({
-            node: worst.node_id,
+            nodes: endpoint.bits.map((bit) => bit.node_id),
             dir: 'fanin',
-            label: `${bitLabel(endpoint.name, endpoint.width, worst.bit)} (fanin)`,
+            highlight: endpoint.bits.map((bit) => bit.node_id),
+            label: `${endpoint.name} (fanin)`,
           })
         }
-        title="Open the fanin cone of the deepest combinational output bit"
+        title="Open the fanin cone of the whole combinational output"
       >
         <td>
           <span className="mono">{endpoint.name}</span>

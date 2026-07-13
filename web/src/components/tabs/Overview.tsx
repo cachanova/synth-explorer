@@ -52,6 +52,13 @@ export function Overview() {
         {STRUCTURAL_DEPTH_CAVEAT}
       </div>
 
+      {design.memories_abstracted && (
+        <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
+          Memories kept abstract — flattening them to gates exceeded sandbox
+          limits.
+        </div>
+      )}
+
       <div className="cards">
         <Card k="Top" v={design.top} small />
         <Card k="Mode" v={displayMode(design.mode)} small />

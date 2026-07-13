@@ -9,6 +9,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 pub(crate) struct SourceAliasProvenance {
     pub ranges: Vec<SourceRangeMapping>,
     pub truncated: bool,
+    /// Resolved procedural-assignment targets per `(file, statement line)`.
+    /// Lines whose targets could not be fully resolved carry no entry so line
+    /// probes fall back to whole-block attribution.
+    pub procedural_targets: HashMap<(String, usize), Vec<NodeId>>,
 }
 
 #[derive(Debug, Default)]
@@ -39,12 +43,16 @@ pub(crate) fn continuous_assign_provenance(
     let scopes_by_module = scopes_by_module(source_netlist, &graph.top);
     let mut ranges: BTreeMap<(String, usize, usize), RangeProvenance> = BTreeMap::new();
     let mut association_count = 0usize;
+    let mut procedural: BTreeMap<(String, usize), BTreeSet<NodeId>> = BTreeMap::new();
+    let mut unusable_lines: HashSet<(String, usize)> = HashSet::new();
+    let mut target_count = 0usize;
 
     for (file, source) in files {
         if has_conditional_preprocessor(&source) {
             continue;
         }
-        for assignment in continuous_assignments(&source) {
+        let scanned = scan_assignments(&source);
+        for assignment in scanned.continuous {
             let Some(scopes) = scopes_by_module.get(&assignment.module) else {
                 continue;
             };
@@ -70,6 +78,50 @@ pub(crate) fn continuous_assign_provenance(
                 .or_default();
             merge_range_roots(range, roots, mapping_incomplete, &mut association_count);
         }
+        for assignment in scanned.procedural {
+            let Some(scopes) = scopes_by_module.get(&assignment.module) else {
+                continue;
+            };
+            let mut roots = BTreeSet::new();
+            let mut unusable = false;
+            for identifier in &assignment.lhs_identifiers {
+                for scope in scopes {
+                    let qualified = if scope.is_empty() {
+                        identifier.clone()
+                    } else {
+                        format!("{scope}.{identifier}")
+                    };
+                    unusable |= roots_by_name.incomplete.contains(&qualified);
+                    if let Some(ids) = roots_by_name.roots.get(qualified.as_str()) {
+                        for id in ids {
+                            unusable |= insert_bounded_root(&mut roots, *id);
+                        }
+                    }
+                }
+            }
+            if roots.is_empty() {
+                continue;
+            }
+            let key = (file.clone(), assignment.line);
+            if unusable {
+                unusable_lines.insert(key);
+                continue;
+            }
+            let targets = procedural.entry(key.clone()).or_default();
+            for root in roots {
+                if targets.contains(&root) {
+                    continue;
+                }
+                if targets.len() == SOURCE_ROOT_COLLECTION_CAP
+                    || target_count == SOURCE_RANGE_ASSOCIATION_CAP
+                {
+                    unusable_lines.insert(key);
+                    break;
+                }
+                targets.insert(root);
+                target_count += 1;
+            }
+        }
     }
 
     let ranges = ranges
@@ -83,7 +135,16 @@ pub(crate) fn continuous_assign_provenance(
         })
         .collect::<Vec<_>>();
     let truncated = ranges.iter().any(|range| range.mapping_incomplete);
-    SourceAliasProvenance { ranges, truncated }
+    let procedural_targets = procedural
+        .into_iter()
+        .filter(|(key, _)| !unusable_lines.contains(key))
+        .map(|(key, roots)| (key, roots.into_iter().collect()))
+        .collect();
+    SourceAliasProvenance {
+        ranges,
+        truncated,
+        procedural_targets,
+    }
 }
 
 fn merge_range_roots(
@@ -244,7 +305,23 @@ struct ContinuousAssignment {
     lhs_identifiers: Vec<String>,
 }
 
-fn continuous_assignments(source: &str) -> Vec<ContinuousAssignment> {
+/// A `<lhs> <=` or leading `<lhs> =` statement inside an `always` region.
+/// Yosys attributes procedural cells to whole blocks; these parsed targets let
+/// line probes narrow block attribution to the assigned signal.
+#[derive(Debug, PartialEq, Eq)]
+struct ProceduralAssignment {
+    module: String,
+    line: usize,
+    lhs_identifiers: Vec<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ScannedAssignments {
+    continuous: Vec<ContinuousAssignment>,
+    procedural: Vec<ProceduralAssignment>,
+}
+
+fn scan_assignments(source: &str) -> ScannedAssignments {
     let sanitized = sanitize_verilog(source);
     let bytes = sanitized.as_bytes();
     let newlines: Vec<usize> = bytes
@@ -252,12 +329,17 @@ fn continuous_assignments(source: &str) -> Vec<ContinuousAssignment> {
         .enumerate()
         .filter_map(|(index, byte)| (*byte == b'\n').then_some(index))
         .collect();
-    let mut assignments = Vec::new();
+    let mut scanned = ScannedAssignments::default();
     let mut index = 0;
     let mut current_module: Option<String> = None;
+    let mut nesting = 0usize;
+    let mut in_always = false;
+    let mut always_begin_depth = 0usize;
+    let mut always_has_begin = false;
 
     while index < bytes.len() {
         if !is_identifier_start(bytes[index]) {
+            update_nesting(bytes[index], &mut nesting);
             index += 1;
             continue;
         }
@@ -283,20 +365,70 @@ fn continuous_assignments(source: &str) -> Vec<ContinuousAssignment> {
                         break;
                     }
                 } else {
+                    update_nesting(bytes[cursor], &mut nesting);
                     cursor += 1;
                 }
             }
             current_module = module_name;
+            in_always = false;
             index = cursor;
             continue;
         }
         if token == "endmodule" {
             current_module = None;
+            in_always = false;
+            continue;
+        }
+        if matches!(
+            token,
+            "always" | "always_ff" | "always_comb" | "always_latch"
+        ) {
+            in_always = current_module.is_some();
+            always_begin_depth = 0;
+            always_has_begin = false;
+            continue;
+        }
+        if token == "begin" {
+            if in_always {
+                always_begin_depth += 1;
+                always_has_begin = true;
+            }
+            continue;
+        }
+        if token == "end" {
+            if in_always {
+                always_begin_depth = always_begin_depth.saturating_sub(1);
+                if always_has_begin && always_begin_depth == 0 {
+                    in_always = false;
+                }
+            }
             continue;
         }
         let explicit_assign = token == "assign";
         let wire_alias = matches!(token, "wire" | "tri" | "wand" | "wor");
         if !explicit_assign && !wire_alias {
+            if in_always && nesting == 0 && !is_statement_keyword(token) {
+                let statement_end = bytes[index..]
+                    .iter()
+                    .position(|byte| *byte == b';')
+                    .map_or(bytes.len(), |offset| index + offset);
+                if let Some(lhs_identifiers) =
+                    procedural_assignment_lhs(&sanitized[token_start..statement_end])
+                {
+                    scanned.procedural.push(ProceduralAssignment {
+                        module: current_module
+                            .clone()
+                            .expect("always tracking requires a module"),
+                        line: line_at(token_start, &newlines),
+                        lhs_identifiers,
+                    });
+                    advance_nesting(&bytes[index..statement_end], &mut nesting);
+                    index = statement_end.saturating_add(1);
+                    if !always_has_begin {
+                        in_always = false;
+                    }
+                }
+            }
             continue;
         }
         let Some(module) = current_module.clone() else {
@@ -319,13 +451,14 @@ fn continuous_assignments(source: &str) -> Vec<ContinuousAssignment> {
             lhs_identifiers.sort();
             lhs_identifiers.dedup();
         }
+        advance_nesting(&bytes[index..statement_end], &mut nesting);
         if lhs_identifiers.is_empty() {
             index = statement_end.saturating_add(1);
             continue;
         }
         let start_line = line_at(token_start, &newlines);
         let end_line = line_at(statement_end, &newlines);
-        assignments.push(ContinuousAssignment {
+        scanned.continuous.push(ContinuousAssignment {
             module,
             start_line,
             end_line,
@@ -333,7 +466,126 @@ fn continuous_assignments(source: &str) -> Vec<ContinuousAssignment> {
         });
         index = statement_end.saturating_add(1);
     }
-    assignments
+    scanned
+}
+
+/// Keywords that can open a procedural statement without being an assignment
+/// LHS. Scanning past them prevents `if (rst) idx <= 0;` from attributing
+/// condition identifiers to the assignment target set.
+fn is_statement_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "if" | "else"
+            | "case"
+            | "casex"
+            | "casez"
+            | "endcase"
+            | "default"
+            | "for"
+            | "foreach"
+            | "while"
+            | "repeat"
+            | "forever"
+            | "do"
+            | "unique"
+            | "unique0"
+            | "priority"
+            | "posedge"
+            | "negedge"
+            | "edge"
+            | "or"
+            | "iff"
+            | "fork"
+            | "join"
+            | "join_any"
+            | "join_none"
+            | "disable"
+            | "wait"
+            | "return"
+            | "break"
+            | "continue"
+            | "assert"
+            | "assume"
+            | "cover"
+            | "initial"
+            | "final"
+            | "function"
+            | "endfunction"
+            | "task"
+            | "endtask"
+            | "generate"
+            | "endgenerate"
+            | "localparam"
+            | "parameter"
+            | "genvar"
+            | "typedef"
+            | "reg"
+            | "logic"
+            | "integer"
+            | "int"
+            | "bit"
+            | "byte"
+            | "shortint"
+            | "longint"
+            | "real"
+            | "realtime"
+            | "time"
+            | "signed"
+            | "unsigned"
+            | "var"
+            | "automatic"
+            | "static"
+            | "const"
+    )
+}
+
+/// LHS identifiers of an assignment statement, or `None` when the statement is
+/// not an assignment. A statement beginning with an identifier directly
+/// followed by `=` (not `==`) is a blocking assignment; otherwise a top-level
+/// `<=` (outside parentheses/brackets/braces, so comparisons in conditions do
+/// not match) marks a nonblocking assignment.
+fn procedural_assignment_lhs(statement: &str) -> Option<Vec<String>> {
+    let bytes = statement.as_bytes();
+    let mut cursor = 0;
+    while cursor < bytes.len() && is_identifier_continue(bytes[cursor]) {
+        cursor += 1;
+    }
+    let lhs_end = cursor;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    if lhs_end > 0 && bytes.get(cursor) == Some(&b'=') && bytes.get(cursor + 1) != Some(&b'=') {
+        return Some(vec![statement[..lhs_end].to_owned()]);
+    }
+    let mut nesting = 0usize;
+    let mut previous = 0u8;
+    for (offset, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => nesting += 1,
+            b')' | b']' | b'}' => nesting = nesting.saturating_sub(1),
+            b'<' if nesting == 0 && previous != b'<' && bytes.get(offset + 1) == Some(&b'=') => {
+                let lhs = identifiers(&statement[..offset]);
+                return (!lhs.is_empty()).then_some(lhs);
+            }
+            _ => {}
+        }
+        previous = *byte;
+    }
+    None
+}
+
+fn update_nesting(byte: u8, nesting: &mut usize) {
+    match byte {
+        b'(' | b'[' | b'{' => *nesting += 1,
+        b')' | b']' | b'}' => *nesting = nesting.saturating_sub(1),
+        _ => {}
+    }
+}
+
+fn advance_nesting(skipped: &[u8], nesting: &mut usize) {
+    for byte in skipped {
+        update_nesting(*byte, nesting);
+    }
 }
 
 fn has_conditional_preprocessor(source: &str) -> bool {
@@ -521,7 +773,7 @@ assign valid = 1'b0;
 endmodule
 "#;
         assert_eq!(
-            continuous_assignments(source),
+            scan_assignments(source).continuous,
             vec![
                 ContinuousAssignment {
                     module: "top".to_owned(),
@@ -540,6 +792,63 @@ endmodule
                     start_line: 11,
                     end_line: 11,
                     lhs_identifiers: vec!["valid".to_owned()],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn procedural_assignments_record_targets_per_statement_line() {
+        let source = r#"
+module top (input logic clk, input logic rst);
+always_ff @(posedge clk) begin
+  if (rst) begin
+    idx <= 5'd0;
+    valid <= 1'b0;
+  end else begin
+    idx <= idx_c;
+  end
+end
+always_comb begin
+  idx_c = 5'd0;
+  if (req <= limit)
+    idx_c = idx + 1;
+end
+always @(posedge clk) q <= d;
+endmodule
+"#;
+        assert_eq!(
+            scan_assignments(source).procedural,
+            vec![
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 5,
+                    lhs_identifiers: vec!["idx".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 6,
+                    lhs_identifiers: vec!["valid".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 8,
+                    lhs_identifiers: vec!["idx".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 12,
+                    lhs_identifiers: vec!["idx_c".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 14,
+                    lhs_identifiers: vec!["idx_c".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 16,
+                    lhs_identifiers: vec!["q".to_owned()],
                 },
             ]
         );

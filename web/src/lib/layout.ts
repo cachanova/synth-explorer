@@ -163,29 +163,86 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
     }
   })()
   const controls = controlsFor(node)
-  if (controls.length === 0) return base
-  const controlWidth = controls.reduce(
-    (max, control) => Math.max(max, controlLabel(control).length * 6.2 + PAD_X),
-    0,
-  )
-  return {
-    width: Math.max(base.width, Math.round(controlWidth)),
-    height: base.height + controls.length * 13,
+  let width = base.width
+  let height = base.height
+  if (controls.length > 0) {
+    const controlWidth = controls.reduce(
+      (max, control) => Math.max(max, controlLabel(control).length * 6.2 + PAD_X),
+      0,
+    )
+    width = Math.max(width, Math.round(controlWidth))
+    height = base.height + controls.length * 13
   }
+  // Grouped vector nodes reserve an extra row and room for a "×N" bit badge.
+  const groupWidth = node.width ?? 0
+  if (groupWidth >= 2) {
+    const badge = `×${groupWidth}`
+    width = Math.max(width, Math.round(badge.length * CHAR_WIDTH + PAD_X))
+    height += 14
+  }
+  return { width, height }
 }
 
 /** Build the ELK graph description from a Subgraph. */
-export function toElkGraph(sub: Subgraph): ElkNode {
+// NETWORK_SIMPLEX gives the tightest alignment but recurses in elkjs and blows
+// the stack on very deep DAGs (e.g. a wide adder tree). BRANDES_KOEPF is the
+// robust fallback: slightly looser, never overflows. layoutSubgraph retries
+// with it when the premium strategy fails.
+export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+
+// A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
+// triangle lower-west, and the data output (Q) at the east. These fractions of
+// the primary body height are shared with GraphView so the routed data edges
+// land exactly on the rendered D and Q pins (and never on the clock notch).
+export const REG_BODY_HEIGHT = 58
+export const REG_DATA_IN_Y_FRAC = 0.32
+export const REG_DATA_OUT_Y_FRAC = 0.5
+export const REG_CLOCK_Y_FRAC = 0.72
+
+function isRegKind(node: GraphNode): boolean {
+  const kind = symbolKind(node)
+  return kind === 'reg' || kind === 'latch'
+}
+
+export function toElkGraph(
+  sub: Subgraph,
+  nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
+): ElkNode {
   assertRenderableSubgraph(sub)
+  const regIds = new Set<number>()
   const children: ElkNode[] = sub.nodes.map((n) => {
     const { width, height } = nodeDimensions(n)
-    return { id: String(n.id), width, height }
+    if (!isRegKind(n)) return { id: String(n.id), width, height }
+    regIds.add(n.id)
+    // Fixed D (west) and Q (east) ports so elk routes the data edges to the
+    // real pins instead of the box centre, which coincides with the clock notch.
+    const body = Math.min(height, REG_BODY_HEIGHT)
+    return {
+      id: String(n.id),
+      width,
+      height,
+      layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+      ports: [
+        {
+          id: `${n.id}#in`,
+          x: 0,
+          y: body * REG_DATA_IN_Y_FRAC,
+          layoutOptions: { 'elk.port.side': 'WEST' },
+        },
+        {
+          id: `${n.id}#out`,
+          x: width,
+          y: body * REG_DATA_OUT_Y_FRAC,
+          layoutOptions: { 'elk.port.side': 'EAST' },
+        },
+      ],
+    }
   })
 
   const edges: ElkExtendedEdge[] = sub.edges.map((e, i) => ({
     id: `e${i}`,
-    sources: [String(e.from)],
-    targets: [String(e.to)],
+    sources: [regIds.has(e.from) ? `${e.from}#out` : String(e.from)],
+    targets: [regIds.has(e.to) ? `${e.to}#in` : String(e.to)],
   }))
 
   return {
@@ -198,11 +255,17 @@ export function toElkGraph(sub: Subgraph): ElkNode {
       'elk.spacing.nodeNode': '30',
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
-      'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
+      'elk.layered.nodePlacement.strategy': nodePlacement,
     },
     children,
     edges,
   }
+}
+
+/** Node id from an elk endpoint that may be a `<id>#in`/`<id>#out` port. */
+function endpointNodeId(endpoint: string): number {
+  const hash = endpoint.indexOf('#')
+  return Number(hash === -1 ? endpoint : endpoint.slice(0, hash))
 }
 
 function assertRenderableSubgraph(sub: Subgraph): void {
@@ -247,8 +310,8 @@ function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       points.push(section.endPoint)
     }
     return {
-      from: Number(e.sources[0]),
-      to: Number(e.targets[0]),
+      from: endpointNodeId(e.sources[0]),
+      to: endpointNodeId(e.targets[0]),
       points,
       edge: src,
     }
@@ -308,14 +371,10 @@ function getWorker(): Worker {
 }
 
 /** Lay out a Subgraph in the worker. Rejects before worker/SVG work at either cap. */
-export async function layoutSubgraph(
-  sub: Subgraph,
-  signal?: AbortSignal,
-): Promise<LaidOutGraph> {
-  const graph = toElkGraph(sub)
+function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
   const w = getWorker()
   const id = ++seq
-  const result = await new Promise<ElkNode>((resolve, reject) => {
+  return new Promise<ElkNode>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
@@ -336,5 +395,40 @@ export async function layoutSubgraph(
     const req: ElkRequest = { id, graph }
     w.postMessage(req)
   })
+}
+
+// Above this size NETWORK_SIMPLEX becomes unsafe in elkjs: on deep datapath
+// cones it either overflows the stack or spins for tens of seconds. The robust
+// placement is chosen upfront so a large schematic never hangs on a spinner;
+// small graphs (the common case) keep the tighter alignment. The catch below is
+// a backstop for anything under the threshold that still fails fast.
+export const NETWORK_SIMPLEX_NODE_LIMIT = 120
+export const NETWORK_SIMPLEX_EDGE_LIMIT = 240
+
+/** The safe upfront node placement for a subgraph's size. */
+export function placementForLayout(sub: Subgraph): NodePlacement {
+  return sub.nodes.length > NETWORK_SIMPLEX_NODE_LIMIT ||
+    sub.edges.length > NETWORK_SIMPLEX_EDGE_LIMIT
+    ? 'BRANDES_KOEPF'
+    : 'NETWORK_SIMPLEX'
+}
+
+export async function layoutSubgraph(
+  sub: Subgraph,
+  signal?: AbortSignal,
+): Promise<LaidOutGraph> {
+  const placement = placementForLayout(sub)
+  let result: ElkNode
+  if (placement === 'BRANDES_KOEPF') {
+    result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
+  } else {
+    try {
+      result = await runLayout(toElkGraph(sub, 'NETWORK_SIMPLEX'), signal)
+    } catch (error) {
+      // Never retry an aborted (superseded) request.
+      if (signal?.aborted) throw error
+      result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
+    }
+  }
   return interpretResult(sub, result)
 }

@@ -11,7 +11,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'endpoints', label: 'Endpoints' },
   { id: 'paths', label: 'Paths' },
   { id: 'fanout', label: 'Fanout' },
-  { id: 'graph', label: 'Graph' },
+  { id: 'graph', label: 'Schematic' },
   { id: 'compare', label: 'Compare' },
 ]
 

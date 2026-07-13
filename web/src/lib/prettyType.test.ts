@@ -25,11 +25,21 @@ describe('isHiddenName', () => {
 describe('shortNetName', () => {
   it('takes the last $-segment of auto names', () => {
     expect(shortNetName('$abc$240$new_n27')).toBe('new_n27')
-    expect(shortNetName('$auto$123')).toBe('123')
   })
   it('passes human names through', () => {
     expect(shortNetName('sum[3]')).toBe('sum[3]')
     expect(shortNetName('enable')).toBe('enable')
+  })
+  it('strips bare autoindex prefixes from the shortened segment', () => {
+    expect(shortNetName('$flatten$abc$1866.genblk1.acc[3]')).toBe(
+      'genblk1.acc[3]',
+    )
+    expect(shortNetName('$abc$9$3763.A[4]')).toBe('A[4]')
+    expect(shortNetName('$auto$x$12/34/new_n7')).toBe('new_n7')
+  })
+  it('returns the empty string when only autoindex numbers remain', () => {
+    expect(shortNetName('$auto$123')).toBe('')
+    expect(shortNetName('$procdff$3763')).toBe('')
   })
 })
 
@@ -70,6 +80,11 @@ describe('fanoutDriverLabel', () => {
   it('keeps port drivers as-is', () => {
     const port: NodeRef = { id: 2, kind: 'port', name: 'clk' }
     expect(fanoutDriverLabel(port, 'clk')).toBe('clk')
+  })
+
+  it('drops the net suffix when the net shortens to nothing', () => {
+    const d = cell('$abc$240$auto$blifparse.cc:397:parse_blif$242', '$_NAND_')
+    expect(fanoutDriverLabel(d, '$auto$123')).toBe('NAND')
   })
 })
 
@@ -224,6 +239,15 @@ describe('nodeSublabel', () => {
     ).toBeNull()
     expect(
       nodeSublabel(cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'), null),
+    ).toBeNull()
+  })
+
+  it('suppresses nets that shorten to a bare autoindex number', () => {
+    expect(
+      nodeSublabel(
+        cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'),
+        '$auto$1866',
+      ),
     ).toBeNull()
   })
 

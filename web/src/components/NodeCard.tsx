@@ -34,6 +34,14 @@ export function NodeCard({
             <span className="v">{node.depth}</span>
           </>
         )}
+        {node.width != null && node.width >= 2 && (
+          <>
+            <span className="k">width</span>
+            <span className="v">{node.width}</span>
+            <span className="k">members</span>
+            <span className="v">{node.members?.length ?? node.width} bits</span>
+          </>
+        )}
         {node.seq && (
           <>
             <span className="k">seq</span>
@@ -98,7 +106,11 @@ export function NodeCard({
       <div className="actions">
         <button
           onClick={() =>
-            store.openCone({ node: node.id, dir: 'fanin', label: `${name} (fanin)` })
+            store.openCone({
+              nodes: node.members ?? [node.id],
+              dir: 'fanin',
+              label: `${name} (fanin)`,
+            })
           }
         >
           Fanin cone
@@ -106,7 +118,7 @@ export function NodeCard({
         <button
           onClick={() =>
             store.openCone({
-              node: node.id,
+              nodes: node.members ?? [node.id],
               dir: 'fanout',
               label: `${name} (fanout)`,
             })

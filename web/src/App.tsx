@@ -36,7 +36,17 @@ function App() {
         <span className="tagline">Compiler Explorer for RTL — synthesize & explore the netlist</span>
       </header>
       <div className="split">
-        <div style={{ width: `${leftWidth}%`, display: 'flex', minWidth: 340 }}>
+        <div
+          style={{
+            width: `${leftWidth}%`,
+            display: 'flex',
+            minWidth: 340,
+            // Hold the set width; the analysis pane (min-width:0) absorbs the
+            // shrink. Otherwise a wide analysis toolbar steals editor width via
+            // proportional flex-shrink.
+            flexShrink: 0,
+          }}
+        >
           <LeftPane />
         </div>
         <div className="divider" onMouseDown={onDown} title="Drag to resize" />
