@@ -1793,12 +1793,17 @@ fn quotient_subgraph(graph: &Graph, subgraph: Subgraph, partition: &GroupPartiti
             }
         }
         let is_root = acc.is_root;
+        let is_port = matches!(group.kind, GroupKind::Port);
         nodes.push(GraphNode {
             node: NodeRef {
                 id: base + group_id,
-                kind: ApiNodeKind::Cell,
+                kind: if is_port {
+                    ApiNodeKind::Port
+                } else {
+                    ApiNodeKind::Cell
+                },
                 name: group.label.clone(),
-                cell_type: Some(group.cell_type.clone()),
+                cell_type: (!is_port).then(|| group.cell_type.clone()),
                 seq: register.then_some(true),
                 register: register.then(|| is_register_type(&group.cell_type)),
                 src: (!src_fragments.is_empty()).then(|| src_fragments.join("|")),
