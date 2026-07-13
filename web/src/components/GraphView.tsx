@@ -38,6 +38,8 @@ interface Props {
   onSelect: (node: GraphNode | null) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  /** Double-click a node to additively render its fanin/fanout connections. */
+  onExpand?: (node: GraphNode) => void
   active: boolean
   fitNonce: number
 }
@@ -145,8 +147,33 @@ function SchematicOutline({
     vectorEffect: 'non-scaling-stroke' as const,
   }
 
+  // A grouped (width>=2) node is a vector, so draw offset silhouettes behind it
+  // — a stack-of-sheets cue that a bus of cells collapsed into one symbol.
+  const groupWidth = node.width ?? 0
+  const stackOffsets = groupWidth >= 2 ? (groupWidth >= 4 ? [7, 3.5] : [4]) : []
+  const ghostProps = {
+    fill: visual.fill,
+    stroke: visual.stroke,
+    strokeWidth,
+    vectorEffect: 'non-scaling-stroke' as const,
+  }
+
   return (
     <>
+      {stackOffsets.map((d) => (
+        <g
+          key={`stack-${d}`}
+          className="g-symbol-stack"
+          transform={`translate(${d},${-d})`}
+          aria-hidden="true"
+        >
+          {path ? (
+            <path d={path} {...ghostProps} />
+          ) : (
+            <rect width={width} height={height} rx={rx} {...ghostProps} />
+          )}
+        </g>
+      ))}
       {path ? (
         <path className="g-symbol-outline" d={path} {...common} />
       ) : (
@@ -257,6 +284,24 @@ function NodeContents({
             {truncate(name, maxChars)}
           </text>
         )}
+      </>
+    )
+  }
+
+  // A flip-flop/latch keeps its primitive glyph centered and shows the register
+  // signal name across the top, clear of the side D/Q/R pins and the clock notch.
+  if (kind === 'reg' || kind === 'latch') {
+    return (
+      <>
+        {groupBadge}
+        {name && (
+          <text className="g-node-name g-reg-name" x={width / 2} y={12} textAnchor="middle">
+            {truncate(name, maxChars)}
+          </text>
+        )}
+        <text className="g-node-label" x={width / 2} y={primaryHeight / 2 + 4} textAnchor="middle">
+          {truncate(label, maxChars)}
+        </text>
       </>
     )
   }
@@ -456,6 +501,7 @@ interface SchematicNodeProps {
   suppressClick: { current: boolean }
   onSelect: (node: GraphNode | null) => void
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  onExpand?: (node: GraphNode) => void
 }
 
 // Hover state belongs to one node, so revealing pin labels never reconciles
@@ -472,6 +518,7 @@ const SchematicNode = memo(function SchematicNode({
   suppressClick,
   onSelect,
   onControlSelect,
+  onExpand,
 }: SchematicNodeProps) {
   const [hovered, setHovered] = useState(false)
   const [focused, setFocused] = useState(false)
@@ -506,6 +553,10 @@ const SchematicNode = memo(function SchematicNode({
         }
         onSelect(node)
       } : undefined}
+      onDoubleClick={interactive && onExpand ? (event) => {
+        event.stopPropagation()
+        onExpand(node)
+      } : undefined}
       onKeyDown={interactive ? (event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return
         event.preventDefault()
@@ -526,9 +577,7 @@ const SchematicNode = memo(function SchematicNode({
         kind={kind}
         width={laidOutNode.width}
         height={bodyHeight}
-        // A flip-flop's net name repeats its Q pin and downstream wire, so it
-        // is dropped from the box body; the identity stays in the node card.
-        name={kind === 'reg' || kind === 'latch' ? null : name}
+        name={name}
       />
       {(kind === 'reg' || kind === 'latch') && (
         <RegisterPins
@@ -564,6 +613,7 @@ export function GraphView({
   interactive,
   onSelect,
   onControlSelect,
+  onExpand,
   active,
   fitNonce,
 }: Props) {
@@ -877,6 +927,7 @@ export function GraphView({
               suppressClick={suppressClick}
               onSelect={onSelect}
               onControlSelect={onControlSelect}
+              onExpand={onExpand}
             />
           ))}
         </g>

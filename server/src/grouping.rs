@@ -14,6 +14,7 @@ pub type GroupId = u32;
 pub enum GroupKind {
     Register,
     Comb,
+    Port,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +117,9 @@ impl GroupPartition {
                 cell_type,
             });
         }
+        // Ports seed last so register and comb group ids stay stable; port
+        // grouping is by name only and never affects comb refinement.
+        seed_port_groups(&mut partition, graph);
         partition
     }
 }
@@ -143,6 +147,60 @@ fn seed_register_groups(partition: &mut GroupPartition, registers: &[RegisterGro
             cell_type: register.cell_type.clone(),
         });
     }
+}
+
+/// Port bits of one named vector (`data[7:0]`) collapse into a single bus port
+/// node, mirroring register vectors. Grouping is purely by port name, so any
+/// bits of the port present in the subgraph render as one node; a scalar port
+/// (single bit) stays ungrouped. Runs after registers so a port bit already
+/// claimed by another group (never expected) is left alone.
+fn seed_port_groups(partition: &mut GroupPartition, graph: &Graph) {
+    let mut by_port: BTreeMap<&str, Vec<NodeId>> = BTreeMap::new();
+    for node in &graph.nodes {
+        if node.kind != NodeKind::PortBit {
+            continue;
+        }
+        let Some(port) = node.port.as_deref() else {
+            continue;
+        };
+        if partition.group_of.contains_key(&node.id) {
+            continue;
+        }
+        by_port.entry(port).or_default().push(node.id);
+    }
+    for (port, mut members) in by_port {
+        if members.len() < 2 {
+            continue;
+        }
+        members.sort_unstable();
+        let group_id = partition.groups.len() as GroupId;
+        let label = port_label(graph, port, &members);
+        for &member in &members {
+            partition.group_of.insert(member, group_id);
+        }
+        partition.groups.push(Group {
+            kind: GroupKind::Port,
+            members,
+            label,
+            cell_type: String::new(),
+        });
+    }
+}
+
+/// `"data[7:0]"` when the grouped port bits form one contiguous run, otherwise
+/// `"data ×N"`.
+fn port_label(graph: &Graph, port: &str, members: &[NodeId]) -> String {
+    let bits: BTreeSet<usize> = members
+        .iter()
+        .filter_map(|&id| graph.nodes[id as usize].port_bit)
+        .collect();
+    if bits.len() == members.len()
+        && let (Some(&lo), Some(&hi)) = (bits.first(), bits.last())
+        && hi - lo + 1 == bits.len()
+    {
+        return format!("{port}[{hi}:{lo}]");
+    }
+    format!("{port} ×{}", members.len())
 }
 
 /// Neighbor identity as seen by a refinement signature. Grouped registers
@@ -701,12 +759,56 @@ mod tests {
     }
 
     #[test]
+    fn multibit_ports_group_into_one_bus_node_while_scalars_stay() {
+        // Two 4-bit input buses, one scalar input, and a 4-bit output bus.
+        let mut nodes = Vec::new();
+        for bit in 0..4 {
+            nodes.push(port_bit(bit as NodeId, "a", bit, 4, PortDirection::Input));
+        }
+        for bit in 0..4 {
+            nodes.push(port_bit(
+                4 + bit as NodeId,
+                "b",
+                bit,
+                4,
+                PortDirection::Input,
+            ));
+        }
+        nodes.push(port_bit(8, "sel", 0, 1, PortDirection::Input));
+        for bit in 0..4 {
+            nodes.push(port_bit(
+                9 + bit as NodeId,
+                "y",
+                bit,
+                4,
+                PortDirection::Output,
+            ));
+        }
+        let graph = graph_from_nodes("top", nodes);
+
+        let partition = GroupPartition::build(&graph, &[]);
+
+        // a, b, y each collapse; the scalar `sel` does not.
+        assert_eq!(partition.groups.len(), 3);
+        for group in &partition.groups {
+            assert_eq!(group.kind, GroupKind::Port);
+            assert_eq!(group.members.len(), 4);
+            assert!(group.cell_type.is_empty());
+        }
+        let labels: BTreeSet<&str> = partition.groups.iter().map(|g| g.label.as_str()).collect();
+        assert_eq!(labels, ["a[3:0]", "b[3:0]", "y[3:0]"].into_iter().collect());
+        assert_eq!(partition.group_of.len(), 12);
+        assert!(!partition.group_of.contains_key(&8));
+    }
+
+    #[test]
     fn bit_parallel_mux_row_groups_with_shared_select() {
         let (graph, registers) = mux_row_graph();
 
         let partition = GroupPartition::build(&graph, &registers);
 
-        assert_eq!(partition.groups.len(), 2);
+        // register(q) + comb(next_q) + two input buses (a, b); scalar `s` stays.
+        assert_eq!(partition.groups.len(), 4);
         let register = &partition.groups[0];
         assert_eq!(register.kind, GroupKind::Register);
         assert_eq!(register.members, (25..33).collect::<Vec<NodeId>>());
@@ -716,9 +818,24 @@ mod tests {
         assert_eq!(comb.members, (17..25).collect::<Vec<NodeId>>());
         assert_eq!(comb.label, "next_q[7:0]");
         assert_eq!(comb.cell_type, "$_MUX_");
-        assert_eq!(partition.group_of.len(), 16);
+        let ports: Vec<(&str, &[NodeId])> = partition.groups[2..]
+            .iter()
+            .map(|g| {
+                assert_eq!(g.kind, GroupKind::Port);
+                (g.label.as_str(), g.members.as_slice())
+            })
+            .collect();
+        assert_eq!(
+            ports,
+            vec![
+                ("a[7:0]", (0..8).collect::<Vec<NodeId>>().as_slice()),
+                ("b[7:0]", (8..16).collect::<Vec<NodeId>>().as_slice()),
+            ]
+        );
+        assert_eq!(partition.group_of.len(), 32);
         assert_eq!(partition.group_of[&30], 0);
         assert_eq!(partition.group_of[&20], 1);
+        assert!(!partition.group_of.contains_key(&16));
     }
 
     #[test]
@@ -729,8 +846,9 @@ mod tests {
 
         let partition = GroupPartition::build(&graph, &[]);
 
-        assert!(partition.groups.is_empty());
-        assert!(partition.group_of.is_empty());
+        // Only the a/sum ports group; no carry cell (ids 24..48) ever joins one.
+        assert!(partition.groups.iter().all(|g| g.kind == GroupKind::Port));
+        assert!((24..48).all(|id| !partition.group_of.contains_key(&id)));
     }
 
     #[test]
@@ -779,7 +897,8 @@ mod tests {
 
         let partition = GroupPartition::build(&graph, &[]);
 
-        assert_eq!(partition.groups.len(), 2);
+        // Two comb vectors split by sink shape, plus the a/x/y bus ports.
+        assert_eq!(partition.groups.len(), 5);
         let x = &partition.groups[0];
         assert_eq!(x.kind, GroupKind::Comb);
         assert_eq!(x.members, vec![8, 9, 10, 11]);
@@ -787,6 +906,11 @@ mod tests {
         let y = &partition.groups[1];
         assert_eq!(y.members, vec![12, 13, 14, 15]);
         assert_eq!(y.label, "y[3:0]");
+        assert!(
+            partition.groups[2..]
+                .iter()
+                .all(|g| g.kind == GroupKind::Port)
+        );
     }
 
     #[test]

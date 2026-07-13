@@ -7,10 +7,13 @@ export function NodeCard({
   node,
   drivingNet,
   onClose,
+  onExpand,
 }: {
   node: GraphNode
   drivingNet?: string | null
   onClose: () => void
+  /** Additively render this node's connections in place (also on double-click). */
+  onExpand?: () => void
 }) {
   const store = useStore()
   const params = node.params ? Object.entries(node.params) : []
@@ -126,6 +129,14 @@ export function NodeCard({
         >
           Fanout cone
         </button>
+        {onExpand && (
+          <button
+            onClick={onExpand}
+            title="Add this node's fanin and fanout connections to the current schematic (or double-click the node)"
+          >
+            Expand here
+          </button>
+        )}
       </div>
     </div>
   )

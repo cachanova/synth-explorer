@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
 import { filterSubgraph, focusKeepSet } from '../../lib/filterSubgraph'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
+import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { designSrcSpans } from '../../lib/src'
@@ -30,6 +31,9 @@ export function Graph({ active }: { active: boolean }) {
   const { analysisState, design, coneReq, graphOptions } = store
 
   const [fetchedSubgraph, setFetchedSubgraph] = useState<FetchedSubgraph | null>(null)
+  // Neighborhoods accumulated from double-click expansions, merged on top of the
+  // base subgraph before layout. Reset whenever a new base subgraph is fetched.
+  const [expansionGraph, setExpansionGraph] = useState<Subgraph | null>(null)
   const [displayedGraph, setDisplayedGraph] = useState<DisplayedGraph | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -78,6 +82,7 @@ export function Graph({ active }: { active: boolean }) {
     const controller = new AbortController()
     setLoading(true)
     setError(null)
+    setExpansionGraph(null)
     setSourceStatus(null)
     setSourceControl(false)
     if (coneReq.kind !== 'source') setSelected(null)
@@ -148,28 +153,37 @@ export function Graph({ active }: { active: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch])
 
+  // The rendered subgraph is the fetched base (optionally focus-filtered) with
+  // every double-click expansion merged on top. Memoized so a tab switch does
+  // not rebuild it and force a needless relayout.
+  const combinedSubgraph = useMemo(() => {
+    if (!fetchedSubgraph) return null
+    const keep =
+      graphOptions.focus && coneReq ? focusKeepSet(coneReq, fetchedSubgraph.graph) : null
+    const base = keep ? filterSubgraph(fetchedSubgraph.graph, keep) : fetchedSubgraph.graph
+    return mergeSubgraphs(base, expansionGraph, MAX_GRAPH_RENDER_NODES)
+  }, [fetchedSubgraph, expansionGraph, graphOptions.focus, coneReq])
+
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
     if (!active) return
-    if (!fetchedSubgraph) return
-    if (laidOutSubgraph.current === fetchedSubgraph.graph) return
-    const result = fetchedSubgraph
+    if (!fetchedSubgraph || !combinedSubgraph) return
+    if (laidOutSubgraph.current === combinedSubgraph) return
+    const owner = fetchedSubgraph
+    const toLayout = combinedSubgraph
     let cancelled = false
     const controller = new AbortController()
     setLoading(true)
-    const keep =
-      graphOptions.focus && coneReq ? focusKeepSet(coneReq, result.graph) : null
-    const toLayout = keep ? filterSubgraph(result.graph, keep) : result.graph
     layoutSubgraph(toLayout, controller.signal)
       .then((g) => {
         if (cancelled) return
         setDisplayedGraph({
-          designId: result.designId,
-          requestKey: result.requestKey,
+          designId: owner.designId,
+          requestKey: owner.requestKey,
           subgraph: toLayout,
           graph: g,
         })
-        laidOutSubgraph.current = result.graph
+        laidOutSubgraph.current = toLayout
         setLoading(false)
         setFitNonce((n) => n + 1)
       })
@@ -183,7 +197,7 @@ export function Graph({ active }: { active: boolean }) {
       cancelled = true
       controller.abort()
     }
-  }, [active, fetchedSubgraph, graphOptions.focus, coneReq])
+  }, [active, fetchedSubgraph, combinedSubgraph])
 
   const sub = displayedGraph?.subgraph ?? null
   const laid = displayedGraph?.graph ?? null
@@ -217,6 +231,57 @@ export function Graph({ active }: { active: boolean }) {
     if (!sub || !selected) return null
     return sub.edges.find((e) => e.from === selected.id)?.net_name ?? null
   }, [sub, selected])
+
+  // Double-click a node to additively pull in its immediate fanin and fanout
+  // neighbors. Grouped nodes expand around their member bits so the neighborhood
+  // comes back grouped and its synthetic ids line up with the base graph.
+  const designId = design?.design_id
+  const onExpand = useCallback(
+    (node: GraphNode) => {
+      if (!designId) return
+      const ids = node.members ?? [node.id]
+      // Guard on the last-started request sequence (bumped when a new base
+      // fetch begins), not the last-completed key — otherwise an expansion that
+      // resolves while a new base cone is still in-flight would leak stale nodes
+      // into it, and setExpansionGraph(null) at fetch start would not clear them.
+      const owner = reqSeq.current
+      const shared = {
+        node: ids[0],
+        nodes: ids.length > 1 ? ids : undefined,
+        max_depth: 1,
+        max_nodes: graphOptions.maxNodes,
+        hide_control: graphOptions.hideControl,
+        hide_const: graphOptions.hideConst,
+        show_infrastructure: graphOptions.showInfrastructure,
+        group_vectors: graphOptions.groupVectors,
+      }
+      Promise.all([
+        getCone(designId, { ...shared, dir: 'fanin' }),
+        getCone(designId, { ...shared, dir: 'fanout' }),
+      ])
+        .then(([fanin, fanout]) => {
+          // Drop stale results if a new base fetch started while fetching.
+          if (reqSeq.current !== owner) return
+          // A depth-1 neighborhood is deliberately shallow, so its truncated
+          // flag (hit the depth limit) is expected and must not mark the whole
+          // view truncated — only the base cone and render cap do that.
+          const clear = (g: Subgraph): Subgraph => ({ ...g, truncated: false })
+          setExpansionGraph((prev) => {
+            const acc = prev ?? { nodes: [], edges: [], truncated: false }
+            return mergeSubgraphs(
+              mergeSubgraphs(acc, clear(fanin), MAX_GRAPH_RENDER_NODES),
+              clear(fanout),
+              MAX_GRAPH_RENDER_NODES,
+            )
+          })
+        })
+        .catch(() => {
+          // Expansion is best-effort; a failed neighborhood fetch leaves the
+          // current graph intact rather than surfacing an error.
+        })
+    },
+    [designId, graphOptions],
+  )
 
   if (!design) return <div className="empty-state">No design yet.</div>
   if (!coneReq)
@@ -256,6 +321,7 @@ export function Graph({ active }: { active: boolean }) {
                     })
                 : undefined
             }
+            onExpand={graphInteractive ? onExpand : undefined}
             active={active}
             fitNonce={fitNonce}
           />
@@ -327,6 +393,7 @@ export function Graph({ active }: { active: boolean }) {
             node={selected}
             drivingNet={selectedNet}
             onClose={() => setSelected(null)}
+            onExpand={() => onExpand(selected)}
           />
         )}
       </div>
