@@ -835,6 +835,9 @@ table.grid tr.expanded td {
   fill: var(--text-faint);
   pointer-events: none;
 }
+.g-reg-name {
+  fill: var(--text);
+}
 .g-node-body {
   cursor: pointer;
   outline: none;
