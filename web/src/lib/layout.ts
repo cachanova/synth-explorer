@@ -5,7 +5,7 @@ import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
 import type { GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
-import { nodeLabel } from './prettyType'
+import { groupBadgeText, nodeLabel } from './prettyType'
 import { controlLabel, controlsFor, symbolKind } from './symbols'
 
 export interface Point {
@@ -173,10 +173,10 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
     width = Math.max(width, Math.round(controlWidth))
     height = base.height + controls.length * 13
   }
-  // Grouped vector nodes reserve an extra row and room for a "×N" bit badge.
-  const groupWidth = node.width ?? 0
-  if (groupWidth >= 2) {
-    const badge = `×${groupWidth}`
+  // Reserve a row and width only when a "×N" bit badge will actually render
+  // (grouped nodes whose label does not already show the width).
+  const badge = groupBadgeText(node)
+  if (badge) {
     width = Math.max(width, Math.round(badge.length * CHAR_WIDTH + PAD_X))
     height += 14
   }

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   fitViewportToContent,
   panViewport,
+  REG_BODY_HEIGHT,
   REG_DATA_IN_Y_FRAC,
   REG_DATA_OUT_Y_FRAC,
   viewportTransformAttribute,
@@ -11,7 +12,7 @@ import {
   type Point,
   type ViewportTransform,
 } from '../lib/layout'
-import { nodeLabel, nodeSublabel, shortNetName } from '../lib/prettyType'
+import { groupBadgeText, nodeLabel, nodeSublabel, shortNetName } from '../lib/prettyType'
 import {
   arithGlyph,
   boxBadge,
@@ -150,7 +151,7 @@ function SchematicOutline({
   // A grouped (width>=2) node is a vector, so draw offset silhouettes behind it
   // — a stack-of-sheets cue that a bus of cells collapsed into one symbol.
   const groupWidth = node.width ?? 0
-  const stackOffsets = groupWidth >= 2 ? (groupWidth >= 4 ? [7, 3.5] : [4]) : []
+  const stackOffsets = groupWidth >= 2 ? (groupWidth >= 4 ? [11, 5.5] : [6]) : []
   const ghostProps = {
     fill: visual.fill,
     stroke: visual.stroke,
@@ -264,13 +265,12 @@ function NodeContents({
   const maxChars = Math.max(4, Math.floor(width / 6.2))
   const primaryHeight = kind === 'reg' ? Math.min(height, 58) : height
 
-  const groupWidth = node.width ?? 0
-  const groupBadge =
-    groupWidth >= 2 ? (
-      <text className="g-group-badge" x={width - 4} y={11} textAnchor="end">
-        ×{groupWidth}
-      </text>
-    ) : null
+  const badgeText = groupBadgeText(node)
+  const groupBadge = badgeText ? (
+    <text className="g-group-badge" x={width - 4} y={11} textAnchor="end">
+      {badgeText}
+    </text>
+  ) : null
 
   if (kind === 'arith') {
     return (
@@ -288,19 +288,25 @@ function NodeContents({
     )
   }
 
-  // A flip-flop/latch keeps its primitive glyph centered and shows the register
-  // signal name across the top, clear of the side D/Q/R pins and the clock notch.
+  // A flip-flop/latch is identified by its register signal name, so that is the
+  // prominent centered label; the primitive type (DFF/LATCH) is a small tag on
+  // top. When the register has no recoverable name, the type takes the center.
   if (kind === 'reg' || kind === 'latch') {
     return (
       <>
         {groupBadge}
         {name && (
-          <text className="g-node-name g-reg-name" x={width / 2} y={12} textAnchor="middle">
-            {truncate(name, maxChars)}
+          <text className="g-reg-type" x={width / 2} y={11} textAnchor="middle">
+            {truncate(label, maxChars)}
           </text>
         )}
-        <text className="g-node-label" x={width / 2} y={primaryHeight / 2 + 4} textAnchor="middle">
-          {truncate(label, maxChars)}
+        <text
+          className="g-node-label g-reg-name"
+          x={width / 2}
+          y={primaryHeight / 2 + (name ? 8 : 4)}
+          textAnchor="middle"
+        >
+          {truncate(name ?? label, maxChars)}
         </text>
       </>
     )
@@ -393,8 +399,13 @@ function RegisterPins({
   width: number
   bodyHeight: number
 }) {
-  const dInY = bodyHeight * REG_DATA_IN_Y_FRAC
-  const qY = bodyHeight * REG_DATA_OUT_Y_FRAC
+  // Pin positions must use the same primary body height as layout.ts (which
+  // routes the data edges to min(fullHeight, REG_BODY_HEIGHT) port offsets), not
+  // the full body — otherwise the grouped-badge row shifts the ticks off the
+  // incoming/outgoing wires.
+  const body = Math.min(bodyHeight, REG_BODY_HEIGHT)
+  const dInY = body * REG_DATA_IN_Y_FRAC
+  const qY = body * REG_DATA_OUT_Y_FRAC
   const controlLetters = controlsFor(node)
     .map((control) => controlPinLetter(control.role))
     .filter((letter): letter is string => letter !== null)
@@ -413,7 +424,7 @@ function RegisterPins({
           className="g-reg-pin g-reg-ctrl-pin"
           key={letter}
           x={9}
-          y={bodyHeight * 0.5 + 3 + index * 11}
+          y={body * 0.5 + 3 + index * 11}
         >
           {letter}
         </text>
