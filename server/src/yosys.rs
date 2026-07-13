@@ -142,6 +142,19 @@ pub enum YosysError {
     Netlist(#[from] NetlistError),
 }
 
+impl YosysError {
+    /// True when synthesis died from exhausting a sandbox bound — memory, CPU,
+    /// output size, or the wall-clock timeout. Flattening a huge memory to
+    /// gates blows any of these depending on the Yosys version, so all four
+    /// are the signal to retry with memories kept abstract.
+    pub fn is_resource_exhaustion(&self) -> bool {
+        matches!(
+            self,
+            YosysError::ResourceLimit { .. } | YosysError::Timeout { .. }
+        )
+    }
+}
+
 impl SynthRequest {
     pub fn validate(self) -> Result<ValidatedSynth, YosysError> {
         if self.files.is_empty() {
@@ -693,6 +706,24 @@ mod tests {
         use std::os::unix::process::ExitStatusExt;
         let failed = std::process::ExitStatus::from_raw(1 << 8); // exit code 1
         assert_eq!(classify_failure(&failed, "ERROR: syntax error"), None);
+    }
+
+    #[test]
+    fn resource_exhaustion_covers_limits_and_timeout_but_not_syntax_errors() {
+        let mem = YosysError::ResourceLimit {
+            kind: ResourceKind::Memory,
+            log: String::new(),
+        };
+        let cpu = YosysError::ResourceLimit {
+            kind: ResourceKind::Cpu,
+            log: String::new(),
+        };
+        let timeout = YosysError::Timeout { log: String::new() };
+        let syntax = YosysError::Yosys { log: String::new() };
+        assert!(mem.is_resource_exhaustion());
+        assert!(cpu.is_resource_exhaustion());
+        assert!(timeout.is_resource_exhaustion());
+        assert!(!syntax.is_resource_exhaustion());
     }
 
     #[test]

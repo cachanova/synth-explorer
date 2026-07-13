@@ -552,16 +552,16 @@ async fn synthesize_uncached(
     };
     let (output, memories_abstracted) = match run_yosys(validated, MemoryHandling::Map).await {
         Ok(output) => (output, false),
-        Err(YosysError::ResourceLimit {
-            kind: ResourceKind::Memory,
-            ..
-        }) if validated.mode.is_generic() => {
+        // A too-large memory flatten exhausts memory, CPU, or the wall clock
+        // depending on the Yosys version; any of them is worth one retry that
+        // keeps memories abstract.
+        Err(err) if validated.mode.is_generic() && err.is_resource_exhaustion() => {
             tracing::info!(design_id, mode, "synthesis_memory_retry");
             let output = run_yosys(validated, MemoryHandling::Abstract)
                 .await
-                .map_err(|err| {
-                    synthesis_failed(&err);
-                    map_yosys_error(err)
+                .map_err(|retry_err| {
+                    synthesis_failed(&retry_err);
+                    map_yosys_error(retry_err)
                 })?;
             (output, true)
         }

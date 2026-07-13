@@ -127,19 +127,21 @@ Response `200`:
   };
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
-  memories_abstracted: boolean; // true when a generic mode hit the sandbox
-                           // memory limit and succeeded on a retry that keeps
-                           // inferred memories as $mem_v2 cells instead of
-                           // flattening them to gates
+  memories_abstracted: boolean; // true when a generic mode exhausted a sandbox
+                           // bound and succeeded on a retry that keeps inferred
+                           // memories as $mem_v2 cells instead of flattening
+                           // them to gates
 }
 ```
 
 Generic modes (`gates`, `lut4`, `lut6`) first synthesize exactly as before.
-When that attempt is killed by the sandbox memory limit, the server retries
-once with a script that stops `synth` before `memory_map` and replays the fine
-stage without it, so large inferred memories survive as abstract `$mem_v2`
-cells (rendered as MEM nodes, treated as sequential boundaries). The response
-then carries `memories_abstracted: true`. RTL and vendor modes never retry.
+When that attempt exhausts a sandbox bound — memory, CPU, output size, or the
+wall-clock timeout, since flattening a huge memory blows any of them depending
+on the Yosys version — the server retries once with a script that stops `synth`
+before `memory_map` and replays the fine stage without it, so large inferred
+memories survive as abstract `$mem_v2` cells (rendered as MEM nodes, treated as
+sequential boundaries). The response then carries `memories_abstracted: true`.
+RTL and vendor modes never retry.
 
 At most three distinct uncached `design_id` leaders are admitted: one complete
 Yosys/parse/analysis/cache pipeline runs while two wait. Concurrent requests for
