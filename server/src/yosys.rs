@@ -106,13 +106,6 @@ pub struct SynthRequest {
     pub top: Option<String>,
     pub mode: SynthMode,
     pub extra_args: Option<String>,
-    /// Xilinx target architecture (`synth_xilinx -family`); ignored by other
-    /// modes. Selects the carry/BRAM/DSP primitives, so it changes the netlist.
-    #[serde(default)]
-    pub family: Option<String>,
-    /// Xilinx register retiming (`synth_xilinx -retime`); ignored by other modes.
-    #[serde(default)]
-    pub retime: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -121,13 +114,7 @@ pub struct ValidatedSynth {
     pub top: Option<String>,
     pub mode: SynthMode,
     pub extra_args: Vec<String>,
-    pub family: Option<String>,
-    pub retime: bool,
 }
-
-/// Non-experimental `synth_xilinx -family` values we expose. Kept in sync with
-/// the frontend family selector.
-pub const XILINX_FAMILIES: &[&str] = &["xc7", "xcup", "xcu", "xc6s", "xc6v"];
 
 #[derive(Debug, Clone)]
 pub struct YosysOutput {
@@ -184,30 +171,12 @@ impl SynthRequest {
             validate_top(top)?;
         }
         let extra_args = parse_extra_args(self.extra_args.as_deref())?;
-        let family = validate_family(self.family.as_deref())?;
         Ok(ValidatedSynth {
             files,
             top: self.top,
             mode: self.mode,
             extra_args,
-            family,
-            retime: self.retime,
         })
-    }
-}
-
-/// Only meaningful for `Xilinx` mode, but validated whenever present so a bad
-/// value is rejected up front rather than failing inside yosys.
-fn validate_family(family: Option<&str>) -> Result<Option<String>, YosysError> {
-    let Some(family) = family else {
-        return Ok(None);
-    };
-    if XILINX_FAMILIES.contains(&family) {
-        Ok(Some(family.to_owned()))
-    } else {
-        Err(YosysError::Validation(format!(
-            "unsupported xilinx family: {family}"
-        )))
     }
 }
 
@@ -221,10 +190,6 @@ impl ValidatedSynth {
         }
         hasher.update([0]);
         hasher.update(self.extra_args.join(" ").as_bytes());
-        hasher.update([0]);
-        hasher.update(self.family.as_deref().unwrap_or("").as_bytes());
-        hasher.update([0]);
-        hasher.update([self.retime as u8]);
         hasher.update([0]);
         for file in &self.files {
             hasher.update(file.name.as_bytes());
@@ -486,14 +451,8 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
             if input.top.is_none() {
                 script.push_str("hierarchy -auto-top\n");
             }
-            let family = input
-                .family
-                .as_deref()
-                .map(|f| format!(" -family {f}"))
-                .unwrap_or_default();
-            let retime = if input.retime { " -retime" } else { "" };
             script.push_str(&format!(
-                "synth_xilinx {}{family}{retime} -flatten{extra}\n",
+                "synth_xilinx {} -flatten{extra}\n",
                 top_only(input.top.as_deref())
             ));
         }
@@ -619,8 +578,6 @@ mod tests {
             } else {
                 Some(extra_args.to_owned())
             },
-            family: None,
-            retime: false,
         }
         .validate()
         .unwrap()
@@ -636,8 +593,6 @@ mod tests {
             top: None,
             mode: SynthMode::Rtl,
             extra_args: None,
-            family: None,
-            retime: false,
         };
         assert!(request.validate().is_err());
     }
@@ -652,8 +607,6 @@ mod tests {
             top: Some("top".to_owned()),
             mode: SynthMode::Gates,
             extra_args: Some("-noabc;rm".to_owned()),
-            family: None,
-            retime: false,
         };
         let error = request.validate().unwrap_err();
         assert_eq!(error.to_string(), "invalid extra_args token: -noabc;rm");
@@ -669,8 +622,6 @@ mod tests {
             top: Some("top".to_owned()),
             mode: SynthMode::Gates,
             extra_args: Some("  -nofsm   -noabc  ".to_owned()),
-            family: None,
-            retime: false,
         }
         .validate()
         .unwrap();
@@ -683,75 +634,26 @@ mod tests {
     }
 
     #[test]
-    fn xilinx_family_is_injected_validated_and_part_of_identity() {
-        fn xilinx_req(family: Option<&str>) -> SynthRequest {
-            SynthRequest {
-                files: vec![SourceFile {
-                    name: "design.sv".to_owned(),
-                    content: "module top; endmodule".to_owned(),
-                }],
-                top: Some("top".to_owned()),
-                mode: SynthMode::Xilinx,
-                extra_args: None,
-                family: family.map(str::to_owned),
-                retime: false,
-            }
-        }
-
-        // A selected family becomes `synth_xilinx -family <f>`.
-        let with_family = xilinx_req(Some("xcup")).validate().unwrap();
+    fn xilinx_flags_flow_through_extra_args_and_the_cache_key() {
+        // The frontend now assembles -family/-retime into the flags string, so
+        // they reach synth_xilinx via extra_args like any other flag, and
+        // changing them re-synthesizes because extra_args is in the cache key.
+        let plain = validated(&["design.sv"], Some("top"), SynthMode::Xilinx, "");
         assert!(
-            build_script(&with_family, MemoryHandling::Map)
-                .contains("synth_xilinx -top top -family xcup -flatten\n")
+            build_script(&plain, MemoryHandling::Map).contains("synth_xilinx -top top -flatten\n")
         );
 
-        // No family keeps the default invocation (no -family flag).
-        let default_family = xilinx_req(None).validate().unwrap();
-        let script = build_script(&default_family, MemoryHandling::Map);
-        assert!(script.contains("synth_xilinx -top top -flatten\n"));
-        assert!(!script.contains("-family"));
-
-        // Unsupported families are rejected up front, not passed to yosys.
-        assert!(xilinx_req(Some("bogus")).validate().is_err());
-
-        // Family is part of the cache identity so switching it re-synthesizes.
-        assert_ne!(
-            xilinx_req(Some("xc7")).validate().unwrap().design_id(),
-            xilinx_req(Some("xcup")).validate().unwrap().design_id(),
+        let tuned = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-family xcup -retime",
         );
-    }
-
-    #[test]
-    fn xilinx_retime_is_injected_and_part_of_identity() {
-        fn xilinx_req(retime: bool) -> SynthRequest {
-            SynthRequest {
-                files: vec![SourceFile {
-                    name: "design.sv".to_owned(),
-                    content: "module top; endmodule".to_owned(),
-                }],
-                top: Some("top".to_owned()),
-                mode: SynthMode::Xilinx,
-                extra_args: None,
-                family: Some("xcup".to_owned()),
-                retime,
-            }
-        }
-
-        // -retime lands after -family, before -flatten.
         assert!(
-            build_script(&xilinx_req(true).validate().unwrap(), MemoryHandling::Map)
-                .contains("synth_xilinx -top top -family xcup -retime -flatten\n")
+            build_script(&tuned, MemoryHandling::Map)
+                .contains("synth_xilinx -top top -flatten -family xcup -retime\n")
         );
-        // Off keeps the invocation retime-free.
-        assert!(
-            !build_script(&xilinx_req(false).validate().unwrap(), MemoryHandling::Map)
-                .contains("-retime")
-        );
-        // Toggling retime re-synthesizes.
-        assert_ne!(
-            xilinx_req(true).validate().unwrap().design_id(),
-            xilinx_req(false).validate().unwrap().design_id(),
-        );
+        assert_ne!(plain.design_id(), tuned.design_id());
     }
 
     #[test]
@@ -863,8 +765,6 @@ mod tests {
             top: Some("a".to_owned()),
             mode: SynthMode::Rtl,
             extra_args: Some("  -ifx   ".to_owned()),
-            family: None,
-            retime: false,
         }
         .validate()
         .unwrap();
@@ -873,8 +773,6 @@ mod tests {
             top: a.top.clone(),
             mode: a.mode,
             extra_args: Some(a.extra_args.join(" ")),
-            family: a.family.clone(),
-            retime: a.retime,
         }
         .validate()
         .unwrap();

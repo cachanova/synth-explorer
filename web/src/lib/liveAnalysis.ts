@@ -1,4 +1,4 @@
-import type { DesignFile, Mode, SynthesizeRequest, XilinxFamily } from '../types'
+import type { DesignFile, Mode, SynthesizeRequest } from '../types'
 import { boundedRetryDelayMs } from './retry'
 import { buildSynthesizeRequest } from './synthesize'
 
@@ -34,10 +34,8 @@ export function synthesisInput(
   mode: Mode,
   extraArgs: string,
   revision = 0,
-  family: XilinxFamily = 'xc7',
-  retime = false,
 ): SynthesisInput {
-  const request = buildSynthesizeRequest(files, top, mode, extraArgs, family, retime)
+  const request = buildSynthesizeRequest(files, top, mode, extraArgs)
   return { request, key: JSON.stringify(request), revision }
 }
 
