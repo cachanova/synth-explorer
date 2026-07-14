@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_only:
-        description: Publish the image without deploying it (first GHCR setup only)
+        description: Build and publish this ref without deploying it
         required: false
         type: boolean
         default: false
@@ -34,7 +34,7 @@ jobs:
     if: >-
       ${{
         (github.event_name == 'workflow_dispatch' &&
-         github.ref == 'refs/heads/main') ||
+         (inputs.publish_only == true || github.ref == 'refs/heads/main')) ||
         (github.event_name == 'workflow_run' &&
          github.event.workflow_run.event == 'push' &&
          github.event.workflow_run.head_branch == 'main' &&
@@ -54,17 +54,27 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISH_ONLY: ${{ inputs.publish_only }}
         run: |
-          count="$(gh api --method GET \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
-            -f branch=main \
-            -f event=push \
-            -f head_sha="${DEPLOY_SHA}" \
-            -f status=success \
-            -F per_page=1 \
-            --jq '.total_count')"
+          if [[ "${PUBLISH_ONLY}" == true ]]; then
+            count="$(gh api --method GET \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f branch="${GITHUB_REF_NAME}" \
+              -f status=success \
+              -F per_page=100 \
+              --jq "[.workflow_runs[] | select(.head_sha == \"${DEPLOY_SHA}\")] | length")"
+          else
+            count="$(gh api --method GET \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f branch=main \
+              -f event=push \
+              -f head_sha="${DEPLOY_SHA}" \
+              -f status=success \
+              -F per_page=1 \
+              --jq '.total_count')"
+          fi
           if [[ ! "${count}" =~ ^[0-9]+$ || "${count}" -lt 1 ]]; then
-            echo "No successful push-triggered CI run for ${DEPLOY_SHA}" >&2
+            echo "No successful qualifying CI run for ${DEPLOY_SHA}" >&2
             exit 1
           fi
 

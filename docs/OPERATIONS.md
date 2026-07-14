@@ -229,8 +229,8 @@ The production workflow performs these steps:
 2. Runs all seven synthesis modes and a browser test that enters `-noabc` in
    the webpage against that image.
 3. Pushes the full-commit tag to GHCR and resolves its `sha256` digest.
-4. Uploads `compose.prod.yml`, `Caddyfile`, and the scripts under `ops/` over
-   SSH.
+4. Uploads the production Compose files, `Caddyfile`, and the scripts under
+   `ops/` over SSH.
 5. Calls `ops/deploy.sh <image-ref@sha256:digest>` on the host.
 6. Verifies the IPv6 HTTPS path from the host, then verifies public DNS, TLS,
    HTTP and `www` redirects, all synthesis modes, and the deployed commit from a
@@ -244,6 +244,16 @@ gh workflow run deploy-production.yml --ref main -f publish_only=false
 ```
 
 Select the new run in GitHub Actions and confirm that both jobs pass.
+
+To publish an immutable image for a CI-green feature branch without granting it
+any deployment path, run:
+
+```bash
+gh workflow run deploy-production.yml --ref FEATURE_BRANCH -f publish_only=true
+```
+
+Publish-only dispatches accept any ref with a successful CI run for that exact
+commit. The deploy job remains restricted to `main` and is skipped entirely.
 
 The host deploy script accepts an immutable digest reference. It rejects tags,
 unpacks each workflow run under `/opt/synth-explorer/releases/`, stores mutable
@@ -270,8 +280,8 @@ curl --fail --silent --show-error https://synthexplorer.dev/healthz | jq
 ./deploy/ops/smoke-test.sh https://synthexplorer.dev "$(git rev-parse origin/main)"
 ```
 
-The health response must report `status: ok`, the deployed commit, and a Yosys
-version.
+The health response must report `status: ok`, the deployed commit, Yosys, and
+Vivado 2026.1.
 
 ## Routine deployments and rollback
 
