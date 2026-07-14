@@ -71,6 +71,9 @@ export interface LineConeResponse {
 
 export type Mode = 'rtl' | 'gates' | 'lut4' | 'lut6' | 'ice40' | 'ecp5' | 'xilinx'
 
+// synth_xilinx -family target; selects carry/BRAM/DSP primitives.
+export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
+
 export interface DesignFile {
   name: string // bare filename, [A-Za-z0-9._-]+, .v/.sv
   content: string
@@ -81,6 +84,7 @@ export interface SynthesizeRequest {
   top?: string // omitted -> yosys -auto-top
   mode: Mode
   extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
+  family?: XilinxFamily // xilinx mode only: synth_xilinx -family target
 }
 
 export interface Stats {

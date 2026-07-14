@@ -35,6 +35,7 @@ import type {
   Stats,
   SynthesizeResponse,
   TimingPath,
+  XilinxFamily,
 } from './types'
 
 export type TabId =
@@ -177,6 +178,7 @@ export interface Store {
   top: string
   mode: Mode
   extraArgs: string
+  xilinxFamily: XilinxFamily
   examples: Example[]
 
   setActiveFileName: (name: string) => void
@@ -187,6 +189,7 @@ export interface Store {
   setTop: (t: string) => void
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
+  setXilinxFamily: (f: XilinxFamily) => void
   loadExample: (ex: Example) => void
 
   // synthesis
@@ -249,6 +252,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [top, setTopState] = useState('')
   const [mode, setModeState] = useState<Mode>('gates')
   const [extraArgs, setExtraArgsState] = useState('')
+  const [xilinxFamily, setXilinxFamilyState] = useState<XilinxFamily>(
+    api.DEFAULT_XILINX_FAMILY,
+  )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -298,6 +304,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   modeRef.current = mode
   const extraArgsRef = useRef(extraArgs)
   extraArgsRef.current = extraArgs
+  const xilinxFamilyRef = useRef(xilinxFamily)
+  xilinxFamilyRef.current = xilinxFamily
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
   const autoSynthesizeRef = useRef(autoSynthesize)
@@ -337,6 +345,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       modeRef.current,
       extraArgsRef.current,
       revision,
+      xilinxFamilyRef.current,
     )
     resolvedInputRef.current = resolved
     setResolvedInputIdentity((current) =>
@@ -499,6 +508,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       extraArgsRef.current = value
       markInputChanged()
       setExtraArgsState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setXilinxFamily = useCallback(
+    (value: XilinxFamily) => {
+      if (xilinxFamilyRef.current === value) return
+      xilinxFamilyRef.current = value
+      markInputChanged()
+      setXilinxFamilyState(value)
     },
     [markInputChanged],
   )
@@ -858,6 +877,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       top,
       mode,
       extraArgs,
+      xilinxFamily,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -867,6 +887,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setTop,
       setMode,
       setExtraArgs,
+      setXilinxFamily,
       loadExample,
       synthesizing,
       design,
@@ -899,6 +920,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       top,
       mode,
       extraArgs,
+      xilinxFamily,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -908,6 +930,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setTop,
       setMode,
       setExtraArgs,
+      setXilinxFamily,
       loadExample,
       synthesizing,
       design,
