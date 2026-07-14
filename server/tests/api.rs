@@ -597,6 +597,151 @@ endmodule
 }
 
 #[tokio::test]
+async fn output_probe_expands_inputs_of_directly_connected_register() {
+    let source = r#"
+module registered_output (
+  input logic clk,
+  input logic a,
+  input logic b,
+  output logic y,
+  output wire alias,
+  output logic z
+);
+  logic q;
+  always_ff @(posedge clk) begin
+    q <= a ^ b;
+    y <= a & b;
+    z <= q;
+  end
+  assign alias = q;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "registered_output.sv", "content": source}],
+                        "top": "registered_output",
+                        "mode": "xilinx"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    let output_line = source
+        .lines()
+        .position(|line| line.trim() == "output logic y,")
+        .unwrap()
+        + 1;
+
+    let probe = get_line_probe(&mut app, design_id, "registered_output.sv", output_line).await;
+    assert_eq!(probe["status"], "mapped");
+    let nodes = probe["graph"]["nodes"].as_array().unwrap();
+    assert!(nodes.iter().any(|node| node["name"] == "y"));
+    assert!(nodes.iter().any(|node| node["register"] == true));
+    assert!(nodes.iter().any(|node| node["name"] == "a"), "{nodes:#?}");
+    assert!(nodes.iter().any(|node| node["name"] == "b"), "{nodes:#?}");
+    assert!(
+        nodes.iter().any(|node| node["cell_type"]
+            .as_str()
+            .is_some_and(|kind| kind.starts_with("LUT"))),
+        "registered output probe should include the D-input logic: {nodes:?}"
+    );
+
+    let with_infrastructure = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=registered_output.sv&start_line={output_line}&end_line={output_line}&show_infrastructure=true"
+        ),
+    )
+    .await;
+    assert!(
+        with_infrastructure["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["cell_type"] == "OBUF"),
+        "the regression must exercise the transparent output-buffer frontier"
+    );
+
+    let y_output = with_infrastructure["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "y")
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let generic_cone = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node={y_output}&dir=fanin"),
+    )
+    .await;
+    let generic_nodes = generic_cone["nodes"].as_array().unwrap();
+    assert!(generic_nodes.iter().any(|node| node["register"] == true));
+    assert!(generic_nodes.iter().all(|node| node["name"] != "a"));
+    assert!(generic_nodes.iter().all(|node| node["name"] != "b"));
+
+    let alias_line = source
+        .lines()
+        .position(|line| line.trim() == "assign alias = q;")
+        .unwrap()
+        + 1;
+    let alias = get_line_probe(&mut app, design_id, "registered_output.sv", alias_line).await;
+    let alias_nodes = alias["graph"]["nodes"].as_array().unwrap();
+    assert!(alias_nodes.iter().any(|node| node["register"] == true));
+    assert!(alias_nodes.iter().all(|node| node["name"] != "a"));
+    assert!(alias_nodes.iter().all(|node| node["name"] != "b"));
+    assert!(
+        alias_nodes.iter().all(|node| node["cell_type"]
+            .as_str()
+            .is_none_or(|kind| !kind.starts_with("LUT"))),
+        "continuous-assignment probes must retain the normal register boundary: {alias_nodes:?}"
+    );
+
+    let chained_output_line = source
+        .lines()
+        .position(|line| line.trim() == "output logic z")
+        .unwrap()
+        + 1;
+    let chained = get_line_probe(
+        &mut app,
+        design_id,
+        "registered_output.sv",
+        chained_output_line,
+    )
+    .await;
+    let chained_nodes = chained["graph"]["nodes"].as_array().unwrap();
+    assert_eq!(
+        chained_nodes
+            .iter()
+            .filter(|node| node["register"] == true)
+            .count(),
+        2,
+        "the output register and its direct register input should be visible: {chained_nodes:?}"
+    );
+    assert!(chained_nodes.iter().all(|node| node["name"] != "a"));
+    assert!(chained_nodes.iter().all(|node| node["name"] != "b"));
+    assert!(
+        chained_nodes.iter().all(|node| node["cell_type"]
+            .as_str()
+            .is_none_or(|kind| !kind.starts_with("LUT"))),
+        "the upstream register must remain a boundary: {chained_nodes:?}"
+    );
+}
+
+#[tokio::test]
 async fn assignment_probe_excludes_downstream_consumers_of_internal_lhs() {
     let source = r#"
 module internal_lhs (

@@ -141,7 +141,11 @@ pub(crate) fn recover_source_provenance(
                         start_line: declaration.line,
                         end_line: declaration.line,
                         direction: *direction,
-                        kind: SourceProbeHintKind::Signal,
+                        kind: if declaration.direction == PortDirection::Output {
+                            SourceProbeHintKind::OutputPort
+                        } else {
+                            SourceProbeHintKind::Signal
+                        },
                     });
                 }
             }

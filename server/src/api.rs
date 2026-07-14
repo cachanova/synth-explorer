@@ -887,9 +887,13 @@ async fn line_cone(
     };
     let grouping = grouping_for(&design, query.group_vectors);
     let subgraph = match probe.direction {
-        Some(_) => design
-            .analysis
-            .multi_root_cone(&design.graph, &roots, options, grouping),
+        Some(_) => design.analysis.multi_root_source_cone(
+            &design.graph,
+            &roots,
+            options,
+            grouping,
+            probe.expand_output_register_inputs,
+        ),
         None => design
             .analysis
             .envelope(&design.graph, &roots, options, grouping),

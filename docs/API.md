@@ -345,14 +345,17 @@ response projection.
 Source-range schematic for one to 200 RTL lines. Directional source constructs
 return only the circuit owned by that selection: an input declaration follows
 fanout, while output declarations, continuous assignments, and procedural
-assignments follow fanin. A non-assignment line inside an `always` block uses
-the union of every resolved assignment target in that block. Unclassified
-source ranges retain the bidirectional register-boundary envelope around cells
-whose `src` maps to the selection. Every traversal stops at sequential cells /
-ports / consts as usual. A selected register may be the center of an
-unclassified envelope so its upstream D and downstream Q neighborhoods are
-both visible without implying a combinational path through it. If selected
-roots drive control pins, control edges are included and `control` is true.
+assignments follow fanin. When an output declaration is connected directly to
+an ordinary register (optionally through transparent I/O buffers), its probe
+also expands that register's inputs; upstream registers remain boundaries. A
+non-assignment line inside an `always` block uses the union of every resolved
+assignment target in that block. Unclassified source ranges retain the
+bidirectional register-boundary envelope around cells whose `src` maps to the
+selection. Every other traversal stops at sequential cells / ports / consts as
+usual. A selected register may be the center of an unclassified envelope so its
+upstream D and downstream Q neighborhoods are both visible without implying a
+combinational path through it. If selected roots drive control pins, control
+edges are included and `control` is true.
 Accepts `group_vectors=true` (same grouping semantics as `/cone`); a group is a
 root when any member is a root.
 
