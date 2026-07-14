@@ -18,6 +18,16 @@ test('synthesizes from the webpage with the entered Yosys flags', async ({
   await page.goto('/')
 
   await expect(page.getByText('Synth Explorer', { exact: true })).toBeVisible()
+  const repositoryLink = page.getByRole('link', {
+    name: 'View source on GitHub (opens in a new tab)',
+  })
+  await expect(repositoryLink).toBeVisible()
+  await expect(repositoryLink).toHaveAttribute(
+    'href',
+    'https://github.com/cachanova/synth-explorer',
+  )
+  await expect(repositoryLink).toHaveAttribute('target', '_blank')
+  await expect(repositoryLink).toHaveAttribute('rel', 'noopener noreferrer')
   const flags = page.getByLabel('Synthesis flags')
   await expect(flags).toBeVisible()
   await flags.fill('-noabc')

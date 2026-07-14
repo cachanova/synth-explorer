@@ -144,6 +144,32 @@ a:hover {
 .app-header .logo .accent {
   color: var(--accent);
 }
+.repo-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  margin-left: auto;
+  padding: 4px 7px;
+  border-radius: 5px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+.repo-link:hover {
+  color: var(--text);
+  background: var(--bg-2);
+  text-decoration: none;
+}
+.repo-link:focus-visible {
+  color: var(--text);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.repo-mark {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
 .split {
   display: flex;
   flex: 1 1 auto;
