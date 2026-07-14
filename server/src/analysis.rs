@@ -1321,34 +1321,26 @@ impl Analysis {
         }
 
         let included_roots = seen.clone();
-        let mut output_register_frontier = HashSet::new();
-        if expand_output_register_inputs {
-            let mut transparent_queue = VecDeque::new();
-            for id in included_roots.iter().copied().filter(|id| {
-                let node = &graph.nodes[*id as usize];
-                node.kind == NodeKind::PortBit
-                    && matches!(
-                        node.port_dir,
-                        Some(PortDirection::Output | PortDirection::Inout)
-                    )
-            }) {
-                output_register_frontier.insert(id);
-                transparent_queue.push_back(id);
-            }
-            while let Some(id) = transparent_queue.pop_front() {
-                for edge_idx in &graph.incoming[id as usize] {
-                    let upstream = graph.edges[*edge_idx].from;
-                    if graph.nodes[upstream as usize]
-                        .cell_type
-                        .as_deref()
-                        .is_some_and(is_transparent_data_buffer)
-                        && output_register_frontier.insert(upstream)
-                    {
-                        transparent_queue.push_back(upstream);
-                    }
-                }
-            }
-        }
+        let mut output_register_frontier: HashSet<NodeId> = if expand_output_register_inputs {
+            included_roots
+                .iter()
+                .copied()
+                .filter(|id| {
+                    let node = &graph.nodes[*id as usize];
+                    (node.kind == NodeKind::PortBit
+                        && matches!(
+                            node.port_dir,
+                            Some(PortDirection::Output | PortDirection::Inout)
+                        ))
+                        || node
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_transparent_data_buffer)
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let mut traversals: Vec<Traversal> = directions
             .iter()
             .map(|dir| Traversal {
@@ -1436,12 +1428,20 @@ impl Analysis {
                     if expand_output_register_inputs
                         && traversal.dir == ConeDir::Fanin
                         && output_register_frontier.contains(&frame.id)
-                        && graph.nodes[next as usize]
+                    {
+                        if graph.nodes[next as usize]
                             .cell_type
                             .as_deref()
                             .is_some_and(is_register_type)
-                    {
-                        expanded_register_inputs.insert(next);
+                        {
+                            expanded_register_inputs.insert(next);
+                        } else if graph.nodes[next as usize]
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_transparent_data_buffer)
+                        {
+                            output_register_frontier.insert(next);
+                        }
                     }
                     if !seen.contains(&next) {
                         let unit = unit_id(grouping, base, next);
