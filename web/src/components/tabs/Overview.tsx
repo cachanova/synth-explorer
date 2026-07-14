@@ -1,8 +1,8 @@
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType } from '../../lib/prettyType'
-import { ESTIMATED_TIMING_CAVEAT, fmaxMhz } from '../../lib/timing'
 import { useStore } from '../../store'
 import type { CellCategoryCounts } from '../../types'
+import { TimingModel } from '../TimingModel'
 
 function displayMode(mode: string): string {
   switch (mode) {
@@ -86,23 +86,11 @@ export function Overview() {
       </div>
 
       {stats.estimated_delay_ns != null && stats.estimated_delay_ns > 0 && (
-        <>
-          <div className="section-title">Estimated timing</div>
-          <div className="cards">
-            <Card
-              k="Critical-path delay"
-              v={`${stats.estimated_delay_ns.toFixed(2)} ns`}
-              accent
-            />
-            <Card
-              k="Implied Fmax"
-              v={`${fmaxMhz(stats.estimated_delay_ns).toFixed(0)} MHz`}
-            />
-          </div>
-          <div className="caveat" style={{ marginTop: 8 }}>
-            {ESTIMATED_TIMING_CAVEAT}
-          </div>
-        </>
+        <TimingModel
+          key={design.design_id}
+          designId={design.design_id}
+          fallbackDelayNs={stats.estimated_delay_ns}
+        />
       )}
 
       <div className="section-title">Cell categories</div>
