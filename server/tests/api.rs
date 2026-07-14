@@ -604,6 +604,7 @@ module registered_output (
   input logic a,
   input logic b,
   output logic y,
+  output wire alias,
   output logic z
 );
   logic q;
@@ -612,6 +613,7 @@ module registered_output (
     y <= a & b;
     z <= q;
   end
+  assign alias = q;
 endmodule
 "#;
     let mut app = app(AppState::default());
@@ -655,6 +657,57 @@ endmodule
             .as_str()
             .is_some_and(|kind| kind.starts_with("LUT"))),
         "registered output probe should include the D-input logic: {nodes:?}"
+    );
+
+    let with_infrastructure = get_json(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/line-cone?file=registered_output.sv&start_line={output_line}&end_line={output_line}&show_infrastructure=true"
+        ),
+    )
+    .await;
+    assert!(
+        with_infrastructure["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["cell_type"] == "OBUF"),
+        "the regression must exercise the transparent output-buffer frontier"
+    );
+
+    let y_output = with_infrastructure["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["name"] == "y")
+        .unwrap()["id"]
+        .as_u64()
+        .unwrap();
+    let generic_cone = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node={y_output}&dir=fanin"),
+    )
+    .await;
+    let generic_nodes = generic_cone["nodes"].as_array().unwrap();
+    assert!(generic_nodes.iter().any(|node| node["register"] == true));
+    assert!(generic_nodes.iter().all(|node| node["name"] != "a"));
+    assert!(generic_nodes.iter().all(|node| node["name"] != "b"));
+
+    let alias_line = source
+        .lines()
+        .position(|line| line.trim() == "assign alias = q;")
+        .unwrap()
+        + 1;
+    let alias = get_line_probe(&mut app, design_id, "registered_output.sv", alias_line).await;
+    let alias_nodes = alias["graph"]["nodes"].as_array().unwrap();
+    assert!(alias_nodes.iter().any(|node| node["register"] == true));
+    assert!(alias_nodes.iter().all(|node| node["name"] != "a"));
+    assert!(alias_nodes.iter().all(|node| node["name"] != "b"));
+    assert!(
+        alias_nodes.iter().all(|node| node["cell_type"]
+            .as_str()
+            .is_none_or(|kind| !kind.starts_with("LUT"))),
+        "continuous-assignment probes must retain the normal register boundary: {alias_nodes:?}"
     );
 
     let chained_output_line = source

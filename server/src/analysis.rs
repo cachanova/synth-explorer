@@ -1425,6 +1425,15 @@ impl Analysis {
                         ConeDir::Fanin => edge.from,
                         ConeDir::Fanout => edge.to,
                     };
+                    if !seen.contains(&next) {
+                        let unit = unit_id(grouping, base, next);
+                        if !seen_units.contains(&unit) && seen_units.len() >= cap {
+                            truncated = true;
+                            break;
+                        }
+                        seen_units.insert(unit);
+                        seen.insert(next);
+                    }
                     if expand_output_register_inputs
                         && traversal.dir == ConeDir::Fanin
                         && output_register_frontier.contains(&frame.id)
@@ -1442,15 +1451,6 @@ impl Analysis {
                         {
                             output_register_frontier.insert(next);
                         }
-                    }
-                    if !seen.contains(&next) {
-                        let unit = unit_id(grouping, base, next);
-                        if !seen_units.contains(&unit) && seen_units.len() >= cap {
-                            truncated = true;
-                            break;
-                        }
-                        seen_units.insert(unit);
-                        seen.insert(next);
                     }
                     let stop_at_state_input = traversal.dir == ConeDir::Fanout
                         && is_addressable_sequential_node(graph, next)
