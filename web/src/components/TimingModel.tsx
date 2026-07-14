@@ -131,20 +131,12 @@ export function TimingModel({
         </summary>
         <div className="timing-coeffs">
           {DELAY_FIELDS.map((f) => (
-            <label className="field" key={f.key}>
-              <span>{f.label}</span>
-              <input
-                type="number"
-                min={0}
-                step={5}
-                value={editorModel ? editorModel[f.key] : ''}
-                disabled={!editorModel}
-                onChange={(e) => {
-                  const n = Number(e.target.value)
-                  if (Number.isFinite(n) && n >= 0) editField(f.key, n)
-                }}
-              />
-            </label>
+            <CoeffInput
+              key={f.key}
+              label={f.label}
+              value={editorModel ? editorModel[f.key] : null}
+              onCommit={(n) => editField(f.key, n)}
+            />
           ))}
         </div>
         {settings.overrides && (
@@ -158,6 +150,44 @@ export function TimingModel({
         {ESTIMATED_TIMING_CAVEAT}
       </div>
     </>
+  )
+}
+
+/**
+ * A single coefficient field. Keeps a local text draft so the user can clear
+ * and retype freely (a controlled numeric input would snap an emptied field to
+ * 0). Commits only finite, non-negative values; reverts to the model value on
+ * blur when the draft is empty or invalid.
+ */
+function CoeffInput({
+  label,
+  value,
+  onCommit,
+}: {
+  label: string
+  value: number | null
+  onCommit: (n: number) => void
+}) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft ?? (value != null ? String(value) : '')
+  return (
+    <label className="field">
+      <span>{label}</span>
+      <input
+        type="number"
+        min={0}
+        step={5}
+        value={shown}
+        disabled={value == null}
+        onChange={(e) => {
+          const text = e.target.value
+          setDraft(text)
+          const n = Number(text)
+          if (text.trim() !== '' && Number.isFinite(n) && n >= 0) onCommit(n)
+        }}
+        onBlur={() => setDraft(null)}
+      />
+    </label>
   )
 }
 

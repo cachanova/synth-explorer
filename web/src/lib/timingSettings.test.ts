@@ -78,4 +78,26 @@ describe('load/save round-trip', () => {
     )
     expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
   })
+
+  it('rejects a partial override (missing coefficients)', () => {
+    const { lut_ps: _drop, ...partial } = MODEL
+    localStorage.setItem(
+      'synthexplorer.timing.v1',
+      JSON.stringify({ profile: 'series7', speedGrade: '-1', overrides: partial }),
+    )
+    expect(loadTimingSettings().overrides).toBeNull()
+  })
+
+  it('rejects non-finite coefficients', () => {
+    localStorage.setItem(
+      'synthexplorer.timing.v1',
+      JSON.stringify({ profile: 'series7', speedGrade: '-1', overrides: { ...MODEL, lut_ps: null } }),
+    )
+    expect(loadTimingSettings().overrides).toBeNull()
+  })
+
+  it('falls back to defaults on malformed JSON', () => {
+    localStorage.setItem('synthexplorer.timing.v1', '{not valid json')
+    expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
+  })
 })
