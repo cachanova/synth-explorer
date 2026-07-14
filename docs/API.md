@@ -239,6 +239,12 @@ Request body (all fields optional):
 }
 ```
 
+Base-model precedence: `model` (full override) > `profile` > the design's own
+synth-time model. With none supplied, a retune reproduces the estimate from the
+synthesis panel (the preset `for_target` chose from the design's mode/family).
+Unknown `profile` or `speed_grade` values fall back leniently (to the design
+model and `-1` respectively) rather than erroring.
+
 `DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
 `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
 `net_per_fanout_ps`. Presets are process-node ballparks characterized at the

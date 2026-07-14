@@ -309,6 +309,10 @@ struct Design {
     analysis: Analysis,
     source_index: SourceLineIndex,
     grouping: GroupPartition,
+    /// The delay model chosen from the synthesis target, i.e. the one that
+    /// produced `response.stats.estimated_delay_ns`. Used as the default base
+    /// for `/timing` retunes so a no-argument retune reproduces that number.
+    delay_model: DelayModel,
 }
 
 impl Design {
@@ -639,6 +643,7 @@ async fn synthesize_uncached(
         analysis,
         source_index,
         grouping,
+        delay_model,
     });
     let cache_estimated_bytes = design_cache_weight(design_id, &design);
     let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
@@ -778,9 +783,14 @@ async fn design_timing(
     Json(request): Json<TimingRequest>,
 ) -> Result<Json<TimingResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
-    let base = request
-        .model
-        .unwrap_or_else(|| profile_preset(request.profile.as_deref()));
+    // Precedence: an explicit coefficient override wins, then a named profile,
+    // then the design's own synth-time model — so a no-argument retune
+    // reproduces the estimate shown in the synthesis panel.
+    let base = match (request.model, request.profile.as_deref()) {
+        (Some(model), _) => model,
+        (None, Some(profile)) => profile_preset(Some(profile)),
+        (None, None) => design.delay_model,
+    };
     let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
     let estimated_delay_ns = estimate_delay_ns(&design.graph, &effective);
     Ok(Json(TimingResponse {
@@ -1271,6 +1281,7 @@ mod tests {
             analysis,
             source_index,
             grouping,
+            delay_model: DelayModel::default(),
         })
     }
 
@@ -1529,6 +1540,70 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
         );
+    }
+
+    async fn post_timing(state: &AppState, id: &str, body: serde_json::Value) -> Response {
+        app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/design/{id}/timing"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn timing_model(response: Response) -> DelayModel {
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        serde_json::from_value(body["model"].clone()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn timing_endpoint_resolves_base_model_by_precedence() {
+        let state = AppState::default();
+        state.cache.write().await.insert(
+            "d".to_owned(),
+            empty_test_design("d"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+
+        // Explicit profile is honored.
+        let model = timing_model(
+            post_timing(
+                &state,
+                "d",
+                serde_json::json!({"profile": "ultrascale_plus"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(model, DelayModel::ultrascale_plus());
+
+        // A full override wins over a conflicting profile.
+        let override_model = DelayModel::ice40();
+        let model = timing_model(
+            post_timing(
+                &state,
+                "d",
+                serde_json::json!({"profile": "series7", "model": override_model}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(model, override_model);
+
+        // No base given → the design's own synth-time model (default here).
+        let model = timing_model(post_timing(&state, "d", serde_json::json!({})).await).await;
+        assert_eq!(model, DelayModel::default());
+
+        // Unknown design → 404.
+        let missing = post_timing(&state, "nope", serde_json::json!({})).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
