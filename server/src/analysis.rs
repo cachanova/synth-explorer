@@ -1504,6 +1504,8 @@ impl Analysis {
         graph: &Graph,
         max_nodes: usize,
         show_infrastructure: bool,
+        hide_control: bool,
+        hide_const: bool,
         grouping: Option<&GroupPartition>,
     ) -> Subgraph {
         let base = graph.nodes.len() as u32;
@@ -1515,6 +1517,9 @@ impl Analysis {
         let mut seen_units: HashSet<u32> = HashSet::new();
         let mut truncated = false;
         for node in &graph.nodes {
+            if hide_const && node.kind == NodeKind::Const {
+                continue;
+            }
             let unit = unit_id(grouping, base, node.id);
             if seen_units.contains(&unit) {
                 seen.insert(node.id);
@@ -1532,7 +1537,7 @@ impl Analysis {
             .filter(|(_, edge)| {
                 seen.contains(&edge.from)
                     && seen.contains(&edge.to)
-                    && !is_labeled_control_edge(graph, edge)
+                    && (!hide_control || !is_labeled_control_edge(graph, edge))
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -3770,8 +3775,8 @@ mod tests {
         let graph = dense_dag_graph(150);
         let analysis = Analysis::new(&graph, vec!["dense.sv".to_owned()]);
 
-        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, None);
-        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, None);
+        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
+        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
 
         assert_eq!(first.edges.len(), MAX_SUBGRAPH_EDGES);
         assert!(first.truncated);

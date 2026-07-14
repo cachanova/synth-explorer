@@ -228,17 +228,41 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   ).toBeGreaterThan(0)
 
   let fullNetlistRequests = 0
-  page.on('request', (request) => {
-    if (request.url().includes('/netlist?')) fullNetlistRequests += 1
+  let releaseFullProjection: () => void = () => {}
+  const fullProjectionGate = new Promise<void>((resolve) => {
+    releaseFullProjection = resolve
+  })
+  await page.route('**/netlist?**', async (route) => {
+    fullNetlistRequests += 1
+    await fullProjectionGate
+    await route.continue().catch(() => {})
   })
   const fullResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
   await focus.uncheck()
-  expect((await fullResponse).ok()).toBe(true)
+  await expect.poll(() => fullNetlistRequests).toBe(1)
+
+  // Change the relevant source while the full projection is still in flight.
+  // Selection cleanup must not abort that shared projection and start another.
+  const supersedingRelevantResponse = page.waitForResponse((response) =>
+    response.url().includes('/line-cone?'),
+  )
+  await page.locator('.cm-line').nth(10).click()
+  expect((await supersedingRelevantResponse).ok()).toBe(true)
+  await page.waitForTimeout(50)
+  const inFlightRequestCount = fullNetlistRequests
+  releaseFullProjection()
+  expect(inFlightRequestCount).toBe(1)
+  const resolvedFullResponse = await fullResponse
+  expect(resolvedFullResponse.ok()).toBe(true)
+  const fullParams = new URL(resolvedFullResponse.url()).searchParams
+  expect(fullParams.get('hide_control')).toBe('true')
+  expect(fullParams.get('hide_const')).toBe('true')
   await expect
     .poll(async () => page.locator('.g-node-body').count())
     .toBeGreaterThan(focusedNodeCount)
+  const fullNodeCount = await page.locator('.g-node-body').count()
   await expect(focus).not.toBeChecked()
   expect(await page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
   expect(
@@ -252,7 +276,9 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   expect((await refocusedResponse).ok()).toBe(true)
   await expect
     .poll(async () => page.locator('.g-node-body').count())
-    .toBe(focusedNodeCount)
+    .toBeLessThan(fullNodeCount)
+  const refocusedNodeCount = await page.locator('.g-node-body').count()
+  expect(refocusedNodeCount).toBeGreaterThan(0)
 
   // The full projection is stable for this design and option set. A second
   // Focus-off transition reuses it rather than rescanning the whole design.
@@ -263,6 +289,6 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   expect((await cachedRelevantResponse).ok()).toBe(true)
   await expect
     .poll(async () => page.locator('.g-node-body').count())
-    .toBeGreaterThan(focusedNodeCount)
+    .toBeGreaterThan(refocusedNodeCount)
   expect(fullNetlistRequests).toBe(1)
 })
