@@ -253,6 +253,7 @@ pub(crate) enum SourceProbeDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SourceProbeHintKind {
     Block,
+    OutputPort,
     Procedural,
     Signal,
 }
@@ -272,6 +273,7 @@ pub(crate) struct SourceProbeSelection {
     /// mixed-direction source ranges.
     pub direction: Option<ConeDir>,
     pub highlight_logic: bool,
+    pub expand_output_register_inputs: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -894,6 +896,7 @@ impl Analysis {
                 roots: default_roots,
                 direction: None,
                 highlight_logic: false,
+                expand_output_register_inputs: false,
             });
         };
         let overlapping: Vec<&SourceProbeHint> = index
@@ -906,6 +909,7 @@ impl Analysis {
                 roots: default_roots,
                 direction: None,
                 highlight_logic: false,
+                expand_output_register_inputs: false,
             });
         }
 
@@ -981,6 +985,9 @@ impl Analysis {
                 SourceProbeDirection::Fanout => ConeDir::Fanout,
             }),
             highlight_logic: true,
+            expand_output_register_inputs: selected
+                .iter()
+                .any(|hint| hint.kind == SourceProbeHintKind::OutputPort),
         })
     }
 
@@ -1232,7 +1239,25 @@ impl Analysis {
         options: ConeOptions,
         grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
-        self.multi_root_subgraph(graph, roots, &[options.dir], options, grouping)
+        self.multi_root_subgraph(graph, roots, &[options.dir], options, grouping, false)
+    }
+
+    pub(crate) fn multi_root_source_cone(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+        grouping: Option<&GroupPartition>,
+        expand_output_register_inputs: bool,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[options.dir],
+            options,
+            grouping,
+            expand_output_register_inputs,
+        )
     }
 
     pub fn envelope(
@@ -1248,6 +1273,7 @@ impl Analysis {
             &[ConeDir::Fanin, ConeDir::Fanout],
             options,
             grouping,
+            false,
         )
     }
 
@@ -1258,6 +1284,7 @@ impl Analysis {
         directions: &[ConeDir],
         options: ConeOptions,
         grouping: Option<&GroupPartition>,
+        expand_output_register_inputs: bool,
     ) -> Option<Subgraph> {
         if roots
             .iter()
@@ -1277,6 +1304,7 @@ impl Analysis {
         let mut included_root_ids = Vec::new();
         let mut boundary_nodes: HashSet<NodeId> = HashSet::new();
         let mut edge_set: HashSet<usize> = HashSet::new();
+        let mut expanded_register_inputs: HashSet<NodeId> = HashSet::new();
         let mut truncated = false;
 
         for root in roots {
@@ -1293,6 +1321,34 @@ impl Analysis {
         }
 
         let included_roots = seen.clone();
+        let mut output_register_frontier = HashSet::new();
+        if expand_output_register_inputs {
+            let mut transparent_queue = VecDeque::new();
+            for id in included_roots.iter().copied().filter(|id| {
+                let node = &graph.nodes[*id as usize];
+                node.kind == NodeKind::PortBit
+                    && matches!(
+                        node.port_dir,
+                        Some(PortDirection::Output | PortDirection::Inout)
+                    )
+            }) {
+                output_register_frontier.insert(id);
+                transparent_queue.push_back(id);
+            }
+            while let Some(id) = transparent_queue.pop_front() {
+                for edge_idx in &graph.incoming[id as usize] {
+                    let upstream = graph.edges[*edge_idx].from;
+                    if graph.nodes[upstream as usize]
+                        .cell_type
+                        .as_deref()
+                        .is_some_and(is_transparent_data_buffer)
+                        && output_register_frontier.insert(upstream)
+                    {
+                        transparent_queue.push_back(upstream);
+                    }
+                }
+            }
+        }
         let mut traversals: Vec<Traversal> = directions
             .iter()
             .map(|dir| Traversal {
@@ -1317,6 +1373,7 @@ impl Analysis {
                         };
                         if !included_roots.contains(&id)
                             && graph.is_boundary(id)
+                            && !expanded_register_inputs.contains(&id)
                             && !is_addressable_sequential_node(graph, id)
                         {
                             boundary_nodes.insert(id);
@@ -1376,6 +1433,16 @@ impl Analysis {
                         ConeDir::Fanin => edge.from,
                         ConeDir::Fanout => edge.to,
                     };
+                    if expand_output_register_inputs
+                        && traversal.dir == ConeDir::Fanin
+                        && output_register_frontier.contains(&frame.id)
+                        && graph.nodes[next as usize]
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_register_type)
+                    {
+                        expanded_register_inputs.insert(next);
+                    }
                     if !seen.contains(&next) {
                         let unit = unit_id(grouping, base, next);
                         if !seen_units.contains(&unit) && seen_units.len() >= cap {
