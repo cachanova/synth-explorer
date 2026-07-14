@@ -21,31 +21,44 @@ const MODEL: DelayModel = {
 }
 
 describe('timingRequest', () => {
+  const t = { targetMhz: null }
   it('omits profile for auto and defaults speed grade', () => {
-    expect(timingRequest({ profile: 'auto', speedGrade: '-1', overrides: null })).toEqual({
+    expect(timingRequest({ profile: 'auto', speedGrade: '-1', overrides: null, ...t })).toEqual({
       speed_grade: '-1',
     })
   })
 
   it('sends a named profile', () => {
     expect(
-      timingRequest({ profile: 'ultrascale_plus', speedGrade: '-2', overrides: null }),
+      timingRequest({ profile: 'ultrascale_plus', speedGrade: '-2', overrides: null, ...t }),
     ).toEqual({ profile: 'ultrascale_plus', speed_grade: '-2' })
   })
 
   it('a full override wins over the profile', () => {
     expect(
-      timingRequest({ profile: 'series7', speedGrade: '-3', overrides: MODEL }),
+      timingRequest({ profile: 'series7', speedGrade: '-3', overrides: MODEL, ...t }),
     ).toEqual({ model: MODEL, speed_grade: '-3' })
+  })
+
+  it('never includes the display-only target clock', () => {
+    const req = timingRequest({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: 200 })
+    expect(req).not.toHaveProperty('targetMhz')
   })
 })
 
 describe('isDefaultTiming', () => {
   it('is true only for auto / -1 / no overrides', () => {
+    const base = { targetMhz: null }
     expect(isDefaultTiming(DEFAULT_TIMING_SETTINGS)).toBe(true)
-    expect(isDefaultTiming({ profile: 'ice40', speedGrade: '-1', overrides: null })).toBe(false)
-    expect(isDefaultTiming({ profile: 'auto', speedGrade: '-2', overrides: null })).toBe(false)
-    expect(isDefaultTiming({ profile: 'auto', speedGrade: '-1', overrides: MODEL })).toBe(false)
+    expect(isDefaultTiming({ profile: 'ice40', speedGrade: '-1', overrides: null, ...base })).toBe(
+      false,
+    )
+    expect(isDefaultTiming({ profile: 'auto', speedGrade: '-2', overrides: null, ...base })).toBe(
+      false,
+    )
+    expect(isDefaultTiming({ profile: 'auto', speedGrade: '-1', overrides: MODEL, ...base })).toBe(
+      false,
+    )
   })
 })
 
@@ -66,9 +79,27 @@ describe('load/save round-trip', () => {
   })
 
   it('persists and restores settings', () => {
-    const s: TimingSettings = { profile: 'ecp5', speedGrade: '-3', overrides: MODEL }
+    const s: TimingSettings = {
+      profile: 'ecp5',
+      speedGrade: '-3',
+      overrides: MODEL,
+      targetMhz: 250,
+    }
     saveTimingSettings(s)
     expect(loadTimingSettings()).toEqual(s)
+  })
+
+  it('rejects a non-positive or non-numeric target clock', () => {
+    localStorage.setItem(
+      'synthexplorer.timing.v1',
+      JSON.stringify({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: -5 }),
+    )
+    expect(loadTimingSettings().targetMhz).toBeNull()
+    localStorage.setItem(
+      'synthexplorer.timing.v1',
+      JSON.stringify({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: 'fast' }),
+    )
+    expect(loadTimingSettings().targetMhz).toBeNull()
   })
 
   it('sanitizes invalid stored values', () => {

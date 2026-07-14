@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { retuneTiming } from '../api'
-import { ESTIMATED_TIMING_CAVEAT, fmaxMhz } from '../lib/timing'
+import { ESTIMATED_TIMING_CAVEAT, fmaxMhz, slackNs } from '../lib/timing'
 import {
   DELAY_FIELDS,
   PROFILE_OPTIONS,
@@ -35,17 +35,18 @@ export function TimingModel({
 
   useEffect(() => saveTimingSettings(settings), [settings])
 
-  // Debounce so dragging a coefficient field doesn't spam the endpoint.
-  const settingsKey = JSON.stringify(settings)
-  const [debouncedKey, setDebouncedKey] = useState(settingsKey)
+  // Debounce so dragging a coefficient field doesn't spam the endpoint. Key on
+  // the request only, so changing the (display-only) target clock never refetches.
+  const requestKey = JSON.stringify(timingRequest(settings))
+  const [debouncedKey, setDebouncedKey] = useState(requestKey)
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedKey(settingsKey), 250)
+    const t = setTimeout(() => setDebouncedKey(requestKey), 250)
     return () => clearTimeout(t)
-  }, [settingsKey])
+  }, [requestKey])
 
   useEffect(() => {
     let cancelled = false
-    retuneTiming(designId, timingRequest(JSON.parse(debouncedKey) as TimingSettings))
+    retuneTiming(designId, JSON.parse(debouncedKey))
       .then((r) => {
         if (!cancelled) setResult(r)
       })
@@ -72,10 +73,19 @@ export function TimingModel({
       return { ...s, overrides: { ...base, [key]: value } }
     })
   const resetOverrides = () => setSettings((s) => ({ ...s, overrides: null }))
+  const setTarget = (targetMhz: number | null) =>
+    setSettings((s) => ({ ...s, targetMhz }))
 
   const fmax = useMemo(
     () => (delayNs != null && delayNs > 0 ? fmaxMhz(delayNs) : null),
     [delayNs],
+  )
+  const slack = useMemo(
+    () =>
+      delayNs != null && delayNs > 0 && settings.targetMhz
+        ? slackNs(delayNs, settings.targetMhz)
+        : null,
+    [delayNs, settings.targetMhz],
   )
 
   return (
@@ -88,6 +98,13 @@ export function TimingModel({
           accent
         />
         <Card k="Implied Fmax" v={fmax != null ? `${fmax.toFixed(0)} MHz` : '—'} />
+        {slack != null && (
+          <Card
+            k={`Slack @ ${settings.targetMhz} MHz`}
+            v={`${slack >= 0 ? '+' : ''}${slack.toFixed(2)} ns`}
+            tone={slack >= 0 ? 'ok' : 'bad'}
+          />
+        )}
       </div>
 
       <div className="timing-controls">
@@ -118,6 +135,23 @@ export function TimingModel({
               </option>
             ))}
           </select>
+        </label>
+        <label className="field">
+          <span>Target clock (MHz)</span>
+          <input
+            type="number"
+            min={0}
+            step={10}
+            placeholder="none"
+            title="Enter a target frequency to see setup slack against the estimate."
+            value={settings.targetMhz ?? ''}
+            onChange={(e) => {
+              const text = e.target.value
+              if (text.trim() === '') return setTarget(null)
+              const n = Number(text)
+              if (Number.isFinite(n) && n > 0) setTarget(n)
+            }}
+          />
         </label>
       </div>
 
@@ -195,15 +229,20 @@ function Card({
   k,
   v,
   accent,
+  tone,
 }: {
   k: string
   v: string | number
   accent?: boolean
+  tone?: 'ok' | 'bad'
 }) {
+  const cls = ['v', accent ? 'accent' : '', tone ? `slack-${tone}` : '']
+    .filter(Boolean)
+    .join(' ')
   return (
     <div className="card">
       <div className="k">{k}</div>
-      <div className={`v${accent ? ' accent' : ''}`}>{v}</div>
+      <div className={cls}>{v}</div>
     </div>
   )
 }
