@@ -1510,6 +1510,8 @@ impl Analysis {
         graph: &Graph,
         max_nodes: usize,
         show_infrastructure: bool,
+        hide_control: bool,
+        hide_const: bool,
         grouping: Option<&GroupPartition>,
     ) -> Subgraph {
         let base = graph.nodes.len() as u32;
@@ -1521,6 +1523,9 @@ impl Analysis {
         let mut seen_units: HashSet<u32> = HashSet::new();
         let mut truncated = false;
         for node in &graph.nodes {
+            if hide_const && node.kind == NodeKind::Const {
+                continue;
+            }
             let unit = unit_id(grouping, base, node.id);
             if seen_units.contains(&unit) {
                 seen.insert(node.id);
@@ -1538,7 +1543,7 @@ impl Analysis {
             .filter(|(_, edge)| {
                 seen.contains(&edge.from)
                     && seen.contains(&edge.to)
-                    && !is_labeled_control_edge(graph, edge)
+                    && (!hide_control || !is_labeled_control_edge(graph, edge))
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -3801,12 +3806,39 @@ mod tests {
         let graph = dense_dag_graph(150);
         let analysis = Analysis::new(&graph, vec!["dense.sv".to_owned()]);
 
-        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, None);
-        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, None);
+        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
+        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
 
         assert_eq!(first.edges.len(), MAX_SUBGRAPH_EDGES);
         assert!(first.truncated);
         assert_eq!(edge_signature(&first), edge_signature(&second));
+    }
+
+    #[test]
+    fn full_netlist_filters_controls_before_the_edge_cap() {
+        let mut graph = dense_dag_graph(150);
+        for edge in graph.edges.iter_mut().take(MAX_SUBGRAPH_EDGES + 1) {
+            edge.control = true;
+            edge.to_port = "C".to_owned();
+        }
+        let visible_data_edges = graph.edges.len() - (MAX_SUBGRAPH_EDGES + 1);
+        let analysis = Analysis::new(&graph, vec!["dense_controls.sv".to_owned()]);
+
+        let controls_visible =
+            analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, false, false, None);
+        assert_eq!(controls_visible.edges.len(), MAX_SUBGRAPH_EDGES);
+        assert!(controls_visible.truncated);
+
+        let controls_hidden =
+            analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
+        assert_eq!(controls_hidden.edges.len(), visible_data_edges);
+        assert!(!controls_hidden.truncated);
+        assert!(
+            controls_hidden
+                .edges
+                .iter()
+                .all(|edge| edge.control.is_none())
+        );
     }
 
     #[test]

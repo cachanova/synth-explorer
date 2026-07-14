@@ -1040,6 +1040,8 @@ async fn fanout(
 struct NetlistQuery {
     max_nodes: Option<usize>,
     show_infrastructure: Option<bool>,
+    hide_control: Option<bool>,
+    hide_const: Option<bool>,
     group_vectors: Option<bool>,
 }
 
@@ -1053,6 +1055,8 @@ async fn netlist(
         &design.graph,
         query.max_nodes.unwrap_or(1500),
         query.show_infrastructure.unwrap_or(false),
+        query.hide_control.unwrap_or(true),
+        query.hide_const.unwrap_or(false),
         grouping_for(&design, query.group_vectors),
     )))
 }

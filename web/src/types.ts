@@ -97,6 +97,10 @@ export interface Stats {
   max_depth: number // worst weighted structural logic depth across all endpoints
   depths: DepthSummary
   cell_categories: CellCategoryCounts
+  // rough pre-place-and-route worst-case combinational delay (logic +
+  // fanout-estimated routing), NOT timing closure. Absent when the design has
+  // no combinational paths.
+  estimated_delay_ns?: number
 }
 
 export interface DepthSummary {
