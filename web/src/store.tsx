@@ -28,7 +28,7 @@ import {
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
 import type { SrcSpan } from './lib/src'
-import { stripXilinxFlags } from './lib/synthFlags'
+import { stripInvalidFlags } from './lib/flagRegistry'
 import type {
   DesignFile,
   Example,
@@ -488,14 +488,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     (value: Mode) => {
       if (modeRef.current === value) return
       modeRef.current = value
-      // -family/-retime are xilinx-only, so strip them when leaving Xilinx mode;
-      // otherwise `synth`/`synth_ice40`/… would reject the unknown flag.
-      if (value !== 'xilinx') {
-        const stripped = stripXilinxFlags(extraArgsRef.current)
-        if (stripped !== extraArgsRef.current) {
-          extraArgsRef.current = stripped
-          setExtraArgsState(stripped)
-        }
+      // Synthesis flags are mode-specific, so drop any that the new mode's pass
+      // would reject (keeping shared and free-form flags). Free-form tokens the
+      // registry doesn't know about are preserved.
+      const stripped = stripInvalidFlags(extraArgsRef.current, value)
+      if (stripped !== extraArgsRef.current) {
+        extraArgsRef.current = stripped
+        setExtraArgsState(stripped)
       }
       markInputChanged()
       setModeState(value)

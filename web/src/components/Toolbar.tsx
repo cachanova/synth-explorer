@@ -1,12 +1,8 @@
 import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
-import {
-  parseFamily,
-  parseRetime,
-  setFamily,
-  setRetime,
-} from '../lib/synthFlags'
+import { parseFamily, setFamily } from '../lib/synthFlags'
 import { useStore } from '../store'
 import type { Mode, XilinxFamily } from '../types'
+import { FlagsMenu } from './FlagsMenu'
 
 export function Toolbar() {
   const store = useStore()
@@ -79,27 +75,17 @@ export function Toolbar() {
         </label>
       )}
 
-      {store.mode === 'xilinx' && (
-        <label
-          className="field checkbox"
-          title="synth_xilinx -retime: move registers across logic to balance path depth (Vivado does this in some flows). Writes -retime into the synthesis flags."
-        >
-          <span>Retime</span>
-          <input
-            type="checkbox"
-            checked={parseRetime(store.extraArgs)}
-            onChange={(e) =>
-              store.setExtraArgs(setRetime(store.extraArgs, e.target.checked))
-            }
-          />
-        </label>
-      )}
+      <FlagsMenu
+        mode={store.mode}
+        flags={store.extraArgs}
+        onChange={(flags) => store.setExtraArgs(flags)}
+      />
 
       <label className="field grow">
         <span>Synthesis flags</span>
         <input
           placeholder="mode-specific, e.g. -noabc"
-          title="The exact flags passed to the selected Yosys synthesis command. The Xilinx Target/Retime controls edit this string; you can also type flags directly."
+          title="The exact flags passed to the selected Yosys synthesis command. The Target dropdown and Flags menu edit this string; you can also type flags directly."
           value={store.extraArgs}
           onChange={(e) => store.setExtraArgs(e.target.value)}
         />
