@@ -46,6 +46,10 @@ export function Graph({ active }: { active: boolean }) {
   const reqSeq = useRef(0)
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
+  // One resolved full projection is enough for repeated Focus-off selections.
+  // The key includes every server option that changes /netlist output, and the
+  // single-entry shape bounds retained memory when designs or options change.
+  const fullGraphCache = useRef<{ key: string; graph: Subgraph } | null>(null)
 
   // Every option here changes what the server returns, so a change refetches.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
@@ -86,14 +90,23 @@ export function Graph({ active }: { active: boolean }) {
     setSourceStatus(null)
     setSourceControl(false)
     if (coneReq.kind !== 'source') setSelected(null)
-    const fetchFullGraph = () =>
-      getNetlist(
+    const fullGraphKey = `${requestDesignId}|${graphOptions.maxNodes}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}`
+    const fetchFullGraph = () => {
+      const cached = fullGraphCache.current
+      if (cached?.key === fullGraphKey) return Promise.resolve(cached.graph)
+      return getNetlist(
         requestDesignId,
         graphOptions.maxNodes,
         graphOptions.showInfrastructure,
         graphOptions.groupVectors,
         controller.signal,
-      )
+      ).then((graph) => {
+        if (!controller.signal.aborted) {
+          fullGraphCache.current = { key: fullGraphKey, graph }
+        }
+        return graph
+      })
+    }
     const fetchRelevantGraph =
       coneReq.kind === 'source'
         ? getLineCone(requestDesignId, {
@@ -147,6 +160,10 @@ export function Graph({ active }: { active: boolean }) {
                 full,
                 graphOptions.focus,
                 graphOptions.maxNodes,
+                {
+                  hideControl: graphOptions.hideControl,
+                  hideConst: graphOptions.hideConst,
+                },
               )
               return {
                 ...relevant,

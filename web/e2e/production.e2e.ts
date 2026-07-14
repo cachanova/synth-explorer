@@ -227,6 +227,10 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
     await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
   ).toBeGreaterThan(0)
 
+  let fullNetlistRequests = 0
+  page.on('request', (request) => {
+    if (request.url().includes('/netlist?')) fullNetlistRequests += 1
+  })
   const fullResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
@@ -249,4 +253,16 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   await expect
     .poll(async () => page.locator('.g-node-body').count())
     .toBe(focusedNodeCount)
+
+  // The full projection is stable for this design and option set. A second
+  // Focus-off transition reuses it rather than rescanning the whole design.
+  const cachedRelevantResponse = page.waitForResponse((response) =>
+    response.url().includes('/line-cone?'),
+  )
+  await focus.uncheck()
+  expect((await cachedRelevantResponse).ok()).toBe(true)
+  await expect
+    .poll(async () => page.locator('.g-node-body').count())
+    .toBeGreaterThan(focusedNodeCount)
+  expect(fullNetlistRequests).toBe(1)
 })

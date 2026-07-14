@@ -53,4 +53,23 @@ describe('Focus graph presentation', () => {
     expect(presentation.graph.truncated).toBe(true)
     expect(presentation.relevanceHighlight).toEqual([8, 9])
   })
+
+  it('does not reintroduce hidden constants or control edges from the full graph', () => {
+    const relevant = subgraph([2, 3], [edge(2, 3)])
+    const constant: GraphNode = { id: 1, kind: 'const', name: "1'b0" }
+    const controlEdge = { ...edge(4, 3), control: true }
+    const full: Subgraph = {
+      nodes: [constant, node(2), node(3), node(4)],
+      edges: [edge(1, 2), edge(2, 3), controlEdge],
+      truncated: false,
+    }
+
+    const presentation = presentGraphForFocus(relevant, full, false, 400, {
+      hideConst: true,
+      hideControl: true,
+    })
+
+    expect(presentation.graph.nodes.map(({ id }) => id)).toEqual([2, 3, 4])
+    expect(presentation.graph.edges).toEqual([edge(2, 3)])
+  })
 })

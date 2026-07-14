@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { GraphEdge, GraphNode, Subgraph } from '../types'
+import { MAX_GRAPH_EDGES } from './graphLimits'
 import { mergeSubgraphs } from './mergeSubgraph'
 
 const node = (id: number, extra: Partial<GraphNode> = {}): GraphNode => ({
@@ -72,5 +73,23 @@ describe('mergeSubgraphs', () => {
     expect(mergeSubgraphs(sub([node(1)], []), sub([node(2)], [], true), 100).truncated).toBe(
       true,
     )
+  })
+
+  it('caps merged edges while preserving base relevance first', () => {
+    const baseEdge = edge(1, 2, 'relevant')
+    const extras = Array.from({ length: MAX_GRAPH_EDGES }, (_, index) => ({
+      ...edge(1, 2, 'extra'),
+      to_port: `A${index}`,
+    }))
+
+    const merged = mergeSubgraphs(
+      sub([node(1), node(2)], [baseEdge]),
+      sub([node(1), node(2)], extras),
+      100,
+    )
+
+    expect(merged.edges).toHaveLength(MAX_GRAPH_EDGES)
+    expect(merged.edges[0]).toBe(baseEdge)
+    expect(merged.truncated).toBe(true)
   })
 })
