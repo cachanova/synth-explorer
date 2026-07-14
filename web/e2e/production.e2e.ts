@@ -66,7 +66,13 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   expect((await responsePromise).ok()).toBe(true)
 
   await page.getByRole('button', { name: 'Schematic', exact: true }).click()
+  const netlistResponse = page.waitForResponse((response) =>
+    response.url().includes('/netlist?'),
+  )
   await page.getByRole('button', { name: 'Full netlist', exact: true }).click()
+  const netlistParams = new URL((await netlistResponse).url()).searchParams
+  expect(netlistParams.get('hide_control')).toBe('true')
+  expect(netlistParams.get('hide_const')).toBe('false')
 
   const stage = page.locator('.graph-stage')
   const svg = stage.locator('svg')

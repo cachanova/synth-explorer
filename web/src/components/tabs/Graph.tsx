@@ -60,8 +60,14 @@ export function Graph({ active }: { active: boolean }) {
 
   // Every option here changes what the server returns, so a change refetches.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
+  const focusAvailable = coneReq?.kind === 'cone' || coneReq?.kind === 'source'
+  // Standalone Full netlist keeps its historical/API visibility defaults. The
+  // cone visibility toggles are not rendered in that mode, so applying their
+  // stored values there would silently hide content the user cannot restore.
+  const fullGraphHideControl = focusAvailable ? graphOptions.hideControl : true
+  const fullGraphHideConst = focusAvailable ? graphOptions.hideConst : false
   const fullGraphKey = design
-    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}|${graphOptions.hideControl}|${graphOptions.hideConst}`
+    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}|${fullGraphHideControl}|${fullGraphHideConst}`
     : null
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
@@ -128,8 +134,8 @@ export function Graph({ active }: { active: boolean }) {
         graphOptions.maxNodes,
         graphOptions.showInfrastructure,
         graphOptions.groupVectors,
-        graphOptions.hideControl,
-        graphOptions.hideConst,
+        fullGraphHideControl,
+        fullGraphHideConst,
         fullController.signal,
       ).catch((error) => {
         if (fullGraphCache.current === entry) fullGraphCache.current = null

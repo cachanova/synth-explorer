@@ -3784,6 +3784,33 @@ mod tests {
     }
 
     #[test]
+    fn full_netlist_filters_controls_before_the_edge_cap() {
+        let mut graph = dense_dag_graph(150);
+        for edge in graph.edges.iter_mut().take(MAX_SUBGRAPH_EDGES + 1) {
+            edge.control = true;
+            edge.to_port = "C".to_owned();
+        }
+        let visible_data_edges = graph.edges.len() - (MAX_SUBGRAPH_EDGES + 1);
+        let analysis = Analysis::new(&graph, vec!["dense_controls.sv".to_owned()]);
+
+        let controls_visible =
+            analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, false, false, None);
+        assert_eq!(controls_visible.edges.len(), MAX_SUBGRAPH_EDGES);
+        assert!(controls_visible.truncated);
+
+        let controls_hidden =
+            analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
+        assert_eq!(controls_hidden.edges.len(), visible_data_edges);
+        assert!(!controls_hidden.truncated);
+        assert!(
+            controls_hidden
+                .edges
+                .iter()
+                .all(|edge| edge.control.is_none())
+        );
+    }
+
+    #[test]
     fn infrastructure_projection_caps_intermediate_work_and_output() {
         let (graph, subgraph) = branching_infrastructure_subgraph(100, 101);
 
