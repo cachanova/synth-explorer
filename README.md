@@ -81,7 +81,7 @@ It does not require a database or external credentials.
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [API contract](docs/API.md)
-- [Production operations](docs/OPERATIONS.md)
+- [Maintainer operations](docs/OPERATIONS.md)
 - [Web client](web/README.md)
 
 ## Development checks

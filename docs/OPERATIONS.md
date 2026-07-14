@@ -1,5 +1,10 @@
 # Production operations
 
+> [!NOTE]
+> This runbook covers the maintainers' deployment at `synthexplorer.dev`.
+> Self-hosters can reuse the checked-in deployment files after replacing the
+> provider, host, DNS, and GitHub environment values for their infrastructure.
+
 Synth Explorer runs on one Hetzner CX33 in Helsinki. Caddy accepts public
 traffic on ports 80 and 443. The application container serves the React build,
 the Rust API, and bounded Yosys jobs on an internal Docker network.
@@ -99,7 +104,7 @@ both public address families, deletion protection, and the checked-in cloud-init
 configuration:
 
 ```bash
-export HCLOUD_SSH_KEY='leela@zen'
+export HCLOUD_SSH_KEY='your-hetzner-ssh-key'
 
 hcloud server create \
   --name synth-explorer-prod \
