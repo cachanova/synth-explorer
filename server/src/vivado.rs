@@ -1,6 +1,6 @@
 use crate::netlist::{NetlistError, parse_value, select_top};
 use crate::yosys::{
-    MemoryHandling, SynthMode, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
+    MemoryHandling, SynthMode, SynthTool, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
 };
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -15,8 +15,6 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::process::Command;
 use tokio::time::timeout;
-
-pub const VIVADO_PART: &str = "xc7a35tcpg236-1";
 
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const JSON_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
@@ -102,7 +100,9 @@ pub async fn run_vivado(input: &ValidatedSynth) -> Result<SynthesisOutput, Vivad
     // names are best-effort aliases, while this source-only Yosys pass retains
     // the user's original spans and procedural targets.
     let mut source_input = input.clone();
+    source_input.tool = SynthTool::Yosys;
     source_input.mode = SynthMode::Rtl;
+    source_input.target = None;
     source_input.extra_args.clear();
     let source = run_yosys(&source_input, MemoryHandling::Map)
         .await
@@ -224,11 +224,19 @@ fn build_tcl(input: &ValidatedSynth, top: &str, output: &str) -> String {
     for file in &input.files {
         writeln!(&mut script, "read_verilog -sv {{{}}}", file.name).unwrap();
     }
-    writeln!(
+    let target = input
+        .target
+        .as_deref()
+        .expect("validated Vivado requests always have a target");
+    write!(
         &mut script,
-        "synth_design -top {{{top}}} -part {{{VIVADO_PART}}} -flatten_hierarchy full"
+        "synth_design -top {{{top}}} -part {{{target}}} -flatten_hierarchy full"
     )
     .unwrap();
+    if !input.extra_args.is_empty() {
+        write!(&mut script, " {}", input.extra_args.join(" ")).unwrap();
+    }
+    script.push('\n');
     writeln!(
         &mut script,
         "write_verilog -force -mode funcsim {{{output}}}"
@@ -420,7 +428,9 @@ mod tests {
                 },
             ],
             top: Some("top".to_owned()),
-            mode: SynthMode::Vivado,
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some(crate::yosys::SUPPORTED_VIVADO_PART.to_owned()),
             extra_args: Vec::new(),
         }
     }
@@ -435,6 +445,15 @@ mod tests {
              synth_design -top {top} -part {xc7a35tcpg236-1} -flatten_hierarchy full\n\
              write_verilog -force -mode funcsim {vivado-netlist.v}\n"
         );
+    }
+
+    #[test]
+    fn tcl_appends_validated_vivado_flags() {
+        let mut input = input();
+        input.extra_args = vec!["-retiming".to_owned(), "-no_lc".to_owned()];
+        assert!(build_tcl(&input, "top", "vivado-netlist.v").contains(
+            "synth_design -top {top} -part {xc7a35tcpg236-1} -flatten_hierarchy full -retiming -no_lc\n"
+        ));
     }
 
     #[test]

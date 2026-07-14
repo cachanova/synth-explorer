@@ -213,11 +213,11 @@ jobs:
         run: |
           : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
           : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
-          # Bundle the deploy files with flat archive paths (compose.prod.yml,
+          # Bundle the deploy files with flat archive paths (compose files,
           # Caddyfile, ops/...) so the on-host release layout is unchanged even
           # though they live under deploy/ in the repo.
           tar -czf "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
-            -C deploy compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
+            -C deploy compose.prod.yml compose.vivado.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
             -C "${GITHUB_WORKSPACE}" examples/05_shared_logic.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

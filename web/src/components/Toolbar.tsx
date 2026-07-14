@@ -1,7 +1,12 @@
-import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
+import {
+  MODE_LABELS,
+  SYNTH_TOOL_LABELS,
+  VIVADO_TARGETS,
+  XILINX_FAMILY_LABELS,
+} from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import { useStore } from '../store'
-import type { Mode, XilinxFamily } from '../types'
+import type { Mode, SynthTool, XilinxFamily } from '../types'
 import { FlagsMenu } from './FlagsMenu'
 
 export function Toolbar() {
@@ -41,13 +46,31 @@ export function Toolbar() {
       </label>
 
       <label className="field">
+        <span>Synth tool</span>
+        <select
+          value={store.synthTool}
+          onChange={(e) => store.setSynthTool(e.target.value as SynthTool)}
+        >
+          {SYNTH_TOOL_LABELS.filter(
+            (tool) => tool.value !== 'vivado' || store.vivadoAvailable,
+          ).map((tool) => (
+            <option key={tool.value} value={tool.value}>
+              {tool.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="field">
         <span>Mode</span>
         <select
-          value={store.mode}
+          value={store.synthTool === 'vivado' ? 'gates' : store.mode}
+          disabled={store.synthTool === 'vivado'}
           onChange={(e) => store.setMode(e.target.value as Mode)}
         >
-          {MODE_LABELS.filter(
-            (m) => m.value !== 'vivado' || store.vivadoAvailable,
+          {(store.synthTool === 'vivado'
+            ? MODE_LABELS.filter((m) => m.value === 'gates')
+            : MODE_LABELS
           ).map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
@@ -56,7 +79,7 @@ export function Toolbar() {
         </select>
       </label>
 
-      {store.mode === 'xilinx' && (
+      {store.synthTool === 'yosys' && store.mode === 'xilinx' && (
         <label className="field">
           <span>Target</span>
           <select
@@ -77,19 +100,24 @@ export function Toolbar() {
         </label>
       )}
 
-      {store.mode === 'vivado' && (
+      {store.synthTool === 'vivado' && (
         <label className="field">
           <span>Target</span>
-          <input
-            style={{ width: 170 }}
-            value="xc7a35tcpg236-1"
-            title="Initial Vivado target: Artix-7 XC7A35T in the free BASIC tier."
-            readOnly
-          />
+          <select
+            value={store.vivadoTarget}
+            title="Vivado part passed to synth_design -part."
+            onChange={(e) => store.setVivadoTarget(e.target.value)}
+          >
+            {VIVADO_TARGETS.map((target) => (
+              <option key={target.value} value={target.value}>
+                {target.label}
+              </option>
+            ))}
+          </select>
         </label>
       )}
 
-      {store.mode !== 'vivado' && (
+      {store.synthTool === 'yosys' ? (
         <>
           <FlagsMenu
             mode={store.mode}
@@ -106,6 +134,16 @@ export function Toolbar() {
             />
           </label>
         </>
+      ) : (
+        <label className="field grow">
+          <span>Synthesis flags</span>
+          <input
+            placeholder="Vivado synth_design flags, e.g. -retiming"
+            title="Validated whitespace-separated flags appended to Vivado synth_design."
+            value={store.vivadoExtraArgs}
+            onChange={(e) => store.setVivadoExtraArgs(e.target.value)}
+          />
+        </label>
       )}
 
       <button

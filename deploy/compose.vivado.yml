@@ -23,17 +23,17 @@ services:
       XILINXD_LICENSE_FILE: /run/secrets/vivado.lic
     volumes:
       - type: bind
-        source: ${VIVADO_INSTALL_ROOT:?set VIVADO_INSTALL_ROOT to the directory containing Vivado/}
+        source: ${VIVADO_INSTALL_ROOT:-/mnt/synth-explorer-vivado/amd/install}
         target: /opt/AMD
         read_only: true
       - type: bind
-        source: ${VIVADO_LICENSE_FILE:?set VIVADO_LICENSE_FILE to the node-locked .lic file}
+        source: ${VIVADO_LICENSE_FILE:-/mnt/synth-explorer-vivado/amd/license/Xilinx.lic}
         target: /run/secrets/vivado.lic
         read_only: true
-    # Vivado needs substantially more scratch, memory, and CPU than the public
-    # Yosys-only app. These values are for a dedicated worker-sized host.
+    # One synthesis runs at a time. Leave half a CPU and 2 GiB of host memory
+    # for Caddy, Docker, and the OS on the dedicated 4-vCPU / 8-GiB worker.
     tmpfs:
-      - /tmp:size=8589934592,mode=1777,nosuid,nodev
-    cpus: 8.0
-    mem_limit: 24g
+      - /tmp:size=2147483648,mode=1777,nosuid,nodev
+    cpus: 3.5
+    mem_limit: 6g
     pids_limit: 512

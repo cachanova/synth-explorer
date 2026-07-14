@@ -34,6 +34,7 @@ import type {
   Example,
   Mode,
   Stats,
+  SynthTool,
   SynthesizeResponse,
   TimingPath,
 } from './types'
@@ -168,8 +169,11 @@ export interface Store {
   /** Bumped when file content is replaced outside the editor (example load). */
   docRevision: number
   top: string
+  synthTool: SynthTool
   mode: Mode
   extraArgs: string
+  vivadoTarget: string
+  vivadoExtraArgs: string
   vivadoAvailable: boolean
   examples: Example[]
 
@@ -179,8 +183,11 @@ export interface Store {
   renameFile: (oldName: string, newName: string) => void
   deleteFile: (name: string) => void
   setTop: (t: string) => void
+  setSynthTool: (tool: SynthTool) => void
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
+  setVivadoTarget: (target: string) => void
+  setVivadoExtraArgs: (args: string) => void
   loadExample: (ex: Example) => void
 
   // synthesis
@@ -241,8 +248,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [activeFileName, setActiveFileNameState] = useState(DEFAULT_FILE.name)
   const [docRevision, setDocRevision] = useState(0)
   const [top, setTopState] = useState('')
+  const [synthTool, setSynthToolState] = useState<SynthTool>('yosys')
   const [mode, setModeState] = useState<Mode>('gates')
   const [extraArgs, setExtraArgsState] = useState('')
+  const [vivadoTarget, setVivadoTargetState] = useState('xc7a35tcpg236-1')
+  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState('')
   const [vivadoAvailable, setVivadoAvailable] = useState(false)
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
@@ -290,10 +300,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   filesRef.current = files
   const topRef = useRef(top)
   topRef.current = top
+  const synthToolRef = useRef(synthTool)
+  synthToolRef.current = synthTool
   const modeRef = useRef(mode)
   modeRef.current = mode
   const extraArgsRef = useRef(extraArgs)
   extraArgsRef.current = extraArgs
+  const vivadoTargetRef = useRef(vivadoTarget)
+  vivadoTargetRef.current = vivadoTarget
+  const vivadoExtraArgsRef = useRef(vivadoExtraArgs)
+  vivadoExtraArgsRef.current = vivadoExtraArgs
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
   const autoSynthesizeRef = useRef(autoSynthesize)
@@ -330,9 +346,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const resolved = synthesisInput(
       filesRef.current,
       topRef.current,
-      modeRef.current,
-      extraArgsRef.current,
+      synthToolRef.current === 'vivado' ? 'gates' : modeRef.current,
+      synthToolRef.current === 'vivado'
+        ? vivadoExtraArgsRef.current
+        : extraArgsRef.current,
       revision,
+      synthToolRef.current,
+      synthToolRef.current === 'vivado' ? vivadoTargetRef.current : '',
     )
     resolvedInputRef.current = resolved
     setResolvedInputIdentity((current) =>
@@ -513,12 +533,42 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [markInputChanged],
   )
 
+  const setSynthTool = useCallback(
+    (value: SynthTool) => {
+      if (synthToolRef.current === value) return
+      synthToolRef.current = value
+      markInputChanged()
+      setSynthToolState(value)
+    },
+    [markInputChanged],
+  )
+
   const setExtraArgs = useCallback(
     (value: string) => {
       if (extraArgsRef.current === value) return
       extraArgsRef.current = value
       markInputChanged()
       setExtraArgsState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setVivadoTarget = useCallback(
+    (value: string) => {
+      if (vivadoTargetRef.current === value) return
+      vivadoTargetRef.current = value
+      markInputChanged()
+      setVivadoTargetState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setVivadoExtraArgs = useCallback(
+    (value: string) => {
+      if (vivadoExtraArgsRef.current === value) return
+      vivadoExtraArgsRef.current = value
+      markInputChanged()
+      setVivadoExtraArgsState(value)
     },
     [markInputChanged],
   )
@@ -882,8 +932,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       activeFileName,
       docRevision,
       top,
+      synthTool,
       mode,
       extraArgs,
+      vivadoTarget,
+      vivadoExtraArgs,
       vivadoAvailable,
       examples,
       setActiveFileName,
@@ -892,8 +945,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameFile,
       deleteFile,
       setTop,
+      setSynthTool,
       setMode,
       setExtraArgs,
+      setVivadoTarget,
+      setVivadoExtraArgs,
       loadExample,
       synthesizing,
       design,
@@ -924,8 +980,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       activeFileName,
       docRevision,
       top,
+      synthTool,
       mode,
       extraArgs,
+      vivadoTarget,
+      vivadoExtraArgs,
       vivadoAvailable,
       examples,
       setActiveFileName,
@@ -934,8 +993,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameFile,
       deleteFile,
       setTop,
+      setSynthTool,
       setMode,
       setExtraArgs,
+      setVivadoTarget,
+      setVivadoExtraArgs,
       loadExample,
       synthesizing,
       design,

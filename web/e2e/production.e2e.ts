@@ -47,6 +47,7 @@ test('synthesizes from the webpage with the default Yosys flags', async ({
   const response = await responsePromise
   expect(response.ok()).toBe(true)
   expect(response.request().postDataJSON()).toMatchObject({
+    tool: 'yosys',
     mode: 'xilinx',
     extra_args: '-noiopad',
   })

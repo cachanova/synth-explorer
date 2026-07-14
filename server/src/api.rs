@@ -10,7 +10,9 @@ use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use crate::synthesis::{SynthesisError, run_synthesis};
 use crate::vivado::VivadoError;
-use crate::yosys::{MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError};
+use crate::yosys::{
+    MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, SynthTool, YosysError,
+};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
@@ -345,7 +347,10 @@ impl Design {
 pub struct SynthesizeResponse {
     pub design_id: String,
     pub top: String,
+    pub tool: String,
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub log: String,
@@ -479,16 +484,23 @@ async fn synthesize(
     Json(request): Json<SynthRequest>,
 ) -> Result<Json<SynthesizeResponse>, ApiError> {
     let validated = request.validate().map_err(map_yosys_error)?;
-    if validated.mode == SynthMode::Vivado && state.metadata.vivado_version.is_none() {
+    if validated.tool == SynthTool::Vivado && state.metadata.vivado_version.is_none() {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "vivado synthesis is not configured on this deployment",
         ));
     }
     let design_id = validated.design_id();
+    let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
     if let Some(design) = cache_lookup(&state.cache, &design_id).await {
-        tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+        tracing::info!(
+            design_id,
+            tool,
+            mode,
+            cache_hit = true,
+            "synthesis_complete"
+        );
         return Ok(Json(design.response.clone()));
     }
 
@@ -503,6 +515,7 @@ async fn synthesize(
             let task_state = state.clone();
             let task_design_id = design_id.clone();
             tokio::spawn(async move {
+                let task_tool = validated.tool.to_string();
                 let task_mode = mode_string(validated.mode);
                 // A previous flight may have filled the cache after the
                 // optimistic lookup but before this key was claimed.
@@ -510,6 +523,7 @@ async fn synthesize(
                     if let Some(design) = cache_lookup(&task_state.cache, &task_design_id).await {
                         tracing::info!(
                             design_id = task_design_id,
+                            tool = task_tool,
                             mode = task_mode,
                             cache_hit = true,
                             "synthesis_complete"
@@ -526,7 +540,13 @@ async fn synthesize(
             // A task can publish its cache entry immediately before removing
             // its flight. Close that race before rejecting a distinct key.
             if let Some(design) = cache_lookup(&state.cache, &design_id).await {
-                tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+                tracing::info!(
+                    design_id,
+                    tool,
+                    mode,
+                    cache_hit = true,
+                    "synthesis_complete"
+                );
                 return Ok(Json(design.response.clone()));
             }
             return Err(ApiError::busy());
@@ -561,15 +581,23 @@ async fn synthesize_uncached(
         .acquire_owned()
         .await
         .expect("synthesis semaphore is never closed");
+    let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
     if let Some(design) = cache_lookup(&state.cache, design_id).await {
-        tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+        tracing::info!(
+            design_id,
+            tool,
+            mode,
+            cache_hit = true,
+            "synthesis_complete"
+        );
         return Ok(design);
     }
     let started = Instant::now();
     let synthesis_failed = |err: &SynthesisError| {
         tracing::warn!(
             design_id,
+            tool,
             mode,
             latency_ms = started.elapsed().as_millis() as u64,
             error = %err,
@@ -581,8 +609,12 @@ async fn synthesize_uncached(
         // A too-large memory flatten exhausts memory, CPU, or the wall clock
         // depending on the Yosys version; any of them is worth one retry that
         // keeps memories abstract.
-        Err(err) if validated.mode.is_generic() && err.is_resource_exhaustion() => {
-            tracing::info!(design_id, mode, "synthesis_memory_retry");
+        Err(err)
+            if validated.tool == SynthTool::Yosys
+                && validated.mode.is_generic()
+                && err.is_resource_exhaustion() =>
+        {
+            tracing::info!(design_id, tool, mode, "synthesis_memory_retry");
             let output = run_synthesis(validated, MemoryHandling::Abstract)
                 .await
                 .map_err(|retry_err| {
@@ -639,7 +671,7 @@ async fn synthesize_uncached(
             .iter()
             .map(|file| (file.name.clone(), file.content.clone())),
     );
-    if validated.mode == SynthMode::Vivado {
+    if validated.tool == SynthTool::Vivado {
         ranges.extend(vivado_procedural_ranges(&procedural_targets));
     }
     let delay_model = DelayModel::for_target(&mode, validated.family());
@@ -653,7 +685,9 @@ async fn synthesize_uncached(
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
+        tool: tool.clone(),
         mode: mode.clone(),
+        target: validated.target.clone(),
         stats: analysis.stats(),
         warnings: analysis.warnings(),
         log: output.log,
@@ -678,6 +712,7 @@ async fn synthesize_uncached(
     if !cached {
         tracing::warn!(
             design_id,
+            tool,
             mode,
             latency_ms = started.elapsed().as_millis() as u64,
             cache_estimated_bytes,
@@ -691,6 +726,7 @@ async fn synthesize_uncached(
     }
     tracing::info!(
         design_id,
+        tool,
         mode,
         cache_hit = false,
         latency_ms = started.elapsed().as_millis() as u64,
@@ -736,7 +772,9 @@ fn synthesize_response_heap_bytes(response: &SynthesizeResponse) -> usize {
         .design_id
         .capacity()
         .saturating_add(response.top.capacity())
+        .saturating_add(response.tool.capacity())
         .saturating_add(response.mode.capacity())
+        .saturating_add(response.target.as_ref().map_or(0, String::capacity))
         .saturating_add(response.log.capacity())
         .saturating_add(
             response
@@ -1354,7 +1392,9 @@ mod tests {
             response: SynthesizeResponse {
                 design_id: design_id.to_owned(),
                 top: top.to_owned(),
+                tool: "yosys".to_owned(),
                 mode: "rtl".to_owned(),
+                target: None,
                 stats: analysis.stats(),
                 warnings: analysis.warnings(),
                 log: String::new(),
@@ -1690,11 +1730,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vivado_mode_is_rejected_when_backend_is_not_configured() {
+    async fn vivado_tool_is_rejected_when_backend_is_not_configured() {
         let request = serde_json::json!({
             "files": [{"name": "top.sv", "content": "module top; endmodule"}],
             "top": "top",
-            "mode": "vivado"
+            "tool": "vivado",
+            "mode": "gates",
+            "target": "xc7a35tcpg236-1"
         });
         let response = app(AppState::new("Yosys test-version"))
             .oneshot(

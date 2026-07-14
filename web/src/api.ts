@@ -13,6 +13,7 @@ import type {
   PathsResponse,
   SourceMapResponse,
   Subgraph,
+  SynthTool,
   SynthesizeRequest,
   SynthesizeResponse,
   TimingRequest,
@@ -221,8 +222,16 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
   { value: 'xilinx', label: 'Xilinx — Yosys' },
-  { value: 'vivado', label: 'Xilinx — Vivado' },
 ]
+
+export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
+  { value: 'yosys', label: 'Yosys' },
+  { value: 'vivado', label: 'Vivado' },
+]
+
+export const VIVADO_TARGETS = [
+  { value: 'xc7a35tcpg236-1', label: 'Artix-7 XC7A35T (xc7a35tcpg236-1)' },
+] as const
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs
 // CARRY8), BRAM, and DSP primitives, so it makes the netlist match the vendor

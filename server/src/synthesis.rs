@@ -1,6 +1,6 @@
 use crate::vivado::{VivadoError, run_vivado};
 use crate::yosys::{
-    MemoryHandling, SynthMode, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
+    MemoryHandling, SynthTool, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
 };
 use thiserror::Error;
 
@@ -22,8 +22,8 @@ pub async fn run_synthesis(
     input: &ValidatedSynth,
     memory: MemoryHandling,
 ) -> Result<SynthesisOutput, SynthesisError> {
-    match input.mode {
-        SynthMode::Vivado => Ok(run_vivado(input).await?),
-        _ => Ok(run_yosys(input, memory).await?),
+    match input.tool {
+        SynthTool::Yosys => Ok(run_yosys(input, memory).await?),
+        SynthTool::Vivado => Ok(run_vivado(input).await?),
     }
 }

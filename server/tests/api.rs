@@ -116,6 +116,9 @@ endmodule
     let design_id = synth["design_id"].as_str().unwrap();
     assert_eq!(design_id.len(), 12);
     assert_eq!(synth["top"], "reg_mux");
+    assert_eq!(synth["tool"], "yosys");
+    assert_eq!(synth["mode"], "rtl");
+    assert!(synth.get("target").is_none());
     assert!(
         synth["log"].as_str().unwrap_or_default().contains("Yosys")
             || synth["log"]

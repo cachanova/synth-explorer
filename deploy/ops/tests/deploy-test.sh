@@ -39,7 +39,7 @@ mkdir -p -- "${CURRENT_RELEASE_FIXTURE}/ops" "${PREVIOUS_RELEASE_FIXTURE}/ops" \
 cp -- "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/ops/deploy.sh" \
   "${CURRENT_RELEASE_FIXTURE}/ops/deploy.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'printf "%s %s\n" "$1" "$2" >>"${SMOKE_LOG:?}"' \
+  'printf "%s %s %s\n" "$1" "$2" "${VIVADO_REQUIRED:-unset}" >>"${SMOKE_LOG:?}"' \
   >"${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh"
 chmod +x "${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh"
 
@@ -99,7 +99,16 @@ assert_file_equals "${ENV_FILE}" "IMAGE_REF=${PREVIOUS_REF}"
   || fail 'current symlink did not move to the previous release'
 [[ ! -e "${PREVIOUS_FILE}" && ! -e "${PREVIOUS_RELEASE_FILE}" ]] \
   || fail 'rollback metadata was not cleared'
-assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT}"
+assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT} 0"
+
+# A release containing the Vivado overlay must request the stronger smoke path.
+: >"${SMOKE_LOG}"
+touch -- "${PREVIOUS_RELEASE_FIXTURE}/compose.vivado.yml"
+run_release_smoke "${PREVIOUS_RELEASE_FIXTURE}" \
+  "${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh" \
+  "https://example.test" "${EXPECTED_COMMIT}"
+assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT} 1"
+rm -f -- "${PREVIOUS_RELEASE_FIXTURE}/compose.vivado.yml"
 grep -Fq "docker image rm -- ${CURRENT_REF}" "${CALL_LOG}" \
   || fail 'successful rollback did not remove the failed digest'
 

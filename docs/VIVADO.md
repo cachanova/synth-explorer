@@ -6,9 +6,9 @@ analysis path. The first supported target is the BASIC-tier Artix-7 part
 `xc7a35tcpg236-1`.
 
 Vivado is never copied into the application image. A deployment enables the
-mode by mounting an administrator-provisioned installation and license, then
+tool by mounting an administrator-provisioned installation and license, then
 setting `VIVADO_BIN`. Without that variable, startup remains Yosys-only and the
-web client hides Vivado mode.
+web client hides the Vivado tool.
 
 ## Netlist path
 
@@ -41,8 +41,8 @@ shape without adding AMD files to the image:
 
 ```bash
 export IMAGE_REF=synth-explorer:vivado
-export VIVADO_INSTALL_ROOT=/absolute/path/to/AMD
-export VIVADO_LICENSE_FILE=/absolute/path/to/Xilinx.lic
+export VIVADO_INSTALL_ROOT=/mnt/synth-explorer-vivado/amd/install
+export VIVADO_LICENSE_FILE=/mnt/synth-explorer-vivado/amd/license/Xilinx.lic
 
 docker compose \
   -f deploy/compose.prod.yml \
@@ -51,24 +51,27 @@ docker compose \
 ```
 
 The license must be readable by container UID 10001. The overlay mounts both
-inputs read-only, sets `XILINXD_LICENSE_FILE`, uses an 8 GiB scratch tmpfs, and
-allocates 8 CPUs, 24 GiB RAM, and 512 PIDs. FlexNet's libudev host-ID scan does
-not work reliably from an isolated Docker network namespace, so the overlay
+inputs read-only, sets `XILINXD_LICENSE_FILE`, uses a 2 GiB scratch tmpfs, and
+allocates 3.5 CPUs, 6 GiB RAM, and 512 PIDs. The server admits one synthesis at
+a time. FlexNet's libudev host-ID scan does not work reliably from an isolated
+Docker network namespace, so the overlay
 uses host networking. The application binds only to `127.0.0.1:8787`, and Caddy
-proxies that loopback address. Tune upward for larger parts; do not co-locate
-this workload with the current 8 GiB production app host.
+proxies that loopback address. The dedicated CX33 runs only this application;
+tune upward only if measured designs need it.
 
-On Hetzner, `VIVADO_INSTALL_ROOT` should be a real attached Cloud Volume, not a
-Docker named volume (which otherwise consumes the server's root disk). Keep the
-installed tree on that Volume, but keep per-job scratch and `$HOME` on local
-NVMe or tmpfs; Vivado performs enough small-file work that network-volume IOPS
-would otherwise add avoidable latency. Hetzner server backups and snapshots do
-not include attached Volumes, so preserve the verified installer/configuration
+On Hetzner, `/mnt/synth-explorer-vivado` should be a real attached Cloud Volume,
+not a Docker named volume (which otherwise consumes the server's root disk).
+Keep the installed tree on that Volume, but keep per-job scratch and `$HOME` on
+local NVMe or tmpfs; Vivado performs enough small-file work that network-volume
+IOPS would otherwise add avoidable latency. Hetzner server backups and snapshots
+do not include attached Volumes, so preserve the verified installer/configuration
 recipe and back up any non-reconstructible Volume contents separately.
 
 The verified 2026.1 installation containing 7-Series, UltraScale, and
 UltraScale+ device data occupies 79 GiB after installer cleanup. Use a 200 GiB
-Volume initially so a replacement release and rollback can coexist. The normal
+Volume initially so a replacement release and rollback can coexist. The CX33
+(4 shared vCPUs, 8 GiB RAM) is the initial one-job-at-a-time production shape;
+resize only if measured designs need more memory or lower latency. The normal
 application image remains small and contains no AMD payload; expanding the app
 root disk is not required for this layout.
 

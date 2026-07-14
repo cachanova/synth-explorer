@@ -7,6 +7,7 @@ readonly BASE_DIR="${SYNTH_EXPLORER_BASE_DIR:-${RELEASE_DIR}}"
 readonly STATE_DIR="${SYNTH_EXPLORER_STATE_DIR:-${BASE_DIR}/state}"
 readonly CURRENT_LINK="${SYNTH_EXPLORER_CURRENT_LINK:-${BASE_DIR}/current}"
 readonly COMPOSE_FILE="${RELEASE_DIR}/compose.prod.yml"
+readonly VIVADO_COMPOSE_FILE="${RELEASE_DIR}/compose.vivado.yml"
 readonly ENV_FILE="${STATE_DIR}/.env"
 readonly PREVIOUS_FILE="${STATE_DIR}/.previous-image"
 readonly PREVIOUS_RELEASE_FILE="${STATE_DIR}/.previous-release"
@@ -60,12 +61,29 @@ point_current_at() {
 compose_in_release() {
   local release_dir=$1
   shift
-  docker compose --project-directory "${release_dir}" \
-    --file "${release_dir}/compose.prod.yml" "$@"
+  local -a files=(--file "${release_dir}/compose.prod.yml")
+  if [[ -f "${release_dir}/compose.vivado.yml" ]]; then
+    files+=(--file "${release_dir}/compose.vivado.yml")
+  fi
+  docker compose --project-directory "${release_dir}" "${files[@]}" "$@"
 }
 
 compose() {
   compose_in_release "${RELEASE_DIR}" "$@"
+}
+
+release_has_vivado() {
+  [[ -f "$1/compose.vivado.yml" ]]
+}
+
+run_release_smoke() {
+  local release_dir=$1 smoke_script=$2 base_url=$3 expected_commit=$4
+  local vivado_required=0
+  if release_has_vivado "${release_dir}"; then
+    vivado_required=1
+  fi
+  VIVADO_REQUIRED="${vivado_required}" \
+    "${smoke_script}" "${base_url}" "${expected_commit}"
 }
 
 validate_caddy() {
@@ -149,7 +167,8 @@ rollback() {
     if [[ "${previous_commit}" =~ ^[a-f0-9]{40}$ ]] \
       && IMAGE_REF="${previous_ref}" compose_in_release "${previous_release}" up --detach --remove-orphans --force-recreate \
       && wait_for_app "${previous_release}" "${previous_ref}" \
-      && "${previous_smoke}" "${PUBLIC_BASE_URL}" "${previous_commit}"; then
+      && run_release_smoke "${previous_release}" "${previous_smoke}" \
+        "${PUBLIC_BASE_URL}" "${previous_commit}"; then
       write_current_ref "${previous_ref}"
       point_current_at "${previous_release}"
       rm -f -- "${PREVIOUS_FILE}" "${PREVIOUS_RELEASE_FILE}"
@@ -243,6 +262,7 @@ main() {
   require_command ln
   install -d -m 0750 -- "${STATE_DIR}"
   [[ -f "${COMPOSE_FILE}" ]] || die "missing ${COMPOSE_FILE}"
+  [[ -f "${VIVADO_COMPOSE_FILE}" ]] || die "missing ${VIVADO_COMPOSE_FILE}"
   [[ -f "${RELEASE_DIR}/Caddyfile" ]] || die "missing ${RELEASE_DIR}/Caddyfile"
   [[ -x "${SCRIPT_DIR}/smoke-test.sh" ]] || die "missing executable ${SCRIPT_DIR}/smoke-test.sh"
   docker compose version >/dev/null
@@ -294,7 +314,8 @@ main() {
     rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
     die "application did not become healthy"
   fi
-  if ! "${SCRIPT_DIR}/smoke-test.sh" "${PUBLIC_BASE_URL}" "${expected_commit}"; then
+  if ! run_release_smoke "${RELEASE_DIR}" "${SCRIPT_DIR}/smoke-test.sh" \
+    "${PUBLIC_BASE_URL}" "${expected_commit}"; then
     if valid_image_ref "${previous_ref}" && [[ -n "${previous_release}" ]]; then
       rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
       die "external smoke test failed"
