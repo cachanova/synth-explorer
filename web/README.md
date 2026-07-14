@@ -49,3 +49,7 @@ origin.
 
 See the [architecture document](../docs/ARCHITECTURE.md) and
 [API contract](../docs/API.md) before changing shared server/client behavior.
+
+## License
+
+Synth Explorer is licensed under the [Apache License 2.0](../LICENSE).

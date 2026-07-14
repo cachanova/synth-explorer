@@ -1,6 +1,7 @@
 # Synth Explorer
 
 [![CI](https://github.com/cachanova/synth-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/cachanova/synth-explorer/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 **Compiler Explorer for RTL.** Paste Verilog or SystemVerilog, synthesize it
 with [Yosys](https://yosyshq.net/yosys/), and inspect the resulting circuit by
@@ -113,6 +114,4 @@ you modify.
 
 ## License
 
-This repository does not include an open-source license yet. GitHub users may
-view and fork the repository under GitHub's Terms of Service, but no license
-grants broader permission to use, modify, or distribute the code.
+Synth Explorer is licensed under the [Apache License 2.0](LICENSE).
