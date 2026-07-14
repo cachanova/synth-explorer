@@ -245,48 +245,29 @@ describe('nodeSublabel', () => {
   })
 
   it('keeps real cell names', () => {
-    expect(nodeSublabel(cell('my_adder'), '$abc$240$new_n27')).toBe('my_adder')
+    expect(nodeSublabel(cell('my_adder'))).toBe('my_adder')
   })
 
-  it('replaces hidden names with the shortened driving net', () => {
-    expect(
-      nodeSublabel(
-        cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'),
-        '$abc$240$new_n27',
-      ),
-    ).toBe('new_n27')
-  })
-
-  it('never returns a blifparse path', () => {
-    const sub = nodeSublabel(
-      cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'),
-      '$abc$240$new_n5',
-    )
-    expect(sub).not.toContain('blifparse')
-  })
-
-  it('suppresses hidden names when no driving net is known', () => {
+  it('suppresses hidden Yosys/ABC cell names', () => {
     expect(
       nodeSublabel(cell('$abc$240$auto$blifparse.cc:397:parse_blif$242')),
     ).toBeNull()
-    expect(
-      nodeSublabel(cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'), null),
-    ).toBeNull()
   })
 
-  it('suppresses nets that shorten to a bare autoindex number', () => {
-    expect(
-      nodeSublabel(
-        cell('$abc$240$auto$blifparse.cc:397:parse_blif$242'),
-        '$auto$1866',
-      ),
-    ).toBeNull()
+  it('reduces a grouped fallback name to its count', () => {
+    const grouped: NodeRef = {
+      id: 2,
+      kind: 'cell',
+      name: 'LUT2 ×3',
+      cell_type: 'LUT2',
+    }
+    expect(nodeSublabel(grouped)).toBe('×3')
   })
 
   it('returns null for ports and consts', () => {
     const port: NodeRef = { id: 2, kind: 'port', name: 'clk' }
     const konst: NodeRef = { id: 3, kind: 'const', name: "1'b0" }
-    expect(nodeSublabel(port, 'clk')).toBeNull()
+    expect(nodeSublabel(port)).toBeNull()
     expect(nodeSublabel(konst)).toBeNull()
   })
 })
