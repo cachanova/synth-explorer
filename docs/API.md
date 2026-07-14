@@ -88,8 +88,15 @@ Request:
   top?: string;          // omitted -> yosys -auto-top
   mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx";
   extra_args?: string;   // flags for the selected synthesis pass; see below
+  family?: "xc7" | "xcup" | "xcu" | "xc6s" | "xc6v"; // xilinx mode only
 }
 ```
+
+`family` selects the `synth_xilinx -family` target (Series 7 / UltraScale /
+UltraScale+ / Spartan-6 / Virtex-6), which determines the carry, BRAM, and DSP
+primitives so the netlist matches the vendor flow for that device. It is
+ignored by non-Xilinx modes, is part of the design cache key, and an
+unsupported value returns `422`. Omitting it uses the yosys default (`xc7`).
 
 `extra_args` is appended to the mode's `prep`, `synth`, or `synth_*` command;
 it does not accept global Yosys CLI flags or arbitrary script commands. Values

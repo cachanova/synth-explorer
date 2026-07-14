@@ -1,6 +1,6 @@
-import { MODE_LABELS } from '../api'
+import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { useStore } from '../store'
-import type { Mode } from '../types'
+import type { Mode, XilinxFamily } from '../types'
 
 export function Toolbar() {
   const store = useStore()
@@ -50,6 +50,23 @@ export function Toolbar() {
           ))}
         </select>
       </label>
+
+      {store.mode === 'xilinx' && (
+        <label className="field">
+          <span>Target</span>
+          <select
+            value={store.xilinxFamily}
+            title="Xilinx device family (synth_xilinx -family) — sets the carry/BRAM/DSP primitives to match Vivado for that part."
+            onChange={(e) => store.setXilinxFamily(e.target.value as XilinxFamily)}
+          >
+            {XILINX_FAMILY_LABELS.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       <label className="field grow">
         <span>Synthesis flags</span>
