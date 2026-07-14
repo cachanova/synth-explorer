@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
-import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
+import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { designSrcSpans } from '../../lib/src'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
@@ -16,6 +16,7 @@ interface FetchedSubgraph {
   designId: string
   requestKey: string
   graph: Subgraph
+  highlight: number[]
 }
 
 interface DisplayedGraph {
@@ -23,6 +24,7 @@ interface DisplayedGraph {
   requestKey: string
   subgraph: Subgraph
   graph: LaidOutGraph
+  highlight: number[]
 }
 
 export function Graph({ active }: { active: boolean }) {
@@ -95,6 +97,7 @@ export function Graph({ active }: { active: boolean }) {
             graph,
             status: null,
             control: false,
+            highlight: [],
           }))
         : coneReq.kind === 'source'
           ? getLineCone(requestDesignId, {
@@ -110,6 +113,7 @@ export function Graph({ active }: { active: boolean }) {
               graph: response.graph,
               status: response.status,
               control: response.control,
+              highlight: response.highlight,
             }))
           : getCone(requestDesignId, {
               node: coneReq.node,
@@ -125,9 +129,10 @@ export function Graph({ active }: { active: boolean }) {
               graph,
               status: null,
               control: false,
+              highlight: [],
             }))
     fetchP
-      .then(({ graph, status, control }) => {
+      .then(({ graph, status, control, highlight }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         loadedRequestKey.current = requestKey
         setSourceControl(control)
@@ -135,7 +140,7 @@ export function Graph({ active }: { active: boolean }) {
         // A partial mapping is still useful and replaces the prior selection.
         if (presentation.acceptReturnedGraph) {
           setSourceStatus(status)
-          setFetchedSubgraph({ designId: requestDesignId, requestKey, graph })
+          setFetchedSubgraph({ designId: requestDesignId, requestKey, graph, highlight })
           if (status != null) setSelected(null)
         }
         // Nothing synthesizable maps to this selection — fall back to the full
@@ -185,6 +190,7 @@ export function Graph({ active }: { active: boolean }) {
           requestKey: owner.requestKey,
           subgraph: toLayout,
           graph: g,
+          highlight: owner.highlight,
         })
         laidOutSubgraph.current = toLayout
         setLoading(false)
@@ -211,12 +217,19 @@ export function Graph({ active }: { active: boolean }) {
   const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
   const graphInteractive = analysisState === 'current' && displayedDesignCurrent
   const sourcePresentation = sourceProbePresentation(sourceStatus)
+  const displayedSourceHighlight = useMemo(
+    () =>
+      isDisplayedRequestCurrent(fetchedSubgraph?.requestKey, displayedGraph?.requestKey)
+        ? (displayedGraph?.highlight ?? [])
+        : [],
+    [fetchedSubgraph?.requestKey, displayedGraph?.requestKey, displayedGraph?.highlight],
+  )
 
   const highlight = useMemo(() => {
     const ids = new Set<number>([
       ...(coneReq?.highlight ?? []),
-      ...(coneReq?.kind === 'source' && sourcePresentation.highlightRoots
-        ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
+      ...(coneReq?.kind === 'source' && sourcePresentation.highlightSelection
+        ? displayedSourceHighlight
         : []),
     ])
     // A grouped bus node collapses per-bit ids the highlight set names, so it
@@ -225,7 +238,7 @@ export function Graph({ active }: { active: boolean }) {
       if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
     }
     return ids
-  }, [coneReq, sourcePresentation.highlightRoots, sub])
+  }, [coneReq, sourcePresentation.highlightSelection, displayedSourceHighlight, sub])
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
   // Net driven by the selected node (first outgoing edge) — lets the detail

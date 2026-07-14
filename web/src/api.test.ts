@@ -50,6 +50,7 @@ describe('getLineCone', () => {
     const response = {
       status: 'unmapped' as const,
       control: false,
+      highlight: [],
       graph: { nodes: [], edges: [], truncated: false },
     }
     const fetchMock = vi.fn().mockResolvedValue(
@@ -92,6 +93,7 @@ describe('getLineCone', () => {
         JSON.stringify({
           status: 'mapped',
           control: false,
+          highlight: [12],
           graph: { nodes: [], edges: [], truncated: false },
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } },

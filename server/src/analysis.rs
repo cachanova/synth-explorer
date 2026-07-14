@@ -244,6 +244,36 @@ pub struct SourceRangeMapping {
     pub mapping_incomplete: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SourceProbeDirection {
+    Fanin,
+    Fanout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SourceProbeHintKind {
+    Block,
+    Procedural,
+    Signal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct SourceProbeHint {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub direction: SourceProbeDirection,
+    pub kind: SourceProbeHintKind,
+}
+
+pub(crate) struct SourceProbeSelection {
+    pub roots: Vec<NodeId>,
+    /// `None` retains the legacy bidirectional envelope for unclassified or
+    /// mixed-direction source ranges.
+    pub direction: Option<ConeDir>,
+    pub highlight_logic: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 struct IntervalIndex {
     intervals: Vec<(usize, usize)>,
@@ -435,8 +465,9 @@ pub struct Analysis {
     endpoint_targets: Vec<EndpointTarget>,
     source_map: SourceMapResponse,
     source_ranges: BTreeMap<String, SourceRangeIndex>,
+    source_probe_hints: BTreeMap<String, SourceProbeHintIndex>,
     synthetic_src: HashMap<NodeId, BTreeSet<String>>,
-    procedural_targets: HashMap<(String, usize), Vec<NodeId>>,
+    procedural_targets: BTreeMap<String, BTreeMap<usize, Vec<NodeId>>>,
     stats: Stats,
     warnings: Vec<String>,
 }
@@ -457,6 +488,34 @@ struct EndpointTarget {
 struct SourceRangeIndex {
     ranges: Vec<SourceRangeMapping>,
     prefix_max_end: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SourceProbeHintIndex {
+    hints: Vec<SourceProbeHint>,
+    prefix_max_end: Vec<usize>,
+}
+
+impl SourceProbeHintIndex {
+    fn rebuild(&mut self) {
+        self.hints.sort();
+        self.hints.dedup();
+        self.prefix_max_end.clear();
+        self.prefix_max_end.reserve(self.hints.len());
+        let mut max_end = 0;
+        for hint in &self.hints {
+            max_end = max_end.max(hint.end_line);
+            self.prefix_max_end.push(max_end);
+        }
+    }
+
+    fn overlapping(&self, start_line: usize, end_line: usize) -> &[SourceProbeHint] {
+        let end = self
+            .hints
+            .partition_point(|hint| hint.start_line <= end_line);
+        let start = self.prefix_max_end[..end].partition_point(|max_end| *max_end < start_line);
+        &self.hints[start..end]
+    }
 }
 
 impl SourceRangeIndex {
@@ -537,6 +596,29 @@ impl Analysis {
                 bytes = bytes.saturating_add(source_range_heap_bytes(range));
             }
         }
+        bytes =
+            bytes.saturating_add(self.source_probe_hints.len().saturating_mul(
+                size_of::<(String, SourceProbeHintIndex)>() + 3 * size_of::<usize>(),
+            ));
+        for (file, index) in &self.source_probe_hints {
+            bytes = bytes
+                .saturating_add(file.capacity())
+                .saturating_add(
+                    index
+                        .hints
+                        .capacity()
+                        .saturating_mul(size_of::<SourceProbeHint>()),
+                )
+                .saturating_add(
+                    index
+                        .prefix_max_end
+                        .capacity()
+                        .saturating_mul(size_of::<usize>()),
+                );
+            for hint in &index.hints {
+                bytes = bytes.saturating_add(hint.file.capacity());
+            }
+        }
         bytes = bytes.saturating_add(
             self.synthetic_src
                 .capacity()
@@ -552,15 +634,18 @@ impl Analysis {
                 bytes = bytes.saturating_add(source.capacity());
             }
         }
-        bytes = bytes.saturating_add(
-            self.procedural_targets
-                .capacity()
-                .saturating_mul(size_of::<((String, usize), Vec<NodeId>)>()),
-        );
-        for ((file, _), ids) in &self.procedural_targets {
-            bytes = bytes
-                .saturating_add(file.capacity())
-                .saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+        bytes = bytes.saturating_add(self.procedural_targets.len().saturating_mul(
+            size_of::<(String, BTreeMap<usize, Vec<NodeId>>)>() + 3 * size_of::<usize>(),
+        ));
+        for (file, targets) in &self.procedural_targets {
+            bytes = bytes.saturating_add(file.capacity()).saturating_add(
+                targets
+                    .len()
+                    .saturating_mul(size_of::<(usize, Vec<NodeId>)>() + 3 * size_of::<usize>()),
+            );
+            for ids in targets.values() {
+                bytes = bytes.saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+            }
         }
         bytes = bytes.saturating_add(stats_heap_bytes(&self.stats));
         bytes = bytes.saturating_add(self.warnings.capacity().saturating_mul(size_of::<String>()));
@@ -591,8 +676,9 @@ impl Analysis {
             endpoint_targets,
             source_map,
             source_ranges: BTreeMap::new(),
+            source_probe_hints: BTreeMap::new(),
             synthetic_src: HashMap::new(),
-            procedural_targets: HashMap::new(),
+            procedural_targets: BTreeMap::new(),
             stats,
             warnings,
         }
@@ -602,7 +688,25 @@ impl Analysis {
     /// submitted sources so `source_nodes_range` can narrow block-attributed
     /// probes to the assigned signals.
     pub fn set_procedural_targets(&mut self, targets: HashMap<(String, usize), Vec<NodeId>>) {
-        self.procedural_targets = targets;
+        for ((file, line), ids) in targets {
+            self.procedural_targets
+                .entry(file)
+                .or_default()
+                .insert(line, ids);
+        }
+    }
+
+    pub(crate) fn set_source_probe_hints(&mut self, hints: Vec<SourceProbeHint>) {
+        for hint in hints {
+            self.source_probe_hints
+                .entry(hint.file.clone())
+                .or_default()
+                .hints
+                .push(hint);
+        }
+        for index in self.source_probe_hints.values_mut() {
+            index.rebuild();
+        }
     }
 
     pub fn endpoints(&self) -> EndpointsResponse {
@@ -777,6 +881,109 @@ impl Analysis {
         Some(self.narrow_to_assignment_targets(graph, file, start_line, end_line, roots))
     }
 
+    pub(crate) fn source_probe_range(
+        &self,
+        graph: &Graph,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Option<SourceProbeSelection> {
+        let default_roots = self.source_nodes_range(graph, file, start_line, end_line)?;
+        let Some(index) = self.source_probe_hints.get(file) else {
+            return Some(SourceProbeSelection {
+                roots: default_roots,
+                direction: None,
+                highlight_logic: false,
+            });
+        };
+        let overlapping: Vec<&SourceProbeHint> = index
+            .overlapping(start_line, end_line)
+            .iter()
+            .filter(|hint| hint.end_line >= start_line)
+            .collect();
+        if overlapping.is_empty() {
+            return Some(SourceProbeSelection {
+                roots: default_roots,
+                direction: None,
+                highlight_logic: false,
+            });
+        }
+
+        // A direct assignment/declaration on one selected line is more
+        // specific than the always-block interval that also covers it. Wider
+        // selections retain every overlapping hint so selecting a whole block
+        // still returns all of its driven signals.
+        let selected: Vec<&SourceProbeHint> = if start_line == end_line
+            && overlapping
+                .iter()
+                .any(|hint| hint.kind != SourceProbeHintKind::Block)
+        {
+            overlapping
+                .into_iter()
+                .filter(|hint| hint.kind != SourceProbeHintKind::Block)
+                .collect()
+        } else {
+            overlapping
+        };
+
+        let mut roots: BTreeSet<NodeId> = default_roots.into_iter().collect();
+        if selected
+            .iter()
+            .all(|hint| hint.kind == SourceProbeHintKind::Block)
+        {
+            roots.clear();
+        }
+        for hint in &selected {
+            if hint.kind != SourceProbeHintKind::Procedural {
+                continue;
+            }
+            if let Some(targets) = self.procedural_targets.get(file) {
+                for ids in targets
+                    .range(hint.start_line..=hint.end_line)
+                    .map(|(_, ids)| ids)
+                {
+                    for id in ids {
+                        if insert_bounded_node(&mut roots, *id) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        for hint in &selected {
+            if hint.kind != SourceProbeHintKind::Block {
+                continue;
+            }
+            if let Some(targets) = self.procedural_targets.get(file) {
+                for ids in targets
+                    .range(hint.start_line..=hint.end_line)
+                    .map(|(_, ids)| ids)
+                {
+                    for id in ids {
+                        if insert_bounded_node(&mut roots, *id) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if roots.is_empty() {
+            roots.extend(self.source_nodes_range(graph, file, start_line, end_line)?);
+        }
+
+        let mut directions = selected.iter().map(|hint| hint.direction);
+        let first = directions.next();
+        let uniform = first.filter(|direction| directions.all(|other| other == *direction));
+        Some(SourceProbeSelection {
+            roots: roots.into_iter().collect(),
+            direction: uniform.map(|direction| match direction {
+                SourceProbeDirection::Fanin => ConeDir::Fanin,
+                SourceProbeDirection::Fanout => ConeDir::Fanout,
+            }),
+            highlight_logic: true,
+        })
+    }
+
     /// Yosys attributes procedural cells to whole `always` blocks, so a
     /// single-line probe inside a block would otherwise root every register in
     /// it. When every selected line that contributed a block-attributed root
@@ -809,7 +1016,10 @@ impl Analysis {
             .map_or(&[][..], |index| index.overlapping(start_line, end_line));
         let mut targets: HashSet<NodeId> = HashSet::new();
         for line in start_line..=end_line {
-            let line_targets = self.procedural_targets.get(&(file.to_owned(), line));
+            let line_targets = self
+                .procedural_targets
+                .get(file)
+                .and_then(|targets| targets.get(&line));
             if let Some(ids) = line_targets {
                 targets.extend(ids.iter().copied());
             }
@@ -3658,11 +3868,23 @@ mod tests {
         };
         let mut analysis = Analysis::new(&graph, vec!["sparse.sv".to_owned()]);
         analysis.extend_source_ranges(vec![range.clone()], false);
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "sparse.sv".to_owned(),
+            start_line: 2,
+            end_line: 1_000_003,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Signal,
+        }]);
 
         assert_eq!(
             analysis.source_nodes_range(&graph, "sparse.sv", 500_000, 500_000),
             Some(vec![0])
         );
+        let probe = analysis
+            .source_probe_range(&graph, "sparse.sv", 500_000, 500_000)
+            .unwrap();
+        assert_eq!(probe.roots, [0]);
+        assert_eq!(probe.direction, Some(ConeDir::Fanin));
         assert!(analysis.source_map.by_line.is_empty());
         assert_eq!(analysis.synthetic_src.len(), 1);
         assert_eq!(analysis.synthetic_src[&0].len(), 1);

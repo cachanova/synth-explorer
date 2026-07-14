@@ -2,7 +2,7 @@ import type { LineConeStatus } from '../types'
 
 export interface SourceProbePresentation {
   acceptReturnedGraph: boolean
-  highlightRoots: boolean
+  highlightSelection: boolean
   message: string | null
 }
 
@@ -13,19 +13,19 @@ export function sourceProbePresentation(
     case null:
       return {
         acceptReturnedGraph: true,
-        highlightRoots: false,
+        highlightSelection: false,
         message: null,
       }
     case 'mapped':
       return {
         acceptReturnedGraph: true,
-        highlightRoots: true,
+        highlightSelection: true,
         message: null,
       }
     case 'mapping_incomplete':
       return {
         acceptReturnedGraph: true,
-        highlightRoots: true,
+        highlightSelection: true,
         message:
           'Source mapping is incomplete because provenance limits were reached; the schematic shows only retained associations.',
       }
@@ -34,13 +34,13 @@ export function sourceProbePresentation(
     case 'optimized_or_absorbed':
       return {
         acceptReturnedGraph: false,
-        highlightRoots: false,
+        highlightSelection: false,
         message: null,
       }
     case 'unmapped':
       return {
         acceptReturnedGraph: false,
-        highlightRoots: false,
+        highlightSelection: false,
         message: null,
       }
   }

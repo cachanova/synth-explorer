@@ -64,6 +64,7 @@ export type LineConeStatus =
 export interface LineConeResponse {
   status: LineConeStatus
   control: boolean
+  highlight: number[]
   graph: Subgraph
 }
 

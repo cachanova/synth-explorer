@@ -323,7 +323,7 @@ wires. Used by the optional full-schematic view. Accepts `group_vectors=true`
     end_line: number;
     node_ids: number[];
     mapping_incomplete: boolean;          // retained roots were capped for this interval
-  }[];                                   // recovered assign/declaration-alias intervals
+  }[];                                   // recovered assign/alias/port-declaration intervals
   truncated: boolean;
 }
 ```
@@ -342,21 +342,26 @@ response projection.
 
 ## GET `/api/design/:id/line-cone?file=<name>&start_line=<n>&end_line=<n>&max_nodes=400&hide_control=true&hide_const=true&show_infrastructure=false`
 
-Source-range envelope: the register-boundary neighborhood of one to 200 RTL
-lines. Takes the cells whose `src` maps to the selected range, then
-returns the union of their fanin and fanout cones (traversal stops at
-sequential cells / ports / consts as usual) as a `Subgraph`. Selected cells
-have `is_root: true`. A selected register is allowed as the center so its
-upstream D and downstream Q neighborhoods are both visible without implying a
-combinational path through it. If selected roots drive control pins, control
-edges are included and `control` is true. Accepts `group_vectors=true` (same
-grouping semantics as `/cone`); a group is a root when any member is a root.
+Source-range schematic for one to 200 RTL lines. Directional source constructs
+return only the circuit owned by that selection: an input declaration follows
+fanout, while output declarations, continuous assignments, and procedural
+assignments follow fanin. A non-assignment line inside an `always` block uses
+the union of every resolved assignment target in that block. Unclassified
+source ranges retain the bidirectional register-boundary envelope around cells
+whose `src` maps to the selection. Every traversal stops at sequential cells /
+ports / consts as usual. A selected register may be the center of an
+unclassified envelope so its upstream D and downstream Q neighborhoods are
+both visible without implying a combinational path through it. If selected
+roots drive control pins, control edges are included and `control` is true.
+Accepts `group_vectors=true` (same grouping semantics as `/cone`); a group is a
+root when any member is a root.
 
 ```ts
 {
   status: "mapped" | "mapping_incomplete" |
           "optimized_or_absorbed" | "unmapped";
   control: boolean;
+  highlight: number[]; // graph node ids owned by the selected source construct
   graph: Subgraph;
 }
 ```
@@ -369,24 +374,23 @@ provenance is never presented as logic proven to have been optimized away.
 the range but no final object retained that attribution; it deliberately does
 not claim whether the logic was removed, folded, shared, or absorbed. `422` for
 an unknown file, invalid range, or a range longer than 200 lines.
-Wire-only continuous assignments, which Yosys JSON does not source-attribute,
-are indexed as inclusive `assign` spans and declaration aliases such as
-`wire alias = value` in the selected top's live elaborated hierarchy, then
-resolved through the final LHS net aliases. Exact flattened instance scopes are
-derived from the reachable pre-flatten module-instance graph, so unreachable
-sibling modules cannot contribute aliases even on Yosys versions without
-post-flatten scope metadata.
+Wire-only continuous assignments and port declarations, which Yosys JSON does
+not reliably source-attribute, are indexed from the selected top's live
+elaborated hierarchy and resolved through the final signal aliases. Continuous
+assignments use inclusive `assign` spans; declaration aliases such as
+`wire alias = value` retain the same recovery. Exact flattened instance scopes
+are derived from the reachable pre-flatten module-instance graph, so
+unreachable sibling modules cannot contribute aliases even on Yosys versions
+without post-flatten scope metadata.
 This recovered attribution is also returned by `/nodes` for graph-to-source
 probing as one `file:start-end` source span rather than one alias per line.
 Yosys attributes procedural cells to whole `always` blocks, so recovery also
 indexes per-line assignment targets (`<lhs> <=` and leading `<lhs> =`
-statements) resolved through the same scope and net-alias machinery. When
-every selected line whose roots carry block-wide src spans has resolved
-targets, the envelope roots are narrowed to those targets plus cells whose
-src spans lie fully inside the selection: probing `idx <= 5'd0;` roots only
-the `idx` register (its fanin cone still follows), while selecting the whole
-block, or any line whose targets cannot be parsed or resolved, keeps today's
-full block attribution.
+statements) and the enclosing block range, resolved through the same scope and
+net-alias machinery. Probing `idx <= 5'd0;` therefore follows only the fanin of
+`idx`; probing an `if`/`for`/block line follows the fanin of every resolved
+target assigned by that block. Any parsing or resolution gap falls back to
+Yosys source attribution rather than inventing ownership.
 Files containing conditional-preprocessor branches use only Yosys provenance
 to avoid attributing an inactive branch. If the LHS no longer exists, the span
 reports `optimized_or_absorbed`. Source-range root collection retains at most
