@@ -1,32 +1,51 @@
-# React + TypeScript + Vite
+# Synth Explorer web client
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The `web/` package contains the React interface for Synth Explorer. It provides
+the CodeMirror source editor, synthesis controls, analysis views, and the
+elkjs-based circuit viewer.
 
-Currently, two official plugins are available:
+Read the [repository README](../README.md) for the product overview and full
+stack setup.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Development
 
-## React Compiler
+Install Node.js 24.11.1 and npm 11.6.2, then install the locked dependencies:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm ci
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Vite serves <http://localhost:5173> and proxies `/api` to the Rust server at
+<http://127.0.0.1:8787>. Start the server from the repository's `server/`
+directory before synthesizing a design.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the Vite development server |
+| `npm test` | Run the Vitest suite once |
+| `npm run test:watch` | Run Vitest in watch mode |
+| `npm run lint` | Check the source with Oxlint |
+| `npx tsc --noEmit` | Type-check without emitting files |
+| `npm run build` | Type-check and build `dist/` for production |
+| `npm run test:e2e` | Run Playwright against `PLAYWRIGHT_BASE_URL` |
+| `npm run verify:worker` | Verify the elkjs worker bundle in a Node VM |
+
+## Structure
+
+| Path | Purpose |
+| --- | --- |
+| `src/components/` | Editor, controls, analysis tabs, and graph UI |
+| `src/lib/` | API-independent graph, synthesis, layout, and source helpers |
+| `src/workers/` | elkjs layout worker and browser environment shim |
+| `e2e/` | Playwright production-flow checks |
+| `public/` | Brand and favicon assets |
+
+`npm run build` writes static assets to `dist/`. The production image includes
+that directory, and the Rust server serves it with the `/api` routes on the same
+origin.
+
+See the [architecture document](../docs/ARCHITECTURE.md) and
+[API contract](../docs/API.md) before changing shared server/client behavior.
