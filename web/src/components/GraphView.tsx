@@ -537,7 +537,7 @@ const SchematicNode = memo(function SchematicNode({
   return (
     <g
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
-      className={`g-node-body g-symbol-${kind}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
+      className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? 0 : undefined}
       aria-label={interactive ? title : undefined}
