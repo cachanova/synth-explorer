@@ -87,7 +87,7 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
     );
     let base = graph.nodes.len() as u32;
 
-    let plain = analysis.full_netlist(&graph, 2000, false, None);
+    let plain = analysis.full_netlist(&graph, 2000, false, true, false, None);
     assert!(
         plain
             .nodes
@@ -96,7 +96,7 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
         "width/members must not appear without grouping"
     );
 
-    let grouped = analysis.full_netlist(&graph, 2000, false, Some(&partition));
+    let grouped = analysis.full_netlist(&graph, 2000, false, true, false, Some(&partition));
     assert!(!grouped.truncated);
     // Register banks seed first (ids base+0, base+1); ports follow.
     let banks: Vec<_> = grouped
@@ -163,11 +163,11 @@ fn grouped_budgets_count_units_not_member_bits() {
     // y register banks, the d and y bus ports, and the lone scalar clk port bit.
     let units = 5;
 
-    let full = analysis.full_netlist(&graph, units, false, Some(&partition));
+    let full = analysis.full_netlist(&graph, units, false, true, false, Some(&partition));
     assert!(!full.truncated, "a cap of one per unit must fit everything");
     assert_eq!(full.nodes.len(), units);
 
-    let capped = analysis.full_netlist(&graph, units - 1, false, Some(&partition));
+    let capped = analysis.full_netlist(&graph, units - 1, false, true, false, Some(&partition));
     assert!(capped.truncated);
     assert!(capped.nodes.len() < units);
 
@@ -341,9 +341,73 @@ fn fanout_counts_direct_sinks() {
 #[test]
 fn full_netlist_caps_nodes() {
     let (graph, analysis) = fixture("and_chain_rtl.json");
-    let subgraph = analysis.full_netlist(&graph, 2, false, None);
+    let subgraph = analysis.full_netlist(&graph, 2, false, true, false, None);
     assert_eq!(subgraph.nodes.len(), 2);
     assert!(subgraph.truncated);
+}
+
+#[test]
+fn full_netlist_applies_control_and_constant_visibility_before_capping() {
+    let (graph, analysis) = fixture("reg_mux_rtl.json");
+    let controls_visible = analysis.full_netlist(&graph, 100, false, false, false, None);
+    assert!(
+        controls_visible
+            .edges
+            .iter()
+            .any(|edge| edge.control == Some(true)),
+        "showing controls should retain the register clock edge"
+    );
+    let controls_hidden = analysis.full_netlist(&graph, 100, false, true, false, None);
+    assert!(
+        controls_hidden
+            .edges
+            .iter()
+            .all(|edge| edge.control != Some(true)),
+        "hiding controls should remove labeled control wiring"
+    );
+
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "y": { "direction": "output", "bits": [2] }
+            },
+            "cells": { "invert_zero": {
+                "type": "$_NOT_",
+                "port_directions": { "A": "input", "Y": "output" },
+                "connections": { "A": ["0"], "Y": [2] }
+            } },
+            "netnames": { "y": { "bits": [2] } }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["const.sv".to_owned()]);
+    let visible_nodes = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind != NodeKind::Const)
+        .count();
+
+    let constants_visible =
+        analysis.full_netlist(&graph, graph.nodes.len(), true, true, false, None);
+    assert!(
+        constants_visible
+            .nodes
+            .iter()
+            .any(|node| node.node.kind == ApiNodeKind::Const)
+    );
+    let constants_hidden = analysis.full_netlist(&graph, visible_nodes, true, true, true, None);
+    assert_eq!(constants_hidden.nodes.len(), visible_nodes);
+    assert!(!constants_hidden.truncated);
+    assert!(
+        constants_hidden
+            .nodes
+            .iter()
+            .all(|node| node.node.kind != ApiNodeKind::Const),
+        "hidden constants must not consume the visible-node budget"
+    );
 }
 
 #[test]
@@ -414,7 +478,7 @@ fn xilinx_latch_gate_and_inverted_control_metadata_are_preserved() {
         .unwrap();
     assert_eq!(endpoint.clock.as_deref(), Some("g"));
 
-    let subgraph = analysis.full_netlist(&graph, 100, false, None);
+    let subgraph = analysis.full_netlist(&graph, 100, false, true, false, None);
     let reset = subgraph
         .nodes
         .iter()
@@ -588,7 +652,7 @@ fn word_level_sr_set_and_clear_are_control_pins() {
         .map(|edge| &graph.edges[*edge])
         .collect();
     assert!(incoming.iter().all(|edge| edge.control));
-    let subgraph = analysis.full_netlist(&graph, 100, false, None);
+    let subgraph = analysis.full_netlist(&graph, 100, false, true, false, None);
     let controls = &subgraph
         .nodes
         .into_iter()

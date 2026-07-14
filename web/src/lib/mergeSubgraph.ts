@@ -1,4 +1,5 @@
 import type { GraphEdge, Subgraph } from '../types'
+import { MAX_GRAPH_EDGES } from './graphLimits'
 
 const edgeKey = (e: GraphEdge) => `${e.from}->${e.to}|${e.from_port}|${e.to_port}`
 
@@ -7,8 +8,9 @@ const edgeKey = (e: GraphEdge) => `${e.from}->${e.to}|${e.from_port}|${e.to_port
  * fanin/fanout neighborhood from a double-click. Nodes dedupe by id and the
  * base node wins, so its root/boundary flags and grouping survive re-expansion.
  * Edges dedupe by (from, to, from_port, to_port) and only survive when both
- * endpoints are present. The node count is capped: extra nodes past `cap` are
- * dropped and the result is flagged truncated so the UI can say so.
+ * endpoints are present. Nodes and merged edges stay within the shared render
+ * caps; base content wins so the relevant cone survives before full-netlist or
+ * expansion content, and any dropped content marks the result truncated.
  */
 export function mergeSubgraphs(
   base: Subgraph,
@@ -17,9 +19,9 @@ export function mergeSubgraphs(
 ): Subgraph {
   if (!extra || (extra.nodes.length === 0 && extra.edges.length === 0)) return base
 
-  const nodes = [...base.nodes]
+  const nodes = base.nodes.slice(0, cap)
   const byId = new Set(nodes.map((n) => n.id))
-  let dropped = false
+  let dropped = base.nodes.length > cap
   for (const node of extra.nodes) {
     if (byId.has(node.id)) continue
     if (nodes.length >= cap) {
@@ -30,14 +32,20 @@ export function mergeSubgraphs(
     byId.add(node.id)
   }
 
-  const edges = [...base.edges]
-  const seen = new Set(edges.map(edgeKey))
-  for (const edge of extra.edges) {
-    if (!byId.has(edge.from) || !byId.has(edge.to)) continue
-    const key = edgeKey(edge)
-    if (seen.has(key)) continue
-    seen.add(key)
-    edges.push(edge)
+  const edges: GraphEdge[] = []
+  const seen = new Set<string>()
+  for (const source of [base.edges, extra.edges]) {
+    for (const edge of source) {
+      if (!byId.has(edge.from) || !byId.has(edge.to)) continue
+      const key = edgeKey(edge)
+      if (seen.has(key)) continue
+      if (edges.length >= MAX_GRAPH_EDGES) {
+        dropped = true
+        continue
+      }
+      seen.add(key)
+      edges.push(edge)
+    }
   }
 
   return {

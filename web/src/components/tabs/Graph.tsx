@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
+import { presentGraphForFocus } from '../../lib/graphFocus'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/graphOwnership'
@@ -27,6 +28,12 @@ interface DisplayedGraph {
   highlight: number[]
 }
 
+interface FullGraphCacheEntry {
+  key: string
+  controller: AbortController
+  promise: Promise<Subgraph>
+}
+
 export function Graph({ active }: { active: boolean }) {
   const store = useStore()
   const { analysisState, design, coneReq, graphOptions } = store
@@ -45,11 +52,42 @@ export function Graph({ active }: { active: boolean }) {
   const reqSeq = useRef(0)
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
+  // One full projection, whether in flight or resolved, is enough for repeated
+  // Focus-off selections.
+  // The key includes every server option that changes /netlist output, and the
+  // single-entry shape bounds retained memory when designs or options change.
+  const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
 
   // Every option here changes what the server returns, so a change refetches.
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
+  const focusAvailable = coneReq?.kind === 'cone' || coneReq?.kind === 'source'
+  // Standalone Full netlist keeps its historical/API visibility defaults. The
+  // cone visibility toggles are not rendered in that mode, so applying their
+  // stored values there would silently hide content the user cannot restore.
+  const fullGraphHideControl = focusAvailable ? graphOptions.hideControl : true
+  const fullGraphHideConst = focusAvailable ? graphOptions.hideConst : false
+  const fullGraphKey = design
+    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}|${fullGraphHideControl}|${fullGraphHideConst}`
+    : null
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
+  )
+
+  // A selection-only request may share an in-flight full projection. Abort it
+  // only when the design or an actual /netlist option changes, or on unmount.
+  useEffect(() => {
+    const cached = fullGraphCache.current
+    if (cached && cached.key !== fullGraphKey) {
+      cached.controller.abort()
+      fullGraphCache.current = null
+    }
+  }, [fullGraphKey])
+  useEffect(
+    () => () => {
+      fullGraphCache.current?.controller.abort()
+      fullGraphCache.current = null
+    },
+    [],
   )
 
   // A request can change while analysis is stale. Clear the previous source
@@ -64,7 +102,7 @@ export function Graph({ active }: { active: boolean }) {
   // disturb its local view state.
   useEffect(() => {
     if (!active) return
-    if (!design || !coneReq) {
+    if (!design || !coneReq || fullGraphKey == null) {
       setFetchedSubgraph(null)
       setDisplayedGraph(null)
       loadedRequestKey.current = null
@@ -85,37 +123,47 @@ export function Graph({ active }: { active: boolean }) {
     setSourceStatus(null)
     setSourceControl(false)
     if (coneReq.kind !== 'source') setSelected(null)
-    const fetchP =
-      coneReq.kind === 'netlist'
-        ? getNetlist(
-            requestDesignId,
-            graphOptions.maxNodes,
-            graphOptions.showInfrastructure,
-            graphOptions.groupVectors,
-            controller.signal,
-          ).then((graph) => ({
-            graph,
-            status: null,
-            control: false,
-            highlight: [],
+    const fetchFullGraph = () => {
+      const cached = fullGraphCache.current
+      if (cached?.key === fullGraphKey) return cached.promise
+      cached?.controller.abort()
+      const fullController = new AbortController()
+      let entry: FullGraphCacheEntry
+      const promise = getNetlist(
+        requestDesignId,
+        graphOptions.maxNodes,
+        graphOptions.showInfrastructure,
+        graphOptions.groupVectors,
+        fullGraphHideControl,
+        fullGraphHideConst,
+        fullController.signal,
+      ).catch((error) => {
+        if (fullGraphCache.current === entry) fullGraphCache.current = null
+        throw error
+      })
+      entry = { key: fullGraphKey, controller: fullController, promise }
+      fullGraphCache.current = entry
+      return promise
+    }
+    const fetchRelevantGraph =
+      coneReq.kind === 'source'
+        ? getLineCone(requestDesignId, {
+            file: coneReq.file,
+            start_line: coneReq.startLine,
+            end_line: coneReq.endLine,
+            max_nodes: graphOptions.maxNodes,
+            hide_control: graphOptions.hideControl,
+            hide_const: graphOptions.hideConst,
+            show_infrastructure: graphOptions.showInfrastructure,
+            group_vectors: graphOptions.groupVectors,
+          }, controller.signal).then((response) => ({
+            graph: response.graph,
+            status: response.status,
+            control: response.control,
+            highlight: response.highlight,
           }))
-        : coneReq.kind === 'source'
-          ? getLineCone(requestDesignId, {
-              file: coneReq.file,
-              start_line: coneReq.startLine,
-              end_line: coneReq.endLine,
-              max_nodes: graphOptions.maxNodes,
-              hide_control: graphOptions.hideControl,
-              hide_const: graphOptions.hideConst,
-              show_infrastructure: graphOptions.showInfrastructure,
-              group_vectors: graphOptions.groupVectors,
-            }, controller.signal).then((response) => ({
-              graph: response.graph,
-              status: response.status,
-              control: response.control,
-              highlight: response.highlight,
-            }))
-          : getCone(requestDesignId, {
+        : coneReq.kind === 'cone'
+          ? getCone(requestDesignId, {
               node: coneReq.node,
               nodes: coneReq.nodes.length > 1 ? coneReq.nodes : undefined,
               dir: coneReq.dir,
@@ -131,6 +179,36 @@ export function Graph({ active }: { active: boolean }) {
               control: false,
               highlight: [],
             }))
+          : null
+    const fetchP =
+      fetchRelevantGraph == null
+        ? fetchFullGraph().then((graph) => ({
+            graph,
+            status: null,
+            control: false,
+            highlight: [],
+          }))
+        : Promise.all([
+            fetchRelevantGraph,
+            graphOptions.focus ? Promise.resolve(null) : fetchFullGraph(),
+          ]).then(
+            ([relevant, full]) => {
+              const presentation = presentGraphForFocus(
+                relevant.graph,
+                full,
+                graphOptions.focus,
+                graphOptions.maxNodes,
+              )
+              return {
+                ...relevant,
+                graph: presentation.graph,
+                highlight: [
+                  ...relevant.highlight,
+                  ...presentation.relevanceHighlight,
+                ],
+              }
+            },
+          )
     fetchP
       .then(({ graph, status, control, highlight }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
@@ -162,7 +240,7 @@ export function Graph({ active }: { active: boolean }) {
       })
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch])
+  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch, fullGraphKey])
 
   // The rendered subgraph is the fetched base with every double-click expansion
   // merged on top. Memoized so a tab switch does not rebuild it and force a
@@ -217,7 +295,7 @@ export function Graph({ active }: { active: boolean }) {
   const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
   const graphInteractive = analysisState === 'current' && displayedDesignCurrent
   const sourcePresentation = sourceProbePresentation(sourceStatus)
-  const displayedSourceHighlight = useMemo(
+  const displayedRequestHighlight = useMemo(
     () =>
       isDisplayedRequestCurrent(fetchedSubgraph?.requestKey, displayedGraph?.requestKey)
         ? (displayedGraph?.highlight ?? [])
@@ -228,8 +306,8 @@ export function Graph({ active }: { active: boolean }) {
   const highlight = useMemo(() => {
     const ids = new Set<number>([
       ...(coneReq?.highlight ?? []),
-      ...(coneReq?.kind === 'source' && sourcePresentation.highlightSelection
-        ? displayedSourceHighlight
+      ...(coneReq?.kind !== 'source' || sourcePresentation.highlightSelection
+        ? displayedRequestHighlight
         : []),
     ])
     // A grouped bus node collapses per-bit ids the highlight set names, so it
@@ -238,7 +316,7 @@ export function Graph({ active }: { active: boolean }) {
       if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
     }
     return ids
-  }, [coneReq, sourcePresentation.highlightSelection, displayedSourceHighlight, sub])
+  }, [coneReq, sourcePresentation.highlightSelection, displayedRequestHighlight, sub])
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
   // Net driven by the selected node (first outgoing edge) — lets the detail
@@ -421,6 +499,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
   const setOpt = store.setGraphOptions
+  const focusAvailable = coneReq?.kind === 'cone' || coneReq?.kind === 'source'
 
   const reissue = (dir: 'fanin' | 'fanout') => {
     if (coneReq?.kind !== 'cone') return
@@ -538,6 +617,25 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           onChange={(event) => setOpt({ groupVectors: event.target.checked })}
         />
         group buses
+      </label>
+
+      <label
+        className="toggle"
+        title={
+          focusAvailable
+            ? graphOptions.focus
+              ? 'Show only the logic relevant to this selection'
+              : 'Show the full capped diagram and highlight the relevant logic'
+            : 'Focus applies to source selections and cones'
+        }
+      >
+        <input
+          type="checkbox"
+          checked={graphOptions.focus}
+          disabled={!focusAvailable}
+          onChange={(event) => setOpt({ focus: event.target.checked })}
+        />
+        Focus
       </label>
 
       <span className="sep" />

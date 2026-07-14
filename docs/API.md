@@ -311,12 +311,14 @@ and by `node=`/`nodes=` (which address real per-bit ids). Defaults to `false`.
 }
 ```
 
-## GET `/api/design/:id/netlist?max_nodes=1500&show_infrastructure=false`
+## GET `/api/design/:id/netlist?max_nodes=1500&show_infrastructure=false&hide_control=true&hide_const=false&group_vectors=false`
 
 Full design as a `Subgraph` (same caps and shapes; `truncated` set if the
-design exceeds `max_nodes`). Label-connected controls omit ordinary control
-wires. Used by the optional full-schematic view. Accepts `group_vectors=true`
-(same grouping semantics as `/cone`, budget counts units).
+design exceeds `max_nodes`). Constants are filtered before the node budget, and
+control edges before the edge budget, so hidden content does not consume its
+corresponding visible capacity. Used by the optional full-schematic view.
+Grouping has the same semantics as `/cone`, and the node budget counts grouped
+units.
 
 ## GET `/api/design/:id/source-map`
 

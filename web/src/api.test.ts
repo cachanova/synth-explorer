@@ -125,5 +125,7 @@ describe('getNetlist', () => {
 
     const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
     expect(url.searchParams.get('max_nodes')).toBe('400')
+    expect(url.searchParams.get('hide_control')).toBe('true')
+    expect(url.searchParams.get('hide_const')).toBe('false')
   })
 })

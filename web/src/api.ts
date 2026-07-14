@@ -167,10 +167,12 @@ export function getNetlist(
   maxNodes = DEFAULT_GRAPH_MAX_NODES,
   showInfrastructure = false,
   groupVectors = false,
+  hideControl = true,
+  hideConst = false,
   signal?: AbortSignal,
 ): Promise<Subgraph> {
   return getJson<Subgraph>(
-    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}&group_vectors=${groupVectors}`,
+    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}&group_vectors=${groupVectors}&hide_control=${hideControl}&hide_const=${hideConst}`,
     signal,
   )
 }
