@@ -3,6 +3,7 @@ import type { GraphNode, Subgraph } from '../types'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
   fitViewportToContent,
+  interpretResult,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
   NETWORK_SIMPLEX_NODE_LIMIT,
@@ -124,6 +125,100 @@ describe('schematic layout sizing', () => {
     expect(graph.edges?.[0].sources).toEqual(['1#o:Y'])
     // the sink port node routes the Q edge to its A input pin
     expect(graph.edges?.[1].targets).toEqual(['3#i:A'])
+  })
+
+  it('preserves register connectivity when ELK reorders or omits routed edges', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'CARRY4'),
+        node(2, 'CARRY4'),
+        node(3, 'FDRE', { seq: true, register: true }),
+        node(4, 'port', { kind: 'port' }),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 3,
+          from_port: 'O',
+          to_port: 'D',
+          net_name: 'd[3:0]',
+          bits: [0, 1, 2, 3],
+        },
+        {
+          from: 2,
+          to: 3,
+          from_port: 'O',
+          to_port: 'D',
+          net_name: 'd[7:4]',
+          bits: [4, 5, 6, 7],
+        },
+        {
+          from: 3,
+          to: 4,
+          from_port: 'Q',
+          to_port: 'q',
+          net_name: 'q',
+          bits: [0, 1, 2, 3, 4, 5, 6, 7],
+        },
+      ],
+      truncated: false,
+    }
+    const root = {
+      id: 'root',
+      width: 500,
+      height: 200,
+      children: [
+        { id: '1', x: 10, y: 20, width: 96, height: 54 },
+        { id: '2', x: 10, y: 100, width: 96, height: 54 },
+        { id: '3', x: 240, y: 60, width: 100, height: 58 },
+        { id: '4', x: 420, y: 72, width: 74, height: 34 },
+      ],
+      // ELK is allowed to reorder its result and may omit a routed section.
+      // e1 is absent here; the adapter must still return the real 2 -> 3 edge.
+      edges: [
+        {
+          id: 'e2',
+          sources: ['3#out'],
+          targets: ['4#i:q'],
+          sections: [
+            {
+              id: 'e2s0',
+              startPoint: { x: 340, y: 89 },
+              endPoint: { x: 420, y: 89 },
+            },
+          ],
+        },
+        {
+          id: 'e0',
+          sources: ['1#o:O'],
+          targets: ['3#in'],
+          sections: [
+            {
+              id: 'e0s0',
+              startPoint: { x: 106, y: 47 },
+              endPoint: { x: 240, y: 79 },
+            },
+          ],
+        },
+      ],
+    }
+
+    const laidOut = interpretResult(sub, root)
+
+    expect(laidOut.edges.map(({ from, to }) => [from, to])).toEqual([
+      [1, 3],
+      [2, 3],
+      [3, 4],
+    ])
+    expect(laidOut.edges.map(({ edge }) => edge.net_name)).toEqual([
+      'd[3:0]',
+      'd[7:4]',
+      'q',
+    ])
+    expect(laidOut.edges[1].points).toEqual([
+      { x: 106, y: 127 },
+      { x: 240, y: 78.56 },
+    ])
   })
 
   it('picks robust placement for large or dense graphs, tight for small', () => {

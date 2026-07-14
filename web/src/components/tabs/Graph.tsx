@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
+import { presentGraphForFocus } from '../../lib/graphFocus'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/graphOwnership'
@@ -47,7 +48,7 @@ export function Graph({ active }: { active: boolean }) {
   const laidOutSubgraph = useRef<Subgraph | null>(null)
 
   // Every option here changes what the server returns, so a change refetches.
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
@@ -85,37 +86,33 @@ export function Graph({ active }: { active: boolean }) {
     setSourceStatus(null)
     setSourceControl(false)
     if (coneReq.kind !== 'source') setSelected(null)
-    const fetchP =
-      coneReq.kind === 'netlist'
-        ? getNetlist(
-            requestDesignId,
-            graphOptions.maxNodes,
-            graphOptions.showInfrastructure,
-            graphOptions.groupVectors,
-            controller.signal,
-          ).then((graph) => ({
-            graph,
-            status: null,
-            control: false,
-            highlight: [],
+    const fetchFullGraph = () =>
+      getNetlist(
+        requestDesignId,
+        graphOptions.maxNodes,
+        graphOptions.showInfrastructure,
+        graphOptions.groupVectors,
+        controller.signal,
+      )
+    const fetchRelevantGraph =
+      coneReq.kind === 'source'
+        ? getLineCone(requestDesignId, {
+            file: coneReq.file,
+            start_line: coneReq.startLine,
+            end_line: coneReq.endLine,
+            max_nodes: graphOptions.maxNodes,
+            hide_control: graphOptions.hideControl,
+            hide_const: graphOptions.hideConst,
+            show_infrastructure: graphOptions.showInfrastructure,
+            group_vectors: graphOptions.groupVectors,
+          }, controller.signal).then((response) => ({
+            graph: response.graph,
+            status: response.status,
+            control: response.control,
+            highlight: response.highlight,
           }))
-        : coneReq.kind === 'source'
-          ? getLineCone(requestDesignId, {
-              file: coneReq.file,
-              start_line: coneReq.startLine,
-              end_line: coneReq.endLine,
-              max_nodes: graphOptions.maxNodes,
-              hide_control: graphOptions.hideControl,
-              hide_const: graphOptions.hideConst,
-              show_infrastructure: graphOptions.showInfrastructure,
-              group_vectors: graphOptions.groupVectors,
-            }, controller.signal).then((response) => ({
-              graph: response.graph,
-              status: response.status,
-              control: response.control,
-              highlight: response.highlight,
-            }))
-          : getCone(requestDesignId, {
+        : coneReq.kind === 'cone'
+          ? getCone(requestDesignId, {
               node: coneReq.node,
               nodes: coneReq.nodes.length > 1 ? coneReq.nodes : undefined,
               dir: coneReq.dir,
@@ -131,6 +128,36 @@ export function Graph({ active }: { active: boolean }) {
               control: false,
               highlight: [],
             }))
+          : null
+    const fetchP =
+      fetchRelevantGraph == null
+        ? fetchFullGraph().then((graph) => ({
+            graph,
+            status: null,
+            control: false,
+            highlight: [],
+          }))
+        : Promise.all([
+            fetchRelevantGraph,
+            graphOptions.focus ? Promise.resolve(null) : fetchFullGraph(),
+          ]).then(
+            ([relevant, full]) => {
+              const presentation = presentGraphForFocus(
+                relevant.graph,
+                full,
+                graphOptions.focus,
+                graphOptions.maxNodes,
+              )
+              return {
+                ...relevant,
+                graph: presentation.graph,
+                highlight: [
+                  ...relevant.highlight,
+                  ...presentation.relevanceHighlight,
+                ],
+              }
+            },
+          )
     fetchP
       .then(({ graph, status, control, highlight }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
@@ -217,7 +244,7 @@ export function Graph({ active }: { active: boolean }) {
   const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
   const graphInteractive = analysisState === 'current' && displayedDesignCurrent
   const sourcePresentation = sourceProbePresentation(sourceStatus)
-  const displayedSourceHighlight = useMemo(
+  const displayedRequestHighlight = useMemo(
     () =>
       isDisplayedRequestCurrent(fetchedSubgraph?.requestKey, displayedGraph?.requestKey)
         ? (displayedGraph?.highlight ?? [])
@@ -228,8 +255,8 @@ export function Graph({ active }: { active: boolean }) {
   const highlight = useMemo(() => {
     const ids = new Set<number>([
       ...(coneReq?.highlight ?? []),
-      ...(coneReq?.kind === 'source' && sourcePresentation.highlightSelection
-        ? displayedSourceHighlight
+      ...(coneReq?.kind !== 'source' || sourcePresentation.highlightSelection
+        ? displayedRequestHighlight
         : []),
     ])
     // A grouped bus node collapses per-bit ids the highlight set names, so it
@@ -238,7 +265,7 @@ export function Graph({ active }: { active: boolean }) {
       if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
     }
     return ids
-  }, [coneReq, sourcePresentation.highlightSelection, displayedSourceHighlight, sub])
+  }, [coneReq, sourcePresentation.highlightSelection, displayedRequestHighlight, sub])
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
   // Net driven by the selected node (first outgoing edge) — lets the detail
@@ -421,6 +448,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
   const setOpt = store.setGraphOptions
+  const focusAvailable = coneReq?.kind === 'cone' || coneReq?.kind === 'source'
 
   const reissue = (dir: 'fanin' | 'fanout') => {
     if (coneReq?.kind !== 'cone') return
@@ -538,6 +566,25 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           onChange={(event) => setOpt({ groupVectors: event.target.checked })}
         />
         group buses
+      </label>
+
+      <label
+        className="toggle"
+        title={
+          focusAvailable
+            ? graphOptions.focus
+              ? 'Show only the logic relevant to this selection'
+              : 'Show the full capped diagram and highlight the relevant logic'
+            : 'Focus applies to source selections and cones'
+        }
+      >
+        <input
+          type="checkbox"
+          checked={graphOptions.focus}
+          disabled={!focusAvailable}
+          onChange={(event) => setOpt({ focus: event.target.checked })}
+        />
+        Focus
       </label>
 
       <span className="sep" />

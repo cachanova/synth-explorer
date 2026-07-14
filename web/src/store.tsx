@@ -87,6 +87,7 @@ export interface GraphOptions {
   hideControl: boolean
   hideConst: boolean
   showInfrastructure: boolean
+  focus: boolean
   groupVectors: boolean
 }
 
@@ -142,6 +143,7 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideControl: true,
   hideConst: true,
   showInfrastructure: false,
+  focus: true,
   groupVectors: true,
 }
 

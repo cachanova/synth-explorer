@@ -315,12 +315,6 @@ export function toElkGraph(
   }
 }
 
-/** Node id from an elk endpoint that may be a `<id>#in`/`<id>#out` port. */
-function endpointNodeId(endpoint: string): number {
-  const hash = endpoint.indexOf('#')
-  return Number(hash === -1 ? endpoint : endpoint.slice(0, hash))
-}
-
 function assertRenderableSubgraph(sub: Subgraph): void {
   if (sub.nodes.length > MAX_GRAPH_RENDER_NODES) {
     throw new Error(
@@ -334,7 +328,7 @@ function assertRenderableSubgraph(sub: Subgraph): void {
   }
 }
 
-function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
+export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
   const byId = new Map<number, GraphNode>()
   for (const n of sub.nodes) byId.set(n.id, n)
 
@@ -352,19 +346,44 @@ function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
     }
   })
 
+  const laidOutById = new Map(nodes.map((node) => [node.id, node]))
   const rootEdges = (root.edges ?? []) as ElkExtendedEdge[]
-  const edges: LaidOutEdge[] = rootEdges.map((e, i) => {
-    const src = sub.edges[i]
+  const routedByInputIndex = new Map<number, ElkExtendedEdge>()
+  for (const edge of rootEdges) {
+    const match = /^e(\d+)$/.exec(edge.id)
+    if (match) routedByInputIndex.set(Number(match[1]), edge)
+  }
+  const fallbackPoint = (id: number, output: boolean): Point => {
+    const laidOut = laidOutById.get(id)
+    if (!laidOut) return { x: 0, y: 0 }
+    const register = isRegKind(laidOut.node)
+    return {
+      x: laidOut.x + (output ? laidOut.width : 0),
+      y:
+        laidOut.y +
+        (register
+          ? Math.min(laidOut.height, REG_BODY_HEIGHT) *
+            (output ? REG_DATA_OUT_Y_FRAC : REG_DATA_IN_Y_FRAC)
+          : laidOut.height / 2),
+    }
+  }
+  const edges: LaidOutEdge[] = sub.edges.map((src, i) => {
+    const routed = routedByInputIndex.get(i)
     const points: Point[] = []
-    const section = e.sections?.[0]
+    const section = routed?.sections?.[0]
     if (section) {
       points.push(section.startPoint)
       if (section.bendPoints) points.push(...section.bendPoints)
       points.push(section.endPoint)
+    } else {
+      // Preserve the structural edge even if ELK omits a routed section. This
+      // is especially important for grouped register D inputs: without the
+      // fallback the driver cone and register render as disconnected islands.
+      points.push(fallbackPoint(src.from, true), fallbackPoint(src.to, false))
     }
     return {
-      from: endpointNodeId(e.sources[0]),
-      to: endpointNodeId(e.targets[0]),
+      from: src.from,
+      to: src.to,
       points,
       edge: src,
     }

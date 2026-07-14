@@ -185,3 +185,68 @@ test('graph viewport follows browser and pane resizing without resetting user zo
     .poll(async () => await viewport.getAttribute('transform'))
     .not.toBe(beforeTabSwitch)
 })
+
+test('Focus switches between the relevant cone and a highlighted full diagram', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page
+    .getByText('Example')
+    .locator('..')
+    .locator('select')
+    .selectOption('05_shared_logic')
+  await page
+    .getByText('Mode')
+    .locator('..')
+    .locator('select')
+    .selectOption('xilinx')
+
+  const synthResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/synthesize') &&
+      response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+  expect((await synthResponse).ok()).toBe(true)
+
+  // Select the q2 output declaration, whose focused Xilinx graph includes a
+  // grouped register fed by several carry-chain D edges.
+  await page.locator('.cm-line').nth(11).click()
+  const focusedResponse = page.waitForResponse((response) =>
+    response.url().includes('/line-cone?'),
+  )
+  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
+  expect((await focusedResponse).ok()).toBe(true)
+
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeChecked()
+  await expect(page.locator('.graph-count')).toBeVisible()
+  const focusedNodeCount = await page.locator('.g-node-body').count()
+  expect(focusedNodeCount).toBeGreaterThan(0)
+  expect(
+    await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
+  ).toBeGreaterThan(0)
+
+  const fullResponse = page.waitForResponse((response) =>
+    response.url().includes('/netlist?'),
+  )
+  await focus.uncheck()
+  expect((await fullResponse).ok()).toBe(true)
+  await expect
+    .poll(async () => page.locator('.g-node-body').count())
+    .toBeGreaterThan(focusedNodeCount)
+  await expect(focus).not.toBeChecked()
+  expect(await page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
+  expect(
+    await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
+  ).toBeGreaterThan(0)
+
+  const refocusedResponse = page.waitForResponse((response) =>
+    response.url().includes('/line-cone?'),
+  )
+  await focus.check()
+  expect((await refocusedResponse).ok()).toBe(true)
+  await expect
+    .poll(async () => page.locator('.g-node-body').count())
+    .toBe(focusedNodeCount)
+})
