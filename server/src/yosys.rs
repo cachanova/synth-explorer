@@ -733,7 +733,7 @@ mod tests {
                 mode: SynthMode::Xilinx,
                 extra_args: None,
                 family: Some("xcup".to_owned()),
-                retime: retime,
+                retime,
             }
         }
 
