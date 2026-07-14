@@ -5,6 +5,38 @@ import type { Mode } from '../types'
 
 const DEFAULT_VALUES: Record<string, string> = { '-widemux': '5' }
 
+/**
+ * Inline number field for a value-taking flag. Local draft state lets the user
+ * clear-and-retype without the field unmounting (only non-empty values are
+ * committed to the flags string), and it swallows click/keydown so editing the
+ * value never toggles the row off.
+ */
+function ValueField({
+  value,
+  onCommit,
+}: {
+  value: string
+  onCommit: (v: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => setDraft(value), [value])
+  return (
+    <input
+      className="flags-menu-value"
+      type="number"
+      min={2}
+      value={draft}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+      onBlur={() => setDraft(value)}
+      onChange={(e) => {
+        setDraft(e.target.value)
+        if (e.target.value !== '') onCommit(e.target.value)
+      }}
+    />
+  )
+}
+
 function isActive(flags: string, def: FlagDef): boolean {
   return def.value ? getFlagValue(flags, def.flag) !== null : hasFlag(flags, def.flag)
 }
@@ -121,15 +153,9 @@ export function FlagsMenu({
                     </div>
                   </div>
                   {def.value && active && (
-                    <input
-                      className="flags-menu-value"
-                      type="number"
-                      min={2}
+                    <ValueField
                       value={getFlagValue(flags, def.flag) ?? ''}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) =>
-                        onChange(setFlagValue(flags, def.flag, e.target.value))
-                      }
+                      onCommit={(v) => onChange(setFlagValue(flags, def.flag, v))}
                     />
                   )}
                 </div>
