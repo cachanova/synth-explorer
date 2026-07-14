@@ -129,7 +129,14 @@ Response `200`:
       carry_special: number;
       infrastructure: number;
     };
+    estimated_delay_ns?: number; // rough worst-case combinational delay (see below)
   };
+  // estimated_delay_ns is a rough PRE-place-and-route figure: it sums
+  // ballpark cell delays with a fanout-based (log-scaled) net-delay estimate
+  // along the critical logic path — the same shape as a vendor tool's
+  // post-synthesis "estimated" timing, NOT timing closure. Omitted when the
+  // design has no combinational paths. The delay coefficients are Series-7
+  // ballparks meant to be calibrated against a real vendor report.
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
   memories_abstracted: boolean; // true when a generic mode exhausted a sandbox
