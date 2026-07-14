@@ -14,12 +14,15 @@ export interface TimingSettings {
   speedGrade: SpeedGrade
   // Full coefficient override from the advanced editor; null uses `profile`.
   overrides: DelayModel | null
+  // Target clock in MHz for the slack readout; null hides it.
+  targetMhz: number | null
 }
 
 export const DEFAULT_TIMING_SETTINGS: TimingSettings = {
   profile: 'auto',
   speedGrade: '-1',
   overrides: null,
+  targetMhz: null,
 }
 
 export const PROFILE_OPTIONS: { value: ProfileChoice; label: string }[] = [
@@ -86,7 +89,13 @@ export function loadTimingSettings(): TimingSettings {
       ? (parsed.speedGrade as SpeedGrade)
       : '-1'
     const overrides = isDelayModel(parsed.overrides) ? parsed.overrides : null
-    return { profile, speedGrade, overrides }
+    const targetMhz =
+      typeof parsed.targetMhz === 'number' &&
+      isFinite(parsed.targetMhz) &&
+      parsed.targetMhz > 0
+        ? parsed.targetMhz
+        : null
+    return { profile, speedGrade, overrides, targetMhz }
   } catch {
     return DEFAULT_TIMING_SETTINGS
   }

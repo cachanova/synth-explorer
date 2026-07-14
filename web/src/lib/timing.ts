@@ -7,3 +7,11 @@ export const ESTIMATED_TIMING_CAVEAT =
 export function fmaxMhz(delayNs: number): number {
   return 1000 / delayNs
 }
+
+// Setup slack (ns) against a target clock: the target period minus the
+// estimated path delay. Positive = the estimate meets the clock; negative =
+// it fails by that much. Like the delay itself, this is a rough pre-route
+// figure, not a signoff slack.
+export function slackNs(delayNs: number, targetMhz: number): number {
+  return 1000 / targetMhz - delayNs
+}
