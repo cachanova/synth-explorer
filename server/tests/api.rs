@@ -53,6 +53,27 @@ async fn get_line_probe(
     .await
 }
 
+fn assert_source_logic(response: &serde_json::Value, min_cells: usize) {
+    let nodes = response["graph"]["nodes"].as_array().unwrap();
+    let logic: BTreeSet<u64> = nodes
+        .iter()
+        .filter(|node| node["kind"] == "cell")
+        .map(|node| node["id"].as_u64().unwrap())
+        .collect();
+    assert!(
+        logic.len() >= min_cells,
+        "expected at least {min_cells} logic cells, got {logic:?}"
+    );
+    assert!(!response["graph"]["edges"].as_array().unwrap().is_empty());
+    let highlighted: BTreeSet<u64> = response["highlight"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    assert!(logic.is_subset(&highlighted));
+}
+
 #[tokio::test]
 async fn synthesize_then_walk_analysis_routes() {
     let source = r#"
@@ -402,9 +423,11 @@ module lsb_sel #(
   parameter int N = 8
 ) (
   input  logic [N-1:0] a,
+  input  logic d,
   output logic [N-1:0] o,
   output logic [$clog2(N)-1:0] oidx,
-  output logic [N-1:0] o2
+  output logic [N-1:0] o2,
+  output logic o3
 );
 
   always_comb begin
@@ -418,6 +441,7 @@ module lsb_sel #(
   end
 
   assign o2 = a & (~a + 1'b1);
+  assign o3 = d;
 endmodule
 "#;
     let line = |text: &str| {
@@ -468,6 +492,7 @@ endmodule
     let o_ids = output_ids("o");
     let oidx_ids = output_ids("oidx");
     let o2_ids = output_ids("o2");
+    let o3_ids = output_ids("o3");
     let graph_ids = |response: &serde_json::Value| -> BTreeSet<u64> {
         response["graph"]["nodes"]
             .as_array()
@@ -489,6 +514,8 @@ endmodule
     assert!(o_ids.is_subset(&input_graph));
     assert!(oidx_ids.is_subset(&input_graph));
     assert!(o2_ids.is_subset(&input_graph));
+    assert!(o3_ids.is_disjoint(&input_graph));
+    assert_source_logic(&input, 3);
 
     let output = get_line_probe(
         &mut app,
@@ -502,6 +529,8 @@ endmodule
     assert!(o_ids.is_subset(&output_graph));
     assert!(oidx_ids.is_disjoint(&output_graph));
     assert!(o2_ids.is_disjoint(&output_graph));
+    assert!(o3_ids.is_disjoint(&output_graph));
+    assert_source_logic(&output, 1);
 
     let direct_assignment =
         get_line_probe(&mut app, design_id, "lsb_sel.sv", line("o = '0;")).await;
@@ -510,6 +539,7 @@ endmodule
     assert!(o_ids.is_subset(&direct_graph));
     assert!(oidx_ids.is_disjoint(&direct_graph));
     assert!(o2_ids.is_disjoint(&direct_graph));
+    assert_source_logic(&direct_assignment, 1);
 
     let indexed_assignment =
         get_line_probe(&mut app, design_id, "lsb_sel.sv", line("o[i] = 1'b1;")).await;
@@ -518,6 +548,7 @@ endmodule
     assert!(o_ids.is_subset(&indexed_graph));
     assert!(oidx_ids.is_disjoint(&indexed_graph));
     assert!(o2_ids.is_disjoint(&indexed_graph));
+    assert_source_logic(&indexed_assignment, 1);
 
     let block_control = get_line_probe(
         &mut app,
@@ -531,6 +562,7 @@ endmodule
     assert!(o_ids.is_subset(&block_graph));
     assert!(oidx_ids.is_subset(&block_graph));
     assert!(o2_ids.is_disjoint(&block_graph));
+    assert_source_logic(&block_control, 2);
 
     let continuous = get_line_probe(
         &mut app,
@@ -562,6 +594,171 @@ endmodule
         "expected add/not/and logic: {logic_ids:?}"
     );
     assert!(logic_ids.is_subset(&highlighted));
+}
+
+#[tokio::test]
+async fn assignment_probe_excludes_downstream_consumers_of_internal_lhs() {
+    let source = r#"
+module internal_lhs (
+  input logic a,
+  input logic b,
+  input logic c,
+  output logic y
+);
+  logic x;
+  assign x = a & b;
+  assign y = x | c;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "internal_lhs.sv", "content": source}],
+                        "top": "internal_lhs",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    let line = source
+        .lines()
+        .position(|candidate| candidate.trim() == "assign x = a & b;")
+        .unwrap()
+        + 1;
+
+    let probe = get_line_probe(&mut app, design_id, "internal_lhs.sv", line).await;
+    assert_eq!(probe["status"], "mapped");
+    let nodes = probe["graph"]["nodes"].as_array().unwrap();
+    assert!(nodes.iter().any(|node| node["name"] == "a"));
+    assert!(nodes.iter().any(|node| node["name"] == "b"));
+    assert!(nodes.iter().all(|node| node["name"] != "c"));
+    assert!(nodes.iter().all(|node| node["name"] != "y"));
+    let logic: BTreeSet<u64> = nodes
+        .iter()
+        .filter(|node| node["kind"] == "cell")
+        .map(|node| node["id"].as_u64().unwrap())
+        .collect();
+    assert_eq!(
+        logic.len(),
+        1,
+        "only the x-driving AND belongs to this line"
+    );
+    let highlighted: BTreeSet<u64> = probe["highlight"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_u64().unwrap())
+        .collect();
+    assert_eq!(highlighted, logic);
+}
+
+#[tokio::test]
+async fn nested_beginless_control_probe_owns_every_assignment_target() {
+    let source = r#"
+module nested_control (
+  input logic sel,
+  input logic kind,
+  input logic a,
+  input logic b,
+  output logic y,
+  output logic z
+);
+  always_comb if (sel) begin
+    case (kind)
+      1'b0: y = a;
+      default: y = b;
+    endcase
+    z = a;
+  end else begin
+    y = b;
+    z = b;
+  end
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "nested_control.sv", "content": source}],
+                        "top": "nested_control",
+                        "mode": "rtl"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let synth = body_json(response).await;
+    let design_id = synth["design_id"].as_str().unwrap();
+    let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
+    let output_ids = |name: &str| -> BTreeSet<u64> {
+        endpoints["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|group| group["name"] == name)
+            .unwrap()["bits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|bit| bit["node_id"].as_u64().unwrap())
+            .collect()
+    };
+    let y_ids = output_ids("y");
+    let z_ids = output_ids("z");
+    let line = |needle: &str| {
+        source
+            .lines()
+            .position(|candidate| candidate.contains(needle))
+            .unwrap()
+            + 1
+    };
+    let graph_ids = |probe: &serde_json::Value| -> BTreeSet<u64> {
+        probe["graph"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["id"].as_u64().unwrap())
+            .collect()
+    };
+
+    let control = get_line_probe(
+        &mut app,
+        design_id,
+        "nested_control.sv",
+        line("always_comb if"),
+    )
+    .await;
+    let control_ids = graph_ids(&control);
+    assert!(y_ids.is_subset(&control_ids));
+    assert!(z_ids.is_subset(&control_ids));
+
+    let z_assignment =
+        get_line_probe(&mut app, design_id, "nested_control.sv", line("z = a;")).await;
+    let z_assignment_ids = graph_ids(&z_assignment);
+    assert!(z_ids.is_subset(&z_assignment_ids));
+    assert!(y_ids.is_disjoint(&z_assignment_ids));
 }
 
 #[tokio::test]
@@ -1073,8 +1270,11 @@ async fn wire_alias_provenance_tracks_reachable_child_instance_scopes() {
         .iter()
         .filter_map(|node| node["name"].as_str())
         .collect();
-    assert!(leaf_names.contains(&"y0"));
-    assert!(!leaf_names.contains(&"y1"));
+    assert!(
+        leaf_names.contains(&"a"),
+        "leaf alias fanin: {leaf_names:?}"
+    );
+    assert!(!leaf_names.contains(&"b"));
 
     let other_alias = get_json(
         &mut app,
@@ -1082,13 +1282,17 @@ async fn wire_alias_provenance_tracks_reachable_child_instance_scopes() {
     )
     .await;
     assert_eq!(other_alias["status"], "mapped");
+    let other_names: Vec<&str> = other_alias["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["name"].as_str())
+        .collect();
     assert!(
-        other_alias["graph"]["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|node| node["name"] == "y1")
+        other_names.contains(&"b"),
+        "other alias fanin: {other_names:?}"
     );
+    assert!(!other_names.contains(&"a"));
 
     let unused_alias = get_json(
         &mut app,

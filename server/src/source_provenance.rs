@@ -25,8 +25,22 @@ struct RangeProvenance {
 
 #[derive(Debug, Default)]
 struct SignalRootIndex {
-    roots: HashMap<String, Vec<NodeId>>,
-    incomplete: HashSet<String>,
+    fanin: HashMap<String, Vec<NodeId>>,
+    fanout: HashMap<String, Vec<NodeId>>,
+    fanin_incomplete: HashSet<String>,
+    fanout_incomplete: HashSet<String>,
+}
+
+impl SignalRootIndex {
+    fn for_direction(
+        &self,
+        direction: SourceProbeDirection,
+    ) -> (&HashMap<String, Vec<NodeId>>, &HashSet<String>) {
+        match direction {
+            SourceProbeDirection::Fanin => (&self.fanin, &self.fanin_incomplete),
+            SourceProbeDirection::Fanout => (&self.fanout, &self.fanout_incomplete),
+        }
+    }
 }
 
 /// Recover source provenance and directional probe intent that Yosys JSON
@@ -69,8 +83,8 @@ pub(crate) fn recover_source_provenance(
                     } else {
                         format!("{scope}.{identifier}")
                     };
-                    mapping_incomplete |= roots_by_name.incomplete.contains(&qualified);
-                    if let Some(ids) = roots_by_name.roots.get(qualified.as_str()) {
+                    mapping_incomplete |= roots_by_name.fanin_incomplete.contains(&qualified);
+                    if let Some(ids) = roots_by_name.fanin.get(qualified.as_str()) {
                         for id in ids {
                             mapping_incomplete |= insert_bounded_root(&mut roots, *id);
                         }
@@ -83,7 +97,7 @@ pub(crate) fn recover_source_provenance(
                     start_line: assignment.start_line,
                     end_line: assignment.end_line,
                     direction: SourceProbeDirection::Fanin,
-                    kind: SourceProbeHintKind::Specific,
+                    kind: SourceProbeHintKind::Signal,
                 });
             }
             let range = ranges
@@ -97,34 +111,37 @@ pub(crate) fn recover_source_provenance(
             };
             let mut roots = BTreeSet::new();
             let mut mapping_incomplete = false;
-            for scope in scopes {
-                let qualified = if scope.is_empty() {
-                    declaration.identifier.clone()
-                } else {
-                    format!("{scope}.{}", declaration.identifier)
-                };
-                mapping_incomplete |= roots_by_name.incomplete.contains(&qualified);
-                if let Some(ids) = roots_by_name.roots.get(qualified.as_str()) {
-                    for id in ids {
-                        mapping_incomplete |= insert_bounded_root(&mut roots, *id);
+            let directions: &[SourceProbeDirection] = match declaration.direction {
+                PortDirection::Input => &[SourceProbeDirection::Fanout],
+                PortDirection::Output => &[SourceProbeDirection::Fanin],
+                PortDirection::Inout => {
+                    &[SourceProbeDirection::Fanin, SourceProbeDirection::Fanout]
+                }
+            };
+            for direction in directions {
+                let (direction_roots, incomplete) = roots_by_name.for_direction(*direction);
+                for scope in scopes {
+                    let qualified = if scope.is_empty() {
+                        declaration.identifier.clone()
+                    } else {
+                        format!("{scope}.{}", declaration.identifier)
+                    };
+                    mapping_incomplete |= incomplete.contains(&qualified);
+                    if let Some(ids) = direction_roots.get(qualified.as_str()) {
+                        for id in ids {
+                            mapping_incomplete |= insert_bounded_root(&mut roots, *id);
+                        }
                     }
                 }
             }
             if !roots.is_empty() && probe_hints.len() < SOURCE_RANGE_ASSOCIATION_CAP {
-                let directions: &[SourceProbeDirection] = match declaration.direction {
-                    PortDirection::Input => &[SourceProbeDirection::Fanout],
-                    PortDirection::Output => &[SourceProbeDirection::Fanin],
-                    PortDirection::Inout => {
-                        &[SourceProbeDirection::Fanin, SourceProbeDirection::Fanout]
-                    }
-                };
                 for direction in directions {
                     probe_hints.push(SourceProbeHint {
                         file: file.clone(),
                         start_line: declaration.line,
                         end_line: declaration.line,
                         direction: *direction,
-                        kind: SourceProbeHintKind::Specific,
+                        kind: SourceProbeHintKind::Signal,
                     });
                 }
             }
@@ -146,8 +163,8 @@ pub(crate) fn recover_source_provenance(
                     } else {
                         format!("{scope}.{identifier}")
                     };
-                    unusable |= roots_by_name.incomplete.contains(&qualified);
-                    if let Some(ids) = roots_by_name.roots.get(qualified.as_str()) {
+                    unusable |= roots_by_name.fanin_incomplete.contains(&qualified);
+                    if let Some(ids) = roots_by_name.fanin.get(qualified.as_str()) {
                         for id in ids {
                             unusable |= insert_bounded_root(&mut roots, *id);
                         }
@@ -188,17 +205,37 @@ pub(crate) fn recover_source_provenance(
                     start_line: assignment.line,
                     end_line: assignment.line,
                     direction: SourceProbeDirection::Fanin,
-                    kind: SourceProbeHintKind::Specific,
+                    kind: SourceProbeHintKind::Procedural,
                 });
             }
         }
+        let resolved_lines: BTreeSet<usize> = scanned
+            .procedural
+            .iter()
+            .filter_map(|assignment| {
+                procedural
+                    .contains_key(&(file.clone(), assignment.line))
+                    .then_some(assignment.line)
+            })
+            .collect();
+        let unusable_file_lines: BTreeSet<usize> = scanned
+            .procedural
+            .iter()
+            .filter_map(|assignment| {
+                unusable_lines
+                    .contains(&(file.clone(), assignment.line))
+                    .then_some(assignment.line)
+            })
+            .collect();
         for block in scanned.blocks {
-            let has_resolved_target = procedural.keys().any(|(target_file, line)| {
-                target_file == &file && block.start_line <= *line && *line <= block.end_line
-            });
-            let has_unusable_target = unusable_lines.iter().any(|(target_file, line)| {
-                target_file == &file && block.start_line <= *line && *line <= block.end_line
-            });
+            let has_resolved_target = resolved_lines
+                .range(block.start_line..=block.end_line)
+                .next()
+                .is_some();
+            let has_unusable_target = unusable_file_lines
+                .range(block.start_line..=block.end_line)
+                .next()
+                .is_some();
             if has_resolved_target
                 && !has_unusable_target
                 && probe_hints.len() < SOURCE_RANGE_ASSOCIATION_CAP
@@ -304,52 +341,66 @@ fn scopes_by_module(
 }
 
 fn roots_by_signal_name(graph: &Graph) -> SignalRootIndex {
-    let mut roots: HashMap<String, BTreeSet<NodeId>> = HashMap::new();
-    let mut incomplete = HashSet::new();
+    let mut fanin: HashMap<String, BTreeSet<NodeId>> = HashMap::new();
+    let mut fanout: HashMap<String, BTreeSet<NodeId>> = HashMap::new();
+    let mut fanin_incomplete = HashSet::new();
+    let mut fanout_incomplete = HashSet::new();
     for node in &graph.nodes {
         if node.kind != NodeKind::PortBit {
             continue;
         }
-        if let Some(port) = &node.port {
-            insert_root_name(&mut roots, &mut incomplete, port, node.id);
+        let names = node.port.iter().chain(std::iter::once(&node.name));
+        if !graph.incoming[node.id as usize].is_empty() {
+            for name in names.clone() {
+                insert_root_name(&mut fanin, &mut fanin_incomplete, name, node.id);
+            }
         }
-        insert_root_name(&mut roots, &mut incomplete, &node.name, node.id);
+        if !graph.outgoing[node.id as usize].is_empty() {
+            for name in names {
+                insert_root_name(&mut fanout, &mut fanout_incomplete, name, node.id);
+            }
+        }
     }
 
-    let mut incident: HashMap<u32, BTreeSet<NodeId>> = HashMap::new();
-    let mut incomplete_incident = HashSet::new();
+    let mut drivers: HashMap<u32, BTreeSet<NodeId>> = HashMap::new();
+    let mut incomplete_drivers = HashSet::new();
     for edge in &graph.edges {
         let Some(bit) = edge.bit else {
             continue;
         };
-        let nodes = incident.entry(bit).or_default();
-        if insert_bounded_root(nodes, edge.from) | insert_bounded_root(nodes, edge.to) {
-            incomplete_incident.insert(bit);
+        if insert_bounded_root(drivers.entry(bit).or_default(), edge.from) {
+            incomplete_drivers.insert(bit);
         }
     }
     for (bit, aliases) in &graph.net_aliases {
-        let Some(nodes) = incident.get(bit) else {
+        let Some(nodes) = drivers.get(bit) else {
             continue;
         };
         for alias in aliases {
-            if incomplete_incident.contains(bit) {
-                mark_root_name_incomplete(&mut incomplete, alias);
+            if incomplete_drivers.contains(bit) {
+                mark_root_name_incomplete(&mut fanin_incomplete, alias);
+                mark_root_name_incomplete(&mut fanout_incomplete, alias);
             }
             for node in nodes {
-                insert_root_name(&mut roots, &mut incomplete, alias, *node);
+                insert_root_name(&mut fanin, &mut fanin_incomplete, alias, *node);
+                insert_root_name(&mut fanout, &mut fanout_incomplete, alias, *node);
             }
         }
     }
 
-    let roots = roots
+    SignalRootIndex {
+        fanin: sorted_root_map(fanin),
+        fanout: sorted_root_map(fanout),
+        fanin_incomplete,
+        fanout_incomplete,
+    }
+}
+
+fn sorted_root_map(roots: HashMap<String, BTreeSet<NodeId>>) -> HashMap<String, Vec<NodeId>> {
+    roots
         .into_iter()
-        .map(|(name, ids)| {
-            let mut ids: Vec<NodeId> = ids.into_iter().collect();
-            ids.sort_unstable();
-            (name, ids)
-        })
-        .collect();
-    SignalRootIndex { roots, incomplete }
+        .map(|(name, ids)| (name, ids.into_iter().collect()))
+        .collect()
 }
 
 fn insert_root_name(
@@ -549,6 +600,9 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
     let mut in_always = false;
     let mut always_begin_depth = 0usize;
     let mut always_has_begin = false;
+    let mut always_case_depth = 0usize;
+    let mut always_if_depth = 0usize;
+    let mut always_nested_begin_depth = 0usize;
     let mut current_block: Option<PendingProceduralBlock> = None;
 
     while index < bytes.len() {
@@ -586,6 +640,9 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
             current_module = module_name;
             in_always = false;
             current_block = None;
+            always_case_depth = 0;
+            always_if_depth = 0;
+            always_nested_begin_depth = 0;
             index = cursor;
             continue;
         }
@@ -593,6 +650,9 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
             current_module = None;
             in_always = false;
             current_block = None;
+            always_case_depth = 0;
+            always_if_depth = 0;
+            always_nested_begin_depth = 0;
             continue;
         }
         if matches!(
@@ -602,20 +662,55 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
             in_always = current_module.is_some();
             always_begin_depth = 0;
             always_has_begin = false;
+            always_case_depth = 0;
+            always_if_depth = 0;
+            always_nested_begin_depth = 0;
             current_block = in_always.then(|| PendingProceduralBlock {
                 start_line: line_at(token_start, &newlines),
             });
             continue;
         }
+        if in_always && matches!(token, "case" | "casex" | "casez") {
+            always_case_depth += 1;
+            continue;
+        }
+        if in_always && token == "endcase" {
+            always_case_depth = always_case_depth.saturating_sub(1);
+            if !always_has_begin
+                && always_case_depth == 0
+                && always_if_depth == 0
+                && always_nested_begin_depth == 0
+            {
+                in_always = false;
+                always_if_depth = 0;
+                if let Some(block) = current_block.take() {
+                    scanned.blocks.push(ProceduralBlock {
+                        start_line: block.start_line,
+                        end_line: line_at(token_start, &newlines),
+                    });
+                }
+            }
+            continue;
+        }
+        if in_always && token == "if" && !always_has_begin && always_case_depth == 0 {
+            always_if_depth += 1;
+            continue;
+        }
         if token == "begin" {
             if in_always {
-                always_begin_depth += 1;
-                always_has_begin = true;
+                if always_has_begin {
+                    always_begin_depth += 1;
+                } else if always_case_depth == 0 && always_if_depth == 0 {
+                    always_has_begin = true;
+                    always_begin_depth = 1;
+                } else {
+                    always_nested_begin_depth += 1;
+                }
             }
             continue;
         }
         if token == "end" {
-            if in_always {
+            if in_always && always_has_begin {
                 always_begin_depth = always_begin_depth.saturating_sub(1);
                 if always_has_begin && always_begin_depth == 0 {
                     in_always = false;
@@ -624,6 +719,23 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
                             start_line: block.start_line,
                             end_line: line_at(token_start, &newlines),
                         });
+                    }
+                }
+            } else if in_always && always_nested_begin_depth > 0 {
+                always_nested_begin_depth = always_nested_begin_depth.saturating_sub(1);
+                if always_nested_begin_depth == 0 && always_case_depth == 0 {
+                    let next = next_identifier(&sanitized, index);
+                    if next.as_deref() != Some("else") {
+                        always_if_depth = always_if_depth.saturating_sub(1);
+                    }
+                    if always_if_depth == 0 {
+                        in_always = false;
+                        if let Some(block) = current_block.take() {
+                            scanned.blocks.push(ProceduralBlock {
+                                start_line: block.start_line,
+                                end_line: line_at(token_start, &newlines),
+                            });
+                        }
                     }
                 }
             }
@@ -650,12 +762,26 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
                     advance_nesting(&bytes[index..statement_end], &mut nesting);
                     index = statement_end.saturating_add(1);
                     if !always_has_begin {
-                        in_always = false;
-                        if let Some(block) = current_block.take() {
-                            scanned.blocks.push(ProceduralBlock {
-                                start_line: block.start_line,
-                                end_line: line_at(statement_end, &newlines),
-                            });
+                        if always_case_depth == 0
+                            && always_nested_begin_depth == 0
+                            && always_if_depth > 0
+                        {
+                            let next = next_identifier(&sanitized, statement_end + 1);
+                            if next.as_deref() != Some("else") {
+                                always_if_depth = always_if_depth.saturating_sub(1);
+                            }
+                        }
+                        if always_case_depth == 0
+                            && always_nested_begin_depth == 0
+                            && always_if_depth == 0
+                        {
+                            in_always = false;
+                            if let Some(block) = current_block.take() {
+                                scanned.blocks.push(ProceduralBlock {
+                                    start_line: block.start_line,
+                                    end_line: line_at(statement_end, &newlines),
+                                });
+                            }
                         }
                     }
                 }
@@ -817,7 +943,11 @@ fn assignment_lhs_identifiers(lhs: &str) -> Vec<String> {
             _ => {}
         }
     }
-    identifiers(std::str::from_utf8(&sanitized).expect("sanitized LHS remains UTF-8"))
+    let sanitized = std::str::from_utf8(&sanitized).expect("sanitized LHS remains UTF-8");
+    let assignment_lhs = sanitized
+        .rsplit_once(':')
+        .map_or(sanitized, |(_, assignment_lhs)| assignment_lhs);
+    identifiers(assignment_lhs)
 }
 
 fn update_nesting(byte: u8, nesting: &mut usize) {
@@ -845,6 +975,18 @@ fn has_conditional_preprocessor(source: &str) -> bool {
 
 fn line_at(offset: usize, newlines: &[usize]) -> usize {
     newlines.partition_point(|newline| *newline < offset) + 1
+}
+
+fn next_identifier(source: &str, mut offset: usize) -> Option<String> {
+    let bytes = source.as_bytes();
+    while offset < bytes.len() && !is_identifier_start(bytes[offset]) {
+        offset += 1;
+    }
+    let start = offset;
+    while offset < bytes.len() && is_identifier_continue(bytes[offset]) {
+        offset += 1;
+    }
+    (offset > start).then(|| source[start..offset].to_owned())
 }
 
 fn identifiers(fragment: &str) -> Vec<String> {
@@ -1118,6 +1260,83 @@ endmodule
                 ProceduralBlock {
                     start_line: 17,
                     end_line: 17,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn beginless_case_and_if_blocks_keep_all_assignment_lines() {
+        let source = r#"
+module top;
+always @* case (sel)
+  1'b0: y = a;
+  default: z = b;
+endcase
+always @* if (sel)
+  y = a;
+else
+  z = b;
+always_comb if (sel) begin
+  y = a;
+  z = b;
+end else begin
+  y = b;
+  z = a;
+end
+always_comb if (sel) begin
+  case (kind)
+    1'b0: y = a;
+    default: y = b;
+  endcase
+  z = a;
+end else begin
+  y = b;
+  z = b;
+end
+endmodule
+"#;
+        let scanned = scan_assignments(source);
+        assert_eq!(
+            scanned
+                .procedural
+                .iter()
+                .map(|assignment| (assignment.line, assignment.lhs_identifiers.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (4, vec!["y".to_owned()]),
+                (5, vec!["z".to_owned()]),
+                (8, vec!["y".to_owned()]),
+                (10, vec!["z".to_owned()]),
+                (12, vec!["y".to_owned()]),
+                (13, vec!["z".to_owned()]),
+                (15, vec!["y".to_owned()]),
+                (16, vec!["z".to_owned()]),
+                (20, vec!["y".to_owned()]),
+                (21, vec!["y".to_owned()]),
+                (23, vec!["z".to_owned()]),
+                (25, vec!["y".to_owned()]),
+                (26, vec!["z".to_owned()]),
+            ]
+        );
+        assert_eq!(
+            scanned.blocks,
+            vec![
+                ProceduralBlock {
+                    start_line: 3,
+                    end_line: 6,
+                },
+                ProceduralBlock {
+                    start_line: 7,
+                    end_line: 10,
+                },
+                ProceduralBlock {
+                    start_line: 11,
+                    end_line: 17,
+                },
+                ProceduralBlock {
+                    start_line: 18,
+                    end_line: 27,
                 },
             ]
         );

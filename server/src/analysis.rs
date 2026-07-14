@@ -253,7 +253,8 @@ pub(crate) enum SourceProbeDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum SourceProbeHintKind {
     Block,
-    Specific,
+    Procedural,
+    Signal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -466,7 +467,7 @@ pub struct Analysis {
     source_ranges: BTreeMap<String, SourceRangeIndex>,
     source_probe_hints: BTreeMap<String, SourceProbeHintIndex>,
     synthetic_src: HashMap<NodeId, BTreeSet<String>>,
-    procedural_targets: HashMap<(String, usize), Vec<NodeId>>,
+    procedural_targets: BTreeMap<String, BTreeMap<usize, Vec<NodeId>>>,
     stats: Stats,
     warnings: Vec<String>,
 }
@@ -633,15 +634,18 @@ impl Analysis {
                 bytes = bytes.saturating_add(source.capacity());
             }
         }
-        bytes = bytes.saturating_add(
-            self.procedural_targets
-                .capacity()
-                .saturating_mul(size_of::<((String, usize), Vec<NodeId>)>()),
-        );
-        for ((file, _), ids) in &self.procedural_targets {
-            bytes = bytes
-                .saturating_add(file.capacity())
-                .saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+        bytes = bytes.saturating_add(self.procedural_targets.len().saturating_mul(
+            size_of::<(String, BTreeMap<usize, Vec<NodeId>>)>() + 3 * size_of::<usize>(),
+        ));
+        for (file, targets) in &self.procedural_targets {
+            bytes = bytes.saturating_add(file.capacity()).saturating_add(
+                targets
+                    .len()
+                    .saturating_mul(size_of::<(usize, Vec<NodeId>)>() + 3 * size_of::<usize>()),
+            );
+            for ids in targets.values() {
+                bytes = bytes.saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
+            }
         }
         bytes = bytes.saturating_add(stats_heap_bytes(&self.stats));
         bytes = bytes.saturating_add(self.warnings.capacity().saturating_mul(size_of::<String>()));
@@ -674,7 +678,7 @@ impl Analysis {
             source_ranges: BTreeMap::new(),
             source_probe_hints: BTreeMap::new(),
             synthetic_src: HashMap::new(),
-            procedural_targets: HashMap::new(),
+            procedural_targets: BTreeMap::new(),
             stats,
             warnings,
         }
@@ -684,7 +688,12 @@ impl Analysis {
     /// submitted sources so `source_nodes_range` can narrow block-attributed
     /// probes to the assigned signals.
     pub fn set_procedural_targets(&mut self, targets: HashMap<(String, usize), Vec<NodeId>>) {
-        self.procedural_targets = targets;
+        for ((file, line), ids) in targets {
+            self.procedural_targets
+                .entry(file)
+                .or_default()
+                .insert(line, ids);
+        }
     }
 
     pub(crate) fn set_source_probe_hints(&mut self, hints: Vec<SourceProbeHint>) {
@@ -907,11 +916,11 @@ impl Analysis {
         let selected: Vec<&SourceProbeHint> = if start_line == end_line
             && overlapping
                 .iter()
-                .any(|hint| hint.kind == SourceProbeHintKind::Specific)
+                .any(|hint| hint.kind != SourceProbeHintKind::Block)
         {
             overlapping
                 .into_iter()
-                .filter(|hint| hint.kind == SourceProbeHintKind::Specific)
+                .filter(|hint| hint.kind != SourceProbeHintKind::Block)
                 .collect()
         } else {
             overlapping
@@ -925,11 +934,14 @@ impl Analysis {
             roots.clear();
         }
         for hint in &selected {
-            if hint.kind != SourceProbeHintKind::Specific {
+            if hint.kind != SourceProbeHintKind::Procedural {
                 continue;
             }
-            for line in hint.start_line..=hint.end_line {
-                if let Some(ids) = self.procedural_targets.get(&(file.to_owned(), line)) {
+            if let Some(targets) = self.procedural_targets.get(file) {
+                for ids in targets
+                    .range(hint.start_line..=hint.end_line)
+                    .map(|(_, ids)| ids)
+                {
                     for id in ids {
                         if insert_bounded_node(&mut roots, *id) {
                             break;
@@ -942,8 +954,11 @@ impl Analysis {
             if hint.kind != SourceProbeHintKind::Block {
                 continue;
             }
-            for ((target_file, line), ids) in &self.procedural_targets {
-                if target_file == file && hint.start_line <= *line && *line <= hint.end_line {
+            if let Some(targets) = self.procedural_targets.get(file) {
+                for ids in targets
+                    .range(hint.start_line..=hint.end_line)
+                    .map(|(_, ids)| ids)
+                {
                     for id in ids {
                         if insert_bounded_node(&mut roots, *id) {
                             break;
@@ -1001,7 +1016,10 @@ impl Analysis {
             .map_or(&[][..], |index| index.overlapping(start_line, end_line));
         let mut targets: HashSet<NodeId> = HashSet::new();
         for line in start_line..=end_line {
-            let line_targets = self.procedural_targets.get(&(file.to_owned(), line));
+            let line_targets = self
+                .procedural_targets
+                .get(file)
+                .and_then(|targets| targets.get(&line));
             if let Some(ids) = line_targets {
                 targets.extend(ids.iter().copied());
             }
@@ -3850,11 +3868,23 @@ mod tests {
         };
         let mut analysis = Analysis::new(&graph, vec!["sparse.sv".to_owned()]);
         analysis.extend_source_ranges(vec![range.clone()], false);
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "sparse.sv".to_owned(),
+            start_line: 2,
+            end_line: 1_000_003,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Signal,
+        }]);
 
         assert_eq!(
             analysis.source_nodes_range(&graph, "sparse.sv", 500_000, 500_000),
             Some(vec![0])
         );
+        let probe = analysis
+            .source_probe_range(&graph, "sparse.sv", 500_000, 500_000)
+            .unwrap();
+        assert_eq!(probe.roots, [0]);
+        assert_eq!(probe.direction, Some(ConeDir::Fanin));
         assert!(analysis.source_map.by_line.is_empty());
         assert_eq!(analysis.synthetic_src.len(), 1);
         assert_eq!(analysis.synthetic_src[&0].len(), 1);

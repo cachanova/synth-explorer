@@ -5,3 +5,11 @@ export function isDisplayedDesignCurrent(
 ): boolean {
   return currentDesignId != null && displayedDesignId === currentDesignId
 }
+
+/** Response-owned overlays apply only after that exact request is laid out. */
+export function isDisplayedRequestCurrent(
+  currentRequestKey: string | null | undefined,
+  displayedRequestKey: string | null | undefined,
+): boolean {
+  return currentRequestKey != null && displayedRequestKey === currentRequestKey
+}
