@@ -1,65 +1,118 @@
 # Synth Explorer
 
-Compiler Explorer for RTL. Paste Verilog/SystemVerilog, synthesize it with
-[Yosys](https://yosyshq.net/yosys/) — generic logic gates, LUT4/LUT6 mapping, or
-FPGA target flows (iCE40, ECP5, Xilinx) — and interactively explore the result:
+[![CI](https://github.com/cachanova/synth-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/cachanova/synth-explorer/actions/workflows/ci.yml)
 
-- **Timing-path endpoints** — every register, top-level output, and blackbox
-  boundary, searchable and grouped.
-- **Longest logical paths** — ranked by combinational depth, with the full
-  cell-by-cell path.
-- **Fanin/fanout cones** — select a register or signal and see only the logic
-  that drives it (or that it drives), not the whole schematic.
-- **High-fanout nets** — ranked, with control (clock/reset/enable) nets labeled.
-- **Source cross-probing** — click a synthesized cell, jump to the RTL line
-  that produced it (via yosys `src` attributes).
-- **Compare** — snapshot two versions of the code (or two synthesis modes) and
-  diff depth, cell counts, and fanout.
+**Compiler Explorer for RTL.** Paste Verilog or SystemVerilog, synthesize it
+with [Yosys](https://yosyshq.net/yosys/), and inspect the resulting circuit by
+path, endpoint, fanin, fanout, or source location.
 
-A full-schematic view exists as an option, but the point of the tool is
-**graph-first exploration** — full synthesized schematics stop being readable
-almost immediately.
+[Try Synth Explorer in your browser](https://synthexplorer.dev)
 
-> **Caveat:** everything here is structural/logical analysis of the synthesized
-> netlist (unit-delay depth, pin counts). It is genuinely useful for
-> understanding how your code synthesizes and where the deep/wide spots are —
-> but it is *not* post-place-and-route timing. Real timing closure needs
-> nextpnr/OpenSTA/Vivado/Quartus.
+## Features
 
-## Running it
+- Synthesize generic gates, LUT4/LUT6 mappings, and iCE40, ECP5, or Xilinx
+  target flows.
+- Rank logical paths and endpoints by combinational depth.
+- Explore bounded fanin and fanout cones without rendering the whole netlist.
+- Find high-fanout nets and identify clock, reset, and enable controls.
+- Jump from synthesized cells to the Verilog source that produced them.
+- Compare cell counts, depth, and fanout across two designs or synthesis modes.
 
-Requirements: `yosys` on PATH (tested with 0.67), Rust stable, Node 24.11.1
-(npm 11.6.2).
+Synth Explorer also offers a size-capped full-schematic view. The main workflow
+focuses on small subgraphs that remain readable as designs grow.
+
+> [!IMPORTANT]
+> Synth Explorer reports structural estimates from a synthesized netlist,
+> including unit-delay depth and a rough pre-place-and-route delay estimate. It
+> does not perform timing closure. Use nextpnr, OpenSTA, Vivado, or Quartus for
+> routed timing analysis.
+
+## Quick start
+
+### Requirements
+
+- [Yosys](https://github.com/YosysHQ/yosys) 0.67 or a compatible release
+- Rust stable
+- Node.js 24.11.1 and npm 11.6.2
+
+Clone the repository, build the frontend, and start the server:
 
 ```bash
-cd web && npm install && npm run build && cd ..
-cd server && cargo run
-# open http://127.0.0.1:8787
+git clone https://github.com/cachanova/synth-explorer.git
+cd synth-explorer/web
+npm ci
+npm run build
+cd ../server
+cargo run
 ```
 
-Development: `cargo run` in `server/` plus `npm run dev` in `web/` (Vite on
-:5173 proxies `/api` to :8787).
+Open <http://127.0.0.1:8787>. The Rust server hosts the built frontend and the
+API on the same origin.
 
-## Production
+For frontend development, run the server and Vite in separate terminals:
 
-Production deploys [synthexplorer.dev](https://synthexplorer.dev) to one Hetzner
-VM. Caddy terminates HTTPS, and the Rust server serves both the built
-frontend and `/api`. GitHub Actions publishes an immutable container image to
-GHCR and deploys that digest over SSH after each push to `main`.
+```bash
+# Terminal 1
+cd server
+cargo run
 
-See [docs/OPERATIONS.md](docs/OPERATIONS.md) for provisioning, DNS, deployment,
-rollback, monitoring, and recovery instructions.
+# Terminal 2
+cd web
+npm ci
+npm run dev
+```
 
-## Layout
+Vite serves <http://localhost:5173> and proxies `/api` to port 8787.
 
-- `server/` — Rust (axum): yosys runner, netlist parser, graph + analysis
-  engine, HTTP API. See `docs/API.md`.
-- `web/` — React + TypeScript + Vite UI: editor, analysis tabs, elkjs-based
-  cone viewer.
-- `examples/` — small validation designs (adder chains, priority encoders,
-  high-fanout enables, FSMs, blackboxes) used by tests and the examples menu.
-- `deploy/` — everything for running it in production: `Dockerfile`, the Caddy
-  and Compose config, and the deploy/monitor scripts under `ops/`.
-- `docs/` — [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) (design rationale and
-  stack decisions), [`API.md`](docs/API.md) (the server/client contract), and
-  [`OPERATIONS.md`](docs/OPERATIONS.md) (production/deployment).
+## Repository layout
+
+| Path | Purpose |
+| --- | --- |
+| [`server/`](server/) | Rust server, Yosys runner, netlist parser, and graph analysis |
+| [`web/`](web/) | React client, CodeMirror editor, and elkjs graph viewer |
+| [`examples/`](examples/) | Verilog/SystemVerilog designs used by the UI and tests |
+| [`docs/`](docs/) | Architecture, API contract, and operations documentation |
+| [`deploy/`](deploy/) | Container, Caddy, deployment, monitoring, and rollback files |
+
+The server keeps synthesized designs in an in-memory, content-addressed cache.
+It does not require a database or external credentials.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [API contract](docs/API.md)
+- [Maintainer operations](docs/OPERATIONS.md)
+- [Web client](web/README.md)
+
+## Development checks
+
+Run backend checks from `server/`:
+
+```bash
+cargo fmt --all -- --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
+
+Run frontend checks from `web/`:
+
+```bash
+npm ci
+npm test
+npm run lint
+npx tsc --noEmit
+npm run build
+```
+
+## Contributing
+
+Bug reports and pull requests are welcome. Open an issue before starting a
+large change so maintainers and contributors can agree on the API or product
+behavior. Include tests for behavior changes and run the checks for each package
+you modify.
+
+## License
+
+This repository does not include an open-source license yet. GitHub users may
+view and fork the repository under GitHub's Terms of Service, but no license
+grants broader permission to use, modify, or distribute the code.
