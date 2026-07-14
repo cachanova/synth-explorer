@@ -59,15 +59,12 @@ export function Graph({ active }: { active: boolean }) {
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
 
   // Every option here changes what the server returns, so a change refetches.
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.showInfrastructure}|${graphOptions.focus}|${graphOptions.groupVectors}`
-  const focusAvailable = coneReq?.kind === 'cone' || coneReq?.kind === 'source'
-  // Standalone Full netlist keeps its historical/API visibility defaults. The
-  // cone visibility toggles are not rendered in that mode, so applying their
-  // stored values there would silently hide content the user cannot restore.
-  const fullGraphHideControl = focusAvailable ? graphOptions.hideControl : true
-  const fullGraphHideConst = focusAvailable ? graphOptions.hideConst : false
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.focus}|${graphOptions.groupVectors}`
   const fullGraphKey = design
-    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.showInfrastructure}|${graphOptions.groupVectors}|${fullGraphHideControl}|${fullGraphHideConst}`
+    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.groupVectors}|${graphOptions.hideControl}|${graphOptions.hideConst}`
+    : null
+  const currentRequestKey = design
+    ? `${design.design_id}|${coneReq?.nonce ?? 'full'}|${optsKey}`
     : null
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
@@ -102,7 +99,7 @@ export function Graph({ active }: { active: boolean }) {
   // disturb its local view state.
   useEffect(() => {
     if (!active) return
-    if (!design || !coneReq || fullGraphKey == null) {
+    if (!design || fullGraphKey == null) {
       setFetchedSubgraph(null)
       setDisplayedGraph(null)
       loadedRequestKey.current = null
@@ -112,7 +109,9 @@ export function Graph({ active }: { active: boolean }) {
     if (analysisState !== 'current') return
     if (requestDesignMismatch) return
     const requestDesignId = design.design_id
-    const requestKey = `${requestDesignId}|${coneReq.nonce}|${optsKey}`
+    const request = coneReq
+    const requestKey = currentRequestKey
+    if (requestKey == null) return
     if (loadedRequestKey.current === requestKey) return
 
     const myReq = ++reqSeq.current
@@ -122,7 +121,7 @@ export function Graph({ active }: { active: boolean }) {
     setExpansionGraph(null)
     setSourceStatus(null)
     setSourceControl(false)
-    if (coneReq.kind !== 'source') setSelected(null)
+    if (request?.kind !== 'source') setSelected(null)
     const fetchFullGraph = () => {
       const cached = fullGraphCache.current
       if (cached?.key === fullGraphKey) return cached.promise
@@ -132,10 +131,10 @@ export function Graph({ active }: { active: boolean }) {
       const promise = getNetlist(
         requestDesignId,
         graphOptions.maxNodes,
-        graphOptions.showInfrastructure,
+        false,
         graphOptions.groupVectors,
-        fullGraphHideControl,
-        fullGraphHideConst,
+        graphOptions.hideControl,
+        graphOptions.hideConst,
         fullController.signal,
       ).catch((error) => {
         if (fullGraphCache.current === entry) fullGraphCache.current = null
@@ -146,15 +145,15 @@ export function Graph({ active }: { active: boolean }) {
       return promise
     }
     const fetchRelevantGraph =
-      coneReq.kind === 'source'
+      request?.kind === 'source'
         ? getLineCone(requestDesignId, {
-            file: coneReq.file,
-            start_line: coneReq.startLine,
-            end_line: coneReq.endLine,
+            file: request.file,
+            start_line: request.startLine,
+            end_line: request.endLine,
             max_nodes: graphOptions.maxNodes,
             hide_control: graphOptions.hideControl,
             hide_const: graphOptions.hideConst,
-            show_infrastructure: graphOptions.showInfrastructure,
+            show_infrastructure: false,
             group_vectors: graphOptions.groupVectors,
           }, controller.signal).then((response) => ({
             graph: response.graph,
@@ -162,16 +161,16 @@ export function Graph({ active }: { active: boolean }) {
             control: response.control,
             highlight: response.highlight,
           }))
-        : coneReq.kind === 'cone'
+        : request?.kind === 'cone'
           ? getCone(requestDesignId, {
-              node: coneReq.node,
-              nodes: coneReq.nodes.length > 1 ? coneReq.nodes : undefined,
-              dir: coneReq.dir,
+              node: request.node,
+              nodes: request.nodes.length > 1 ? request.nodes : undefined,
+              dir: request.dir,
               max_depth: graphOptions.maxDepth,
               max_nodes: graphOptions.maxNodes,
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
-              show_infrastructure: graphOptions.showInfrastructure,
+              show_infrastructure: false,
               group_vectors: graphOptions.groupVectors,
             }, controller.signal).then((graph) => ({
               graph,
@@ -228,9 +227,7 @@ export function Graph({ active }: { active: boolean }) {
         else {
           setSourceStatus(null)
           setLoading(false)
-          const reason =
-            status === 'optimized_or_absorbed' ? 'optimized away' : 'no mapped logic'
-          store.openNetlist(`${coneReq.label} — ${reason}; showing full netlist`)
+          store.clearGraphSelection()
         }
       })
       .catch((e) => {
@@ -297,10 +294,14 @@ export function Graph({ active }: { active: boolean }) {
   const sourcePresentation = sourceProbePresentation(sourceStatus)
   const displayedRequestHighlight = useMemo(
     () =>
-      isDisplayedRequestCurrent(fetchedSubgraph?.requestKey, displayedGraph?.requestKey)
+      isDisplayedRequestCurrent(
+        currentRequestKey,
+        fetchedSubgraph?.requestKey,
+        displayedGraph?.requestKey,
+      )
         ? (displayedGraph?.highlight ?? [])
         : [],
-    [fetchedSubgraph?.requestKey, displayedGraph?.requestKey, displayedGraph?.highlight],
+    [currentRequestKey, fetchedSubgraph?.requestKey, displayedGraph?.requestKey, displayedGraph?.highlight],
   )
 
   const highlight = useMemo(() => {
@@ -346,7 +347,7 @@ export function Graph({ active }: { active: boolean }) {
         max_nodes: graphOptions.maxNodes,
         hide_control: graphOptions.hideControl,
         hide_const: graphOptions.hideConst,
-        show_infrastructure: graphOptions.showInfrastructure,
+        show_infrastructure: false,
         group_vectors: graphOptions.groupVectors,
       }
       Promise.all([
@@ -378,16 +379,6 @@ export function Graph({ active }: { active: boolean }) {
   )
 
   if (!design) return <div className="empty-state">No design yet.</div>
-  if (!coneReq)
-    return (
-      <div className="empty-state">
-        Select a register, output, path, or fanout driver to render its cone here —
-        or open the full netlist.
-        <div style={{ marginTop: 14 }}>
-          <button onClick={() => store.openNetlist()}>Open full netlist</button>
-        </div>
-      </div>
-    )
 
   return (
     <div className="graph-tab">
@@ -465,7 +456,7 @@ export function Graph({ active }: { active: boolean }) {
               control path selection — reset/clock/enable connectivity is shown
             </span>
           )}
-          {coneReq.kind === 'source' && coneReq.selectionTruncated && (
+          {coneReq?.kind === 'source' && coneReq.selectionTruncated && (
             <span className="msg">selection capped at 200 source lines</span>
           )}
           {sub?.truncated && (
@@ -514,7 +505,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
   return (
     <div className="graph-toolbar">
       <span className="mono" style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-        {coneReq?.label}
+        {coneReq?.label ?? 'Full diagram'}
       </span>
       <span className="sep" />
 
@@ -551,26 +542,22 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
         </>
       )}
 
-      {(coneReq?.kind === 'cone' || coneReq?.kind === 'source') && (
-        <>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={graphOptions.hideControl}
-              onChange={(e) => setOpt({ hideControl: e.target.checked })}
-            />
-            hide control
-          </label>
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={graphOptions.hideConst}
-              onChange={(e) => setOpt({ hideConst: e.target.checked })}
-            />
-            hide const
-          </label>
-        </>
-      )}
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={graphOptions.hideControl}
+          onChange={(e) => setOpt({ hideControl: e.target.checked })}
+        />
+        hide control
+      </label>
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={graphOptions.hideConst}
+          onChange={(e) => setOpt({ hideConst: e.target.checked })}
+        />
+        hide const
+      </label>
 
       <label className="toggle" title="Max nodes to request">
         max nodes
@@ -594,17 +581,6 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
             +
           </button>
         </div>
-      </label>
-
-      <label className="toggle" title="Show vendor IO and clock-buffer cells">
-        <input
-          type="checkbox"
-          checked={graphOptions.showInfrastructure}
-          onChange={(event) =>
-            setOpt({ showInfrastructure: event.target.checked })
-          }
-        />
-        infrastructure
       </label>
 
       <label
@@ -650,9 +626,6 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
         />
         auto synth
       </label>
-      <button onClick={() => store.openNetlist()} title="Render the full (capped) netlist">
-        Full netlist
-      </button>
     </div>
   )
 }

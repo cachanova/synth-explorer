@@ -144,6 +144,14 @@ export function Editor() {
 
     const synthKeymap = keymap.of([
       {
+        key: 'Escape',
+        preventDefault: true,
+        run: () => {
+          storeRef.current.clearGraphSelection()
+          return true
+        },
+      },
+      {
         key: 'Mod-Enter',
         preventDefault: true,
         run: () => {

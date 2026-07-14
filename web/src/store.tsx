@@ -28,7 +28,7 @@ import {
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
 import type { SrcSpan } from './lib/src'
-import { stripInvalidFlags } from './lib/flagRegistry'
+import { flagsForModeChange } from './lib/flagRegistry'
 import type {
   DesignFile,
   Example,
@@ -58,13 +58,6 @@ export interface ConeGraphRequest {
   nonce: number // force re-render even if identical request
 }
 
-export interface NetlistGraphRequest {
-  kind: 'netlist'
-  label: string
-  highlight: number[]
-  nonce: number
-}
-
 export interface SourceGraphRequest {
   kind: 'source'
   file: string
@@ -78,7 +71,6 @@ export interface SourceGraphRequest {
 
 export type GraphRequest =
   | ConeGraphRequest
-  | NetlistGraphRequest
   | SourceGraphRequest
 
 export interface GraphOptions {
@@ -86,7 +78,6 @@ export interface GraphOptions {
   maxNodes: number
   hideControl: boolean
   hideConst: boolean
-  showInfrastructure: boolean
   focus: boolean
   groupVectors: boolean
 }
@@ -142,7 +133,6 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   maxNodes: DEFAULT_GRAPH_MAX_NODES,
   hideControl: true,
   hideConst: true,
-  showInfrastructure: false,
   focus: true,
   groupVectors: true,
 }
@@ -222,7 +212,7 @@ export interface Store {
     generated?: boolean
   }) => void
   showPathInGraph: (path: TimingPath) => void
-  openNetlist: (label?: string) => void
+  clearGraphSelection: () => void
 
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
@@ -289,6 +279,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   activeTabRef.current = activeTab
   const sourceSelectionRef = useRef(sourceSelection)
   sourceSelectionRef.current = sourceSelection
+  const sourceSelectionActiveRef = useRef(false)
   const designInputKeyRef = useRef(designInputKey)
   designInputKeyRef.current = designInputKey
   const designRef = useRef(design)
@@ -429,7 +420,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     markInputChanged()
     setFiles(next)
     setActiveFileNameState(name)
-    setSourceSelectionState({ file: name, startLine: 1, endLine: 1 })
+    const selection = { file: name, startLine: 1, endLine: 1 }
+    sourceSelectionRef.current = selection
+    sourceSelectionActiveRef.current = false
+    setSourceSelectionState(selection)
+    setConeReq((request) => (request?.kind === 'source' ? null : request))
   }, [markInputChanged])
 
   const renameFile = useCallback(
@@ -467,6 +462,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       markInputChanged()
       setFiles(next)
       setActiveFileNameState((cur) => (cur === name ? next[0].name : cur))
+      if (sourceSelectionRef.current.file === name) {
+        const selection = { file: next[0].name, startLine: 1, endLine: 1 }
+        sourceSelectionRef.current = selection
+        sourceSelectionActiveRef.current = false
+        setConeReq((request) => (request?.kind === 'source' ? null : request))
+      }
       setSourceSelectionState((cur) =>
         cur.file === name
           ? { file: next[0].name, startLine: 1, endLine: 1 }
@@ -493,10 +494,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // Synthesis flags are mode-specific, so drop any that the new mode's pass
       // would reject (keeping shared and free-form flags). Free-form tokens the
       // registry doesn't know about are preserved.
-      const stripped = stripInvalidFlags(extraArgsRef.current, value)
-      if (stripped !== extraArgsRef.current) {
-        extraArgsRef.current = stripped
-        setExtraArgsState(stripped)
+      const nextFlags = flagsForModeChange(extraArgsRef.current, value)
+      if (nextFlags !== extraArgsRef.current) {
+        extraArgsRef.current = nextFlags
+        setExtraArgsState(nextFlags)
       }
       markInputChanged()
       setModeState(value)
@@ -527,7 +528,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setDocRevision((r) => r + 1)
       const firstFile = ex.files[0]?.name ?? DEFAULT_FILE.name
       setActiveFileNameState(firstFile)
-      setSourceSelectionState({ file: firstFile, startLine: 1, endLine: 1 })
+      const selection = { file: firstFile, startLine: 1, endLine: 1 }
+      sourceSelectionRef.current = selection
+      sourceSelectionActiveRef.current = false
+      setSourceSelectionState(selection)
+      setConeReq((request) => (request?.kind === 'source' ? null : request))
       setTopState(nextTop)
     },
     [markInputChanged],
@@ -769,14 +774,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const openNetlist = useCallback((label = 'Full netlist') => {
-    setConeReq({
-      kind: 'netlist',
-      label,
-      highlight: [],
-      nonce: nextNonce(),
-    })
-    setActiveTab('graph')
+  const clearGraphSelection = useCallback(() => {
+    sourceSelectionActiveRef.current = false
+    setConeReq(null)
   }, [])
 
   const highlightSources = useCallback((spans: SrcSpan[]) => {
@@ -797,6 +797,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     (file: string, startLine: number, endLine: number) => {
       const selection = normalizeSourceSelection(file, startLine, endLine)
       sourceSelectionRef.current = selection
+      sourceSelectionActiveRef.current = true
       setSourceSelectionState(selection)
       if (activeTabRef.current === 'graph') {
         setConeReq(sourceGraphRequest(selection, nextNonce()))
@@ -808,9 +809,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const setActiveFileName = useCallback(
     (name: string) => {
       setActiveFileNameState(name)
-      setSourceSelection(name, 1, 1)
+      const selection = { file: name, startLine: 1, endLine: 1 }
+      sourceSelectionRef.current = selection
+      sourceSelectionActiveRef.current = false
+      setSourceSelectionState(selection)
+      setConeReq((request) => (request?.kind === 'source' ? null : request))
     },
-    [setSourceSelection],
+    [],
   )
 
   const setActiveTabForUser = useCallback((tab: TabId) => {
@@ -820,9 +825,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // Explicit path/node cones retain their local pan/zoom state. A source
       // probe catches up to cursor movement that happened on another tab.
       setConeReq((request) =>
-        request && request.kind !== 'source'
+        request?.kind === 'cone'
           ? request
-          : sourceGraphRequest(sourceSelectionRef.current, nextNonce()),
+          : sourceSelectionActiveRef.current
+            ? sourceGraphRequest(sourceSelectionRef.current, nextNonce())
+            : null,
       )
     }
   }, [])
@@ -894,7 +901,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       openCone,
       openControlCone,
       showPathInGraph,
-      openNetlist,
+      clearGraphSelection,
       editorHighlight,
       highlightSources,
       sourceSelection,
@@ -935,7 +942,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       openCone,
       openControlCone,
       showPathInGraph,
-      openNetlist,
+      clearGraphSelection,
       editorHighlight,
       highlightSources,
       sourceSelection,

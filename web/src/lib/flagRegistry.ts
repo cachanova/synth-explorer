@@ -1,5 +1,5 @@
 import type { Mode } from '../types'
-import { stripFlags } from './synthFlags'
+import { stripFlags, toggleFlag } from './synthFlags'
 
 export interface FlagDef {
   flag: string
@@ -98,4 +98,15 @@ export function stripInvalidFlags(flags: string, mode: Mode): string {
     .filter((flag) => !valid.has(flag))
     .map((flag) => ({ flag, takesValue: VALUE_FLAGS.has(flag) }))
   return stripFlags(flags, toStrip)
+}
+
+/** Apply the destination mode's defaults after removing incompatible flags. */
+export function flagsForModeChange(flags: string, mode: Mode): string {
+  const stripped = stripInvalidFlags(flags, mode)
+  const defaultsWithoutIoPads = flagsForMode(mode).some(
+    (definition) => definition.flag === '-noiopad',
+  )
+  return defaultsWithoutIoPads
+    ? toggleFlag(stripped, '-noiopad', true)
+    : stripped
 }

@@ -12,7 +12,7 @@ async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
   return box
 }
 
-test('synthesizes from the webpage with the entered Yosys flags', async ({
+test('synthesizes from the webpage with the default Yosys flags', async ({
   page,
 }) => {
   await page.goto('/')
@@ -30,7 +30,12 @@ test('synthesizes from the webpage with the entered Yosys flags', async ({
   await expect(repositoryLink).toHaveAttribute('rel', 'noopener noreferrer')
   const flags = page.getByLabel('Synthesis flags')
   await expect(flags).toBeVisible()
-  await flags.fill('-noabc')
+  await page
+    .getByText('Mode')
+    .locator('..')
+    .locator('select')
+    .selectOption('xilinx')
+  await expect(flags).toHaveValue('-noiopad')
 
   const responsePromise = page.waitForResponse(
     (response) =>
@@ -42,8 +47,8 @@ test('synthesizes from the webpage with the entered Yosys flags', async ({
   const response = await responsePromise
   expect(response.ok()).toBe(true)
   expect(response.request().postDataJSON()).toMatchObject({
-    mode: 'gates',
-    extra_args: '-noabc',
+    mode: 'xilinx',
+    extra_args: '-noiopad',
   })
   await expect(
     page.locator('.card').filter({ hasText: 'Cells' }).locator('.v'),
@@ -65,20 +70,25 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
   expect((await responsePromise).ok()).toBe(true)
 
-  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
   const netlistResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
-  await page.getByRole('button', { name: 'Full netlist', exact: true }).click()
+  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
   const netlistParams = new URL((await netlistResponse).url()).searchParams
   expect(netlistParams.get('hide_control')).toBe('true')
-  expect(netlistParams.get('hide_const')).toBe('false')
+  expect(netlistParams.get('hide_const')).toBe('true')
+  expect(netlistParams.get('show_infrastructure')).toBe('false')
+  await expect(page.getByRole('button', { name: 'Full netlist' })).toHaveCount(0)
+  await expect(page.getByLabel('infrastructure')).toHaveCount(0)
+  await expect(page.getByLabel('Focus')).toBeDisabled()
 
   const stage = page.locator('.graph-stage')
   const svg = stage.locator('svg')
   const viewport = svg.locator(':scope > g').first()
   await expect(svg).toBeVisible()
   await expect(page.locator('.g-node-body').first()).toBeVisible()
+  await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
+  await expect(page.locator('.g-edge.hl')).toHaveCount(0)
 
   const initialStage = await stage.boundingBox()
   expect(initialStage).not.toBeNull()
@@ -306,5 +316,13 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   await expect
     .poll(async () => page.locator('.g-node-body').count())
     .toBeGreaterThan(refocusedNodeCount)
+  expect(fullNetlistRequests).toBe(1)
+
+  // Escape clears the relevant source selection. The full diagram remains,
+  // but no relevance highlight is retained when nothing is selected.
+  await page.locator('.cm-content').press('Escape')
+  await expect(focus).toBeDisabled()
+  await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
+  await expect(page.locator('.g-edge.hl')).toHaveCount(0)
   expect(fullNetlistRequests).toBe(1)
 })

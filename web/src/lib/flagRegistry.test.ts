@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { flagsForMode, stripInvalidFlags } from './flagRegistry'
+import { flagsForMode, flagsForModeChange, stripInvalidFlags } from './flagRegistry'
 
 describe('flagRegistry', () => {
   it('exposes per-mode flags and none for rtl', () => {
@@ -23,5 +23,11 @@ describe('flagRegistry', () => {
 
   it('drops the value token of value-taking flags when stripping', () => {
     expect(stripInvalidFlags('-widemux 5 -noabc', 'gates')).toBe('-noabc')
+  })
+
+  it('defaults supported vendor modes to netlists without IO pads', () => {
+    expect(flagsForModeChange('', 'xilinx')).toBe('-noiopad')
+    expect(flagsForModeChange('-nocarry', 'xilinx')).toBe('-nocarry -noiopad')
+    expect(flagsForModeChange('-noiopad', 'gates')).toBe('')
   })
 })
