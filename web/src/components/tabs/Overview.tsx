@@ -85,7 +85,7 @@ export function Overview() {
         <Card k="Input → output" v={depthValue(stats.depths.input_to_output)} />
       </div>
 
-      {stats.estimated_delay_ns != null && (
+      {stats.estimated_delay_ns != null && stats.estimated_delay_ns > 0 && (
         <>
           <div className="section-title">Estimated timing</div>
           <div className="cards">
