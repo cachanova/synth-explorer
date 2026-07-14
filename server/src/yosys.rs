@@ -75,6 +75,7 @@ pub enum SynthMode {
     Ice40,
     Ecp5,
     Xilinx,
+    Vivado,
 }
 
 impl SynthMode {
@@ -95,6 +96,7 @@ impl fmt::Display for SynthMode {
             Self::Ice40 => "ice40",
             Self::Ecp5 => "ecp5",
             Self::Xilinx => "xilinx",
+            Self::Vivado => "vivado",
         };
         f.write_str(value)
     }
@@ -117,7 +119,7 @@ pub struct ValidatedSynth {
 }
 
 #[derive(Debug, Clone)]
-pub struct YosysOutput {
+pub struct SynthesisOutput {
     pub json: Value,
     pub source_json: Value,
     pub log: String,
@@ -171,6 +173,11 @@ impl SynthRequest {
             validate_top(top)?;
         }
         let extra_args = parse_extra_args(self.extra_args.as_deref())?;
+        if self.mode == SynthMode::Vivado && !extra_args.is_empty() {
+            return Err(YosysError::Validation(
+                "extra_args are not supported in vivado mode".to_owned(),
+            ));
+        }
         Ok(ValidatedSynth {
             files,
             top: self.top,
@@ -255,7 +262,12 @@ pub async fn preflight_yosys() -> Result<String, YosysError> {
 pub async fn run_yosys(
     input: &ValidatedSynth,
     memory: MemoryHandling,
-) -> Result<YosysOutput, YosysError> {
+) -> Result<SynthesisOutput, YosysError> {
+    if input.mode == SynthMode::Vivado {
+        return Err(YosysError::Validation(
+            "vivado mode must use the Vivado synthesis backend".to_owned(),
+        ));
+    }
     let temp = TempDir::new()?;
     for file in &input.files {
         fs::write(temp.path().join(&file.name), &file.content).await?;
@@ -311,7 +323,7 @@ pub async fn run_yosys(
     let source_json = read_json_limited(&source_json_path, "yosys source json").await?;
     let parsed = parse_value(json.clone())?;
     let (top, _) = select_top(&parsed, None)?;
-    Ok(YosysOutput {
+    Ok(SynthesisOutput {
         json,
         source_json,
         log,
@@ -468,6 +480,9 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
                 top_only(input.top.as_deref())
             ));
         }
+        SynthMode::Vivado => {
+            unreachable!("Vivado mode is dispatched before building a Yosys script")
+        }
     }
     script.push_str("write_json netlist.json\n");
     script
@@ -622,6 +637,23 @@ mod tests {
         };
         let error = request.validate().unwrap_err();
         assert_eq!(error.to_string(), "invalid extra_args token: -noabc;rm");
+    }
+
+    #[test]
+    fn vivado_rejects_yosys_only_options() {
+        let request = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            mode: SynthMode::Vivado,
+            extra_args: Some("-noabc".to_owned()),
+        };
+        assert_eq!(
+            request.validate().unwrap_err().to_string(),
+            "extra_args are not supported in vivado mode"
+        );
     }
 
     #[test]

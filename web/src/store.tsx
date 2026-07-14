@@ -170,6 +170,7 @@ export interface Store {
   top: string
   mode: Mode
   extraArgs: string
+  vivadoAvailable: boolean
   examples: Example[]
 
   setActiveFileName: (name: string) => void
@@ -242,6 +243,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [top, setTopState] = useState('')
   const [mode, setModeState] = useState<Mode>('gates')
   const [extraArgs, setExtraArgsState] = useState('')
+  const [vivadoAvailable, setVivadoAvailable] = useState(false)
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -388,6 +390,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then((r) => setExamples(r.examples))
       .catch(() => {
         /* backend may be down; examples optional */
+      })
+    api
+      .getHealth()
+      .then((health) => setVivadoAvailable(Boolean(health.vivado_version)))
+      .catch(() => {
+        /* backend may be down; optional modes stay hidden */
       })
   }
 
@@ -876,6 +884,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       top,
       mode,
       extraArgs,
+      vivadoAvailable,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -917,6 +926,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       top,
       mode,
       extraArgs,
+      vivadoAvailable,
       examples,
       setActiveFileName,
       updateFileContent,

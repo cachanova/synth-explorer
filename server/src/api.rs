@@ -1,15 +1,16 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef,
-    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph, estimate_delay_ns,
+    PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats, Subgraph,
+    estimate_delay_ns,
 };
 use crate::delay_model::DelayModel;
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
-use crate::yosys::{
-    MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys,
-};
+use crate::synthesis::{SynthesisError, run_synthesis};
+use crate::vivado::VivadoError;
+use crate::yosys::{MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError};
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
@@ -50,11 +51,21 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new(yosys_version: impl Into<String>) -> Self {
-        Self::with_cache_config(yosys_version, DESIGN_CACHE_BUDGET_BYTES, DESIGN_CACHE_TTL)
+        Self::with_backends(yosys_version, None)
+    }
+
+    pub fn with_backends(yosys_version: impl Into<String>, vivado_version: Option<String>) -> Self {
+        Self::with_cache_config(
+            yosys_version,
+            vivado_version,
+            DESIGN_CACHE_BUDGET_BYTES,
+            DESIGN_CACHE_TTL,
+        )
     }
 
     fn with_cache_config(
         yosys_version: impl Into<String>,
+        vivado_version: Option<String>,
         cache_budget_bytes: usize,
         cache_ttl: Duration,
     ) -> Self {
@@ -67,6 +78,7 @@ impl AppState {
                 commit: env::var("BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_owned()),
                 version: env!("CARGO_PKG_VERSION"),
                 yosys_version: yosys_version.into(),
+                vivado_version,
             }),
         }
     }
@@ -78,6 +90,8 @@ struct BuildMetadata {
     commit: String,
     version: &'static str,
     yosys_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vivado_version: Option<String>,
 }
 
 #[derive(Debug)]
@@ -465,6 +479,12 @@ async fn synthesize(
     Json(request): Json<SynthRequest>,
 ) -> Result<Json<SynthesizeResponse>, ApiError> {
     let validated = request.validate().map_err(map_yosys_error)?;
+    if validated.mode == SynthMode::Vivado && state.metadata.vivado_version.is_none() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vivado synthesis is not configured on this deployment",
+        ));
+    }
     let design_id = validated.design_id();
     let mode = mode_string(validated.mode);
     if let Some(design) = cache_lookup(&state.cache, &design_id).await {
@@ -547,7 +567,7 @@ async fn synthesize_uncached(
         return Ok(design);
     }
     let started = Instant::now();
-    let synthesis_failed = |err: &YosysError| {
+    let synthesis_failed = |err: &SynthesisError| {
         tracing::warn!(
             design_id,
             mode,
@@ -556,24 +576,24 @@ async fn synthesize_uncached(
             "synthesis_failed"
         );
     };
-    let (output, memories_abstracted) = match run_yosys(validated, MemoryHandling::Map).await {
+    let (output, memories_abstracted) = match run_synthesis(validated, MemoryHandling::Map).await {
         Ok(output) => (output, false),
         // A too-large memory flatten exhausts memory, CPU, or the wall clock
         // depending on the Yosys version; any of them is worth one retry that
         // keeps memories abstract.
         Err(err) if validated.mode.is_generic() && err.is_resource_exhaustion() => {
             tracing::info!(design_id, mode, "synthesis_memory_retry");
-            let output = run_yosys(validated, MemoryHandling::Abstract)
+            let output = run_synthesis(validated, MemoryHandling::Abstract)
                 .await
                 .map_err(|retry_err| {
                     synthesis_failed(&retry_err);
-                    map_yosys_error(retry_err)
+                    map_synthesis_error(retry_err)
                 })?;
             (output, true)
         }
         Err(err) => {
             synthesis_failed(&err);
-            return Err(map_yosys_error(err));
+            return Err(map_synthesis_error(err));
         }
     };
     let parsed = parse_value(output.json).map_err(|err| {
@@ -607,7 +627,7 @@ async fn synthesize_uncached(
         )
     })?;
     let SourceProvenance {
-        ranges,
+        mut ranges,
         truncated: source_ranges_truncated,
         procedural_targets,
         probe_hints,
@@ -619,6 +639,9 @@ async fn synthesize_uncached(
             .iter()
             .map(|file| (file.name.clone(), file.content.clone())),
     );
+    if validated.mode == SynthMode::Vivado {
+        ranges.extend(vivado_procedural_ranges(&procedural_targets));
+    }
     let delay_model = DelayModel::for_target(&mode, validated.family());
     let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
@@ -676,6 +699,25 @@ async fn synthesize_uncached(
         "synthesis_complete"
     );
     Ok(design)
+}
+
+fn vivado_procedural_ranges(
+    targets: &HashMap<(String, usize), Vec<u32>>,
+) -> Vec<SourceRangeMapping> {
+    let mut ranges = targets
+        .iter()
+        .map(|((file, line), node_ids)| SourceRangeMapping {
+            file: file.clone(),
+            start_line: *line,
+            end_line: *line,
+            node_ids: node_ids.clone(),
+            mapping_incomplete: false,
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_by(|a, b| {
+        (&a.file, a.start_line, a.end_line).cmp(&(&b.file, b.start_line, b.end_line))
+    });
+    ranges
 }
 
 fn design_cache_weight(design_id: &str, design: &Design) -> usize {
@@ -1232,6 +1274,43 @@ fn map_yosys_error(err: YosysError) -> ApiError {
     }
 }
 
+fn map_synthesis_error(err: SynthesisError) -> ApiError {
+    match err {
+        SynthesisError::Yosys(err) => map_yosys_error(err),
+        SynthesisError::Vivado(err) => match err {
+            VivadoError::Source(err) => map_yosys_error(err),
+            VivadoError::Timeout { log } => {
+                ApiError::with_log(StatusCode::GATEWAY_TIMEOUT, "vivado timed out", log)
+            }
+            VivadoError::Vivado { log } => {
+                ApiError::with_log(StatusCode::BAD_REQUEST, "vivado synthesis failed", log)
+            }
+            VivadoError::NormalizeTimeout { log } => ApiError::with_log(
+                StatusCode::GATEWAY_TIMEOUT,
+                "vivado netlist normalization timed out",
+                log,
+            ),
+            VivadoError::Normalize { log } => ApiError::with_log(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "vivado netlist normalization failed",
+                log,
+            ),
+            VivadoError::Io(err) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to run vivado synthesis: {err}"),
+            ),
+            VivadoError::Json(err) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("invalid normalized netlist json: {err}"),
+            ),
+            VivadoError::Netlist(err) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("invalid normalized netlist: {err}"),
+            ),
+        },
+    }
+}
+
 fn mode_string(mode: SynthMode) -> String {
     mode.to_string()
 }
@@ -1611,6 +1690,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vivado_mode_is_rejected_when_backend_is_not_configured() {
+        let request = serde_json::json!({
+            "files": [{"name": "top.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "mode": "vivado"
+        });
+        let response = app(AppState::new("Yosys test-version"))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"],
+            "vivado synthesis is not configured on this deployment"
+        );
+    }
+
+    #[tokio::test]
     async fn capacity_error_returns_retry_after() {
         let error = ApiError::busy().into_response();
         assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1658,6 +1764,7 @@ mod tests {
     async fn synthesized_design_that_cannot_be_retained_returns_507() {
         let state = AppState::with_cache_config(
             "Yosys test-version",
+            None,
             DESIGN_CACHE_MIN_ENTRY_BYTES - 1,
             Duration::from_secs(60),
         );
@@ -1752,5 +1859,22 @@ mod tests {
         ));
         assert!(cache.get("large").is_none());
         assert_eq!(cache.total_bytes, 0);
+    }
+
+    #[test]
+    fn vivado_procedural_targets_become_deterministic_source_ranges() {
+        let targets = HashMap::from([
+            (("top.sv".to_owned(), 17), vec![8, 9]),
+            (("top.sv".to_owned(), 14), vec![7]),
+        ]);
+        let ranges = vivado_procedural_ranges(&targets);
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|range| (range.start_line, range.node_ids.clone()))
+                .collect::<Vec<_>>(),
+            vec![(14, vec![7]), (17, vec![8, 9])]
+        );
+        assert!(ranges.iter().all(|range| !range.mapping_incomplete));
     }
 }

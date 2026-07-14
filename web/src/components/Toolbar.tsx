@@ -46,7 +46,9 @@ export function Toolbar() {
           value={store.mode}
           onChange={(e) => store.setMode(e.target.value as Mode)}
         >
-          {MODE_LABELS.map((m) => (
+          {MODE_LABELS.filter(
+            (m) => m.value !== 'vivado' || store.vivadoAvailable,
+          ).map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
@@ -75,21 +77,36 @@ export function Toolbar() {
         </label>
       )}
 
-      <FlagsMenu
-        mode={store.mode}
-        flags={store.extraArgs}
-        onChange={(flags) => store.setExtraArgs(flags)}
-      />
+      {store.mode === 'vivado' && (
+        <label className="field">
+          <span>Target</span>
+          <input
+            style={{ width: 170 }}
+            value="xc7a35tcpg236-1"
+            title="Initial Vivado target: Artix-7 XC7A35T in the free BASIC tier."
+            readOnly
+          />
+        </label>
+      )}
 
-      <label className="field grow">
-        <span>Synthesis flags</span>
-        <input
-          placeholder="mode-specific, e.g. -noabc"
-          title="The exact flags passed to the selected Yosys synthesis command. The Target dropdown and Flags menu edit this string; you can also type flags directly."
-          value={store.extraArgs}
-          onChange={(e) => store.setExtraArgs(e.target.value)}
-        />
-      </label>
+      {store.mode !== 'vivado' && (
+        <>
+          <FlagsMenu
+            mode={store.mode}
+            flags={store.extraArgs}
+            onChange={(flags) => store.setExtraArgs(flags)}
+          />
+          <label className="field grow">
+            <span>Synthesis flags</span>
+            <input
+              placeholder="mode-specific, e.g. -noabc"
+              title="The exact flags passed to the selected Yosys synthesis command. The Target dropdown and Flags menu edit this string; you can also type flags directly."
+              value={store.extraArgs}
+              onChange={(e) => store.setExtraArgs(e.target.value)}
+            />
+          </label>
+        </>
+      )}
 
       <button
         className="primary"

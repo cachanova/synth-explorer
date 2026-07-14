@@ -6,12 +6,13 @@ export function buildSynthesizeRequest(
   mode: Mode,
   extraArgs: string,
 ): SynthesizeRequest {
+  const vivado = mode === 'vivado'
   return {
     files,
     top: top.trim() || undefined,
     mode,
     // The flags string is the single source of truth for what reaches yosys —
     // the Xilinx family/retime controls edit it directly (see lib/synthFlags).
-    extra_args: extraArgs.trim() || undefined,
+    extra_args: vivado ? undefined : extraArgs.trim() || undefined,
   }
 }

@@ -19,10 +19,13 @@ and external monitoring:
   commit: string;        // full Git commit in production; "unknown" in local builds
   version: string;       // server crate version
   yosys_version: string; // captured by the required startup preflight
+  vivado_version?: string; // present only when VIVADO_BIN passed preflight
 }
 ```
 
-The server does not start if the Yosys preflight fails.
+The server does not start if the required Yosys preflight fails, or if
+`VIVADO_BIN` is configured and its optional preflight fails. The web client
+only exposes Vivado mode when `vivado_version` is present.
 
 ## Shared shapes
 
@@ -86,7 +89,7 @@ Request:
 {
   files: { name: string; content: string }[]; // name: bare filename, [A-Za-z0-9._-]+, .v/.sv
   top?: string;          // omitted -> yosys -auto-top
-  mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx";
+  mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx" | "vivado";
   extra_args?: string;   // flags for the selected synthesis pass; see below
 }
 ```
@@ -101,6 +104,9 @@ it does not accept global Yosys CLI flags or arbitrary script commands. Values
 are split on whitespace and every token must match
 `^[A-Za-z0-9_+=.,:-]+$`. Supported flags are mode-specific, and invalid or
 conflicting combinations return a synthesis error with the Yosys log.
+It is not supported by `vivado` mode. Vivado mode initially targets the fixed
+free-tier Artix-7 part `xc7a35tcpg236-1`. A deployment without a configured
+Vivado backend returns `503` before scheduling synthesis.
 
 Response `200`:
 

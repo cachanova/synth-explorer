@@ -6,6 +6,7 @@ import type {
   EndpointsResponse,
   ExamplesResponse,
   FanoutResponse,
+  HealthResponse,
   LineConeResponse,
   Mode,
   NodesResponse,
@@ -208,6 +209,10 @@ export function getExamples(): Promise<ExamplesResponse> {
   return getJson<ExamplesResponse>('/api/examples')
 }
 
+export function getHealth(): Promise<HealthResponse> {
+  return getJson<HealthResponse>('/healthz')
+}
+
 export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'rtl', label: 'RTL (word-level)' },
   { value: 'gates', label: 'Generic gates' },
@@ -215,7 +220,8 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'lut6', label: 'Generic LUT6 metric' },
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
-  { value: 'xilinx', label: 'Xilinx' },
+  { value: 'xilinx', label: 'Xilinx — Yosys' },
+  { value: 'vivado', label: 'Xilinx — Vivado' },
 ]
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs

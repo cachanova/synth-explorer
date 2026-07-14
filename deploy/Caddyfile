@@ -4,7 +4,7 @@ synthexplorer.dev {
 		output stdout
 		format json
 	}
-	reverse_proxy app:8787
+	reverse_proxy {$APP_UPSTREAM:app:8787}
 }
 
 www.synthexplorer.dev {

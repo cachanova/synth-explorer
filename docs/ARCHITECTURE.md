@@ -31,13 +31,15 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
 - **Frontend: React + TypeScript + Vite.** CodeMirror 6 for editing,
   **elkjs** (layered layout, same engine netlistsvg uses) in a Web Worker for
   cone layout, custom SVG rendering with pan/zoom.
-- **Synthesis: Yosys** subprocess (`write_json` netlists). Verified against
-  Yosys 0.67. Vivado is future work behind the same `SynthBackend` seam (the
-  runner module is the only place that knows how a netlist gets produced).
+- **Synthesis: Yosys plus optional Vivado.** Yosys 0.67 produces the canonical
+  JSON netlist. The Vivado path runs `synth_design`, exports structural
+  Verilog, then uses a read-only Yosys pass to normalize that netlist into the
+  same parser contract. Deployments only advertise Vivado when `VIVADO_BIN`
+  passes startup preflight.
 - No database. Designs live in an in-memory store keyed by a content hash of
   (sources, mode, args); re-synthesizing identical input is a cache hit.
 
-## Synthesis Modes (verified against Yosys 0.67)
+## Synthesis Modes
 
 | Mode | Script core | Produces |
 | --- | --- | --- |
@@ -48,6 +50,7 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
 | `ice40` | `synth_ice40 -top <top> -flatten` | `SB_LUT4`, `SB_CARRY`, `SB_DFF*` |
 | `ecp5` | `synth_ecp5 -top <top> -flatten` | `LUT4`, `CCU2C`, `TRELLIS_FF` |
 | `xilinx` | `synth_xilinx -top <top> -flatten` | `LUT1-6`, `CARRY4`, `FD?E` |
+| `vivado` | Vivado `synth_design` for `xc7a35tcpg236-1`; structural-Verilog normalization | `LUT1-6`, `LUT6_2`, `CARRY4`, `FD?E` |
 
 - Sources are written to a temp dir; the script is built programmatically
   (never shell-interpolated) as `read_verilog -sv <files>; <mode script>;
@@ -55,7 +58,9 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
 - `-top` omitted → `-auto-top`. User-supplied **extra args** are tokenized and
   each token must match `^[A-Za-z0-9_+=.,:-]+$` (rejects `;`, quotes, paths out).
   They are appended to the mode's synth command.
-- Runner enforces: 60 s wall timeout, log + JSON size caps, temp dir cleanup.
+- Yosys enforces a 60 s wall timeout. Vivado gets 5 minutes and a 16 GiB
+  address-space cap; its normalization pass gets 60 s. Both paths enforce log
+  and JSON size caps, process-group cleanup, and temp-dir cleanup.
 - `src` attributes survive on RTL cells and FFs; ABC-generated LUTs/gates lose
   them — source cross-probe is best-effort by design and the UI says so.
 

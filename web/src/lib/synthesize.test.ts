@@ -41,4 +41,13 @@ describe('buildSynthesizeRequest', () => {
       extra_args: '-family xcup -retime',
     })
   })
+
+  it('omits yosys-only options for vivado mode', () => {
+    expect(buildSynthesizeRequest(files, 'top', 'vivado', '-noabc')).toEqual({
+      files,
+      top: 'top',
+      mode: 'vivado',
+      extra_args: undefined,
+    })
+  })
 })

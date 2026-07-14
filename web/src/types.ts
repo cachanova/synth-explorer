@@ -70,7 +70,15 @@ export interface LineConeResponse {
 
 // --- POST /api/synthesize ---
 
-export type Mode = 'rtl' | 'gates' | 'lut4' | 'lut6' | 'ice40' | 'ecp5' | 'xilinx'
+export type Mode =
+  | 'rtl'
+  | 'gates'
+  | 'lut4'
+  | 'lut6'
+  | 'ice40'
+  | 'ecp5'
+  | 'xilinx'
+  | 'vivado'
 
 // synth_xilinx -family target; selects carry/BRAM/DSP primitives.
 export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
@@ -85,6 +93,14 @@ export interface SynthesizeRequest {
   top?: string // omitted -> yosys -auto-top
   mode: Mode
   extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
+}
+
+export interface HealthResponse {
+  status: string
+  commit: string
+  version: string
+  yosys_version: string
+  vivado_version?: string
 }
 
 export interface Stats {
