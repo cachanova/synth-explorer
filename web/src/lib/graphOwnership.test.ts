@@ -10,8 +10,9 @@ describe('displayed graph ownership', () => {
   })
 
   it('withholds response overlays until the matching request is displayed', () => {
-    expect(isDisplayedRequestCurrent('request-b', 'request-b')).toBe(true)
-    expect(isDisplayedRequestCurrent('request-b', 'request-a')).toBe(false)
-    expect(isDisplayedRequestCurrent('request-b', null)).toBe(false)
+    expect(isDisplayedRequestCurrent('request-b', 'request-b', 'request-b')).toBe(true)
+    expect(isDisplayedRequestCurrent('request-b', 'request-a', 'request-a')).toBe(false)
+    expect(isDisplayedRequestCurrent('request-b', 'request-b', 'request-a')).toBe(false)
+    expect(isDisplayedRequestCurrent('request-b', null, null)).toBe(false)
   })
 })
