@@ -117,6 +117,41 @@ export interface CellCategoryCounts {
   infrastructure: number
 }
 
+// --- POST /api/design/:id/timing ---
+
+// Flat delay coefficients (picoseconds) — mirrors the server DelayModel.
+export interface DelayModel {
+  lut_ps: number
+  carry_ps: number
+  wide_mux_ps: number
+  cell_ps: number
+  ff_clk_to_q_ps: number
+  ff_setup_ps: number
+  net_base_ps: number
+  net_per_fanout_ps: number
+}
+
+export type DelayProfile =
+  | 'series7'
+  | 'ultrascale'
+  | 'ultrascale_plus'
+  | 'ice40'
+  | 'ecp5'
+  | 'generic'
+
+export type SpeedGrade = '-1' | '-2' | '-3'
+
+export interface TimingRequest {
+  profile?: DelayProfile // omitted -> the design's synth-time model
+  speed_grade?: SpeedGrade // omitted -> -1
+  model?: DelayModel // full override; wins over profile
+}
+
+export interface TimingResponse {
+  estimated_delay_ns: number | null // null when no combinational paths
+  model: DelayModel // base coefficients used (pre speed-grade)
+}
+
 export interface SynthesizeResponse {
   design_id: string // content hash; identical input returns the same id
   top: string // resolved top module

@@ -14,6 +14,8 @@ import type {
   Subgraph,
   SynthesizeRequest,
   SynthesizeResponse,
+  TimingRequest,
+  TimingResponse,
   XilinxFamily,
 } from './types'
 
@@ -64,6 +66,19 @@ export async function synthesize(req: SynthesizeRequest): Promise<SynthesizeResp
 
 export function getDesign(id: string): Promise<SynthesizeResponse> {
   return getJson<SynthesizeResponse>(`/api/design/${encodeURIComponent(id)}`)
+}
+
+export async function retuneTiming(
+  id: string,
+  req: TimingRequest,
+): Promise<TimingResponse> {
+  const res = await fetch(`/api/design/${encodeURIComponent(id)}/timing`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw await parseError(res)
+  return (await res.json()) as TimingResponse
 }
 
 export function getEndpoints(id: string): Promise<EndpointsResponse> {

@@ -717,6 +717,37 @@ table.grid tr.expanded td {
   white-space: pre-wrap;
 }
 
+/* ---- timing model panel ---- */
+.timing-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 8px 0 2px;
+}
+.timing-controls .field select {
+  min-width: 160px;
+}
+.timing-coeffs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px 12px;
+  margin: 8px 0;
+}
+.timing-coeffs .field input {
+  width: 100%;
+}
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+.link-button:hover {
+  text-decoration: underline;
+}
+
 /* ---- path chain ---- */
 .chain {
   display: flex;
