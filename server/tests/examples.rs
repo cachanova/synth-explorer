@@ -496,7 +496,7 @@ endmodule
             .any(|register| register.bits.iter().any(|bit| bit.node_id == ff.id))
     );
     let clock = analysis
-        .full_netlist(&graph, 100, false, None)
+        .full_netlist(&graph, 100, false, true, false, None)
         .nodes
         .into_iter()
         .find(|node| node.node.id == ff.id)
@@ -549,7 +549,7 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
                 .all(|edge| !edge.control)
         );
 
-        let schematic = analysis.full_netlist(&graph, 2000, false, None);
+        let schematic = analysis.full_netlist(&graph, 2000, false, true, false, None);
         let rendered_ff = schematic
             .nodes
             .iter()
