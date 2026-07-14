@@ -1,46 +1,48 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getFlagValue,
+  hasFlag,
   parseFamily,
-  parseRetime,
   setFamily,
-  setRetime,
-  stripXilinxFlags,
+  setFlagValue,
+  stripFlags,
+  toggleFlag,
 } from './synthFlags'
 
 describe('synthFlags', () => {
-  it('parses family and retime out of a flags string', () => {
-    expect(parseFamily('')).toBe('xc7') // default when absent
-    expect(parseFamily('-noabc -family xcup -retime')).toBe('xcup')
-    expect(parseFamily('-family bogus')).toBe('xc7') // invalid -> default
-    expect(parseRetime('-family xcup')).toBe(false)
-    expect(parseRetime('-noabc -retime')).toBe(true)
-  })
-
-  it('writes family, keeping the default as no token', () => {
+  it('parses and writes the family (default = no token)', () => {
+    expect(parseFamily('')).toBe('xc7')
+    expect(parseFamily('-noabc -family xcup')).toBe('xcup')
+    expect(parseFamily('-family bogus')).toBe('xc7')
     expect(setFamily('-noabc', 'xcup')).toBe('-noabc -family xcup')
-    // switching families replaces, never duplicates
     expect(setFamily('-family xcu -retime', 'xcup')).toBe('-retime -family xcup')
-    // the default removes the token
     expect(setFamily('-family xcup -noabc', 'xc7')).toBe('-noabc')
   })
 
-  it('toggles retime idempotently', () => {
-    expect(setRetime('-family xcup', true)).toBe('-family xcup -retime')
-    expect(setRetime('-retime -family xcup', true)).toBe('-family xcup -retime') // no dup
-    expect(setRetime('-retime -family xcup', false)).toBe('-family xcup')
+  it('toggles boolean flags without duplication', () => {
+    expect(hasFlag('-nocarry -nodsp', '-nocarry')).toBe(true)
+    expect(hasFlag('-nodsp', '-nocarry')).toBe(false)
+    expect(toggleFlag('-nodsp', '-nocarry', true)).toBe('-nodsp -nocarry')
+    expect(toggleFlag('-nocarry -nodsp', '-nocarry', true)).toBe('-nodsp -nocarry')
+    expect(toggleFlag('-nocarry -nodsp', '-nocarry', false)).toBe('-nodsp')
   })
 
-  it('round-trips a control edit through the flags string', () => {
-    let flags = ''
-    flags = setFamily(flags, 'xcup')
-    flags = setRetime(flags, true)
-    expect(flags).toBe('-family xcup -retime')
-    expect(parseFamily(flags)).toBe('xcup')
-    expect(parseRetime(flags)).toBe(true)
+  it('reads and writes value-taking flags', () => {
+    expect(getFlagValue('-widemux 5 -nocarry', '-widemux')).toBe('5')
+    expect(getFlagValue('-nocarry', '-widemux')).toBeNull()
+    expect(setFlagValue('-nocarry', '-widemux', '5')).toBe('-nocarry -widemux 5')
+    expect(setFlagValue('-widemux 3 -nocarry', '-widemux', '7')).toBe('-nocarry -widemux 7')
+    expect(setFlagValue('-widemux 3 -nocarry', '-widemux', '')).toBe('-nocarry')
   })
 
-  it('strips xilinx-only flags but keeps other tokens', () => {
-    expect(stripXilinxFlags('-family xcup -retime -noabc')).toBe('-noabc')
-    expect(stripXilinxFlags('-nofsm')).toBe('-nofsm')
+  it('strips a set of flags, dropping values for value-taking ones', () => {
+    expect(
+      stripFlags('-nocarry -widemux 5 -noabc', [
+        { flag: '-nocarry' },
+        { flag: '-widemux', takesValue: true },
+      ]),
+    ).toBe('-noabc')
+    // free-form / unknown tokens survive
+    expect(stripFlags('-custom -nocarry', [{ flag: '-nocarry' }])).toBe('-custom')
   })
 })
