@@ -29,17 +29,16 @@ describe('buildSynthesizeRequest', () => {
     })
   })
 
-  it('sends the family and retime only for xilinx mode', () => {
-    const xil = buildSynthesizeRequest(files, 'top', 'xilinx', '', 'xcup', true)
-    expect(xil.family).toBe('xcup')
-    expect(xil.retime).toBe(true)
-    expect(buildSynthesizeRequest(files, 'top', 'xilinx', '', 'xcup', false).retime).toBe(
-      false,
-    )
-    // Non-xilinx modes keep an identical request regardless of the selectors.
-    const gates = buildSynthesizeRequest(files, 'top', 'gates', '', 'xcup', true)
-    expect(gates.family).toBeUndefined()
-    expect(gates.retime).toBeUndefined()
-    expect(gates).toEqual(buildSynthesizeRequest(files, 'top', 'gates', '', 'xc7', false))
+  it('passes xilinx family/retime through as ordinary flags (no dedicated fields)', () => {
+    // The Xilinx controls assemble -family/-retime into the flags string, so
+    // buildSynthesizeRequest just forwards them via extra_args.
+    expect(
+      buildSynthesizeRequest(files, 'top', 'xilinx', '-family xcup -retime'),
+    ).toEqual({
+      files,
+      top: 'top',
+      mode: 'xilinx',
+      extra_args: '-family xcup -retime',
+    })
   })
 })

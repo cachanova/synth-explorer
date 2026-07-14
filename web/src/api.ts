@@ -211,5 +211,3 @@ export const XILINX_FAMILY_LABELS: { value: XilinxFamily; label: string }[] = [
   { value: 'xc6s', label: 'Spartan-6' },
   { value: 'xc6v', label: 'Virtex-6' },
 ]
-
-export const DEFAULT_XILINX_FAMILY: XilinxFamily = 'xc7'

@@ -19,8 +19,6 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
         top: Some(top.to_owned()),
         mode,
         extra_args: None,
-        family: None,
-        retime: false,
     }
     .validate()
     .unwrap();
@@ -41,8 +39,6 @@ async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) ->
         top: Some(top.to_owned()),
         mode,
         extra_args: None,
-        family: None,
-        retime: false,
     }
     .validate()
     .unwrap();
@@ -632,8 +628,6 @@ endmodule
         top: Some("mem_top".to_owned()),
         mode: SynthMode::Gates,
         extra_args: None,
-        family: None,
-        retime: false,
     }
     .validate()
     .unwrap();
