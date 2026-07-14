@@ -255,13 +255,23 @@ describe('nodeSublabel', () => {
   })
 
   it('reduces a grouped fallback name to its count', () => {
-    const grouped: NodeRef = {
+    const grouped: GraphNode = {
       id: 2,
       kind: 'cell',
       name: 'LUT2 ×3',
       cell_type: 'LUT2',
+      width: 3,
     }
     expect(nodeSublabel(grouped)).toBe('×3')
+  })
+
+  it('keeps a real name that only resembles a grouped fallback', () => {
+    expect(nodeSublabel({
+      id: 2,
+      kind: 'cell',
+      name: 'LUT2 ×3',
+      cell_type: 'LUT2',
+    })).toBe('LUT2 ×3')
   })
 
   it('returns null for ports and consts', () => {

@@ -246,9 +246,9 @@ export function nodeSublabel(node: NodeRef): string | null {
   if (node.kind !== 'cell' || !node.name) return null
   if (isHiddenName(node.name)) return null
 
-  const groupedFallback = /^(.+) ×(\d+)$/.exec(node.name)
-  if (groupedFallback?.[1] === nodeLabel(node)) {
-    return `×${groupedFallback[2]}`
+  const groupWidth = (node as GraphNode).width ?? 0
+  if (groupWidth >= 2 && node.name === `${nodeLabel(node)} ×${groupWidth}`) {
+    return `×${groupWidth}`
   }
   return node.name
 }
