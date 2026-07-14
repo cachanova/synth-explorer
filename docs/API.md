@@ -221,6 +221,49 @@ instance name, and a design-file `file:line` label, ending with a
 deterministic `<cell_type>·<node_id>`. Names never surface hidden `$`-names,
 and no two register groups share a displayed name.
 
+## POST `/api/design/:id/timing`
+
+Retune the estimated timing of an already-synthesized design **without
+re-running synthesis** — the delay is recomputed on the cached graph under a
+different delay model. (Timing parameters are deliberately kept out of
+`/api/synthesize`: that endpoint's design id is a content hash of the synthesis
+input, so a timing-only change must not re-key or re-run it.)
+
+Request body (all fields optional):
+
+```ts
+{
+  profile?: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' | 'ecp5' | 'generic';
+  speed_grade?: '-1' | '-2' | '-3';   // -1 slowest (default); scales all delays
+  model?: DelayModel;                 // full coefficient override; wins over profile
+}
+```
+
+Base-model precedence: `model` (full override) > `profile` > the design's own
+synth-time model. With none supplied, a retune reproduces the estimate from the
+synthesis panel (the preset `for_target` chose from the design's mode/family).
+Unknown `profile` or `speed_grade` values fall back leniently (to the design
+model and `-1` respectively) rather than erroring.
+
+`DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
+`wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
+`net_per_fanout_ps`. Presets are process-node ballparks characterized at the
+`-1` grade; `speed_grade` applies a global multiplier on top (`-2`≈0.87,
+`-3`≈0.78). The coefficients are **uncalibrated relative estimates**, not vendor
+numbers.
+
+Response:
+
+```ts
+{
+  estimated_delay_ns: number | null;  // null when the design has no comb paths
+  model: DelayModel;                   // base coefficients used, pre speed-grade
+                                       // (so a client can populate an editor)
+}
+```
+
+Returns 404 if the design id is not in the cache (e.g. expired — re-synthesize).
+
 ## GET `/api/design/:id/paths?limit=25&to=<node_id>`
 
 Ranked longest structural paths (deepest first). Paths with the same logical

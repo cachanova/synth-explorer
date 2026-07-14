@@ -208,6 +208,18 @@ impl ValidatedSynth {
     pub fn file_names(&self) -> Vec<String> {
         self.files.iter().map(|file| file.name.clone()).collect()
     }
+
+    /// The value of the `-family <value>` flag in `extra_args`, if present. Used
+    /// to pick a delay-model preset for the estimated timing figure.
+    pub fn family(&self) -> Option<&str> {
+        let mut it = self.extra_args.iter();
+        while let Some(arg) = it.next() {
+            if arg == "-family" {
+                return it.next().map(String::as_str);
+            }
+        }
+        None
+    }
 }
 
 /// Verify the production runtime can execute Yosys and capture its version once.
@@ -654,6 +666,19 @@ mod tests {
                 .contains("synth_xilinx -top top -flatten -family xcup -retime\n")
         );
         assert_ne!(plain.design_id(), tuned.design_id());
+    }
+
+    #[test]
+    fn family_extracts_the_flag_value() {
+        let tuned = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-family xcup -retime",
+        );
+        assert_eq!(tuned.family(), Some("xcup"));
+        let plain = validated(&["design.sv"], Some("top"), SynthMode::Xilinx, "");
+        assert_eq!(plain.family(), None);
     }
 
     #[test]

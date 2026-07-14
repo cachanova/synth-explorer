@@ -1,7 +1,8 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef,
-    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph,
+    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph, estimate_delay_ns,
 };
+use crate::delay_model::DelayModel;
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
@@ -308,6 +309,10 @@ struct Design {
     analysis: Analysis,
     source_index: SourceLineIndex,
     grouping: GroupPartition,
+    /// The delay model chosen from the synthesis target, i.e. the one that
+    /// produced `response.stats.estimated_delay_ns`. Used as the default base
+    /// for `/timing` retunes so a no-argument retune reproduces that number.
+    delay_model: DelayModel,
 }
 
 impl Design {
@@ -405,6 +410,7 @@ pub fn app(state: AppState) -> Router {
         .route("/examples", get(examples))
         .route("/design/{id}", get(design))
         .route("/design/{id}/endpoints", get(endpoints))
+        .route("/design/{id}/timing", post(design_timing))
         .route("/design/{id}/paths", get(paths))
         .route("/design/{id}/cone", get(cone))
         .route("/design/{id}/line-cone", get(line_cone))
@@ -613,7 +619,8 @@ async fn synthesize_uncached(
             .iter()
             .map(|file| (file.name.clone(), file.content.clone())),
     );
-    let mut analysis = Analysis::new(&graph, validated.file_names());
+    let delay_model = DelayModel::for_target(&mode, validated.family());
+    let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
     source_index.extend_ranges(&ranges);
@@ -636,6 +643,7 @@ async fn synthesize_uncached(
         analysis,
         source_index,
         grouping,
+        delay_model,
     });
     let cache_estimated_bytes = design_cache_weight(design_id, &design);
     let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
@@ -723,6 +731,72 @@ async fn endpoints(
 ) -> Result<Json<EndpointsResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
     Ok(Json(design.analysis.endpoints()))
+}
+
+/// Retune the estimated timing of an already-synthesized design. The caller
+/// supplies a base delay profile (or a full coefficient override) plus a speed
+/// grade; the delay is recomputed on the cached graph without re-synthesizing.
+#[derive(Debug, Deserialize)]
+struct TimingRequest {
+    /// Named preset: series7 | ultrascale | ultrascale_plus | ice40 | ecp5 |
+    /// generic. Ignored when `model` is present. Defaults to series7.
+    profile: Option<String>,
+    /// Speed grade: "-1" (slowest, default), "-2", or "-3".
+    speed_grade: Option<String>,
+    /// Full coefficient override from the advanced editor; wins over `profile`.
+    model: Option<DelayModel>,
+}
+
+#[derive(Debug, Serialize)]
+struct TimingResponse {
+    /// Recomputed worst-case combinational delay; null when there are no
+    /// combinational paths.
+    estimated_delay_ns: Option<f64>,
+    /// The base coefficients used (before the speed-grade multiplier), so the
+    /// client can populate the editor when only a profile name was sent.
+    model: DelayModel,
+}
+
+fn profile_preset(name: Option<&str>) -> DelayModel {
+    match name {
+        Some("ultrascale") => DelayModel::ultrascale(),
+        Some("ultrascale_plus") => DelayModel::ultrascale_plus(),
+        Some("ice40") => DelayModel::ice40(),
+        Some("ecp5") => DelayModel::ecp5(),
+        Some("generic") => DelayModel::generic(),
+        _ => DelayModel::series7(),
+    }
+}
+
+fn speed_grade_factor(grade: Option<&str>) -> f64 {
+    match grade {
+        Some("-2") => 0.87,
+        Some("-3") => 0.78,
+        // "-1" or unspecified: the baseline the presets are characterized at.
+        _ => 1.0,
+    }
+}
+
+async fn design_timing(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<TimingRequest>,
+) -> Result<Json<TimingResponse>, ApiError> {
+    let design = get_design(&state, &id).await?;
+    // Precedence: an explicit coefficient override wins, then a named profile,
+    // then the design's own synth-time model — so a no-argument retune
+    // reproduces the estimate shown in the synthesis panel.
+    let base = match (request.model, request.profile.as_deref()) {
+        (Some(model), _) => model,
+        (None, Some(profile)) => profile_preset(Some(profile)),
+        (None, None) => design.delay_model,
+    };
+    let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
+    let estimated_delay_ns = estimate_delay_ns(&design.graph, &effective);
+    Ok(Json(TimingResponse {
+        estimated_delay_ns,
+        model: base,
+    }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1211,6 +1285,7 @@ mod tests {
             analysis,
             source_index,
             grouping,
+            delay_model: DelayModel::default(),
         })
     }
 
@@ -1469,6 +1544,70 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
         );
+    }
+
+    async fn post_timing(state: &AppState, id: &str, body: serde_json::Value) -> Response {
+        app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(format!("/api/design/{id}/timing"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn timing_model(response: Response) -> DelayModel {
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        serde_json::from_value(body["model"].clone()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn timing_endpoint_resolves_base_model_by_precedence() {
+        let state = AppState::default();
+        state.cache.write().await.insert(
+            "d".to_owned(),
+            empty_test_design("d"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+
+        // Explicit profile is honored.
+        let model = timing_model(
+            post_timing(
+                &state,
+                "d",
+                serde_json::json!({"profile": "ultrascale_plus"}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(model, DelayModel::ultrascale_plus());
+
+        // A full override wins over a conflicting profile.
+        let override_model = DelayModel::ice40();
+        let model = timing_model(
+            post_timing(
+                &state,
+                "d",
+                serde_json::json!({"profile": "series7", "model": override_model}),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(model, override_model);
+
+        // No base given → the design's own synth-time model (default here).
+        let model = timing_model(post_timing(&state, "d", serde_json::json!({})).await).await;
+        assert_eq!(model, DelayModel::default());
+
+        // Unknown design → 404.
+        let missing = post_timing(&state, "nope", serde_json::json!({})).await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
