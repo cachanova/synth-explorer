@@ -1,11 +1,11 @@
 use crate::analysis::{
-    Analysis, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef, PathsResponse,
-    SourceLineIndex, SourceMapResponse, Stats, Subgraph,
+    Analysis, ApiNodeKind, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef,
+    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph,
 };
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
-use crate::source_provenance::{SourceAliasProvenance, continuous_assign_provenance};
+use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use crate::yosys::{
     MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys,
 };
@@ -600,11 +600,12 @@ async fn synthesize_uncached(
             format!("failed to resolve source-provenance top module: {err}"),
         )
     })?;
-    let SourceAliasProvenance {
+    let SourceProvenance {
         ranges,
         truncated: source_ranges_truncated,
         procedural_targets,
-    } = continuous_assign_provenance(
+        probe_hints,
+    } = recover_source_provenance(
         &graph,
         &source_parsed,
         validated
@@ -618,6 +619,7 @@ async fn synthesize_uncached(
     source_index.extend_ranges(&ranges);
     analysis.extend_source_ranges(ranges, source_ranges_truncated);
     analysis.set_procedural_targets(procedural_targets);
+    analysis.set_source_probe_hints(probe_hints);
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
@@ -835,6 +837,7 @@ enum SourceEnvelopeStatus {
 struct LineConeResponse {
     status: SourceEnvelopeStatus,
     control: bool,
+    highlight: Vec<u32>,
     graph: Subgraph,
 }
 
@@ -863,32 +866,47 @@ async fn line_cone(
             "at most 200 source lines may be selected",
         ));
     }
-    let roots = design
+    let probe = design
         .analysis
-        .source_nodes_range(&design.graph, &file, start_line as usize, end_line as usize)
+        .source_probe_range(&design.graph, &file, start_line as usize, end_line as usize)
         .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
+    let roots = probe.roots;
     let control = roots.iter().any(|root| {
         design.graph.outgoing[*root as usize]
             .iter()
             .any(|edge_idx| design.graph.edges[*edge_idx].control)
     });
     let hide_control = query.hide_control.unwrap_or(true) && !control;
-    let subgraph = design
-        .analysis
-        .envelope(
-            &design.graph,
-            &roots,
-            ConeOptions {
-                dir: ConeDir::Fanin,
-                max_depth: 64,
-                max_nodes: query.max_nodes.unwrap_or(400),
-                hide_control,
-                hide_const: query.hide_const.unwrap_or(true),
-                show_infrastructure: query.show_infrastructure.unwrap_or(false),
-            },
-            grouping_for(&design, query.group_vectors),
-        )
-        .expect("source map contains only valid graph node ids");
+    let options = ConeOptions {
+        dir: probe.direction.unwrap_or(ConeDir::Fanin),
+        max_depth: 64,
+        max_nodes: query.max_nodes.unwrap_or(400),
+        hide_control,
+        hide_const: query.hide_const.unwrap_or(true),
+        show_infrastructure: query.show_infrastructure.unwrap_or(false),
+    };
+    let grouping = grouping_for(&design, query.group_vectors);
+    let subgraph = match probe.direction {
+        Some(_) => design
+            .analysis
+            .multi_root_cone(&design.graph, &roots, options, grouping),
+        None => design
+            .analysis
+            .envelope(&design.graph, &roots, options, grouping),
+    }
+    .expect("source map contains only valid graph node ids");
+    let highlight = subgraph
+        .nodes
+        .iter()
+        .filter(|node| {
+            if probe.highlight_logic {
+                node.node.kind == ApiNodeKind::Cell
+            } else {
+                node.is_root == Some(true)
+            }
+        })
+        .map(|node| node.node.id)
+        .collect();
     let mapping_incomplete = design
         .analysis
         .source_mapping_incomplete(&file, start_line as usize, end_line as usize)
@@ -901,6 +919,7 @@ async fn line_cone(
     Ok(Json(LineConeResponse {
         status,
         control,
+        highlight,
         graph: subgraph,
     }))
 }

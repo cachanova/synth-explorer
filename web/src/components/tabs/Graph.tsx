@@ -39,6 +39,7 @@ export function Graph({ active }: { active: boolean }) {
   const [selected, setSelected] = useState<GraphNode | null>(null)
   const [sourceStatus, setSourceStatus] = useState<LineConeStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
+  const [sourceHighlight, setSourceHighlight] = useState<number[]>([])
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
   const loadedRequestKey = useRef<string | null>(null)
@@ -55,6 +56,7 @@ export function Graph({ active }: { active: boolean }) {
   useEffect(() => {
     setSourceStatus(null)
     setSourceControl(false)
+    setSourceHighlight([])
   }, [analysisState, coneReq?.nonce])
 
   // Fetch subgraphs only while Graph is visible. A completed request key is
@@ -82,6 +84,7 @@ export function Graph({ active }: { active: boolean }) {
     setExpansionGraph(null)
     setSourceStatus(null)
     setSourceControl(false)
+    setSourceHighlight([])
     if (coneReq.kind !== 'source') setSelected(null)
     const fetchP =
       coneReq.kind === 'netlist'
@@ -95,6 +98,7 @@ export function Graph({ active }: { active: boolean }) {
             graph,
             status: null,
             control: false,
+            highlight: [],
           }))
         : coneReq.kind === 'source'
           ? getLineCone(requestDesignId, {
@@ -110,6 +114,7 @@ export function Graph({ active }: { active: boolean }) {
               graph: response.graph,
               status: response.status,
               control: response.control,
+              highlight: response.highlight,
             }))
           : getCone(requestDesignId, {
               node: coneReq.node,
@@ -125,12 +130,14 @@ export function Graph({ active }: { active: boolean }) {
               graph,
               status: null,
               control: false,
+              highlight: [],
             }))
     fetchP
-      .then(({ graph, status, control }) => {
+      .then(({ graph, status, control, highlight }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         loadedRequestKey.current = requestKey
         setSourceControl(control)
+        setSourceHighlight(highlight)
         const presentation = sourceProbePresentation(status)
         // A partial mapping is still useful and replaces the prior selection.
         if (presentation.acceptReturnedGraph) {
@@ -215,8 +222,8 @@ export function Graph({ active }: { active: boolean }) {
   const highlight = useMemo(() => {
     const ids = new Set<number>([
       ...(coneReq?.highlight ?? []),
-      ...(coneReq?.kind === 'source' && sourcePresentation.highlightRoots
-        ? (sub?.nodes.filter((node) => node.is_root).map((node) => node.id) ?? [])
+      ...(coneReq?.kind === 'source' && sourcePresentation.highlightSelection
+        ? sourceHighlight
         : []),
     ])
     // A grouped bus node collapses per-bit ids the highlight set names, so it
@@ -225,7 +232,7 @@ export function Graph({ active }: { active: boolean }) {
       if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
     }
     return ids
-  }, [coneReq, sourcePresentation.highlightRoots, sub])
+  }, [coneReq, sourcePresentation.highlightSelection, sourceHighlight, sub])
   const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
 
   // Net driven by the selected node (first outgoing edge) — lets the detail
