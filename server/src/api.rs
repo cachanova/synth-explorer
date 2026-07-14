@@ -1,7 +1,8 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef,
-    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph,
+    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph, estimate_delay_ns,
 };
+use crate::delay_model::DelayModel;
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
@@ -405,6 +406,7 @@ pub fn app(state: AppState) -> Router {
         .route("/examples", get(examples))
         .route("/design/{id}", get(design))
         .route("/design/{id}/endpoints", get(endpoints))
+        .route("/design/{id}/timing", post(design_timing))
         .route("/design/{id}/paths", get(paths))
         .route("/design/{id}/cone", get(cone))
         .route("/design/{id}/line-cone", get(line_cone))
@@ -613,7 +615,8 @@ async fn synthesize_uncached(
             .iter()
             .map(|file| (file.name.clone(), file.content.clone())),
     );
-    let mut analysis = Analysis::new(&graph, validated.file_names());
+    let delay_model = DelayModel::for_target(&mode, validated.family());
+    let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
     source_index.extend_ranges(&ranges);
@@ -723,6 +726,67 @@ async fn endpoints(
 ) -> Result<Json<EndpointsResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
     Ok(Json(design.analysis.endpoints()))
+}
+
+/// Retune the estimated timing of an already-synthesized design. The caller
+/// supplies a base delay profile (or a full coefficient override) plus a speed
+/// grade; the delay is recomputed on the cached graph without re-synthesizing.
+#[derive(Debug, Deserialize)]
+struct TimingRequest {
+    /// Named preset: series7 | ultrascale | ultrascale_plus | ice40 | ecp5 |
+    /// generic. Ignored when `model` is present. Defaults to series7.
+    profile: Option<String>,
+    /// Speed grade: "-1" (slowest, default), "-2", or "-3".
+    speed_grade: Option<String>,
+    /// Full coefficient override from the advanced editor; wins over `profile`.
+    model: Option<DelayModel>,
+}
+
+#[derive(Debug, Serialize)]
+struct TimingResponse {
+    /// Recomputed worst-case combinational delay; null when there are no
+    /// combinational paths.
+    estimated_delay_ns: Option<f64>,
+    /// The base coefficients used (before the speed-grade multiplier), so the
+    /// client can populate the editor when only a profile name was sent.
+    model: DelayModel,
+}
+
+fn profile_preset(name: Option<&str>) -> DelayModel {
+    match name {
+        Some("ultrascale") => DelayModel::ultrascale(),
+        Some("ultrascale_plus") => DelayModel::ultrascale_plus(),
+        Some("ice40") => DelayModel::ice40(),
+        Some("ecp5") => DelayModel::ecp5(),
+        Some("generic") => DelayModel::generic(),
+        _ => DelayModel::series7(),
+    }
+}
+
+fn speed_grade_factor(grade: Option<&str>) -> f64 {
+    match grade {
+        Some("-2") => 0.87,
+        Some("-3") => 0.78,
+        // "-1" or unspecified: the baseline the presets are characterized at.
+        _ => 1.0,
+    }
+}
+
+async fn design_timing(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(request): Json<TimingRequest>,
+) -> Result<Json<TimingResponse>, ApiError> {
+    let design = get_design(&state, &id).await?;
+    let base = request
+        .model
+        .unwrap_or_else(|| profile_preset(request.profile.as_deref()));
+    let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
+    let estimated_delay_ns = estimate_delay_ns(&design.graph, &effective);
+    Ok(Json(TimingResponse {
+        estimated_delay_ns,
+        model: base,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

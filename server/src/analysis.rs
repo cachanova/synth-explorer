@@ -667,6 +667,12 @@ impl Analysis {
     }
 
     pub fn new(graph: &Graph, source_files: Vec<String>) -> Self {
+        Self::with_delay_model(graph, source_files, &DelayModel::default())
+    }
+
+    /// Like [`Analysis::new`], but uses a specific delay model for the estimated
+    /// timing figure (e.g. one selected from the synthesis target).
+    pub fn with_delay_model(graph: &Graph, source_files: Vec<String>, model: &DelayModel) -> Self {
         let comb_loops = find_comb_loops(graph);
         let loop_set: HashSet<NodeId> = comb_loops.iter().copied().collect();
         let DepthComputation {
@@ -674,7 +680,7 @@ impl Analysis {
             best_pred,
             node_startpoint,
             estimated_max_delay_ps,
-        } = compute_depths(graph, &loop_set);
+        } = compute_depths(graph, &loop_set, model);
         let (endpoints, endpoint_targets) =
             discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
         let source_map = build_source_map(graph, source_files);
@@ -2263,7 +2269,11 @@ fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
     loops
 }
 
-fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation {
+fn compute_depths(
+    graph: &Graph,
+    loop_set: &HashSet<NodeId>,
+    model: &DelayModel,
+) -> DepthComputation {
     let mut indegree = vec![0usize; graph.nodes.len()];
     for edge in &graph.edges {
         if is_depth_node(graph, edge.from)
@@ -2291,7 +2301,6 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
     let mut best_pred = vec![None; graph.nodes.len()];
     let mut startpoint = vec![None; graph.nodes.len()];
     // Parallel delay-weighted longest path (picoseconds); see delay_model.
-    let model = DelayModel::default();
     let mut node_delay = vec![0.0f64; graph.nodes.len()];
 
     while let Some(id) = queue.pop_front() {
@@ -2381,6 +2390,17 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
 /// estimate.
 fn fanout_of(graph: &Graph, id: NodeId) -> u32 {
     graph.outgoing[id as usize].len() as u32
+}
+
+/// Recompute only the estimated worst-case combinational delay (nanoseconds) for
+/// a graph under a given delay model. Used to *retune* timing on a cached design
+/// without re-running synthesis. Returns `None` when there are no combinational
+/// paths. Mirrors the estimate produced during [`Analysis::with_delay_model`].
+pub fn estimate_delay_ns(graph: &Graph, model: &DelayModel) -> Option<f64> {
+    let loop_set: HashSet<NodeId> = find_comb_loops(graph).into_iter().collect();
+    compute_depths(graph, &loop_set, model)
+        .estimated_max_delay_ps
+        .map(|ps| ps / 1000.0)
 }
 
 fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
@@ -3639,6 +3659,17 @@ mod tests {
         // A depth-3 chain: a few cells + fanout nets + capture setup — the rough
         // pre-route figure should be positive and in a sane nanosecond range.
         assert!(est > 0.3 && est < 30.0, "implausible estimate: {est} ns");
+    }
+
+    #[test]
+    fn estimate_delay_ns_shrinks_with_a_faster_preset() {
+        let (graph, _analysis) = fixture("and_chain_rtl.json");
+        let s7 = estimate_delay_ns(&graph, &DelayModel::series7()).unwrap();
+        let usp = estimate_delay_ns(&graph, &DelayModel::ultrascale_plus()).unwrap();
+        let s7_fast = estimate_delay_ns(&graph, &DelayModel::series7().scaled(0.78)).unwrap();
+        // A faster process, and a faster speed grade, both reduce the estimate.
+        assert!(usp < s7, "ultrascale+ {usp} should beat series7 {s7}");
+        assert!(s7_fast < s7, "-3 grade {s7_fast} should beat -1 {s7}");
     }
 
     #[test]
