@@ -179,6 +179,7 @@ export interface Store {
   mode: Mode
   extraArgs: string
   xilinxFamily: XilinxFamily
+  retime: boolean
   examples: Example[]
 
   setActiveFileName: (name: string) => void
@@ -190,6 +191,7 @@ export interface Store {
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
   setXilinxFamily: (f: XilinxFamily) => void
+  setRetime: (r: boolean) => void
   loadExample: (ex: Example) => void
 
   // synthesis
@@ -255,6 +257,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [xilinxFamily, setXilinxFamilyState] = useState<XilinxFamily>(
     api.DEFAULT_XILINX_FAMILY,
   )
+  const [retime, setRetimeState] = useState(false)
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -306,6 +309,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   extraArgsRef.current = extraArgs
   const xilinxFamilyRef = useRef(xilinxFamily)
   xilinxFamilyRef.current = xilinxFamily
+  const retimeRef = useRef(retime)
+  retimeRef.current = retime
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
   const autoSynthesizeRef = useRef(autoSynthesize)
@@ -346,6 +351,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       extraArgsRef.current,
       revision,
       xilinxFamilyRef.current,
+      retimeRef.current,
     )
     resolvedInputRef.current = resolved
     setResolvedInputIdentity((current) =>
@@ -518,6 +524,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       xilinxFamilyRef.current = value
       markInputChanged()
       setXilinxFamilyState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setRetime = useCallback(
+    (value: boolean) => {
+      if (retimeRef.current === value) return
+      retimeRef.current = value
+      markInputChanged()
+      setRetimeState(value)
     },
     [markInputChanged],
   )
@@ -878,6 +894,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mode,
       extraArgs,
       xilinxFamily,
+      retime,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -888,6 +905,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setMode,
       setExtraArgs,
       setXilinxFamily,
+      setRetime,
       loadExample,
       synthesizing,
       design,
@@ -921,6 +939,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mode,
       extraArgs,
       xilinxFamily,
+      retime,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -931,6 +950,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setMode,
       setExtraArgs,
       setXilinxFamily,
+      setRetime,
       loadExample,
       synthesizing,
       design,

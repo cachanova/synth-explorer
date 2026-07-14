@@ -20,6 +20,7 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
         mode,
         extra_args: None,
         family: None,
+        retime: false,
     }
     .validate()
     .unwrap();
@@ -41,6 +42,7 @@ async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) ->
         mode,
         extra_args: None,
         family: None,
+        retime: false,
     }
     .validate()
     .unwrap();
@@ -631,6 +633,7 @@ endmodule
         mode: SynthMode::Gates,
         extra_args: None,
         family: None,
+        retime: false,
     }
     .validate()
     .unwrap();

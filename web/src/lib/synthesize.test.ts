@@ -29,14 +29,17 @@ describe('buildSynthesizeRequest', () => {
     })
   })
 
-  it('sends the family only for xilinx mode', () => {
-    expect(buildSynthesizeRequest(files, 'top', 'xilinx', '', 'xcup').family).toBe(
-      'xcup',
+  it('sends the family and retime only for xilinx mode', () => {
+    const xil = buildSynthesizeRequest(files, 'top', 'xilinx', '', 'xcup', true)
+    expect(xil.family).toBe('xcup')
+    expect(xil.retime).toBe(true)
+    expect(buildSynthesizeRequest(files, 'top', 'xilinx', '', 'xcup', false).retime).toBe(
+      false,
     )
-    // Non-xilinx modes keep an identical request regardless of the selector.
-    expect(buildSynthesizeRequest(files, 'top', 'gates', '', 'xcup').family).toBeUndefined()
-    expect(buildSynthesizeRequest(files, 'top', 'gates', '', 'xcup')).toEqual(
-      buildSynthesizeRequest(files, 'top', 'gates', '', 'xc7'),
-    )
+    // Non-xilinx modes keep an identical request regardless of the selectors.
+    const gates = buildSynthesizeRequest(files, 'top', 'gates', '', 'xcup', true)
+    expect(gates.family).toBeUndefined()
+    expect(gates.retime).toBeUndefined()
+    expect(gates).toEqual(buildSynthesizeRequest(files, 'top', 'gates', '', 'xc7', false))
   })
 })

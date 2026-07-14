@@ -85,6 +85,7 @@ export interface SynthesizeRequest {
   mode: Mode
   extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
   family?: XilinxFamily // xilinx mode only: synth_xilinx -family target
+  retime?: boolean // xilinx mode only: synth_xilinx -retime (register retiming)
 }
 
 export interface Stats {
