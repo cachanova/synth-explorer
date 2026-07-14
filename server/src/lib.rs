@@ -1,5 +1,6 @@
 pub mod analysis;
 pub mod api;
+pub mod delay_model;
 pub mod graph;
 pub mod grouping;
 pub mod netlist;

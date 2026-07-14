@@ -1,3 +1,4 @@
+use crate::delay_model::DelayModel;
 use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
     is_infrastructure_cell, is_register_type, is_transparent_data_buffer, strip_bit_suffix,
@@ -434,6 +435,11 @@ pub struct Stats {
     pub max_depth: u32,
     pub depths: DepthSummary,
     pub cell_categories: CellCategoryCounts,
+    /// Rough estimated worst-case combinational delay in nanoseconds — a
+    /// pre-place-and-route figure (logic + fanout-estimated routing), NOT timing
+    /// closure. `None` when the design has no combinational paths.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_delay_ns: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -456,6 +462,9 @@ struct DepthComputation {
     node_depth: Vec<Option<u32>>,
     best_pred: Vec<Option<usize>>,
     node_startpoint: Vec<Option<NodeId>>,
+    /// Estimated worst-case combinational delay (picoseconds) over all paths —
+    /// a rough pre-place-and-route figure from the fanout-aware delay model.
+    estimated_max_delay_ps: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -664,11 +673,12 @@ impl Analysis {
             node_depth,
             best_pred,
             node_startpoint,
+            estimated_max_delay_ps,
         } = compute_depths(graph, &loop_set);
         let (endpoints, endpoint_targets) =
             discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
         let source_map = build_source_map(graph, source_files);
-        let stats = build_stats(graph, &endpoints, &endpoint_targets);
+        let stats = build_stats(graph, &endpoints, &endpoint_targets, estimated_max_delay_ps);
         let warnings = build_warnings(graph, &comb_loops);
         Self {
             node_depth,
@@ -2280,14 +2290,15 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
     let mut depth = vec![None; graph.nodes.len()];
     let mut best_pred = vec![None; graph.nodes.len()];
     let mut startpoint = vec![None; graph.nodes.len()];
+    // Parallel delay-weighted longest path (picoseconds); see delay_model.
+    let model = DelayModel::default();
+    let mut node_delay = vec![0.0f64; graph.nodes.len()];
 
     while let Some(id) = queue.pop_front() {
-        let weight = graph.nodes[id as usize]
-            .cell_type
-            .as_deref()
-            .map(cell_depth_weight)
-            .unwrap_or(1);
+        let cell = graph.nodes[id as usize].cell_type.as_deref();
+        let weight = cell.map(cell_depth_weight).unwrap_or(1);
         let mut best: Option<(u32, usize, NodeId)> = None;
+        let mut best_delay = 0.0f64;
         for edge_idx in &graph.incoming[id as usize] {
             let edge = &graph.edges[*edge_idx];
             if loop_set.contains(&edge.from) || !is_depth_input_edge(graph, edge) {
@@ -2309,10 +2320,23 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
             if best.is_none_or(|(current, _, _)| candidate > current) {
                 best = Some((candidate, *edge_idx, origin));
             }
+            // A path either continues from an upstream comb node's arrival time
+            // or is launched here by a register (clk-to-Q) / input (zero).
+            let base_delay = if follows_depth {
+                node_delay[edge.from as usize]
+            } else {
+                model.launch_ps(graph.nodes[edge.from as usize].seq)
+            };
+            let net = model.net_delay_ps(fanout_of(graph, edge.from));
+            best_delay = best_delay.max(base_delay + net);
         }
         let (node_depth, pred, origin) = best.unwrap_or((weight, usize::MAX, id));
         depth[id as usize] = Some(node_depth);
         startpoint[id as usize] = Some(origin);
+        node_delay[id as usize] = best_delay
+            + cell
+                .map(|c| model.cell_delay_ps(c))
+                .unwrap_or(model.cell_ps);
         if pred != usize::MAX {
             best_pred[id as usize] = Some(pred);
         }
@@ -2333,11 +2357,30 @@ fn compute_depths(graph: &Graph, loop_set: &HashSet<NodeId>) -> DepthComputation
         }
     }
 
+    // Worst arrival across every combinational node, plus that node's output
+    // net and the capturing register's setup — the estimated critical path.
+    let estimated_max_delay_ps = graph
+        .nodes
+        .iter()
+        .filter(|node| depth[node.id as usize].is_some())
+        .map(|node| node_delay[node.id as usize] + model.net_delay_ps(fanout_of(graph, node.id)))
+        .fold(None, |acc: Option<f64>, d| {
+            Some(acc.map_or(d, |a| a.max(d)))
+        })
+        .map(|d| d + model.ff_setup_ps);
+
     DepthComputation {
         node_depth: depth,
         best_pred,
         node_startpoint: startpoint,
+        estimated_max_delay_ps,
     }
+}
+
+/// Number of sinks a node's output drives — the fanout used by the net-delay
+/// estimate.
+fn fanout_of(graph: &Graph, id: NodeId) -> u32 {
+    graph.outgoing[id as usize].len() as u32
 }
 
 fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
@@ -3230,6 +3273,7 @@ fn build_stats(
     graph: &Graph,
     endpoints: &EndpointsResponse,
     endpoint_targets: &[EndpointTarget],
+    estimated_max_delay_ps: Option<f64>,
 ) -> Stats {
     let mut cells_by_type = BTreeMap::new();
     let mut cell_categories = CellCategoryCounts::default();
@@ -3289,6 +3333,7 @@ fn build_stats(
         max_depth,
         depths,
         cell_categories,
+        estimated_delay_ns: estimated_max_delay_ps.map(|ps| ps / 1000.0),
     }
 }
 
@@ -3582,6 +3627,18 @@ mod tests {
         assert_eq!(analysis.stats.max_depth, 3);
         let paths = analysis.paths(&_graph, 5, None);
         assert_eq!(paths.paths[0].depth, 3);
+    }
+
+    #[test]
+    fn estimates_a_positive_critical_path_delay() {
+        let (_graph, analysis) = fixture("and_chain_rtl.json");
+        let est = analysis
+            .stats
+            .estimated_delay_ns
+            .expect("a combinational design has a delay estimate");
+        // A depth-3 chain: a few cells + fanout nets + capture setup — the rough
+        // pre-route figure should be positive and in a sane nanosecond range.
+        assert!(est > 0.3 && est < 30.0, "implausible estimate: {est} ns");
     }
 
     #[test]
