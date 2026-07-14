@@ -226,15 +226,6 @@ function SchematicOutline({
           vectorEffect="non-scaling-stroke"
         />
       )}
-      {kind === 'lut' && (
-        <path
-          className="g-symbol-detail g-lut-detail"
-          d={`M 8 8 V ${height - 8} M ${width - 8} 8 V ${height - 8}`}
-          fill="none"
-          stroke={visual.stroke}
-          vectorEffect="non-scaling-stroke"
-        />
-      )}
       {kind === 'memory' && (
         <path
           className="g-symbol-detail"
@@ -506,7 +497,6 @@ interface SchematicNodeProps {
   highlighted: boolean
   selected: boolean
   portDirection: PortDirection
-  drivingNet?: string
   pins: NodePins
   interactive: boolean
   suppressClick: { current: boolean }
@@ -523,7 +513,6 @@ const SchematicNode = memo(function SchematicNode({
   highlighted,
   selected,
   portDirection,
-  drivingNet,
   pins,
   interactive,
   suppressClick,
@@ -536,7 +525,7 @@ const SchematicNode = memo(function SchematicNode({
   const node = laidOutNode.node
   const kind = symbolKind(node, portDirection)
   const visual = nodeVisual(node, kind, rootId, highlighted)
-  const name = nodeSublabel(node, drivingNet)
+  const name = nodeSublabel(node)
   const controls = controlsFor(node)
   const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
@@ -638,7 +627,6 @@ export function GraphView({
 
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
-    const drivingNet = new Map<number, string>()
     const pinSetsById = new Map<number, MutableNodePins>()
     const hasIncoming = new Set<number>()
     const hasOutgoing = new Set<number>()
@@ -650,9 +638,6 @@ export function GraphView({
     for (const edge of graph.edges) {
       hasOutgoing.add(edge.from)
       hasIncoming.add(edge.to)
-      if (!drivingNet.has(edge.from) && edge.edge.net_name) {
-        drivingNet.set(edge.from, edge.edge.net_name)
-      }
       const fromPins = pinSetsById.get(edge.from)
       const toPins = pinSetsById.get(edge.to)
       if (fromPins && edge.edge.from_port) fromPins.outgoing.add(edge.edge.from_port)
@@ -676,7 +661,7 @@ export function GraphView({
         outgoing: [...pins.outgoing],
       })
     }
-    return { nodeById, drivingNet, pinsById, portDirection }
+    return { nodeById, pinsById, portDirection }
   }, [graph])
 
   // The graph can contain thousands of SVG elements. Keep pointer-frequency
@@ -932,7 +917,6 @@ export function GraphView({
               highlighted={highlight.has(laidOutNode.id)}
               selected={laidOutNode.id === selectedId}
               portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
-              drivingNet={metadata.drivingNet.get(laidOutNode.id)}
               pins={metadata.pinsById.get(laidOutNode.id) ?? { incoming: [], outgoing: [] }}
               interactive={interactive}
               suppressClick={suppressClick}
