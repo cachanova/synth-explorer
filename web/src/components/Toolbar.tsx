@@ -37,7 +37,8 @@ export function Toolbar() {
         <span>Top module</span>
         <input
           style={{ width: 110 }}
-          placeholder="auto"
+          placeholder="auto-detect"
+          title="Leave blank to auto-detect the top module (yosys hierarchy -auto-top), or name it explicitly."
           value={store.top}
           onChange={(e) => store.setTop(e.target.value)}
         />
