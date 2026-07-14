@@ -204,6 +204,14 @@ a:hover {
 .field select {
   padding: 3px 6px;
 }
+.field.checkbox input[type='checkbox'] {
+  align-self: flex-start;
+  width: auto;
+  padding: 0;
+  margin: 4px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 
 /* ---- file tabs ---- */
 .file-tabs {

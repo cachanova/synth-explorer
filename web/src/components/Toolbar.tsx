@@ -68,6 +68,20 @@ export function Toolbar() {
         </label>
       )}
 
+      {store.mode === 'xilinx' && (
+        <label
+          className="field checkbox"
+          title="synth_xilinx -retime: move registers across logic to balance path depth (Vivado does this in some flows)."
+        >
+          <span>Retime</span>
+          <input
+            type="checkbox"
+            checked={store.retime}
+            onChange={(e) => store.setRetime(e.target.checked)}
+          />
+        </label>
+      )}
+
       <label className="field grow">
         <span>Synthesis flags</span>
         <input

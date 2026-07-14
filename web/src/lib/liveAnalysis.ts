@@ -35,8 +35,9 @@ export function synthesisInput(
   extraArgs: string,
   revision = 0,
   family: XilinxFamily = 'xc7',
+  retime = false,
 ): SynthesisInput {
-  const request = buildSynthesizeRequest(files, top, mode, extraArgs, family)
+  const request = buildSynthesizeRequest(files, top, mode, extraArgs, family, retime)
   return { request, key: JSON.stringify(request), revision }
 }
 

@@ -110,6 +110,9 @@ pub struct SynthRequest {
     /// modes. Selects the carry/BRAM/DSP primitives, so it changes the netlist.
     #[serde(default)]
     pub family: Option<String>,
+    /// Xilinx register retiming (`synth_xilinx -retime`); ignored by other modes.
+    #[serde(default)]
+    pub retime: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +122,7 @@ pub struct ValidatedSynth {
     pub mode: SynthMode,
     pub extra_args: Vec<String>,
     pub family: Option<String>,
+    pub retime: bool,
 }
 
 /// Non-experimental `synth_xilinx -family` values we expose. Kept in sync with
@@ -187,6 +191,7 @@ impl SynthRequest {
             mode: self.mode,
             extra_args,
             family,
+            retime: self.retime,
         })
     }
 }
@@ -218,6 +223,8 @@ impl ValidatedSynth {
         hasher.update(self.extra_args.join(" ").as_bytes());
         hasher.update([0]);
         hasher.update(self.family.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        hasher.update([self.retime as u8]);
         hasher.update([0]);
         for file in &self.files {
             hasher.update(file.name.as_bytes());
@@ -484,8 +491,9 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
                 .as_deref()
                 .map(|f| format!(" -family {f}"))
                 .unwrap_or_default();
+            let retime = if input.retime { " -retime" } else { "" };
             script.push_str(&format!(
-                "synth_xilinx {}{family} -flatten{extra}\n",
+                "synth_xilinx {}{family}{retime} -flatten{extra}\n",
                 top_only(input.top.as_deref())
             ));
         }
@@ -612,6 +620,7 @@ mod tests {
                 Some(extra_args.to_owned())
             },
             family: None,
+            retime: false,
         }
         .validate()
         .unwrap()
@@ -628,6 +637,7 @@ mod tests {
             mode: SynthMode::Rtl,
             extra_args: None,
             family: None,
+            retime: false,
         };
         assert!(request.validate().is_err());
     }
@@ -643,6 +653,7 @@ mod tests {
             mode: SynthMode::Gates,
             extra_args: Some("-noabc;rm".to_owned()),
             family: None,
+            retime: false,
         };
         let error = request.validate().unwrap_err();
         assert_eq!(error.to_string(), "invalid extra_args token: -noabc;rm");
@@ -659,6 +670,7 @@ mod tests {
             mode: SynthMode::Gates,
             extra_args: Some("  -nofsm   -noabc  ".to_owned()),
             family: None,
+            retime: false,
         }
         .validate()
         .unwrap();
@@ -682,6 +694,7 @@ mod tests {
                 mode: SynthMode::Xilinx,
                 extra_args: None,
                 family: family.map(str::to_owned),
+                retime: false,
             }
         }
 
@@ -705,6 +718,39 @@ mod tests {
         assert_ne!(
             xilinx_req(Some("xc7")).validate().unwrap().design_id(),
             xilinx_req(Some("xcup")).validate().unwrap().design_id(),
+        );
+    }
+
+    #[test]
+    fn xilinx_retime_is_injected_and_part_of_identity() {
+        fn xilinx_req(retime: bool) -> SynthRequest {
+            SynthRequest {
+                files: vec![SourceFile {
+                    name: "design.sv".to_owned(),
+                    content: "module top; endmodule".to_owned(),
+                }],
+                top: Some("top".to_owned()),
+                mode: SynthMode::Xilinx,
+                extra_args: None,
+                family: Some("xcup".to_owned()),
+                retime: retime,
+            }
+        }
+
+        // -retime lands after -family, before -flatten.
+        assert!(
+            build_script(&xilinx_req(true).validate().unwrap(), MemoryHandling::Map)
+                .contains("synth_xilinx -top top -family xcup -retime -flatten\n")
+        );
+        // Off keeps the invocation retime-free.
+        assert!(
+            !build_script(&xilinx_req(false).validate().unwrap(), MemoryHandling::Map)
+                .contains("-retime")
+        );
+        // Toggling retime re-synthesizes.
+        assert_ne!(
+            xilinx_req(true).validate().unwrap().design_id(),
+            xilinx_req(false).validate().unwrap().design_id(),
         );
     }
 
@@ -818,6 +864,7 @@ mod tests {
             mode: SynthMode::Rtl,
             extra_args: Some("  -ifx   ".to_owned()),
             family: None,
+            retime: false,
         }
         .validate()
         .unwrap();
@@ -827,6 +874,7 @@ mod tests {
             mode: a.mode,
             extra_args: Some(a.extra_args.join(" ")),
             family: a.family.clone(),
+            retime: a.retime,
         }
         .validate()
         .unwrap();
