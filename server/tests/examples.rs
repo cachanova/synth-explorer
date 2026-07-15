@@ -4,7 +4,7 @@ use synth_explorer_server::graph::{
 };
 use synth_explorer_server::netlist::{parse_value, select_top};
 use synth_explorer_server::yosys::{
-    MemoryHandling, SourceFile, SynthMode, SynthRequest, run_yosys,
+    MemoryHandling, SourceFile, SynthMode, SynthRequest, SynthTool, run_yosys,
 };
 
 async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Analysis) {
@@ -17,7 +17,9 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
             content,
         }],
         top: Some(top.to_owned()),
+        tool: SynthTool::Yosys,
         mode,
+        target: None,
         extra_args: None,
     }
     .validate()
@@ -37,7 +39,9 @@ async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) ->
             content: source.to_owned(),
         }],
         top: Some(top.to_owned()),
+        tool: SynthTool::Yosys,
         mode,
+        target: None,
         extra_args: None,
     }
     .validate()
@@ -626,7 +630,9 @@ endmodule
             content: source.to_owned(),
         }],
         top: Some("mem_top".to_owned()),
+        tool: SynthTool::Yosys,
         mode: SynthMode::Gates,
+        target: None,
         extra_args: None,
     }
     .validate()

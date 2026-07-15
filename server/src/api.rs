@@ -1,28 +1,33 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef,
-    PathsResponse, SourceLineIndex, SourceMapResponse, Stats, Subgraph, estimate_delay_ns,
+    PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats, Subgraph,
+    estimate_delay_ns,
 };
 use crate::delay_model::DelayModel;
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
+use crate::synthesis::{SynthesisError, run_synthesis};
+use crate::vivado::VivadoError;
 use crate::yosys::{
-    MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, YosysError, run_yosys,
+    MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, SynthTool, YosysError,
 };
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderValue, Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use subtle::{Choice, ConstantTimeEq};
 use tokio::sync::{RwLock, Semaphore, watch};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -40,6 +45,7 @@ pub struct AppState {
     flights: Arc<SynthesisFlights>,
     running: Arc<Semaphore>,
     metadata: Arc<BuildMetadata>,
+    vivado_access: Option<Arc<VivadoAccess>>,
 }
 
 impl Default for AppState {
@@ -50,11 +56,31 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new(yosys_version: impl Into<String>) -> Self {
-        Self::with_cache_config(yosys_version, DESIGN_CACHE_BUDGET_BYTES, DESIGN_CACHE_TTL)
+        Self::with_backends(yosys_version, None)
+    }
+
+    pub fn with_backends(yosys_version: impl Into<String>, vivado_version: Option<String>) -> Self {
+        Self::with_backends_and_vivado_access(yosys_version, vivado_version, None)
+    }
+
+    pub fn with_backends_and_vivado_access(
+        yosys_version: impl Into<String>,
+        vivado_version: Option<String>,
+        vivado_access: Option<VivadoAccess>,
+    ) -> Self {
+        Self::with_cache_config(
+            yosys_version,
+            vivado_version,
+            vivado_access,
+            DESIGN_CACHE_BUDGET_BYTES,
+            DESIGN_CACHE_TTL,
+        )
     }
 
     fn with_cache_config(
         yosys_version: impl Into<String>,
+        vivado_version: Option<String>,
+        vivado_access: Option<VivadoAccess>,
         cache_budget_bytes: usize,
         cache_ttl: Duration,
     ) -> Self {
@@ -67,9 +93,69 @@ impl AppState {
                 commit: env::var("BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_owned()),
                 version: env!("CARGO_PKG_VERSION"),
                 yosys_version: yosys_version.into(),
+                vivado_access_protected: vivado_version.as_ref().map(|_| vivado_access.is_some()),
+                vivado_version,
             }),
+            vivado_access: vivado_access.map(Arc::new),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct VivadoAccess {
+    digests: Vec<[u8; 32]>,
+}
+
+impl VivadoAccess {
+    pub fn from_digest_hexes<'a>(
+        digests: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, &'static str> {
+        let digests = digests
+            .into_iter()
+            .map(parse_sha256_hex)
+            .collect::<Result<Vec<_>, _>>()?;
+        if digests.is_empty() {
+            return Err("at least one Vivado access digest is required");
+        }
+        Ok(Self { digests })
+    }
+
+    fn authorizes(&self, headers: &HeaderMap) -> bool {
+        let Some(token) = bearer_token(headers) else {
+            return false;
+        };
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        let matched = self
+            .digests
+            .iter()
+            .fold(Choice::from(0), |matched, expected| {
+                matched | presented.ct_eq(expected)
+            });
+        bool::from(matched)
+    }
+}
+
+fn parse_sha256_hex(value: &str) -> Result<[u8; 32], &'static str> {
+    let value = value.trim();
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Vivado access digest must be exactly 64 hexadecimal characters");
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(pair).map_err(|_| "Vivado access digest is not UTF-8")?;
+        digest[index] = u8::from_str_radix(pair, 16)
+            .map_err(|_| "Vivado access digest contains invalid hexadecimal")?;
+    }
+    Ok(digest)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("bearer") && !token.contains(char::is_whitespace)).then_some(token)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -78,6 +164,10 @@ struct BuildMetadata {
     commit: String,
     version: &'static str,
     yosys_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vivado_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vivado_access_protected: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -331,7 +421,10 @@ impl Design {
 pub struct SynthesizeResponse {
     pub design_id: String,
     pub top: String,
+    pub tool: String,
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
     pub stats: Stats,
     pub warnings: Vec<String>,
     pub log: String,
@@ -399,6 +492,12 @@ impl IntoResponse for ApiError {
         {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
+        if response.status() == StatusCode::UNAUTHORIZED {
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer realm=\"Vivado owner access\""),
+            );
+        }
         response
     }
 }
@@ -407,6 +506,7 @@ pub fn app(state: AppState) -> Router {
     let health_state = state.clone();
     let api = Router::new()
         .route("/synthesize", post(synthesize))
+        .route("/vivado/access", post(vivado_access))
         .route("/examples", get(examples))
         .route("/design/{id}", get(design))
         .route("/design/{id}/endpoints", get(endpoints))
@@ -462,13 +562,30 @@ async fn trace_request(request: Request<axum::body::Body>, next: Next) -> Respon
 
 async fn synthesize(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<SynthRequest>,
 ) -> Result<Json<SynthesizeResponse>, ApiError> {
     let validated = request.validate().map_err(map_yosys_error)?;
+    if validated.tool == SynthTool::Vivado && state.metadata.vivado_version.is_none() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vivado synthesis is not configured on this deployment",
+        ));
+    }
+    if validated.tool == SynthTool::Vivado {
+        require_vivado_access(&state, &headers)?;
+    }
     let design_id = validated.design_id();
+    let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
     if let Some(design) = cache_lookup(&state.cache, &design_id).await {
-        tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+        tracing::info!(
+            design_id,
+            tool,
+            mode,
+            cache_hit = true,
+            "synthesis_complete"
+        );
         return Ok(Json(design.response.clone()));
     }
 
@@ -483,6 +600,7 @@ async fn synthesize(
             let task_state = state.clone();
             let task_design_id = design_id.clone();
             tokio::spawn(async move {
+                let task_tool = validated.tool.to_string();
                 let task_mode = mode_string(validated.mode);
                 // A previous flight may have filled the cache after the
                 // optimistic lookup but before this key was claimed.
@@ -490,6 +608,7 @@ async fn synthesize(
                     if let Some(design) = cache_lookup(&task_state.cache, &task_design_id).await {
                         tracing::info!(
                             design_id = task_design_id,
+                            tool = task_tool,
                             mode = task_mode,
                             cache_hit = true,
                             "synthesis_complete"
@@ -506,7 +625,13 @@ async fn synthesize(
             // A task can publish its cache entry immediately before removing
             // its flight. Close that race before rejecting a distinct key.
             if let Some(design) = cache_lookup(&state.cache, &design_id).await {
-                tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+                tracing::info!(
+                    design_id,
+                    tool,
+                    mode,
+                    cache_hit = true,
+                    "synthesis_complete"
+                );
                 return Ok(Json(design.response.clone()));
             }
             return Err(ApiError::busy());
@@ -514,6 +639,36 @@ async fn synthesize(
     };
     let design = wait_for_flight(receiver).await?;
     Ok(Json(design.response.clone()))
+}
+
+async fn vivado_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    if state.metadata.vivado_version.is_none() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vivado synthesis is not configured on this deployment",
+        ));
+    }
+    require_vivado_access(&state, &headers)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_vivado_access(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(access) = state.vivado_access.as_ref() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vivado access control is not configured on this deployment",
+        ));
+    };
+    if !access.authorizes(headers) {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "valid owner access key required for Vivado synthesis",
+        ));
+    }
+    Ok(())
 }
 
 async fn wait_for_flight(mut receiver: watch::Receiver<Option<FlightResult>>) -> FlightResult {
@@ -541,39 +696,51 @@ async fn synthesize_uncached(
         .acquire_owned()
         .await
         .expect("synthesis semaphore is never closed");
+    let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
     if let Some(design) = cache_lookup(&state.cache, design_id).await {
-        tracing::info!(design_id, mode, cache_hit = true, "synthesis_complete");
+        tracing::info!(
+            design_id,
+            tool,
+            mode,
+            cache_hit = true,
+            "synthesis_complete"
+        );
         return Ok(design);
     }
     let started = Instant::now();
-    let synthesis_failed = |err: &YosysError| {
+    let synthesis_failed = |err: &SynthesisError| {
         tracing::warn!(
             design_id,
+            tool,
             mode,
             latency_ms = started.elapsed().as_millis() as u64,
             error = %err,
             "synthesis_failed"
         );
     };
-    let (output, memories_abstracted) = match run_yosys(validated, MemoryHandling::Map).await {
+    let (output, memories_abstracted) = match run_synthesis(validated, MemoryHandling::Map).await {
         Ok(output) => (output, false),
         // A too-large memory flatten exhausts memory, CPU, or the wall clock
         // depending on the Yosys version; any of them is worth one retry that
         // keeps memories abstract.
-        Err(err) if validated.mode.is_generic() && err.is_resource_exhaustion() => {
-            tracing::info!(design_id, mode, "synthesis_memory_retry");
-            let output = run_yosys(validated, MemoryHandling::Abstract)
+        Err(err)
+            if validated.tool == SynthTool::Yosys
+                && validated.mode.is_generic()
+                && err.is_resource_exhaustion() =>
+        {
+            tracing::info!(design_id, tool, mode, "synthesis_memory_retry");
+            let output = run_synthesis(validated, MemoryHandling::Abstract)
                 .await
                 .map_err(|retry_err| {
                     synthesis_failed(&retry_err);
-                    map_yosys_error(retry_err)
+                    map_synthesis_error(retry_err)
                 })?;
             (output, true)
         }
         Err(err) => {
             synthesis_failed(&err);
-            return Err(map_yosys_error(err));
+            return Err(map_synthesis_error(err));
         }
     };
     let parsed = parse_value(output.json).map_err(|err| {
@@ -607,7 +774,7 @@ async fn synthesize_uncached(
         )
     })?;
     let SourceProvenance {
-        ranges,
+        mut ranges,
         truncated: source_ranges_truncated,
         procedural_targets,
         probe_hints,
@@ -619,7 +786,10 @@ async fn synthesize_uncached(
             .iter()
             .map(|file| (file.name.clone(), file.content.clone())),
     );
-    let delay_model = DelayModel::for_target(&mode, validated.family());
+    if validated.tool == SynthTool::Vivado {
+        ranges.extend(vivado_procedural_ranges(&procedural_targets));
+    }
+    let delay_model = default_delay_model(validated, &mode);
     let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
@@ -630,7 +800,9 @@ async fn synthesize_uncached(
     let response = SynthesizeResponse {
         design_id: design_id.to_owned(),
         top: output.resolved_top,
+        tool: tool.clone(),
         mode: mode.clone(),
+        target: validated.target.clone(),
         stats: analysis.stats(),
         warnings: analysis.warnings(),
         log: output.log,
@@ -655,6 +827,7 @@ async fn synthesize_uncached(
     if !cached {
         tracing::warn!(
             design_id,
+            tool,
             mode,
             latency_ms = started.elapsed().as_millis() as u64,
             cache_estimated_bytes,
@@ -668,6 +841,7 @@ async fn synthesize_uncached(
     }
     tracing::info!(
         design_id,
+        tool,
         mode,
         cache_hit = false,
         latency_ms = started.elapsed().as_millis() as u64,
@@ -676,6 +850,25 @@ async fn synthesize_uncached(
         "synthesis_complete"
     );
     Ok(design)
+}
+
+fn vivado_procedural_ranges(
+    targets: &HashMap<(String, usize), Vec<u32>>,
+) -> Vec<SourceRangeMapping> {
+    let mut ranges = targets
+        .iter()
+        .map(|((file, line), node_ids)| SourceRangeMapping {
+            file: file.clone(),
+            start_line: *line,
+            end_line: *line,
+            node_ids: node_ids.clone(),
+            mapping_incomplete: false,
+        })
+        .collect::<Vec<_>>();
+    ranges.sort_by(|a, b| {
+        (&a.file, a.start_line, a.end_line).cmp(&(&b.file, b.start_line, b.end_line))
+    });
+    ranges
 }
 
 fn design_cache_weight(design_id: &str, design: &Design) -> usize {
@@ -694,7 +887,9 @@ fn synthesize_response_heap_bytes(response: &SynthesizeResponse) -> usize {
         .design_id
         .capacity()
         .saturating_add(response.top.capacity())
+        .saturating_add(response.tool.capacity())
         .saturating_add(response.mode.capacity())
+        .saturating_add(response.target.as_ref().map_or(0, String::capacity))
         .saturating_add(response.log.capacity())
         .saturating_add(
             response
@@ -1262,8 +1457,55 @@ fn map_yosys_error(err: YosysError) -> ApiError {
     }
 }
 
+fn map_synthesis_error(err: SynthesisError) -> ApiError {
+    match err {
+        SynthesisError::Yosys(err) => map_yosys_error(err),
+        SynthesisError::Vivado(err) => match err {
+            VivadoError::Source(err) => map_yosys_error(err),
+            VivadoError::Timeout { log } => {
+                ApiError::with_log(StatusCode::GATEWAY_TIMEOUT, "vivado timed out", log)
+            }
+            VivadoError::Vivado { log } => {
+                ApiError::with_log(StatusCode::BAD_REQUEST, "vivado synthesis failed", log)
+            }
+            VivadoError::NormalizeTimeout { log } => ApiError::with_log(
+                StatusCode::GATEWAY_TIMEOUT,
+                "vivado netlist normalization timed out",
+                log,
+            ),
+            VivadoError::Normalize { log } => ApiError::with_log(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "vivado netlist normalization failed",
+                log,
+            ),
+            VivadoError::Io(err) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to run vivado synthesis: {err}"),
+            ),
+            VivadoError::Json(err) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("invalid normalized netlist json: {err}"),
+            ),
+            VivadoError::Netlist(err) => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("invalid normalized netlist: {err}"),
+            ),
+        },
+    }
+}
+
 fn mode_string(mode: SynthMode) -> String {
     mode.to_string()
+}
+
+fn default_delay_model(validated: &crate::yosys::ValidatedSynth, mode: &str) -> DelayModel {
+    if validated.tool == SynthTool::Vivado {
+        return match validated.target.as_deref() {
+            Some(target) if target.starts_with("xc7") => DelayModel::series7(),
+            _ => DelayModel::generic(),
+        };
+    }
+    DelayModel::for_target(mode, validated.family())
 }
 
 fn parse_node_ids(ids: &str) -> Result<Vec<u32>, ApiError> {
@@ -1289,6 +1531,67 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    const TEST_VIVADO_KEY: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn test_vivado_access() -> VivadoAccess {
+        let digest = Sha256::digest(TEST_VIVADO_KEY.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        VivadoAccess::from_digest_hexes([digest.as_str()]).unwrap()
+    }
+
+    fn authorized_request(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+        builder.header(header::AUTHORIZATION, format!("Bearer {TEST_VIVADO_KEY}"))
+    }
+
+    #[test]
+    fn vivado_access_hashes_the_presented_key_and_compares_the_digest() {
+        let access = test_vivado_access();
+        let mut valid = HeaderMap::new();
+        valid.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {TEST_VIVADO_KEY}")).unwrap(),
+        );
+        assert!(access.authorizes(&valid));
+
+        let stored_digest = Sha256::digest(TEST_VIVADO_KEY.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut digest_as_key = HeaderMap::new();
+        digest_as_key.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {stored_digest}")).unwrap(),
+        );
+        assert!(!access.authorizes(&digest_as_key));
+        assert!(!access.authorizes(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn vivado_artix_target_uses_the_series7_delay_model() {
+        let validated = SynthRequest {
+            files: vec![SourceFile {
+                name: "top.sv".to_owned(),
+                content: "module top(input logic a, output logic y); assign y = a; endmodule"
+                    .to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some("xc7a35tcpg236-1".to_owned()),
+            extra_args: None,
+        }
+        .validate()
+        .unwrap();
+
+        assert_eq!(
+            default_delay_model(&validated, "gates"),
+            DelayModel::series7()
+        );
+    }
+
     fn empty_test_design(design_id: &str) -> Arc<Design> {
         let netlist = parse_value(serde_json::json!({
             "modules": {
@@ -1305,7 +1608,9 @@ mod tests {
             response: SynthesizeResponse {
                 design_id: design_id.to_owned(),
                 top: top.to_owned(),
+                tool: "yosys".to_owned(),
                 mode: "rtl".to_owned(),
+                target: None,
                 stats: analysis.stats(),
                 warnings: analysis.warnings(),
                 log: String::new(),
@@ -1576,6 +1881,82 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn vivado_access_endpoint_requires_the_owner_key() {
+        let state = AppState::with_backends_and_vivado_access(
+            "Yosys test-version",
+            Some("Vivado v2026.1".to_owned()),
+            Some(test_vivado_access()),
+        );
+
+        let unauthorized = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/vivado/access")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            unauthorized
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap(),
+            "Bearer realm=\"Vivado owner access\""
+        );
+
+        let authorized = app(state)
+            .oneshot(
+                authorized_request(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/vivado/access"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorized.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn vivado_synthesis_rejects_unauthorized_requests_before_execution() {
+        let state = AppState::with_backends_and_vivado_access(
+            "Yosys test-version",
+            Some("Vivado v2026.1".to_owned()),
+            Some(test_vivado_access()),
+        );
+        let request = serde_json::json!({
+            "files": [{"name": "top.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "tool": "vivado",
+            "mode": "gates",
+            "target": "xc7a35tcpg236-1"
+        });
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/synthesize")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"],
+            "valid owner access key required for Vivado synthesis"
+        );
+    }
+
     async fn post_timing(state: &AppState, id: &str, body: serde_json::Value) -> Response {
         app(state.clone())
             .oneshot(
@@ -1641,6 +2022,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vivado_tool_is_rejected_when_backend_is_not_configured() {
+        let request = serde_json::json!({
+            "files": [{"name": "top.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "tool": "vivado",
+            "mode": "gates",
+            "target": "xc7a35tcpg236-1"
+        });
+        let response = app(AppState::new("Yosys test-version"))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"],
+            "vivado synthesis is not configured on this deployment"
+        );
+    }
+
+    #[tokio::test]
     async fn capacity_error_returns_retry_after() {
         let error = ApiError::busy().into_response();
         assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1688,6 +2098,8 @@ mod tests {
     async fn synthesized_design_that_cannot_be_retained_returns_507() {
         let state = AppState::with_cache_config(
             "Yosys test-version",
+            None,
+            None,
             DESIGN_CACHE_MIN_ENTRY_BYTES - 1,
             Duration::from_secs(60),
         );
@@ -1782,5 +2194,22 @@ mod tests {
         ));
         assert!(cache.get("large").is_none());
         assert_eq!(cache.total_bytes, 0);
+    }
+
+    #[test]
+    fn vivado_procedural_targets_become_deterministic_source_ranges() {
+        let targets = HashMap::from([
+            (("top.sv".to_owned(), 17), vec![8, 9]),
+            (("top.sv".to_owned(), 14), vec![7]),
+        ]);
+        let ranges = vivado_procedural_ranges(&targets);
+        assert_eq!(
+            ranges
+                .iter()
+                .map(|range| (range.start_line, range.node_ids.clone()))
+                .collect::<Vec<_>>(),
+            vec![(14, vec![7]), (17, vec![8, 9])]
+        );
+        assert!(ranges.iter().all(|range| !range.mapping_incomplete));
     }
 }

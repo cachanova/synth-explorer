@@ -68,8 +68,13 @@ RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
         ca-certificates \
         curl \
+        libx11-6 \
+        libpixman-1-0 \
+        libpng16-16t64 \
         libstdc++6 \
+        locales \
         zlib1g \
+    && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 synth-explorer \
     && useradd --uid 10001 --gid synth-explorer --no-create-home \
@@ -88,6 +93,8 @@ LABEL org.opencontainers.image.title="Synth Explorer" \
       org.opencontainers.image.revision="${BUILD_COMMIT}"
 
 ENV PATH="/opt/yosys/bin:${PATH}" \
+    LANG=en_US.UTF-8 \
+    LC_ALL=en_US.UTF-8 \
     STATIC_DIR=/app/web/dist \
     EXAMPLES_DIR=/app/examples \
     BIND_ADDR=0.0.0.0:8787 \

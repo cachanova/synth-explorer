@@ -39,7 +39,7 @@ mkdir -p -- "${CURRENT_RELEASE_FIXTURE}/ops" "${PREVIOUS_RELEASE_FIXTURE}/ops" \
 cp -- "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/ops/deploy.sh" \
   "${CURRENT_RELEASE_FIXTURE}/ops/deploy.sh"
 printf '%s\n' '#!/usr/bin/env bash' \
-  'printf "%s %s\n" "$1" "$2" >>"${SMOKE_LOG:?}"' \
+  'printf "%s %s %s\n" "$1" "$2" "${VIVADO_REQUIRED:-unset}" >>"${SMOKE_LOG:?}"' \
   >"${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh"
 chmod +x "${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh"
 
@@ -48,6 +48,26 @@ export PUBLIC_BASE_URL=https://example.test
 export SMOKE_LOG
 # shellcheck source=/dev/null
 source "${CURRENT_RELEASE_FIXTURE}/ops/deploy.sh"
+
+# Production keeps only the owner's digest on disk and generates a one-deploy
+# smoke key in memory. The digest file must fail closed on shape or permissions.
+if (configure_vivado_access >/dev/null 2>&1); then
+  fail 'missing Vivado owner digest unexpectedly passed validation'
+fi
+printf '%064d\n' 0 >"${VIVADO_ACCESS_DIGEST_FILE}"
+chmod 0644 "${VIVADO_ACCESS_DIGEST_FILE}"
+if (configure_vivado_access >/dev/null 2>&1); then
+  fail 'world-readable Vivado owner digest unexpectedly passed validation'
+fi
+chmod 0600 "${VIVADO_ACCESS_DIGEST_FILE}"
+configure_vivado_access
+[[ "${VIVADO_ACCESS_TOKEN_SHA256}" == "$(printf '%064d' 0)" ]] \
+  || fail 'Vivado owner digest was not exported exactly'
+[[ "${VIVADO_SMOKE_ACCESS_TOKEN}" =~ ^[a-f0-9]{64}$ ]] \
+  || fail 'deployment smoke key was not a 256-bit hexadecimal token'
+[[ "${VIVADO_DEPLOY_TOKEN_SHA256}" == "$(
+  printf '%s' "${VIVADO_SMOKE_ACCESS_TOKEN}" | sha256sum | awk '{print $1}'
+)" ]] || fail 'deployment smoke digest did not match its ephemeral token'
 
 # Invoking through current/ must resolve the physical release, never current
 # itself (which would turn the symlink into a self-reference on success).
@@ -99,7 +119,16 @@ assert_file_equals "${ENV_FILE}" "IMAGE_REF=${PREVIOUS_REF}"
   || fail 'current symlink did not move to the previous release'
 [[ ! -e "${PREVIOUS_FILE}" && ! -e "${PREVIOUS_RELEASE_FILE}" ]] \
   || fail 'rollback metadata was not cleared'
-assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT}"
+assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT} 0"
+
+# A release containing the Vivado overlay must request the stronger smoke path.
+: >"${SMOKE_LOG}"
+touch -- "${PREVIOUS_RELEASE_FIXTURE}/compose.vivado.yml"
+run_release_smoke "${PREVIOUS_RELEASE_FIXTURE}" \
+  "${PREVIOUS_RELEASE_FIXTURE}/ops/smoke-test.sh" \
+  "https://example.test" "${EXPECTED_COMMIT}"
+assert_file_equals "${SMOKE_LOG}" "https://example.test ${EXPECTED_COMMIT} 1"
+rm -f -- "${PREVIOUS_RELEASE_FIXTURE}/compose.vivado.yml"
 grep -Fq "docker image rm -- ${CURRENT_REF}" "${CALL_LOG}" \
   || fail 'successful rollback did not remove the failed digest'
 
@@ -185,6 +214,22 @@ if grep -Fq 'compose down' "${CALL_LOG}" \
 fi
 clear_deployment_state
 PUBLIC_HEALTH_MODE=exact
+
+# The stronger runtime health predicate must accept real version strings. Keep
+# this fixture beside the deployment tests because ordinary CI images do not
+# contain Vivado and therefore exercise only the Yosys health branch.
+health_fixture="${TEST_DIR}/vivado-health.json"
+jq --null-input --arg commit "${EXPECTED_COMMIT}" \
+  '{status: "ok", commit: $commit, yosys_version: "Yosys 0.67", vivado_version: "Vivado v2026.1 (64-bit)"}' \
+  >"${health_fixture}"
+jq --exit-status --arg commit "${EXPECTED_COMMIT}" \
+  '.status == "ok" and .commit == $commit
+    and ((.yosys_version | type) == "string")
+    and (.yosys_version | contains("0.67"))
+    and ((.vivado_version | type) == "string")
+    and (.vivado_version | ascii_downcase | contains("vivado v2026.1"))' \
+  "${health_fixture}" >/dev/null \
+  || fail 'Vivado runtime health predicate rejected valid version strings'
 
 # Retention keeps exactly the active and previous release/image.
 : >"${CALL_LOG}"

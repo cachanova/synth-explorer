@@ -65,6 +65,25 @@ pub struct SourceFile {
     pub content: String,
 }
 
+pub const SUPPORTED_VIVADO_PART: &str = "xc7a35tcpg236-1";
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SynthTool {
+    #[default]
+    Yosys,
+    Vivado,
+}
+
+impl fmt::Display for SynthTool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Yosys => "yosys",
+            Self::Vivado => "vivado",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SynthMode {
@@ -104,7 +123,10 @@ impl fmt::Display for SynthMode {
 pub struct SynthRequest {
     pub files: Vec<SourceFile>,
     pub top: Option<String>,
+    #[serde(default)]
+    pub tool: SynthTool,
     pub mode: SynthMode,
+    pub target: Option<String>,
     pub extra_args: Option<String>,
 }
 
@@ -112,12 +134,14 @@ pub struct SynthRequest {
 pub struct ValidatedSynth {
     pub files: Vec<SourceFile>,
     pub top: Option<String>,
+    pub tool: SynthTool,
     pub mode: SynthMode,
+    pub target: Option<String>,
     pub extra_args: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct YosysOutput {
+pub struct SynthesisOutput {
     pub json: Value,
     pub source_json: Value,
     pub log: String,
@@ -171,10 +195,41 @@ impl SynthRequest {
             validate_top(top)?;
         }
         let extra_args = parse_extra_args(self.extra_args.as_deref())?;
+        match self.tool {
+            SynthTool::Yosys if self.target.is_some() => {
+                return Err(YosysError::Validation(
+                    "target is only supported with the vivado synthesis tool".to_owned(),
+                ));
+            }
+            SynthTool::Vivado if self.mode != SynthMode::Gates => {
+                return Err(YosysError::Validation(
+                    "vivado currently supports only gates mode".to_owned(),
+                ));
+            }
+            SynthTool::Vivado if self.target.as_deref() != Some(SUPPORTED_VIVADO_PART) => {
+                return Err(YosysError::Validation(format!(
+                    "unsupported vivado target; expected {SUPPORTED_VIVADO_PART}"
+                )));
+            }
+            SynthTool::Vivado
+                if extra_args.iter().any(|arg| {
+                    matches!(arg.as_str(), "-top" | "-part")
+                        || arg.starts_with("-top=")
+                        || arg.starts_with("-part=")
+                }) =>
+            {
+                return Err(YosysError::Validation(
+                    "vivado top and part must use the dedicated request fields".to_owned(),
+                ));
+            }
+            _ => {}
+        }
         Ok(ValidatedSynth {
             files,
             top: self.top,
+            tool: self.tool,
             mode: self.mode,
+            target: self.target,
             extra_args,
         })
     }
@@ -183,6 +238,14 @@ impl SynthRequest {
 impl ValidatedSynth {
     pub fn design_id(&self) -> String {
         let mut hasher = Sha256::new();
+        // Keep existing Yosys design ids stable. Non-default tools get an
+        // explicit namespace and target so cross-tool results cannot collide.
+        if self.tool != SynthTool::Yosys {
+            hasher.update(self.tool.to_string().as_bytes());
+            hasher.update([0]);
+            hasher.update(self.target.as_deref().unwrap_or_default().as_bytes());
+            hasher.update([0]);
+        }
         hasher.update(self.mode.to_string().as_bytes());
         hasher.update([0]);
         if let Some(top) = &self.top {
@@ -255,7 +318,12 @@ pub async fn preflight_yosys() -> Result<String, YosysError> {
 pub async fn run_yosys(
     input: &ValidatedSynth,
     memory: MemoryHandling,
-) -> Result<YosysOutput, YosysError> {
+) -> Result<SynthesisOutput, YosysError> {
+    if input.tool != SynthTool::Yosys {
+        return Err(YosysError::Validation(
+            "non-yosys request must use its selected synthesis backend".to_owned(),
+        ));
+    }
     let temp = TempDir::new()?;
     for file in &input.files {
         fs::write(temp.path().join(&file.name), &file.content).await?;
@@ -311,7 +379,7 @@ pub async fn run_yosys(
     let source_json = read_json_limited(&source_json_path, "yosys source json").await?;
     let parsed = parse_value(json.clone())?;
     let (top, _) = select_top(&parsed, None)?;
-    Ok(YosysOutput {
+    Ok(SynthesisOutput {
         json,
         source_json,
         log,
@@ -584,7 +652,9 @@ mod tests {
                 })
                 .collect(),
             top: top.map(str::to_owned),
+            tool: SynthTool::Yosys,
             mode,
+            target: None,
             extra_args: if extra_args.is_empty() {
                 None
             } else {
@@ -603,7 +673,9 @@ mod tests {
                 content: String::new(),
             }],
             top: None,
+            tool: SynthTool::Yosys,
             mode: SynthMode::Rtl,
+            target: None,
             extra_args: None,
         };
         assert!(request.validate().is_err());
@@ -617,11 +689,77 @@ mod tests {
                 content: "module top; endmodule".to_owned(),
             }],
             top: Some("top".to_owned()),
+            tool: SynthTool::Yosys,
             mode: SynthMode::Gates,
+            target: None,
             extra_args: Some("-noabc;rm".to_owned()),
         };
         let error = request.validate().unwrap_err();
         assert_eq!(error.to_string(), "invalid extra_args token: -noabc;rm");
+    }
+
+    #[test]
+    fn vivado_validates_mode_and_target_but_accepts_safe_synth_design_flags() {
+        let request = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some(SUPPORTED_VIVADO_PART.to_owned()),
+            extra_args: Some("-retiming".to_owned()),
+        };
+        let validated = request.validate().unwrap();
+        assert_eq!(validated.extra_args, ["-retiming"]);
+
+        let request = SynthRequest {
+            files: validated.files,
+            top: validated.top,
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Rtl,
+            target: Some(SUPPORTED_VIVADO_PART.to_owned()),
+            extra_args: None,
+        };
+        assert_eq!(
+            request.validate().unwrap_err().to_string(),
+            "vivado currently supports only gates mode"
+        );
+    }
+
+    #[test]
+    fn vivado_flags_cannot_override_top_or_target() {
+        for flags in ["-part xc7a100tcsg324-1", "-top other"] {
+            let request = SynthRequest {
+                files: vec![SourceFile {
+                    name: "design.sv".to_owned(),
+                    content: "module top; endmodule".to_owned(),
+                }],
+                top: Some("top".to_owned()),
+                tool: SynthTool::Vivado,
+                mode: SynthMode::Gates,
+                target: Some(SUPPORTED_VIVADO_PART.to_owned()),
+                extra_args: Some(flags.to_owned()),
+            };
+            assert_eq!(
+                request.validate().unwrap_err().to_string(),
+                "vivado top and part must use the dedicated request fields"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_tool_defaults_to_yosys() {
+        let request: SynthRequest = serde_json::from_value(serde_json::json!({
+            "files": [{"name": "design.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "mode": "gates"
+        }))
+        .unwrap();
+        let validated = request.validate().unwrap();
+        assert_eq!(validated.tool, SynthTool::Yosys);
+        assert_eq!(validated.target, None);
     }
 
     #[test]
@@ -632,7 +770,9 @@ mod tests {
                 content: "module top; endmodule".to_owned(),
             }],
             top: Some("top".to_owned()),
+            tool: SynthTool::Yosys,
             mode: SynthMode::Gates,
+            target: None,
             extra_args: Some("  -nofsm   -noabc  ".to_owned()),
         }
         .validate()
@@ -788,7 +928,9 @@ mod tests {
                 },
             ],
             top: Some("a".to_owned()),
+            tool: SynthTool::Yosys,
             mode: SynthMode::Rtl,
+            target: None,
             extra_args: Some("  -ifx   ".to_owned()),
         }
         .validate()
@@ -796,7 +938,9 @@ mod tests {
         let b = SynthRequest {
             files: a.files.iter().cloned().rev().collect(),
             top: a.top.clone(),
+            tool: a.tool,
             mode: a.mode,
+            target: a.target.clone(),
             extra_args: Some(a.extra_args.join(" ")),
         }
         .validate()

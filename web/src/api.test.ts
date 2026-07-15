@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getLineCone, getNetlist } from './api'
+import { getLineCone, getNetlist, synthesize, unlockVivado } from './api'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -13,11 +13,13 @@ describe('getLineCone', () => {
       highlight: [],
       graph: { nodes: [], edges: [], truncated: false },
     }
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(response), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
     )
     vi.stubGlobal('fetch', fetchMock)
 
@@ -87,5 +89,68 @@ describe('getNetlist', () => {
     expect(url.searchParams.get('max_nodes')).toBe('400')
     expect(url.searchParams.get('hide_control')).toBe('true')
     expect(url.searchParams.get('hide_const')).toBe('false')
+  })
+})
+
+describe('Vivado owner access', () => {
+  const accessKey =
+    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+
+  it('verifies the owner key without putting it in the URL or body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await unlockVivado(accessKey)
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/vivado/access', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessKey}` },
+    })
+  })
+
+  it('sends the key only for Vivado synthesis', async () => {
+    const response = {
+      design_id: '0123456789ab',
+      top: 'top',
+      tool: 'vivado',
+      mode: 'gates',
+      stats: {},
+      warnings: [],
+      log: '',
+      memories_abstracted: false,
+    }
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify(response), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await synthesize(
+      {
+        files: [{ name: 'top.sv', content: 'module top; endmodule' }],
+        top: 'top',
+        tool: 'vivado',
+        mode: 'gates',
+        target: 'xc7a35tcpg236-1',
+      },
+      accessKey,
+    )
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessKey}`,
+    })
+
+    await synthesize({
+      files: [{ name: 'top.sv', content: 'module top; endmodule' }],
+      mode: 'gates',
+      tool: 'yosys',
+    })
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({
+      'Content-Type': 'application/json',
+    })
   })
 })

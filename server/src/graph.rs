@@ -835,9 +835,11 @@ fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
         "FDRE" | "FDRE_1" | "FDSE" | "FDSE_1" | "FDCE" | "FDCE_1" | "FDPE" | "FDPE_1" | "FDCPE"
         | "FDR" | "FDS" | "FDC" | "FDP" | "LDCE" | "LDPE" | "LDCPE" | "TRELLIS_FF" | "SRL16E"
         | "SRLC32E" => Some(VendorPrimitiveClass::Sequential),
-        "LUT1" | "LUT2" | "LUT3" | "LUT4" | "LUT5" | "LUT6" | "SB_LUT4" | "PFUMX" | "L6MUX21"
-        | "CCU2C" | "CARRY4" | "CARRY8" | "MUXF7" | "MUXF8" | "MUXF9" | "INV" | "SB_CARRY"
-        | "XORCY" | "MUXCY" => Some(VendorPrimitiveClass::Combinational { depth_weight: 1 }),
+        "LUT1" | "LUT2" | "LUT3" | "LUT4" | "LUT5" | "LUT6" | "LUT6_2" | "SB_LUT4" | "PFUMX"
+        | "L6MUX21" | "CCU2C" | "CARRY4" | "CARRY8" | "MUXF7" | "MUXF8" | "MUXF9" | "INV"
+        | "SB_CARRY" | "XORCY" | "MUXCY" => {
+            Some(VendorPrimitiveClass::Combinational { depth_weight: 1 })
+        }
         "IBUF" | "OBUF" | "OBUFT" | "IOBUF" | "BUFG" | "BUFGCE" | "BUFGCTRL" | "BUFH" | "SB_GB"
         | "$_BUF_" => Some(VendorPrimitiveClass::Combinational { depth_weight: 0 }),
         _ => None,

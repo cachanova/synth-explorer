@@ -70,7 +70,16 @@ export interface LineConeResponse {
 
 // --- POST /api/synthesize ---
 
-export type Mode = 'rtl' | 'gates' | 'lut4' | 'lut6' | 'ice40' | 'ecp5' | 'xilinx'
+export type Mode =
+  | 'rtl'
+  | 'gates'
+  | 'lut4'
+  | 'lut6'
+  | 'ice40'
+  | 'ecp5'
+  | 'xilinx'
+
+export type SynthTool = 'yosys' | 'vivado'
 
 // synth_xilinx -family target; selects carry/BRAM/DSP primitives.
 export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
@@ -83,8 +92,19 @@ export interface DesignFile {
 export interface SynthesizeRequest {
   files: DesignFile[]
   top?: string // omitted -> yosys -auto-top
+  tool?: SynthTool // omitted -> yosys (backward-compatible API default)
   mode: Mode
-  extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
+  target?: string // currently required for vivado; omitted for yosys
+  extra_args?: string // tool/mode-specific synthesis-pass flags; safe whitespace-separated tokens
+}
+
+export interface HealthResponse {
+  status: string
+  commit: string
+  version: string
+  yosys_version: string
+  vivado_version?: string
+  vivado_access_protected?: boolean
 }
 
 export interface Stats {
@@ -155,7 +175,9 @@ export interface TimingResponse {
 export interface SynthesizeResponse {
   design_id: string // content hash; identical input returns the same id
   top: string // resolved top module
+  tool: SynthTool
   mode: string
+  target?: string
   stats: Stats
   warnings: string[]
   log: string // yosys log (tail, capped)

@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_only:
-        description: Publish the image without deploying it (first GHCR setup only)
+        description: Build and publish this ref without deploying it
         required: false
         type: boolean
         default: false
@@ -34,7 +34,7 @@ jobs:
     if: >-
       ${{
         (github.event_name == 'workflow_dispatch' &&
-         github.ref == 'refs/heads/main') ||
+         (inputs.publish_only == true || github.ref == 'refs/heads/main')) ||
         (github.event_name == 'workflow_run' &&
          github.event.workflow_run.event == 'push' &&
          github.event.workflow_run.head_branch == 'main' &&
@@ -54,17 +54,27 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
+          PUBLISH_ONLY: ${{ inputs.publish_only }}
         run: |
-          count="$(gh api --method GET \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
-            -f branch=main \
-            -f event=push \
-            -f head_sha="${DEPLOY_SHA}" \
-            -f status=success \
-            -F per_page=1 \
-            --jq '.total_count')"
+          if [[ "${PUBLISH_ONLY}" == true ]]; then
+            count="$(gh api --method GET \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f branch="${GITHUB_REF_NAME}" \
+              -f status=success \
+              -F per_page=100 \
+              --jq "[.workflow_runs[] | select(.head_sha == \"${DEPLOY_SHA}\")] | length")"
+          else
+            count="$(gh api --method GET \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
+              -f branch=main \
+              -f event=push \
+              -f head_sha="${DEPLOY_SHA}" \
+              -f status=success \
+              -F per_page=1 \
+              --jq '.total_count')"
+          fi
           if [[ ! "${count}" =~ ^[0-9]+$ || "${count}" -lt 1 ]]; then
-            echo "No successful push-triggered CI run for ${DEPLOY_SHA}" >&2
+            echo "No successful qualifying CI run for ${DEPLOY_SHA}" >&2
             exit 1
           fi
 
@@ -213,11 +223,11 @@ jobs:
         run: |
           : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
           : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
-          # Bundle the deploy files with flat archive paths (compose.prod.yml,
+          # Bundle the deploy files with flat archive paths (compose files,
           # Caddyfile, ops/...) so the on-host release layout is unchanged even
           # though they live under deploy/ in the repo.
           tar -czf "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
-            -C deploy compose.prod.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
+            -C deploy compose.prod.yml compose.vivado.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
             -C "${GITHUB_WORKSPACE}" examples/05_shared_logic.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \

@@ -100,6 +100,19 @@ jobs:
       - name: Test deployment state transitions
         run: ./deploy/ops/tests/deploy-test.sh
 
+      - name: Validate optional Vivado overlay
+        run: |
+          mkdir -p /tmp/vivado-install/2026.1/Vivado
+          touch /tmp/vivado.lic
+          IMAGE_REF=synth-explorer:ci \
+            VIVADO_INSTALL_ROOT=/tmp/vivado-install \
+            VIVADO_LICENSE_FILE=/tmp/vivado.lic \
+            VIVADO_ACCESS_TOKEN_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            docker compose \
+              -f deploy/compose.prod.yml \
+              -f deploy/compose.vivado.yml \
+              config --quiet
+
       - name: Build production image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -120,6 +133,11 @@ jobs:
           docker run --detach --name synth-explorer-ci \
             --publish 127.0.0.1:8787:8787 \
             synth-explorer:ci
+
+      - name: Verify AMD software is not in the image
+        run: |
+          docker run --rm --entrypoint /bin/sh synth-explorer:ci \
+            -c 'test ! -e /opt/AMD'
 
       - name: Run production smoke test
         run: ./deploy/ops/smoke-test.sh http://127.0.0.1:8787 "${GITHUB_SHA}"

@@ -1,7 +1,12 @@
-import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
+import {
+  MODE_LABELS,
+  SYNTH_TOOL_LABELS,
+  VIVADO_TARGETS,
+  XILINX_FAMILY_LABELS,
+} from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import { useStore } from '../store'
-import type { Mode, XilinxFamily } from '../types'
+import type { Mode, SynthTool, XilinxFamily } from '../types'
 import { FlagsMenu } from './FlagsMenu'
 
 export function Toolbar() {
@@ -41,12 +46,45 @@ export function Toolbar() {
       </label>
 
       <label className="field">
+        <span>Synth tool</span>
+        <select
+          value={store.synthTool}
+          onChange={(e) => {
+            const tool = e.target.value as SynthTool
+            if (tool !== 'vivado' || store.vivadoUnlocked) {
+              store.setSynthTool(tool)
+              return
+            }
+            const accessKey = window.prompt(
+              'Enter the Vivado owner API key. It stays only in this browser tab’s memory.',
+            )
+            if (!accessKey) return
+            void store.unlockVivado(accessKey).then((unlocked) => {
+              if (unlocked) store.setSynthTool('vivado')
+            })
+          }}
+        >
+          {SYNTH_TOOL_LABELS.filter(
+            (tool) => tool.value !== 'vivado' || store.vivadoAvailable,
+          ).map((tool) => (
+            <option key={tool.value} value={tool.value}>
+              {tool.label}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label className="field">
         <span>Mode</span>
         <select
-          value={store.mode}
+          value={store.synthTool === 'vivado' ? 'gates' : store.mode}
+          disabled={store.synthTool === 'vivado'}
           onChange={(e) => store.setMode(e.target.value as Mode)}
         >
-          {MODE_LABELS.map((m) => (
+          {(store.synthTool === 'vivado'
+            ? MODE_LABELS.filter((m) => m.value === 'gates')
+            : MODE_LABELS
+          ).map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
@@ -54,7 +92,7 @@ export function Toolbar() {
         </select>
       </label>
 
-      {store.mode === 'xilinx' && (
+      {store.synthTool === 'yosys' && store.mode === 'xilinx' && (
         <label className="field">
           <span>Target</span>
           <select
@@ -75,21 +113,51 @@ export function Toolbar() {
         </label>
       )}
 
-      <FlagsMenu
-        mode={store.mode}
-        flags={store.extraArgs}
-        onChange={(flags) => store.setExtraArgs(flags)}
-      />
+      {store.synthTool === 'vivado' && (
+        <label className="field">
+          <span>Target</span>
+          <select
+            value={store.vivadoTarget}
+            title="Vivado part passed to synth_design -part."
+            onChange={(e) => store.setVivadoTarget(e.target.value)}
+          >
+            {VIVADO_TARGETS.map((target) => (
+              <option key={target.value} value={target.value}>
+                {target.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label className="field grow">
-        <span>Synthesis flags</span>
-        <input
-          placeholder="mode-specific, e.g. -noabc"
-          title="The exact flags passed to the selected Yosys synthesis command. The Target dropdown and Flags menu edit this string; you can also type flags directly."
-          value={store.extraArgs}
-          onChange={(e) => store.setExtraArgs(e.target.value)}
-        />
-      </label>
+      {store.synthTool === 'yosys' ? (
+        <>
+          <FlagsMenu
+            mode={store.mode}
+            flags={store.extraArgs}
+            onChange={(flags) => store.setExtraArgs(flags)}
+          />
+          <label className="field grow">
+            <span>Synthesis flags</span>
+            <input
+              placeholder="mode-specific, e.g. -noabc"
+              title="The exact flags passed to the selected Yosys synthesis command. The Target dropdown and Flags menu edit this string; you can also type flags directly."
+              value={store.extraArgs}
+              onChange={(e) => store.setExtraArgs(e.target.value)}
+            />
+          </label>
+        </>
+      ) : (
+        <label className="field grow">
+          <span>Synthesis flags</span>
+          <input
+            placeholder="Vivado synth_design flags, e.g. -retiming"
+            title="Validated whitespace-separated flags appended to Vivado synth_design."
+            value={store.vivadoExtraArgs}
+            onChange={(e) => store.setVivadoExtraArgs(e.target.value)}
+          />
+        </label>
+      )}
 
       <button
         className="primary"

@@ -6,12 +6,14 @@ import type {
   EndpointsResponse,
   ExamplesResponse,
   FanoutResponse,
+  HealthResponse,
   LineConeResponse,
   Mode,
   NodesResponse,
   PathsResponse,
   SourceMapResponse,
   Subgraph,
+  SynthTool,
   SynthesizeRequest,
   SynthesizeResponse,
   TimingRequest,
@@ -51,14 +53,29 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await res.json()) as T
 }
 
-export async function synthesize(req: SynthesizeRequest): Promise<SynthesizeResponse> {
+export async function synthesize(
+  req: SynthesizeRequest,
+  vivadoAccessKey?: string,
+): Promise<SynthesizeResponse> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (req.tool === 'vivado' && vivadoAccessKey) {
+    headers.Authorization = `Bearer ${vivadoAccessKey}`
+  }
   const res = await fetch('/api/synthesize', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(req),
   })
   if (!res.ok) throw await parseError(res)
   return (await res.json()) as SynthesizeResponse
+}
+
+export async function unlockVivado(accessKey: string): Promise<void> {
+  const res = await fetch('/api/vivado/access', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessKey}` },
+  })
+  if (!res.ok) throw await parseError(res)
 }
 
 export function getDesign(id: string): Promise<SynthesizeResponse> {
@@ -215,6 +232,10 @@ export function getExamples(): Promise<ExamplesResponse> {
   return getJson<ExamplesResponse>('/api/examples')
 }
 
+export function getHealth(): Promise<HealthResponse> {
+  return getJson<HealthResponse>('/healthz')
+}
+
 export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'rtl', label: 'RTL (word-level)' },
   { value: 'gates', label: 'Generic gates' },
@@ -222,8 +243,17 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'lut6', label: 'Generic LUT6 metric' },
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
-  { value: 'xilinx', label: 'Xilinx' },
+  { value: 'xilinx', label: 'Xilinx — Yosys' },
 ]
+
+export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
+  { value: 'yosys', label: 'Yosys' },
+  { value: 'vivado', label: 'Vivado (owner key)' },
+]
+
+export const VIVADO_TARGETS = [
+  { value: 'xc7a35tcpg236-1', label: 'Artix-7 XC7A35T (xc7a35tcpg236-1)' },
+] as const
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs
 // CARRY8), BRAM, and DSP primitives, so it makes the netlist match the vendor

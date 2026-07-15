@@ -19,10 +19,24 @@ and external monitoring:
   commit: string;        // full Git commit in production; "unknown" in local builds
   version: string;       // server crate version
   yosys_version: string; // captured by the required startup preflight
+  vivado_version?: string; // present only when VIVADO_BIN passed preflight
+  vivado_access_protected?: boolean; // true when the optional Vivado backend requires an owner key
 }
 ```
 
-The server does not start if the Yosys preflight fails.
+The server does not start if the required Yosys preflight fails, or if
+`VIVADO_BIN` is configured and its optional preflight fails. The web client
+only exposes the Vivado synthesis tool when `vivado_version` is present. A
+configured Vivado backend also requires `VIVADO_ACCESS_TOKEN_SHA256`; startup
+fails closed when the digest is missing or invalid.
+
+## POST `/api/vivado/access`
+
+Verifies the owner API key before the web client enables Vivado for the current
+browser tab. Send the 256-bit hexadecimal key in
+`Authorization: Bearer <key>`. The key is hashed by the server and compared in
+constant time with the configured SHA-256 digest. Success returns `204`; a
+missing or invalid key returns `401` with a `WWW-Authenticate` challenge.
 
 ## Shared shapes
 
@@ -86,8 +100,10 @@ Request:
 {
   files: { name: string; content: string }[]; // name: bare filename, [A-Za-z0-9._-]+, .v/.sv
   top?: string;          // omitted -> yosys -auto-top
+  tool?: "yosys" | "vivado"; // omitted -> yosys
   mode: "rtl" | "gates" | "lut4" | "lut6" | "ice40" | "ecp5" | "xilinx";
-  extra_args?: string;   // flags for the selected synthesis pass; see below
+  target?: string;       // required for vivado; omitted for yosys
+  extra_args?: string;   // tool/mode-specific synthesis-pass flags; see below
 }
 ```
 
@@ -96,11 +112,16 @@ retiming: those are ordinary `synth_xilinx` flags, so the client passes them
 through `extra_args` (e.g. `-family xcup -retime`). The webpage's Target and
 Retime controls simply edit that flags string.
 
-`extra_args` is appended to the mode's `prep`, `synth`, or `synth_*` command;
-it does not accept global Yosys CLI flags or arbitrary script commands. Values
-are split on whitespace and every token must match
+`extra_args` is appended to the selected tool's synthesis command. Values are
+split on whitespace and every token must match
 `^[A-Za-z0-9_+=.,:-]+$`. Supported flags are mode-specific, and invalid or
 conflicting combinations return a synthesis error with the Yosys log.
+The Vivado tool initially supports `gates` mode and the fixed free-tier Artix-7
+part `xc7a35tcpg236-1`; its flags are appended to `synth_design`. A deployment
+without a configured Vivado backend returns `503` before scheduling synthesis.
+Vivado requests also require the same owner bearer key used by
+`/api/vivado/access`; unauthorized requests return `401` before cache lookup or
+tool execution. Yosys requests remain public and require no authorization.
 
 Response `200`:
 
@@ -108,7 +129,9 @@ Response `200`:
 {
   design_id: string;     // content hash; identical input returns the same id
   top: string;           // resolved top module
+  tool: "yosys" | "vivado";
   mode: string;
+  target?: string;
   stats: {
     num_cells: number;
     cells_by_type: Record<string, number>;

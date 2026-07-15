@@ -1,4 +1,4 @@
-import type { DesignFile, Mode, SynthesizeRequest } from '../types'
+import type { DesignFile, Mode, SynthesizeRequest, SynthTool } from '../types'
 import { buildSynthesizeRequest } from './synthesize'
 
 export interface SourceSelection {
@@ -23,8 +23,10 @@ export function synthesisInput(
   mode: Mode,
   extraArgs: string,
   revision = 0,
+  tool: SynthTool = 'yosys',
+  target = '',
 ): SynthesisInput {
-  const request = buildSynthesizeRequest(files, top, mode, extraArgs)
+  const request = buildSynthesizeRequest(files, top, mode, extraArgs, tool, target)
   return { request, key: JSON.stringify(request), revision }
 }
 
