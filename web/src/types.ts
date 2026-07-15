@@ -329,7 +329,7 @@ export interface SourceMapResponse {
 // --- GET /api/examples ---
 
 export interface Example {
-  name: string // "03_adder_chain"
+  name: string // "adder_chain"
   title: string
   description: string
   top: string

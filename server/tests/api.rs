@@ -95,7 +95,7 @@ endmodule
 "#;
     let mut app = app(AppState::default());
     let synth_body = json!({
-        "files": [{"name": "01_reg_mux.sv", "content": source}],
+        "files": [{"name": "reg_mux.sv", "content": source}],
         "top": "reg_mux",
         "mode": "rtl"
     });
@@ -205,18 +205,76 @@ endmodule
             .as_array()
             .unwrap()
             .iter()
-            .any(|file| file.as_str() == Some("01_reg_mux.sv"))
+            .any(|file| file.as_str() == Some("reg_mux.sv"))
     );
     assert!(source_map["ranges"].is_array());
     assert!(source_map["truncated"].is_boolean());
 }
 
 #[tokio::test]
+async fn examples_endpoint_returns_the_parameterized_catalog() {
+    let mut app = app(AppState::default());
+    let response = get_response(&mut app, "/api/examples").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let examples = body["examples"].as_array().unwrap();
+    let names: Vec<_> = examples
+        .iter()
+        .map(|example| example["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "reg_mux",
+            "priority_encoder_case",
+            "priority_encoder_for",
+            "priority_encoder_carry",
+            "adder_chain",
+            "barrel_shifter",
+            "round_robin_arbiter",
+            "pipe",
+            "srl_pipe",
+            "fifo_pipe",
+            "inferred_fifo",
+            "async_fifo_blackbox",
+            "handshake_controller",
+        ]
+    );
+    assert!(examples.iter().all(|example| {
+        example["title"].is_string()
+            && example["description"].is_string()
+            && example["top"].is_string()
+            && example["files"].as_array().is_some_and(|files| {
+                files.len() == 1
+                    && files[0]["name"].is_string()
+                    && files[0]["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("#("))
+            })
+    }));
+}
+
+#[tokio::test]
 async fn line_cone_returns_assign_fanin_and_validates_source_location() {
-    let source = std::fs::read_to_string("../examples/03_adder_chain.sv").unwrap();
+    let source = std::fs::read_to_string("../examples/adder_chain.sv").unwrap();
+    let assignment_line = source
+        .lines()
+        .position(|line| line.contains("assign partial_sum[i + 1]"))
+        .unwrap()
+        + 1;
+    let output_line = source
+        .lines()
+        .position(|line| line.contains("assign sum ="))
+        .unwrap()
+        + 1;
+    let comment_line = source
+        .lines()
+        .position(|line| line.trim_start().starts_with("//"))
+        .unwrap()
+        + 1;
     let mut app = app(AppState::default());
     let synth_body = json!({
-        "files": [{"name": "03_adder_chain.sv", "content": source}],
+        "files": [{"name": "adder_chain.sv", "content": source}],
         "top": "adder_chain",
         "mode": "rtl"
     });
@@ -237,13 +295,18 @@ async fn line_cone_returns_assign_fanin_and_validates_source_location() {
     let design_id = synth["design_id"].as_str().unwrap();
 
     let source_map = get_json(&mut app, &format!("/api/design/{design_id}/source-map")).await;
-    let mapped_roots = source_map_roots(&source_map, "03_adder_chain.sv", 17, 17);
+    let mapped_roots = source_map_roots(
+        &source_map,
+        "adder_chain.sv",
+        assignment_line,
+        assignment_line,
+    );
     assert!(!mapped_roots.is_empty());
 
     let assignment = get_json(
         &mut app,
         &format!(
-            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=17&end_line=17&max_nodes=400&hide_control=true&hide_const=true"
+            "/api/design/{design_id}/line-cone?file=adder_chain.sv&start_line={assignment_line}&end_line={assignment_line}&max_nodes=400&hide_control=true&hide_const=true"
         ),
     )
     .await;
@@ -274,11 +337,11 @@ async fn line_cone_returns_assign_fanin_and_validates_source_location() {
     );
     assert_eq!(graph["truncated"], false);
 
-    let range_roots = source_map_roots(&source_map, "03_adder_chain.sv", 17, 21);
+    let range_roots = source_map_roots(&source_map, "adder_chain.sv", assignment_line, output_line);
     let range = get_json(
         &mut app,
         &format!(
-            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=17&end_line=21"
+            "/api/design/{design_id}/line-cone?file=adder_chain.sv&start_line={assignment_line}&end_line={output_line}"
         ),
     )
     .await;
@@ -297,7 +360,7 @@ async fn line_cone_returns_assign_fanin_and_validates_source_location() {
     let comment_line = get_json(
         &mut app,
         &format!(
-            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=2&end_line=2"
+            "/api/design/{design_id}/line-cone?file=adder_chain.sv&start_line={comment_line}&end_line={comment_line}"
         ),
     )
     .await;
@@ -307,11 +370,11 @@ async fn line_cone_returns_assign_fanin_and_validates_source_location() {
     assert_eq!(comment_line["graph"]["truncated"], false);
 
     for uri in [
-        format!("/api/design/{design_id}/line-cone?file=unknown.sv&start_line=17&end_line=17"),
-        format!("/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=0&end_line=1"),
         format!(
-            "/api/design/{design_id}/line-cone?file=03_adder_chain.sv&start_line=1&end_line=201"
+            "/api/design/{design_id}/line-cone?file=unknown.sv&start_line={assignment_line}&end_line={assignment_line}"
         ),
+        format!("/api/design/{design_id}/line-cone?file=adder_chain.sv&start_line=0&end_line=1"),
+        format!("/api/design/{design_id}/line-cone?file=adder_chain.sv&start_line=1&end_line=201"),
     ] {
         let response = get_response(&mut app, &uri).await;
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
@@ -319,7 +382,9 @@ async fn line_cone_returns_assign_fanin_and_validates_source_location() {
 
     let response = get_response(
         &mut app,
-        "/api/design/unknown/line-cone?file=03_adder_chain.sv&start_line=17&end_line=17",
+        &format!(
+            "/api/design/unknown/line-cone?file=adder_chain.sv&start_line={assignment_line}&end_line={assignment_line}"
+        ),
     )
     .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -327,13 +392,22 @@ async fn line_cone_returns_assign_fanin_and_validates_source_location() {
 
 #[tokio::test]
 async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register() {
-    let source = std::fs::read_to_string("../examples/02_priority_encoder.sv").unwrap();
-    // The always_ff block spans lines 59-67; line 61 assigns only `idx`.
-    assert_eq!(
-        source.lines().nth(58).unwrap().trim(),
-        "always_ff @(posedge clk) begin"
-    );
-    assert_eq!(source.lines().nth(60).unwrap().trim(), "idx   <= 5'd0;");
+    let source = std::fs::read_to_string("../examples/inferred_fifo.sv").unwrap();
+    let reset_line = source
+        .lines()
+        .position(|line| line.trim() == "if (rst) begin")
+        .unwrap()
+        + 1;
+    let write_pointer_line = source
+        .lines()
+        .position(|line| line.trim() == "write_pointer <= '0;")
+        .unwrap()
+        + 1;
+    let count_line = source
+        .lines()
+        .position(|line| line.trim() == "count <= '0;")
+        .unwrap()
+        + 1;
     let mut app = app(AppState::default());
     let response = app
         .clone()
@@ -344,8 +418,8 @@ async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register(
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
-                        "files": [{"name": "02_priority_encoder.sv", "content": source}],
-                        "top": "priority_encoder",
+                        "files": [{"name": "inferred_fifo.sv", "content": source}],
+                        "top": "inferred_fifo",
                         "mode": "rtl"
                     }))
                     .unwrap(),
@@ -372,8 +446,8 @@ async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register(
             .map(|bit| bit["node_id"].as_u64().unwrap())
             .collect()
     };
-    let idx_ids = register_ids("idx");
-    let valid_ids = register_ids("valid");
+    let write_pointer_ids = register_ids("write_pointer");
+    let count_ids = register_ids("count");
 
     let line_roots = |response: &serde_json::Value| -> BTreeSet<u64> {
         response["graph"]["nodes"]
@@ -388,33 +462,33 @@ async fn line_probe_on_procedural_assignment_targets_only_the_assigned_register(
     let single = get_json(
         &mut app,
         &format!(
-            "/api/design/{design_id}/line-cone?file=02_priority_encoder.sv&start_line=61&end_line=61"
+            "/api/design/{design_id}/line-cone?file=inferred_fifo.sv&start_line={write_pointer_line}&end_line={write_pointer_line}"
         ),
     )
     .await;
     assert_eq!(single["status"], "mapped");
     let single_roots = line_roots(&single);
     assert!(
-        single_roots.iter().any(|id| idx_ids.contains(id)),
-        "probing `idx <= 5'd0;` must root the idx register: {single_roots:?}"
+        single_roots.iter().any(|id| write_pointer_ids.contains(id)),
+        "probing `write_pointer <= '0;` must root that register: {single_roots:?}"
     );
     assert!(
-        single_roots.iter().all(|id| !valid_ids.contains(id)),
-        "probing `idx <= 5'd0;` must not root the valid register: {single_roots:?}"
+        single_roots.iter().all(|id| !count_ids.contains(id)),
+        "probing `write_pointer <= '0;` must not root count: {single_roots:?}"
     );
 
     let block = get_json(
         &mut app,
         &format!(
-            "/api/design/{design_id}/line-cone?file=02_priority_encoder.sv&start_line=59&end_line=67"
+            "/api/design/{design_id}/line-cone?file=inferred_fifo.sv&start_line={reset_line}&end_line={count_line}"
         ),
     )
     .await;
     assert_eq!(block["status"], "mapped");
     let block_roots = line_roots(&block);
-    assert!(block_roots.iter().any(|id| idx_ids.contains(id)));
+    assert!(block_roots.iter().any(|id| write_pointer_ids.contains(id)));
     assert!(
-        block_roots.iter().any(|id| valid_ids.contains(id)),
+        block_roots.iter().any(|id| count_ids.contains(id)),
         "selecting the whole always block still probes every register: {block_roots:?}"
     );
 }
@@ -1722,12 +1796,12 @@ async fn get_json(app: &mut axum::Router, uri: &str) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn high_fanout_memory_registers_are_grouped_by_array_element() {
-    let source = std::fs::read_to_string("../examples/04_high_fanout_enable.sv").unwrap();
+async fn pipe_registers_are_grouped_by_array_element() {
+    let source = std::fs::read_to_string("../examples/pipe.sv").unwrap();
     let mut app = app(AppState::default());
     let synth_body = json!({
-        "files": [{"name": "04_high_fanout_enable.sv", "content": source}],
-        "top": "high_fanout_enable",
+        "files": [{"name": "pipe.sv", "content": source}],
+        "top": "pipe",
         "mode": "gates"
     });
     let response = app
@@ -1745,22 +1819,24 @@ async fn high_fanout_memory_registers_are_grouped_by_array_element() {
     assert_eq!(response.status(), StatusCode::OK);
     let synth = body_json(response).await;
     let design_id = synth["design_id"].as_str().unwrap();
-    assert_eq!(synth["stats"]["num_register_bits"].as_u64(), Some(128));
-    assert_eq!(synth["stats"]["num_register_groups"].as_u64(), Some(16));
+    assert_eq!(synth["stats"]["num_register_bits"].as_u64(), Some(64));
+    assert_eq!(synth["stats"]["num_register_groups"].as_u64(), Some(4));
 
     let endpoints = get_json(&mut app, &format!("/api/design/{design_id}/endpoints")).await;
     let registers = endpoints["registers"].as_array().unwrap();
-    assert_eq!(registers.len(), 16);
+    assert_eq!(registers.len(), 4);
     assert!(
         registers
             .iter()
-            .all(|group| group["width"].as_u64() == Some(8))
+            .all(|group| group["width"].as_u64() == Some(16))
     );
     let names: BTreeSet<_> = registers
         .iter()
         .map(|group| group["name"].as_str().unwrap().to_owned())
         .collect();
-    let expected: BTreeSet<_> = (0..16).map(|idx| format!("regs[{idx}]")).collect();
+    let expected: BTreeSet<_> = (0..4)
+        .map(|idx| format!("with_stages.stage[{idx}]"))
+        .collect();
     assert_eq!(names, expected);
 }
 
@@ -1842,11 +1918,11 @@ endmodule
 
 #[tokio::test]
 async fn blackbox_input_paths_contribute_to_stats_max_depth() {
-    let source = std::fs::read_to_string("../examples/07_blackbox.sv").unwrap();
+    let source = std::fs::read_to_string("../examples/async_fifo_blackbox.sv").unwrap();
     let mut app = app(AppState::default());
     let synth_body = json!({
-        "files": [{"name": "07_blackbox.sv", "content": source}],
-        "top": "blackbox_demo",
+        "files": [{"name": "async_fifo_blackbox.sv", "content": source}],
+        "top": "async_fifo_wrapper",
         "mode": "gates"
     });
     let response = app
@@ -1880,7 +1956,7 @@ async fn blackbox_input_paths_contribute_to_stats_max_depth() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|path| path["startpoint"]["cell_type"] == "mystery_core")
+        .find(|path| path["startpoint"]["cell_type"] == "async_fifo_ip")
         .expect("blackbox output should remain visible as a path boundary");
     assert_eq!(boundary_path["class"], "other");
     assert_eq!(boundary_path["startpoint"]["register"], false);

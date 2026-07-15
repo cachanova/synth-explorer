@@ -61,11 +61,244 @@ fn is_lut_cell(cell_type: &str) -> bool {
     )
 }
 
+const EXPECTED_EXAMPLES: &[(&str, &str, &str, &str)] = &[
+    ("reg_mux", "Reg Mux", "reg_mux", "reg_mux.sv"),
+    (
+        "priority_encoder_case",
+        "Priority Encoder Case",
+        "priority_encoder_case",
+        "priority_encoder_case.sv",
+    ),
+    (
+        "priority_encoder_for",
+        "Priority Encoder For",
+        "priority_encoder_for",
+        "priority_encoder_for.sv",
+    ),
+    (
+        "priority_encoder_carry",
+        "Priority Encoder Carry",
+        "priority_encoder_carry",
+        "priority_encoder_carry.sv",
+    ),
+    (
+        "adder_chain",
+        "Adder Chain",
+        "adder_chain",
+        "adder_chain.sv",
+    ),
+    (
+        "barrel_shifter",
+        "Barrel Shifter",
+        "barrel_shifter",
+        "barrel_shifter.sv",
+    ),
+    (
+        "round_robin_arbiter",
+        "Round-Robin Arbiter",
+        "round_robin_arbiter",
+        "round_robin_arbiter.sv",
+    ),
+    ("pipe", "Register Pipe", "pipe", "pipe.sv"),
+    ("srl_pipe", "SRL Pipe", "srl_pipe", "srl_pipe.sv"),
+    ("fifo_pipe", "FIFO Pipe", "fifo_pipe", "fifo_pipe.sv"),
+    (
+        "inferred_fifo",
+        "Inferred FIFO",
+        "inferred_fifo",
+        "inferred_fifo.sv",
+    ),
+    (
+        "async_fifo_blackbox",
+        "Async FIFO IP Wrapper",
+        "async_fifo_wrapper",
+        "async_fifo_blackbox.sv",
+    ),
+    (
+        "handshake_controller",
+        "Handshake Controller",
+        "handshake_controller",
+        "handshake_controller.sv",
+    ),
+];
+
+fn run_yosys_script(script: &str) {
+    let output = std::process::Command::new("yosys")
+        .args(["-q", "-p", script])
+        .output()
+        .expect("yosys should be available for example integration tests");
+    assert!(
+        output.status.success(),
+        "yosys failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn check_example_parameters(file: &str, top: &str, parameters: &[(&str, u32)]) {
+    let mut script = format!("read_verilog -sv ../examples/{file};");
+    for (parameter, value) in parameters {
+        script.push_str(&format!(" chparam -set {parameter} {value} {top};"));
+    }
+    script.push_str(&format!(" hierarchy -check -top {top}; proc; check"));
+    run_yosys_script(&script);
+}
+
+#[tokio::test]
+async fn parameterized_example_catalog_synthesizes() {
+    let manifest = std::fs::read_to_string("../examples/manifest.json").unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&manifest).unwrap();
+    let roster: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["name"].as_str().unwrap(),
+                entry["title"].as_str().unwrap(),
+                entry["top"].as_str().unwrap(),
+                entry["files"][0].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(roster, EXPECTED_EXAMPLES);
+
+    for entry in entries {
+        let top = entry["top"].as_str().unwrap();
+        let files = entry["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{top} should be a standalone example");
+        let file = files[0].as_str().unwrap();
+        let source =
+            std::fs::read_to_string(std::path::Path::new("../examples").join(file)).unwrap();
+        assert!(
+            source.contains("#("),
+            "{file} must expose design parameters"
+        );
+
+        let (graph, _analysis) = analyze_example(file, top, SynthMode::Rtl).await;
+        assert!(!graph.nodes.is_empty(), "{file} produced an empty graph");
+    }
+}
+
+#[test]
+fn examples_elaborate_with_non_default_parameters() {
+    check_example_parameters("reg_mux.sv", "reg_mux", &[("WIDTH", 3)]);
+    check_example_parameters(
+        "priority_encoder_case.sv",
+        "priority_encoder_case",
+        &[("WIDTH", 1)],
+    );
+    check_example_parameters(
+        "priority_encoder_case.sv",
+        "priority_encoder_case",
+        &[("WIDTH", 5)],
+    );
+    check_example_parameters(
+        "priority_encoder_for.sv",
+        "priority_encoder_for",
+        &[("WIDTH", 5)],
+    );
+    check_example_parameters(
+        "priority_encoder_carry.sv",
+        "priority_encoder_carry",
+        &[("WIDTH", 5)],
+    );
+    check_example_parameters(
+        "adder_chain.sv",
+        "adder_chain",
+        &[("WIDTH", 5), ("NUM_INPUTS", 3)],
+    );
+    check_example_parameters("barrel_shifter.sv", "barrel_shifter", &[("WIDTH", 1)]);
+    check_example_parameters("barrel_shifter.sv", "barrel_shifter", &[("WIDTH", 7)]);
+    check_example_parameters(
+        "round_robin_arbiter.sv",
+        "round_robin_arbiter",
+        &[("NUM_REQUESTERS", 1)],
+    );
+    check_example_parameters(
+        "round_robin_arbiter.sv",
+        "round_robin_arbiter",
+        &[("NUM_REQUESTERS", 3)],
+    );
+    check_example_parameters("pipe.sv", "pipe", &[("WIDTH", 7), ("STAGES", 0)]);
+    check_example_parameters("pipe.sv", "pipe", &[("WIDTH", 7), ("STAGES", 1)]);
+    check_example_parameters("srl_pipe.sv", "srl_pipe", &[("WIDTH", 3), ("STAGES", 0)]);
+    check_example_parameters("srl_pipe.sv", "srl_pipe", &[("WIDTH", 3), ("STAGES", 2)]);
+    check_example_parameters("fifo_pipe.sv", "fifo_pipe", &[("WIDTH", 7), ("STAGES", 0)]);
+    check_example_parameters("fifo_pipe.sv", "fifo_pipe", &[("WIDTH", 7), ("STAGES", 1)]);
+    check_example_parameters(
+        "inferred_fifo.sv",
+        "inferred_fifo",
+        &[("DATA_WIDTH", 7), ("DEPTH", 1)],
+    );
+    check_example_parameters(
+        "inferred_fifo.sv",
+        "inferred_fifo",
+        &[("DATA_WIDTH", 7), ("DEPTH", 3)],
+    );
+    check_example_parameters(
+        "async_fifo_blackbox.sv",
+        "async_fifo_wrapper",
+        &[("DATA_WIDTH", 7), ("DEPTH", 3)],
+    );
+    check_example_parameters(
+        "handshake_controller.sv",
+        "handshake_controller",
+        &[("TIMEOUT_CYCLES", 1)],
+    );
+    check_example_parameters(
+        "handshake_controller.sv",
+        "handshake_controller",
+        &[("TIMEOUT_CYCLES", 3)],
+    );
+}
+
+#[test]
+fn priority_encoder_implementations_are_equivalent() {
+    for implementation in ["priority_encoder_for", "priority_encoder_carry"] {
+        run_yosys_script(&format!(
+            "read_verilog -sv ../examples/priority_encoder_case.sv \
+             ../examples/{implementation}.sv; \
+             chparam -set WIDTH 5 priority_encoder_case; \
+             chparam -set WIDTH 5 {implementation}; \
+             proc; memory; \
+             equiv_make priority_encoder_case {implementation} equiv; \
+             prep -top equiv; equiv_simple; equiv_status -assert"
+        ));
+    }
+}
+
+#[tokio::test]
+async fn xilinx_examples_infer_shift_register_and_carry_resources() {
+    let (srl_graph, _analysis) =
+        analyze_example("srl_pipe.sv", "srl_pipe", SynthMode::Xilinx).await;
+    assert!(
+        srl_graph.nodes.iter().any(|node| {
+            matches!(
+                node.cell_type.as_deref(),
+                Some("SRL16E" | "SRLC32E" | "SRL16" | "SRLC16E")
+            )
+        }),
+        "srl_pipe should infer a Xilinx shift-register primitive"
+    );
+
+    let (carry_graph, _analysis) = analyze_example(
+        "priority_encoder_carry.sv",
+        "priority_encoder_carry",
+        SynthMode::Xilinx,
+    )
+    .await;
+    assert!(
+        carry_graph
+            .nodes
+            .iter()
+            .any(|node| { matches!(node.cell_type.as_deref(), Some("CARRY4" | "CARRY8")) }),
+        "priority_encoder_carry should infer a Xilinx carry primitive"
+    );
+}
+
 #[tokio::test]
 async fn adder_chain_is_deeper_than_reg_mux() {
-    let (_reg_graph, reg) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
+    let (_reg_graph, reg) = analyze_example("reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
     let (_adder_graph, adder) =
-        analyze_example("03_adder_chain.sv", "adder_chain", SynthMode::Rtl).await;
+        analyze_example("adder_chain.sv", "adder_chain", SynthMode::Rtl).await;
     assert!(
         adder.stats().max_depth > reg.stats().max_depth,
         "expected adder_chain depth {} > reg_mux depth {}",
@@ -76,9 +309,28 @@ async fn adder_chain_is_deeper_than_reg_mux() {
 
 #[tokio::test]
 async fn high_fanout_enable_ranks_large_driver() {
-    let (graph, analysis) = analyze_example(
-        "04_high_fanout_enable.sv",
-        "high_fanout_enable",
+    let source = r#"
+module high_fanout_fixture (
+    input logic clk,
+    input logic rst,
+    input logic en,
+    input logic [127:0] d_in,
+    output logic [127:0] d_out
+);
+  logic [7:0] regs [16];
+  for (genvar i = 0; i < 16; i = i + 1) begin : g_regs
+    always_ff @(posedge clk) begin
+      if (rst) regs[i] <= '0;
+      else if (en) regs[i] <= d_in[i*8 +: 8];
+    end
+    assign d_out[i*8 +: 8] = regs[i];
+  end
+endmodule
+"#;
+    let (graph, analysis) = analyze_source(
+        "high_fanout_fixture.sv",
+        source,
+        "high_fanout_fixture",
         SynthMode::Gates,
     )
     .await;
@@ -105,8 +357,12 @@ async fn high_fanout_enable_ranks_large_driver() {
 
 #[tokio::test]
 async fn blackbox_is_seq_like_boundary() {
-    let (graph, analysis) =
-        analyze_example("07_blackbox.sv", "blackbox_demo", SynthMode::Rtl).await;
+    let (graph, analysis) = analyze_example(
+        "async_fifo_blackbox.sv",
+        "async_fifo_wrapper",
+        SynthMode::Rtl,
+    )
+    .await;
     assert!(
         graph
             .nodes
@@ -124,7 +380,7 @@ async fn blackbox_is_seq_like_boundary() {
 #[tokio::test]
 async fn reg_mux_endpoints_include_q_width_8() {
     for mode in [SynthMode::Rtl, SynthMode::Xilinx] {
-        let (graph, analysis) = analyze_example("01_reg_mux.sv", "reg_mux", mode).await;
+        let (graph, analysis) = analyze_example("reg_mux.sv", "reg_mux", mode).await;
         let endpoints = analysis.endpoints();
         let q = endpoints
             .registers
@@ -155,29 +411,30 @@ async fn reg_mux_endpoints_include_q_width_8() {
 }
 
 #[tokio::test]
-async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
+async fn vendor_handshake_controller_modes_have_depth_and_lut_fanin() {
     for (mode, expected_lut, collapsed_buffer) in [
         (SynthMode::Xilinx, None, Some("OBUF")),
         (SynthMode::Ice40, Some("SB_LUT4"), None),
         (SynthMode::Ecp5, Some("LUT4"), None),
     ] {
-        let (graph, analysis) = analyze_example("08_fsm.sv", "fsm", mode).await;
+        let (graph, analysis) =
+            analyze_example("handshake_controller.sv", "handshake_controller", mode).await;
         assert!(
             analysis.stats().max_depth >= 1,
             "{mode} max_depth was {}",
             analysis.stats().max_depth
         );
 
-        let valid = analysis
+        let timed_out = analysis
             .endpoints()
             .outputs
             .into_iter()
-            .find(|output| output.name == "valid")
-            .expect("expected valid output");
+            .find(|output| output.name == "timed_out")
+            .expect("expected timed_out output");
         let cone = analysis
             .cone(
                 &graph,
-                valid.bits[0].node_id,
+                timed_out.bits[0].node_id,
                 ConeOptions {
                     dir: ConeDir::Fanin,
                     max_depth: 64,
@@ -188,7 +445,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                 },
                 None,
             )
-            .expect("valid output node should have a fanin cone");
+            .expect("timed_out output node should have a fanin cone");
         let cell_types: Vec<&str> = cone
             .nodes
             .iter()
@@ -196,7 +453,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
             .collect();
         assert!(
             cell_types.iter().any(|cell_type| is_lut_cell(cell_type)),
-            "{mode} valid fanin did not cross a LUT: {cell_types:?}"
+            "{mode} timed_out fanin did not cross a LUT: {cell_types:?}"
         );
         if let Some(expected) = expected_lut {
             assert!(cell_types.contains(&expected));
@@ -209,7 +466,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
             let implementation_cone = analysis
                 .cone(
                     &graph,
-                    valid.bits[0].node_id,
+                    timed_out.bits[0].node_id,
                     ConeOptions {
                         show_infrastructure: true,
                         ..ConeOptions {
@@ -237,7 +494,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
 #[tokio::test]
 async fn xilinx_adder_depth_excludes_buffers() {
     let (graph, analysis) =
-        analyze_example("03_adder_chain.sv", "adder_chain", SynthMode::Xilinx).await;
+        analyze_example("adder_chain.sv", "adder_chain", SynthMode::Xilinx).await;
     let path = analysis
         .paths(&graph, 1, None)
         .paths
@@ -520,7 +777,8 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
         (SynthMode::Ice40, "SB_DFFSR", &["C", "R"][..]),
         (SynthMode::Ecp5, "TRELLIS_FF", &["CLK", "LSR"][..]),
     ] {
-        let (graph, analysis) = analyze_example("08_fsm.sv", "fsm", mode).await;
+        let (graph, analysis) =
+            analyze_example("handshake_controller.sv", "handshake_controller", mode).await;
         let ff = graph
             .nodes
             .iter()
@@ -588,7 +846,7 @@ fn vendor_flip_flop_control_pin_names_are_tagged() {
 
 #[tokio::test]
 async fn mux_select_is_a_data_dependency_not_a_set_reset_control() {
-    let (graph, _analysis) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
+    let (graph, _analysis) = analyze_example("reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
     let mux = graph
         .nodes
         .iter()
