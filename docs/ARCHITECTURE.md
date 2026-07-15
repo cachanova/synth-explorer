@@ -150,24 +150,26 @@ Compiler-Explorer-style split view, dark theme:
 - **Source cross-probe:** node src (`file.sv:12.16-12.21`) → editor highlight;
   editor cursor line → matching nodes listed/highlighted.
 
-## Validation Examples (`examples/`)
+## Example RTL (`examples/`)
 
-Per the spec, each exercising a distinct analysis behavior:
+The example picker contains parameterized, reusable RTL modules rather than
+analysis-specific fixtures: muxed registers; case-, loop-, and carry-based
+priority encoders; an N-input adder chain; a barrel shifter; a round-robin
+arbiter; fixed-latency, SRL, and elastic pipelines; an inferred FIFO; an async
+FIFO IP wrapper; and a request/response handshake controller.
 
-`01_reg_mux.sv` (register behind mux), `02_priority_encoder.sv` (wide priority
-chain → deep path), `03_adder_chain.sv` (long carry chain → deepest path),
-`04_high_fanout_enable.sv` (one enable fanning to many regs), `05_shared_logic.sv`
-(multiple regs sharing a cone), `06_comb_output.sv` (combinational top output),
-`07_blackbox.sv` (instantiated blackbox), `08_fsm.sv` (small FSM).
-
-Expected: adder/priority paths rank deepest; enable net tops fanout; selecting a
-register shows only its driver cone; blackbox breaks paths at its boundary.
+The modules intentionally cover portable RTL and common FPGA inference idioms.
+The three priority encoders use the same lowest-numbered-request convention so
+their synthesized implementations can be compared directly. The inferred FIFO
+shows a source-defined memory and pointers, while the async FIFO wrapper shows a
+realistic blackbox boundary around vendor-generated clock-domain-crossing IP.
 
 ## Testing
 
 - **Rust:** unit tests on parser/graph/analysis over committed fixture JSONs;
   integration tests that run yosys on `examples/` and assert semantic facts
-  (e.g. `03_adder_chain` depth > `01_reg_mux` depth; enable fanout ≥ reg count).
+  (e.g. `adder_chain` depth > `reg_mux` depth and blackbox boundaries remain
+  explicit).
 - **Frontend:** `tsc --noEmit`, `vite build`, vitest on pure logic (API client,
   graph transforms).
 - **E2E:** drive Chrome against the built stack — synthesize each example, walk

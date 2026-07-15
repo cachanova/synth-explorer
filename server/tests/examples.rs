@@ -62,10 +62,33 @@ fn is_lut_cell(cell_type: &str) -> bool {
 }
 
 #[tokio::test]
+async fn parameterized_example_catalog_synthesizes() {
+    let manifest = std::fs::read_to_string("../examples/manifest.json").unwrap();
+    let entries: Vec<serde_json::Value> = serde_json::from_str(&manifest).unwrap();
+    assert_eq!(entries.len(), 13);
+
+    for entry in entries {
+        let top = entry["top"].as_str().unwrap();
+        let files = entry["files"].as_array().unwrap();
+        assert_eq!(files.len(), 1, "{top} should be a standalone example");
+        let file = files[0].as_str().unwrap();
+        let source =
+            std::fs::read_to_string(std::path::Path::new("../examples").join(file)).unwrap();
+        assert!(
+            source.contains("#("),
+            "{file} must expose design parameters"
+        );
+
+        let (graph, _analysis) = analyze_example(file, top, SynthMode::Rtl).await;
+        assert!(!graph.nodes.is_empty(), "{file} produced an empty graph");
+    }
+}
+
+#[tokio::test]
 async fn adder_chain_is_deeper_than_reg_mux() {
-    let (_reg_graph, reg) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
+    let (_reg_graph, reg) = analyze_example("reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
     let (_adder_graph, adder) =
-        analyze_example("03_adder_chain.sv", "adder_chain", SynthMode::Rtl).await;
+        analyze_example("adder_chain.sv", "adder_chain", SynthMode::Rtl).await;
     assert!(
         adder.stats().max_depth > reg.stats().max_depth,
         "expected adder_chain depth {} > reg_mux depth {}",
@@ -76,9 +99,28 @@ async fn adder_chain_is_deeper_than_reg_mux() {
 
 #[tokio::test]
 async fn high_fanout_enable_ranks_large_driver() {
-    let (graph, analysis) = analyze_example(
-        "04_high_fanout_enable.sv",
-        "high_fanout_enable",
+    let source = r#"
+module high_fanout_fixture (
+    input logic clk,
+    input logic rst,
+    input logic en,
+    input logic [127:0] d_in,
+    output logic [127:0] d_out
+);
+  logic [7:0] regs [16];
+  for (genvar i = 0; i < 16; i = i + 1) begin : g_regs
+    always_ff @(posedge clk) begin
+      if (rst) regs[i] <= '0;
+      else if (en) regs[i] <= d_in[i*8 +: 8];
+    end
+    assign d_out[i*8 +: 8] = regs[i];
+  end
+endmodule
+"#;
+    let (graph, analysis) = analyze_source(
+        "high_fanout_fixture.sv",
+        source,
+        "high_fanout_fixture",
         SynthMode::Gates,
     )
     .await;
@@ -105,8 +147,12 @@ async fn high_fanout_enable_ranks_large_driver() {
 
 #[tokio::test]
 async fn blackbox_is_seq_like_boundary() {
-    let (graph, analysis) =
-        analyze_example("07_blackbox.sv", "blackbox_demo", SynthMode::Rtl).await;
+    let (graph, analysis) = analyze_example(
+        "async_fifo_blackbox.sv",
+        "async_fifo_wrapper",
+        SynthMode::Rtl,
+    )
+    .await;
     assert!(
         graph
             .nodes
@@ -124,7 +170,7 @@ async fn blackbox_is_seq_like_boundary() {
 #[tokio::test]
 async fn reg_mux_endpoints_include_q_width_8() {
     for mode in [SynthMode::Rtl, SynthMode::Xilinx] {
-        let (graph, analysis) = analyze_example("01_reg_mux.sv", "reg_mux", mode).await;
+        let (graph, analysis) = analyze_example("reg_mux.sv", "reg_mux", mode).await;
         let endpoints = analysis.endpoints();
         let q = endpoints
             .registers
@@ -155,29 +201,30 @@ async fn reg_mux_endpoints_include_q_width_8() {
 }
 
 #[tokio::test]
-async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
+async fn vendor_handshake_controller_modes_have_depth_and_lut_fanin() {
     for (mode, expected_lut, collapsed_buffer) in [
         (SynthMode::Xilinx, None, Some("OBUF")),
         (SynthMode::Ice40, Some("SB_LUT4"), None),
         (SynthMode::Ecp5, Some("LUT4"), None),
     ] {
-        let (graph, analysis) = analyze_example("08_fsm.sv", "fsm", mode).await;
+        let (graph, analysis) =
+            analyze_example("handshake_controller.sv", "handshake_controller", mode).await;
         assert!(
             analysis.stats().max_depth >= 1,
             "{mode} max_depth was {}",
             analysis.stats().max_depth
         );
 
-        let valid = analysis
+        let timed_out = analysis
             .endpoints()
             .outputs
             .into_iter()
-            .find(|output| output.name == "valid")
-            .expect("expected valid output");
+            .find(|output| output.name == "timed_out")
+            .expect("expected timed_out output");
         let cone = analysis
             .cone(
                 &graph,
-                valid.bits[0].node_id,
+                timed_out.bits[0].node_id,
                 ConeOptions {
                     dir: ConeDir::Fanin,
                     max_depth: 64,
@@ -188,7 +235,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
                 },
                 None,
             )
-            .expect("valid output node should have a fanin cone");
+            .expect("timed_out output node should have a fanin cone");
         let cell_types: Vec<&str> = cone
             .nodes
             .iter()
@@ -196,7 +243,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
             .collect();
         assert!(
             cell_types.iter().any(|cell_type| is_lut_cell(cell_type)),
-            "{mode} valid fanin did not cross a LUT: {cell_types:?}"
+            "{mode} timed_out fanin did not cross a LUT: {cell_types:?}"
         );
         if let Some(expected) = expected_lut {
             assert!(cell_types.contains(&expected));
@@ -209,7 +256,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
             let implementation_cone = analysis
                 .cone(
                     &graph,
-                    valid.bits[0].node_id,
+                    timed_out.bits[0].node_id,
                     ConeOptions {
                         show_infrastructure: true,
                         ..ConeOptions {
@@ -237,7 +284,7 @@ async fn vendor_fsm_modes_have_depth_and_lut_fanin() {
 #[tokio::test]
 async fn xilinx_adder_depth_excludes_buffers() {
     let (graph, analysis) =
-        analyze_example("03_adder_chain.sv", "adder_chain", SynthMode::Xilinx).await;
+        analyze_example("adder_chain.sv", "adder_chain", SynthMode::Xilinx).await;
     let path = analysis
         .paths(&graph, 1, None)
         .paths
@@ -520,7 +567,8 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
         (SynthMode::Ice40, "SB_DFFSR", &["C", "R"][..]),
         (SynthMode::Ecp5, "TRELLIS_FF", &["CLK", "LSR"][..]),
     ] {
-        let (graph, analysis) = analyze_example("08_fsm.sv", "fsm", mode).await;
+        let (graph, analysis) =
+            analyze_example("handshake_controller.sv", "handshake_controller", mode).await;
         let ff = graph
             .nodes
             .iter()
@@ -588,7 +636,7 @@ fn vendor_flip_flop_control_pin_names_are_tagged() {
 
 #[tokio::test]
 async fn mux_select_is_a_data_dependency_not_a_set_reset_control() {
-    let (graph, _analysis) = analyze_example("01_reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
+    let (graph, _analysis) = analyze_example("reg_mux.sv", "reg_mux", SynthMode::Rtl).await;
     let mux = graph
         .nodes
         .iter()

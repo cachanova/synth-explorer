@@ -521,7 +521,7 @@ At most 200 ids per request (`422` above that).
 ```ts
 {
   examples: {
-    name: string;        // "03_adder_chain"
+    name: string;        // "adder_chain"
     title: string;
     description: string;
     top: string;

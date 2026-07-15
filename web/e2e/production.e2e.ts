@@ -152,7 +152,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
 }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await page.goto('/')
-  await page.getByLabel('Example').selectOption({ label: 'Register behind a mux' })
+  await page.getByLabel('Example').selectOption({ label: 'Reg Mux' })
 
   const responsePromise = page.waitForResponse(
     (response) =>
@@ -312,7 +312,7 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
     .getByText('Example')
     .locator('..')
     .locator('select')
-    .selectOption('05_shared_logic')
+    .selectOption('handshake_controller')
   await page
     .getByText('Mode')
     .locator('..')
@@ -327,9 +327,9 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
   expect((await synthResponse).ok()).toBe(true)
 
-  // Select the q2 output declaration, whose focused Xilinx graph includes a
-  // grouped register fed by several carry-chain D edges.
-  await page.locator('.cm-line').nth(11).click()
+  // Select the timeout counter update, whose focused graph includes the
+  // counter register while the full diagram includes the complete controller.
+  await page.locator('.cm-line').nth(72).click()
   const focusedResponse = page.waitForResponse((response) =>
     response.url().includes('/line-cone?'),
   )

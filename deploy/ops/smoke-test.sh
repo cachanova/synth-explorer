@@ -57,12 +57,12 @@ main() {
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
   source_file=""
   for candidate in "${script_dir}/.." "${script_dir}/../.."; do
-    if [[ -f "${candidate}/examples/05_shared_logic.sv" ]]; then
-      source_file="$(cd -- "${candidate}" && pwd)/examples/05_shared_logic.sv"
+    if [[ -f "${candidate}/examples/adder_chain.sv" ]]; then
+      source_file="$(cd -- "${candidate}" && pwd)/examples/adder_chain.sv"
       break
     fi
   done
-  [[ -n "${source_file}" ]] || die "missing synthesis smoke fixture: examples/05_shared_logic.sv"
+  [[ -n "${source_file}" ]] || die "missing synthesis smoke fixture: examples/adder_chain.sv"
 
   curl --fail-with-body --show-error --silent --location \
     --retry 20 --retry-all-errors --retry-delay 3 \
@@ -88,7 +88,7 @@ main() {
   fi
 
   jq --null-input --rawfile source "${source_file}" \
-    '{files: [{name: "05_shared_logic.sv", content: $source}], top: "shared_logic", tool: "yosys", mode: "gates"}' \
+    '{files: [{name: "adder_chain.sv", content: $source}], top: "adder_chain", tool: "yosys", mode: "gates"}' \
     >"${payload_file}"
   jq '. + {extra_args: "-noabc"}' "${payload_file}" >"${flags_payload_file}"
 
@@ -98,7 +98,7 @@ main() {
     --data-binary "@${payload_file}" \
     --output "${synth_file}" "${base_url}/api/synthesize"
   design_id="$(jq --exit-status --raw-output \
-    'select(.top == "shared_logic" and .tool == "yosys" and .mode == "gates") | .design_id | select(type == "string" and length == 12)' \
+    'select(.top == "adder_chain" and .tool == "yosys" and .mode == "gates") | .design_id | select(type == "string" and length == 12)' \
     "${synth_file}")" \
     || die "synthesis response did not contain the expected design"
 
@@ -108,7 +108,7 @@ main() {
     --data-binary "@${flags_payload_file}" \
     --output "${flags_synth_file}" "${base_url}/api/synthesize"
   flags_design_id="$(jq --exit-status --raw-output \
-    'select(.top == "shared_logic" and .tool == "yosys" and .mode == "gates") | .design_id | select(type == "string" and length == 12)' \
+    'select(.top == "adder_chain" and .tool == "yosys" and .mode == "gates") | .design_id | select(type == "string" and length == 12)' \
     "${flags_synth_file}")" \
     || die "synthesis-flags response did not contain the expected design"
   [[ "${flags_design_id}" != "${design_id}" ]] \
@@ -124,7 +124,7 @@ main() {
     --connect-timeout 5 --max-time 15 \
     --output "${design_file}" "${base_url}/api/design/${design_id}"
   jq --exit-status --arg design_id "${design_id}" \
-    '.design_id == $design_id and .top == "shared_logic" and .tool == "yosys" and .mode == "gates"' \
+    '.design_id == $design_id and .top == "adder_chain" and .tool == "yosys" and .mode == "gates"' \
     "${design_file}" >/dev/null \
     || die "design fetch did not return the synthesized design"
 
@@ -137,7 +137,7 @@ main() {
       --data-binary "@${matrix_payload_file}" \
       --output "${matrix_file}" "${base_url}/api/synthesize"
     matrix_design_id="$(jq --exit-status --raw-output --arg mode "${mode}" \
-      'select(.top == "shared_logic" and .tool == "yosys" and .mode == $mode) | .design_id | select(type == "string" and length == 12)' \
+      'select(.top == "adder_chain" and .tool == "yosys" and .mode == $mode) | .design_id | select(type == "string" and length == 12)' \
       "${matrix_file}")" \
       || die "${mode} synthesis did not contain the expected design"
     jq --exit-status '.stats.num_cells | select(type == "number")' \
@@ -165,7 +165,7 @@ main() {
       --data-binary "@${matrix_payload_file}" \
       --output "${matrix_file}" "${base_url}/api/synthesize"
     vivado_design_id="$(jq --exit-status --raw-output \
-      'select(.top == "shared_logic" and .tool == "vivado" and .mode == "gates" and .target == "xc7a35tcpg236-1") | .design_id | select(type == "string" and length == 12)' \
+      'select(.top == "adder_chain" and .tool == "vivado" and .mode == "gates" and .target == "xc7a35tcpg236-1") | .design_id | select(type == "string" and length == 12)' \
       "${matrix_file}")" \
       || die "vivado synthesis did not contain the expected design"
     jq --exit-status '.stats.num_cells | select(type == "number" and . > 0)' \
