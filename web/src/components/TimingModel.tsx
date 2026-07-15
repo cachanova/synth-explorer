@@ -251,11 +251,13 @@ function BreakdownBar({
   breakdown: DelayBreakdown
   total: number
 }) {
+  // Only categories that contribute — keeps the bar and legend consistent (a
+  // primary-input path has no launch; a comb-output path has no setup).
   const segments = BREAKDOWN_SEGMENTS.map((s) => ({
     ...s,
     ns: breakdown[s.key],
     pct: (breakdown[s.key] / total) * 100,
-  }))
+  })).filter((s) => s.ns > 0)
   return (
     <div className="breakdown">
       <div className="breakdown-bar" title="Where the estimated delay goes">
