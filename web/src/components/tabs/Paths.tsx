@@ -68,6 +68,7 @@ export function Paths() {
           <tr>
             <th className="num">#</th>
             <th className="num">Depth</th>
+            <th className="num">Est. delay</th>
             <th>Class</th>
             <th>Startpoint</th>
             <th>Logical endpoint</th>
@@ -232,6 +233,11 @@ function PathRow({
         <td className="num">
           <span className="depth-chip">{path.depth}</span>
         </td>
+        <td className="num mono">
+          {path.estimated_delay_ns != null
+            ? `${path.estimated_delay_ns.toFixed(2)} ns`
+            : '—'}
+        </td>
         <td>
           <span className="tag">{pathClassLabel(path.class)}</span>
         </td>
@@ -269,7 +275,7 @@ function PathRow({
       </tr>
       {open && (
         <tr className="expanded">
-          <td colSpan={7}>
+          <td colSpan={8}>
             <div className="chain">
               {path.nodes.map((node, nodeIndex) => (
                 <Hop
