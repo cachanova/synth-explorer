@@ -251,10 +251,18 @@ Four decisions are worth stating, because each is load-bearing:
   `-mode out_of_context`, so Vivado inserts IBUF/OBUF/BUFG and the normalized
   netlist the Tier-0 estimate analyses contains them too. Restricting to
   register-to-register keeps IOB delay out of both numbers regardless.
-- **`data_path_delay_ns` excludes FF setup**, which Vivado folds into slack.
-  Comparing it against `estimated_delay_ns` double-counts nothing but compares
-  unlike quantities; subtract the estimate's `estimated_delay_breakdown.setup_ns`
-  first. `logic_ns + route_ns == data_path_delay_ns`.
+- **`data_path_delay_ns` excludes FF setup**, which Vivado folds into slack
+  (`logic_ns + route_ns == data_path_delay_ns`). It is therefore **not**
+  subtractable from `estimated_delay_ns`, and clients should not derive a delta
+  between the two. Removing the estimate's `estimated_delay_breakdown.setup_ns`
+  makes the units agree but still leaves two different circuits: this field is
+  the worst *register-to-register* path, whereas `estimated_delay_ns` is the
+  worst arrival over every combinational node — of any path class — and adds a
+  setup term unconditionally, even where the path ends at an output port with no
+  capturing register. The response carries nothing saying whether the estimate's
+  critical path happened to be register-to-register, so the two are presented
+  side by side and left uncompared. A true like-for-like delta needs a
+  register-to-register-restricted estimate, which does not exist today.
 
 `vivado_timing` is absent, rather than approximated, when Vivado reports no
 constrained register-to-register path: a design with no registers, none with a
@@ -263,6 +271,14 @@ generated clock (only primary clock **ports** are constrained, so a divided
 clock leaves its paths unconstrained and Vivado reports `Slack: inf`). The
 report is also best-effort: a Tcl failure, a missing report, or an unparseable
 one leaves the field absent and never fails an otherwise-successful synthesis.
+
+The timing step costs wall clock inside the existing Vivado timeout — measured
+at ~7s on a 2001-register design (most of it Vivado building its timing graph)
+against ~36s of synthesis for the same design. Because that budget was sized
+when a run ended at `write_verilog`, the Tcl drops a marker file once the
+netlist is written: if the run is then killed on the timeout, the completed
+netlist is still used and only `vivado_timing` is dropped. A synthesis that
+would have succeeded before cannot fail because Tier 2 was added.
 
 Generic modes (`gates`, `lut4`, `lut6`) first synthesize exactly as before.
 When that attempt exhausts a sandbox bound — memory, CPU, output size, or the

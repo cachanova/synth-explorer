@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  dataPathEstimateNs,
-  estimateErrorPct,
-  fmaxMhz,
-  slackNs,
-} from './timing'
-import type { DelayBreakdown } from '../types'
+import { VIVADO_TIMING_CAVEAT, fmaxMhz, slackNs } from './timing'
 
 describe('fmaxMhz', () => {
   it('converts a nanosecond period to megahertz', () => {
@@ -36,46 +30,25 @@ describe('slackNs', () => {
   })
 })
 
-describe('dataPathEstimateNs', () => {
-  const breakdown: DelayBreakdown = {
-    launch_ns: 0.46,
-    logic_ns: 1.4,
-    net_ns: 0.75,
-    setup_ns: 0.08,
-  }
-
-  it('removes the setup term Vivado excludes from Data Path Delay', () => {
-    // The four terms sum to 2.69; Vivado's comparable figure drops setup.
-    expect(dataPathEstimateNs(2.69, breakdown)).toBeCloseTo(2.61)
+describe('VIVADO_TIMING_CAVEAT', () => {
+  // The measured and estimated figures cover different path classes and handle
+  // FF setup differently, and the UI shows no delta between them. The caveat
+  // therefore carries the whole burden of stopping a reader from treating them
+  // as a subtractable pair, so pin what it must say.
+  it('states the path class the measurement is restricted to', () => {
+    expect(VIVADO_TIMING_CAVEAT).toContain('register-to-register')
   })
 
-  it('leaves launch, logic and route in place', () => {
-    const estimate = dataPathEstimateNs(2.69, breakdown)
-    expect(estimate).toBeCloseTo(
-      breakdown.launch_ns + breakdown.logic_ns + breakdown.net_ns,
-    )
+  it('warns against subtracting the two figures', () => {
+    expect(VIVADO_TIMING_CAVEAT).toContain('rather than subtracting')
   })
 
-  it('is null without a breakdown to subtract setup from', () => {
-    expect(dataPathEstimateNs(2.69, undefined)).toBeNull()
-  })
-})
-
-describe('estimateErrorPct', () => {
-  it('is positive when the estimate is pessimistic', () => {
-    expect(estimateErrorPct(2.75, 2.5)).toBeCloseTo(10)
+  it('explains the setup asymmetry in both directions', () => {
+    expect(VIVADO_TIMING_CAVEAT).toContain('excludes FF setup')
+    expect(VIVADO_TIMING_CAVEAT).toContain('includes setup')
   })
 
-  it('is negative when the estimate is optimistic', () => {
-    expect(estimateErrorPct(2.25, 2.5)).toBeCloseTo(-10)
-  })
-
-  it('is zero on an exact match', () => {
-    expect(estimateErrorPct(2.5, 2.5)).toBeCloseTo(0)
-  })
-
-  it('is null when the measurement cannot be a denominator', () => {
-    expect(estimateErrorPct(2.5, 0)).toBeNull()
-    expect(estimateErrorPct(2.5, -1)).toBeNull()
+  it('does not claim to be timing closure', () => {
+    expect(VIVADO_TIMING_CAVEAT).toContain('not timing closure')
   })
 })

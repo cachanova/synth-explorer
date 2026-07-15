@@ -1,9 +1,9 @@
 use crate::netlist::{NetlistError, parse_value, select_top};
-use deepsize::DeepSizeOf;
 use crate::yosys::{
     MemoryHandling, SynthMode, SynthTool, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
     valid_vivado_part_name,
 };
+use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt::Write as _;
@@ -29,6 +29,10 @@ const TIMING_REPORT_LIMIT: u64 = 256 * 1024;
 /// only sets what `slack_ns` is measured against. See `docs/API.md`.
 const REFERENCE_PERIOD_NS: f64 = 10.0;
 const TIMING_REPORT_NAME: &str = "timing.rpt";
+/// Marker the Tcl writes once `write_verilog` has returned. Its presence is
+/// what distinguishes "synthesis finished, the optional timing step ran out of
+/// wall clock" from "synthesis itself timed out".
+const NETLIST_MARKER_NAME: &str = "netlist-complete.marker";
 const VIVADO_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const NORMALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -365,9 +369,19 @@ pub async fn run_vivado(input: &ValidatedSynth) -> Result<SynthesisOutput, Vivad
         .kill_on_drop(true);
     let status = run_command(&mut vivado, VIVADO_TIMEOUT, &vivado_console_path).await;
     let vivado_log = combined_log(&[&vivado_log_path, &vivado_console_path]).await;
+    // Written by the Tcl once `write_verilog` returned, so it proves the
+    // netlist on disk is complete rather than a partial flush.
+    let netlist_complete = fs::metadata(temp.path().join(NETLIST_MARKER_NAME))
+        .await
+        .is_ok();
     match status {
         Ok(status) if status.success() => {}
         Ok(_) => return Err(VivadoError::Vivado { log: vivado_log }),
+        // The timing step is best-effort and runs only after the netlist is
+        // written, so it adds wall time to a budget sized for synthesis alone.
+        // A timeout inside it must not discard a synthesis that already
+        // finished: keep the netlist and drop the timing report instead.
+        Err(CommandFailure::Timeout) if netlist_complete => {}
         Err(CommandFailure::Timeout) => return Err(VivadoError::Timeout { log: vivado_log }),
         Err(CommandFailure::Io(err)) => return Err(VivadoError::Io(err)),
     }
@@ -473,6 +487,9 @@ fn build_tcl(input: &ValidatedSynth, top: &str, output: &str) -> String {
         "write_verilog -force -mode funcsim {{{output}}}"
     )
     .unwrap();
+    // Ordered between the netlist and the timing step on purpose: everything
+    // above this line is Tier 1, everything below is best-effort Tier 2.
+    writeln!(&mut script, "close [open {{{NETLIST_MARKER_NAME}}} w]").unwrap();
     script.push_str(&build_timing_tcl());
     script
 }
@@ -495,6 +512,13 @@ fn build_tcl(input: &ValidatedSynth, top: &str, output: &str) -> String {
 /// error here leaves the report absent and Tier 1 synthesis untouched.
 /// No caller-supplied text is interpolated — the period is a Rust constant and
 /// clock names are positional.
+///
+/// `catch` covers Tcl errors but not wall clock, and this step is not free:
+/// measured at ~7s on a 2001-register design (~6s of it Vivado building its
+/// timing graph on first `all_registers`, ~1s the report itself), against 36s
+/// of synthesis. It therefore eats into `VIVADO_TIMEOUT`, which was sized when
+/// a run ended at `write_verilog`. `NETLIST_MARKER_NAME` is what keeps that
+/// from turning a previously-passing synthesis into a timeout.
 fn build_timing_tcl() -> String {
     format!(
         "if {{[catch {{\n\
@@ -873,6 +897,20 @@ mod tests {
         assert!(script.contains("catch"));
         assert!(script.contains("-period 10.000"));
         assert!(script.contains("report_timing -delay_type max -from $se_regs -to $se_regs"));
+    }
+
+    /// The completion marker must sit after the netlist and before the timing
+    /// step, or a timeout inside the timing step could not be told apart from
+    /// a synthesis that never finished.
+    #[test]
+    fn netlist_marker_separates_synthesis_from_the_best_effort_timing_step() {
+        let script = build_tcl(&input(), "top", "vivado-netlist.v");
+        let write = script.find("write_verilog").unwrap();
+        let marker = script.find(NETLIST_MARKER_NAME).unwrap();
+        let timing = script.find("all_registers").unwrap();
+        assert!(write < marker, "marker must prove write_verilog returned");
+        assert!(marker < timing, "marker must precede the timing step");
+        assert!(script.contains("close [open {netlist-complete.marker} w]"));
     }
 
     #[test]

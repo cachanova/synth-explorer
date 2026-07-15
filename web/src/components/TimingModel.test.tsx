@@ -69,18 +69,27 @@ describe('TimingModel Vivado tier', () => {
     expect(markup).toContain('2.62 ns') // measured
   })
 
+  // Both tiers are on screen together, so each has to say which it is.
   it('labels which figure is measured and which is estimated', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69, breakdown })
-    expect(markup).toContain('measured')
-    expect(markup).toContain('estimated')
+    expect(markup).toContain('tier-measured">measured')
+    expect(markup).toContain('tier-estimated">estimated')
   })
 
-  it('compares like for like by dropping the setup term Vivado excludes', () => {
+  // The estimate and the measurement do not describe the same path, so the
+  // panel must not print a delta between them however tempting it looks.
+  it('shows no estimate-vs-measured delta', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69, breakdown })
-    // 2.69 - 0.08 setup = 2.61 ns, against Vivado's 2.616 ns => -0.2%.
-    expect(markup).toContain('2.61 ns')
-    expect(markup).toContain('-0.2%')
-    expect(markup).toContain('excluding FF setup')
+    expect(markup).not.toContain('%<')
+    expect(markup).not.toContain('vivado-compare')
+    // 2.69 - 0.08 setup: the "comparable" figure that used to be derived here.
+    expect(markup).not.toContain('2.61 ns')
+  })
+
+  it('says why the two figures are not subtractable', () => {
+    const markup = render({ timing: vivadoTiming, estimate: 2.69, breakdown })
+    expect(markup).toContain('rather than subtracting')
+    expect(markup).toContain('Worst register-to-register path')
   })
 
   it('reports slack against the reference clock rather than a user target', () => {
@@ -102,18 +111,15 @@ describe('TimingModel Vivado tier', () => {
   // A design with no combinational logic has no Tier-0 estimate but still has
   // a real Vivado measurement. Show the measurement rather than nothing, and
   // drop the comparison instead of inventing a denominator.
-  it('still shows the measured delay when there is no estimate to compare', () => {
+  it('still shows the measured delay when there is no estimate at all', () => {
     const markup = render({ timing: vivadoTiming, estimate: null })
     expect(markup).toContain('Vivado data-path delay')
     expect(markup).toContain('2.62 ns')
-    expect(markup).not.toContain('vivado-compare')
   })
 
-  // An estimate with no breakdown cannot have its setup term removed, so there
-  // is no like-for-like figure to compare.
-  it('omits the comparison when the estimate has no setup term to remove', () => {
+  it('renders the measured tier without an estimate breakdown', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69 })
     expect(markup).toContain('Vivado data-path delay')
-    expect(markup).not.toContain('vivado-compare')
+    expect(markup).toContain('2.62 ns')
   })
 })

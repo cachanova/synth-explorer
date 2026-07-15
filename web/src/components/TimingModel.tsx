@@ -3,8 +3,6 @@ import { retuneTiming } from '../api'
 import {
   ESTIMATED_TIMING_CAVEAT,
   VIVADO_TIMING_CAVEAT,
-  dataPathEstimateNs,
-  estimateErrorPct,
   fmaxMhz,
   slackNs,
 } from '../lib/timing'
@@ -114,7 +112,15 @@ export function TimingModel({
 
   return (
     <>
-      <div className="section-title">Estimated timing</div>
+      {/* The tag appears only when Vivado's measured tier is alongside it:
+          with nothing to contrast against, "estimated" is what the section
+          already says, and the Yosys view must stay exactly as it was. */}
+      <div className="section-title">
+        Estimated timing{' '}
+        {vivadoTiming && (
+          <span className="tier-tag tier-estimated">estimated</span>
+        )}
+      </div>
       <div className="cards">
         <Card
           k="Critical-path delay"
@@ -135,13 +141,7 @@ export function TimingModel({
         <BreakdownBar breakdown={breakdown} total={delayNs} />
       )}
 
-      {vivadoTiming && (
-        <VivadoTimingPanel
-          timing={vivadoTiming}
-          estimateNs={delayNs}
-          breakdown={breakdown}
-        />
-      )}
+      {vivadoTiming && <VivadoTimingPanel timing={vivadoTiming} />}
 
       <div className="timing-controls">
         <label className="field">
@@ -224,27 +224,13 @@ export function TimingModel({
 }
 
 /**
- * Vivado's measured report_timing beside our estimate. The headline pair is
- * deliberately like-for-like: Vivado's Data Path Delay excludes FF setup, so
- * the estimate it is compared against has its setup term removed rather than
- * using the (setup-inclusive) critical-path delay shown above.
+ * Vivado's measured report_timing beside our estimate.
+ *
+ * The two figures are shown as neighbours, not as a comparison: they do not
+ * describe the same path (see VIVADO_TIMING_CAVEAT). Everything here is tagged
+ * `measured` so no figure can be read as coming from the delay model.
  */
-function VivadoTimingPanel({
-  timing,
-  estimateNs,
-  breakdown,
-}: {
-  timing: VivadoTiming
-  estimateNs: number | null
-  breakdown?: DelayBreakdown
-}) {
-  const comparable =
-    estimateNs != null ? dataPathEstimateNs(estimateNs, breakdown) : null
-  const errorPct =
-    comparable != null
-      ? estimateErrorPct(comparable, timing.data_path_delay_ns)
-      : null
-
+function VivadoTimingPanel({ timing }: { timing: VivadoTiming }) {
   return (
     <>
       <div className="section-title">
@@ -261,26 +247,9 @@ function VivadoTimingPanel({
         <Card k="Logic levels" v={timing.logic_levels} />
       </div>
 
-      {comparable != null && errorPct != null && (
-        <div className="vivado-compare">
-          <span className="tier-tag tier-estimated">estimated</span>
-          <b>{comparable.toFixed(2)} ns</b>
-          <span className="faint">vs</span>
-          <span className="tier-tag tier-measured">measured</span>
-          <b>{timing.data_path_delay_ns.toFixed(2)} ns</b>
-          <span className={errorPct >= 0 ? 'slack-ok' : 'slack-bad'}>
-            {errorPct >= 0 ? '+' : ''}
-            {errorPct.toFixed(1)}%
-          </span>
-          <span className="faint">
-            — both excluding FF setup, which Vivado folds into slack
-          </span>
-        </div>
-      )}
-
       <div className="faint vivado-path" title="Vivado's worst-path endpoints">
-        {timing.source} → {timing.destination} · slack{' '}
-        {timing.slack_ns >= 0 ? '+' : ''}
+        Worst register-to-register path: {timing.source} → {timing.destination} ·
+        slack {timing.slack_ns >= 0 ? '+' : ''}
         {timing.slack_ns.toFixed(2)} ns vs the {timing.reference_period_ns} ns
         reference clock ({timing.slack_met ? 'met' : 'violated'})
       </div>

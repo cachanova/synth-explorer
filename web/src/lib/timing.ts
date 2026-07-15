@@ -1,5 +1,3 @@
-import type { DelayBreakdown } from '../types'
-
 export const ESTIMATED_TIMING_CAVEAT =
   'An estimate, not a measurement. It sums per-cell delays with an estimated routing delay along the critical path of the synthesis netlist, before placement or routing. Use it to compare paths and weigh design choices — the ordering is far more trustworthy than the absolute number. For figures closer to Vivado, use the Vivado backend; for signoff, use Vivado\'s own timing report.'
 
@@ -18,32 +16,16 @@ export function slackNs(delayNs: number, targetMhz: number): number {
   return 1000 / targetMhz - delayNs
 }
 
+// Deliberately no estimate-vs-measured delta anywhere in the UI. The two
+// figures do not describe the same path, and nothing in the response says
+// whether they happen to: Vivado reports the worst REGISTER-TO-REGISTER path
+// and excludes FF setup (folding it into slack), whereas the estimate takes the
+// worst arrival over every combinational node — of any path class — and always
+// adds a setup term, even when the path ends at an output port rather than a
+// register. Subtracting setup would make the units agree while leaving the two
+// numbers describing different circuits, which is a worse error than showing no
+// delta: it would look precise. Present both, label each, and let the reader
+// compare. A true like-for-like delta needs a register-to-register-restricted
+// estimate from the server, which does not exist today.
 export const VIVADO_TIMING_CAVEAT =
-  "Measured by Vivado's own report_timing on the netlist it synthesized, for the worst register-to-register path under a synthetic 10 ns reference clock applied after synthesis. Like the estimate, it is a post-synthesis figure with estimated routing — Vivado's own estimate, not timing closure."
-
-/**
- * The part of an estimate that is directly comparable to Vivado's Data Path
- * Delay. Vivado reports clk-to-Q + logic + route and folds FF setup into slack
- * instead, so the estimate's setup term has to come off before the two numbers
- * describe the same quantity. Returns null without a breakdown to subtract.
- */
-export function dataPathEstimateNs(
-  delayNs: number,
-  breakdown: DelayBreakdown | undefined,
-): number | null {
-  if (!breakdown) return null
-  return delayNs - breakdown.setup_ns
-}
-
-/**
- * How far the estimate lands from the measurement, as a percentage of the
- * measurement (positive = the estimate is pessimistic). Both arguments must
- * already be like-for-like — see dataPathEstimateNs.
- */
-export function estimateErrorPct(
-  estimateNs: number,
-  measuredNs: number,
-): number | null {
-  if (!(measuredNs > 0)) return null
-  return ((estimateNs - measuredNs) / measuredNs) * 100
-}
+  "Measured by Vivado's own report_timing on the netlist it synthesized: the worst register-to-register path, under a synthetic 10 ns reference clock applied after synthesis. Read it alongside the estimate rather than subtracting one from the other — this figure covers register-to-register paths only and excludes FF setup (Vivado folds setup into slack), while the estimate takes the worst path of any class and includes setup. Like the estimate, it is a post-synthesis figure with estimated routing — Vivado's own estimate, not timing closure."
