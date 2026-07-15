@@ -1,7 +1,7 @@
 use crate::analysis::{
-    Analysis, ApiNodeKind, ConeDir, ConeOptions, EndpointsResponse, FanoutResponse, NodeRef,
-    PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats, Subgraph,
-    estimate_delay_ns,
+    Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
+    NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats,
+    Subgraph, estimate_timing,
 };
 use crate::delay_model::DelayModel;
 use crate::graph::Graph;
@@ -947,6 +947,9 @@ struct TimingResponse {
     /// Recomputed worst-case combinational delay; null when there are no
     /// combinational paths.
     estimated_delay_ns: Option<f64>,
+    /// Launch/logic/net/setup split of that delay; null when there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_delay_breakdown: Option<DelayBreakdown>,
     /// The base coefficients used (before the speed-grade multiplier), so the
     /// client can populate the editor when only a profile name was sent.
     model: DelayModel,
@@ -1000,9 +1003,10 @@ async fn design_timing(
         request.profile.as_deref(),
     );
     let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
-    let estimated_delay_ns = estimate_delay_ns(&design.graph, &effective);
+    let estimate = estimate_timing(&design.graph, &effective);
     Ok(Json(TimingResponse {
-        estimated_delay_ns,
+        estimated_delay_ns: estimate.delay_ns,
+        estimated_delay_breakdown: estimate.breakdown,
         model: base,
     }))
 }

@@ -444,6 +444,40 @@ pub struct Stats {
     /// closure. `None` when the design has no combinational paths.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_delay_ns: Option<f64>,
+    /// How `estimated_delay_ns` splits across the critical path (ns). The four
+    /// terms sum to `estimated_delay_ns`. `None` when there is no estimate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_delay_breakdown: Option<DelayBreakdown>,
+}
+
+/// The estimated critical-path delay split into contributions (nanoseconds).
+/// `launch_ns + logic_ns + net_ns + setup_ns == estimated_delay_ns`.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DelayBreakdown {
+    pub launch_ns: f64,
+    pub logic_ns: f64,
+    pub net_ns: f64,
+    pub setup_ns: f64,
+}
+
+/// Picosecond accumulator used while walking the delay-critical path.
+#[derive(Debug, Clone, Copy, Default)]
+struct DelayBreakdownPs {
+    launch: f64,
+    logic: f64,
+    net: f64,
+    setup: f64,
+}
+
+impl DelayBreakdown {
+    fn from_ps(ps: DelayBreakdownPs) -> Self {
+        Self {
+            launch_ns: ps.launch / 1000.0,
+            logic_ns: ps.logic / 1000.0,
+            net_ns: ps.net / 1000.0,
+            setup_ns: ps.setup / 1000.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -469,6 +503,8 @@ struct DepthComputation {
     /// Estimated worst-case combinational delay (picoseconds) over all paths —
     /// a rough pre-place-and-route figure from the fanout-aware delay model.
     estimated_max_delay_ps: Option<f64>,
+    /// The critical path's delay split into launch/logic/net/setup (picoseconds).
+    estimated_max_delay_breakdown: Option<DelayBreakdownPs>,
     /// Per-node arrival time (picoseconds) at each comb node's output, for
     /// reconstructing a specific path's estimated delay.
     node_delay: Vec<f64>,
@@ -690,12 +726,19 @@ impl Analysis {
             best_pred,
             node_startpoint,
             estimated_max_delay_ps,
+            estimated_max_delay_breakdown,
             node_delay,
         } = compute_depths(graph, &loop_set, model);
         let (endpoints, endpoint_targets) =
             discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
         let source_map = build_source_map(graph, source_files);
-        let stats = build_stats(graph, &endpoints, &endpoint_targets, estimated_max_delay_ps);
+        let stats = build_stats(
+            graph,
+            &endpoints,
+            &endpoint_targets,
+            estimated_max_delay_ps,
+            estimated_max_delay_breakdown,
+        );
         let warnings = build_warnings(graph, &comb_loops);
         Self {
             node_depth,
@@ -2392,12 +2435,15 @@ fn compute_depths(
     let mut startpoint = vec![None; graph.nodes.len()];
     // Parallel delay-weighted longest path (picoseconds); see delay_model.
     let mut node_delay = vec![0.0f64; graph.nodes.len()];
+    // Breakdown of that arrival (launch/logic/net) along the delay-max path.
+    let mut node_breakdown = vec![DelayBreakdownPs::default(); graph.nodes.len()];
 
     while let Some(id) = queue.pop_front() {
         let cell = graph.nodes[id as usize].cell_type.as_deref();
         let weight = cell.map(cell_depth_weight).unwrap_or(1);
         let mut best: Option<(u32, usize, NodeId)> = None;
         let mut best_delay = 0.0f64;
+        let mut best_bd = DelayBreakdownPs::default();
         for edge_idx in &graph.incoming[id as usize] {
             let edge = &graph.edges[*edge_idx];
             if loop_set.contains(&edge.from) || !is_depth_input_edge(graph, edge) {
@@ -2421,21 +2467,37 @@ fn compute_depths(
             }
             // A path either continues from an upstream comb node's arrival time
             // or is launched here by a register (clk-to-Q) / input (zero).
-            let base_delay = if follows_depth {
-                node_delay[edge.from as usize]
+            let (base_delay, base_bd) = if follows_depth {
+                (
+                    node_delay[edge.from as usize],
+                    node_breakdown[edge.from as usize],
+                )
             } else {
-                model.launch_ps(graph.nodes[edge.from as usize].seq)
+                let launch = model.launch_ps(graph.nodes[edge.from as usize].seq);
+                (
+                    launch,
+                    DelayBreakdownPs {
+                        launch,
+                        ..Default::default()
+                    },
+                )
             };
             let net = model.net_delay_ps(fanout_of(graph, edge.from));
-            best_delay = best_delay.max(base_delay + net);
+            if base_delay + net > best_delay {
+                best_delay = base_delay + net;
+                best_bd = base_bd;
+                best_bd.net += net;
+            }
         }
         let (node_depth, pred, origin) = best.unwrap_or((weight, usize::MAX, id));
         depth[id as usize] = Some(node_depth);
         startpoint[id as usize] = Some(origin);
-        node_delay[id as usize] = best_delay
-            + cell
-                .map(|c| model.cell_delay_ps(c))
-                .unwrap_or(model.cell_ps);
+        let cell_ps = cell
+            .map(|c| model.cell_delay_ps(c))
+            .unwrap_or(model.cell_ps);
+        node_delay[id as usize] = best_delay + cell_ps;
+        best_bd.logic += cell_ps;
+        node_breakdown[id as usize] = best_bd;
         if pred != usize::MAX {
             best_pred[id as usize] = Some(pred);
         }
@@ -2458,21 +2520,33 @@ fn compute_depths(
 
     // Worst arrival across every combinational node, plus that node's output
     // net and the capturing register's setup — the estimated critical path.
-    let estimated_max_delay_ps = graph
-        .nodes
-        .iter()
-        .filter(|node| depth[node.id as usize].is_some())
-        .map(|node| node_delay[node.id as usize] + model.net_delay_ps(fanout_of(graph, node.id)))
-        .fold(None, |acc: Option<f64>, d| {
-            Some(acc.map_or(d, |a| a.max(d)))
-        })
-        .map(|d| d + model.ff_setup_ps);
+    let mut best_arrival: Option<f64> = None;
+    let mut best_arrival_bd: Option<DelayBreakdownPs> = None;
+    for node in &graph.nodes {
+        if depth[node.id as usize].is_none() {
+            continue;
+        }
+        let net = model.net_delay_ps(fanout_of(graph, node.id));
+        let arrival = node_delay[node.id as usize] + net;
+        if best_arrival.is_none_or(|current| arrival > current) {
+            best_arrival = Some(arrival);
+            let mut bd = node_breakdown[node.id as usize];
+            bd.net += net;
+            best_arrival_bd = Some(bd);
+        }
+    }
+    let estimated_max_delay_ps = best_arrival.map(|d| d + model.ff_setup_ps);
+    let estimated_max_delay_breakdown = best_arrival_bd.map(|mut bd| {
+        bd.setup = model.ff_setup_ps;
+        bd
+    });
 
     DepthComputation {
         node_depth: depth,
         best_pred,
         node_startpoint: startpoint,
         estimated_max_delay_ps,
+        estimated_max_delay_breakdown,
         node_delay,
     }
 }
@@ -2483,15 +2557,30 @@ fn fanout_of(graph: &Graph, id: NodeId) -> u32 {
     graph.outgoing[id as usize].len() as u32
 }
 
-/// Recompute only the estimated worst-case combinational delay (nanoseconds) for
-/// a graph under a given delay model. Used to *retune* timing on a cached design
-/// without re-running synthesis. Returns `None` when there are no combinational
-/// paths. Mirrors the estimate produced during [`Analysis::with_delay_model`].
-pub fn estimate_delay_ns(graph: &Graph, model: &DelayModel) -> Option<f64> {
+/// The estimated worst-case delay and its breakdown for a design under `model`.
+pub struct TimingEstimate {
+    pub delay_ns: Option<f64>,
+    pub breakdown: Option<DelayBreakdown>,
+}
+
+/// Recompute the estimated worst-case combinational delay and its per-category
+/// breakdown for a graph under a given delay model. Used to *retune* timing on a
+/// cached design without re-running synthesis. Mirrors the estimate produced
+/// during [`Analysis::with_delay_model`].
+pub fn estimate_timing(graph: &Graph, model: &DelayModel) -> TimingEstimate {
     let loop_set: HashSet<NodeId> = find_comb_loops(graph).into_iter().collect();
-    compute_depths(graph, &loop_set, model)
-        .estimated_max_delay_ps
-        .map(|ps| ps / 1000.0)
+    let dc = compute_depths(graph, &loop_set, model);
+    TimingEstimate {
+        delay_ns: dc.estimated_max_delay_ps.map(|ps| ps / 1000.0),
+        breakdown: dc
+            .estimated_max_delay_breakdown
+            .map(DelayBreakdown::from_ps),
+    }
+}
+
+/// Just the worst-case delay (nanoseconds); `None` with no combinational paths.
+pub fn estimate_delay_ns(graph: &Graph, model: &DelayModel) -> Option<f64> {
+    estimate_timing(graph, model).delay_ns
 }
 
 fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
@@ -3385,6 +3474,7 @@ fn build_stats(
     endpoints: &EndpointsResponse,
     endpoint_targets: &[EndpointTarget],
     estimated_max_delay_ps: Option<f64>,
+    estimated_max_delay_breakdown: Option<DelayBreakdownPs>,
 ) -> Stats {
     let mut cells_by_type = BTreeMap::new();
     let mut cell_categories = CellCategoryCounts::default();
@@ -3445,6 +3535,7 @@ fn build_stats(
         depths,
         cell_categories,
         estimated_delay_ns: estimated_max_delay_ps.map(|ps| ps / 1000.0),
+        estimated_delay_breakdown: estimated_max_delay_breakdown.map(DelayBreakdown::from_ps),
     }
 }
 
@@ -3789,6 +3880,28 @@ mod tests {
         // A faster model shrinks the per-path delays without changing structure.
         assert_eq!(s7.paths.len(), usp.paths.len());
         assert!(worst(&usp) < worst(&s7), "ultrascale+ should be faster");
+    }
+
+    #[test]
+    fn delay_breakdown_sums_to_the_total() {
+        let (_graph, analysis) = fixture("reg_mux_rtl.json");
+        let total = analysis.stats.estimated_delay_ns.unwrap();
+        let bd = analysis
+            .stats
+            .estimated_delay_breakdown
+            .expect("an estimate has a breakdown");
+        let sum = bd.launch_ns + bd.logic_ns + bd.net_ns + bd.setup_ns;
+        assert!(
+            (sum - total).abs() < 1e-9,
+            "breakdown {sum} != total {total}"
+        );
+        // Every real path crosses at least one net; all terms are non-negative.
+        // (launch is 0 when the path starts at a primary input; setup is 0 when
+        // it ends at an output rather than a register.)
+        assert!(bd.net_ns > 0.0);
+        for term in [bd.launch_ns, bd.logic_ns, bd.net_ns, bd.setup_ns] {
+            assert!(term >= 0.0);
+        }
     }
 
     #[test]

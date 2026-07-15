@@ -92,6 +92,7 @@ export function Overview() {
           key={design.design_id}
           designId={design.design_id}
           fallbackDelayNs={stats.estimated_delay_ns}
+          fallbackBreakdown={stats.estimated_delay_breakdown}
         />
       )}
 

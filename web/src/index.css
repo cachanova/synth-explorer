@@ -760,6 +760,50 @@ th.sortable {
 th.sortable:hover {
   color: var(--accent);
 }
+.breakdown {
+  margin: 8px 0 2px;
+}
+.breakdown-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.breakdown-seg {
+  height: 100%;
+}
+.breakdown-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.breakdown-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.breakdown-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.bd-launch {
+  background: #a371f7;
+}
+.bd-logic {
+  background: var(--accent);
+}
+.bd-net {
+  background: #d0a215;
+}
+.bd-setup {
+  background: var(--text-faint);
+}
 
 /* ---- path chain ---- */
 .chain {

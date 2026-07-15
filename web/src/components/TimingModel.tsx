@@ -11,7 +11,7 @@ import {
   type ProfileChoice,
   type TimingSettings,
 } from '../lib/timingSettings'
-import type { DelayModel, SpeedGrade } from '../types'
+import type { DelayBreakdown, DelayModel, SpeedGrade } from '../types'
 
 /**
  * Interactive timing panel: shows the estimated critical-path delay / Fmax and
@@ -22,13 +22,16 @@ import type { DelayModel, SpeedGrade } from '../types'
 export function TimingModel({
   designId,
   fallbackDelayNs,
+  fallbackBreakdown,
 }: {
   designId: string
   fallbackDelayNs: number | null
+  fallbackBreakdown?: DelayBreakdown
 }) {
   const [settings, setSettings] = useState<TimingSettings>(loadTimingSettings)
   const [result, setResult] = useState<{
     estimated_delay_ns: number | null
+    estimated_delay_breakdown?: DelayBreakdown
     model: DelayModel
   } | null>(null)
   const [advanced, setAdvanced] = useState(false)
@@ -59,6 +62,7 @@ export function TimingModel({
   }, [designId, debouncedKey])
 
   const delayNs = result?.estimated_delay_ns ?? fallbackDelayNs
+  const breakdown = result?.estimated_delay_breakdown ?? fallbackBreakdown
   // What the editor shows: the user's override if any, else the resolved preset.
   const editorModel = settings.overrides ?? result?.model ?? null
 
@@ -106,6 +110,10 @@ export function TimingModel({
           />
         )}
       </div>
+
+      {breakdown && delayNs != null && delayNs > 0 && (
+        <BreakdownBar breakdown={breakdown} total={delayNs} />
+      )}
 
       <div className="timing-controls">
         <label className="field">
@@ -222,6 +230,57 @@ function CoeffInput({
         onBlur={() => setDraft(null)}
       />
     </label>
+  )
+}
+
+const BREAKDOWN_SEGMENTS: {
+  key: keyof DelayBreakdown
+  label: string
+  cls: string
+}[] = [
+  { key: 'launch_ns', label: 'Launch', cls: 'bd-launch' },
+  { key: 'logic_ns', label: 'Logic', cls: 'bd-logic' },
+  { key: 'net_ns', label: 'Routing', cls: 'bd-net' },
+  { key: 'setup_ns', label: 'Setup', cls: 'bd-setup' },
+]
+
+function BreakdownBar({
+  breakdown,
+  total,
+}: {
+  breakdown: DelayBreakdown
+  total: number
+}) {
+  // Only categories that contribute — keeps the bar and legend consistent (a
+  // primary-input path has no launch; a comb-output path has no setup).
+  const segments = BREAKDOWN_SEGMENTS.map((s) => ({
+    ...s,
+    ns: breakdown[s.key],
+    pct: (breakdown[s.key] / total) * 100,
+  })).filter((s) => s.ns > 0)
+  return (
+    <div className="breakdown">
+      <div className="breakdown-bar" title="Where the estimated delay goes">
+        {segments.map(
+          (s) =>
+            s.pct > 0 && (
+              <span
+                key={s.key}
+                className={`breakdown-seg ${s.cls}`}
+                style={{ width: `${s.pct}%` }}
+              />
+            ),
+        )}
+      </div>
+      <div className="breakdown-legend">
+        {segments.map((s) => (
+          <span key={s.key} className="breakdown-item">
+            <span className={`breakdown-swatch ${s.cls}`} />
+            {s.label} {s.ns.toFixed(2)} ns
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
 
