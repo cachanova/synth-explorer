@@ -753,6 +753,13 @@ table.grid tr.expanded td {
 .card .v.slack-bad {
   color: var(--red);
 }
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+th.sortable:hover {
+  color: var(--accent);
+}
 
 /* ---- path chain ---- */
 .chain {

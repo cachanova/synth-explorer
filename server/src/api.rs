@@ -857,20 +857,33 @@ fn speed_grade_factor(grade: Option<&str>) -> f64 {
     }
 }
 
+/// Resolve the base delay coefficients (before the speed-grade multiplier) from
+/// a request. Precedence: an explicit coefficient override wins, then a named
+/// profile, then the design's own synth-time model — so with none supplied the
+/// figures reproduce the synthesis panel.
+fn resolve_base_model(
+    design_default: DelayModel,
+    model: Option<DelayModel>,
+    profile: Option<&str>,
+) -> DelayModel {
+    match (model, profile) {
+        (Some(model), _) => model,
+        (None, Some(profile)) => profile_preset(Some(profile)),
+        (None, None) => design_default,
+    }
+}
+
 async fn design_timing(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(request): Json<TimingRequest>,
 ) -> Result<Json<TimingResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
-    // Precedence: an explicit coefficient override wins, then a named profile,
-    // then the design's own synth-time model — so a no-argument retune
-    // reproduces the estimate shown in the synthesis panel.
-    let base = match (request.model, request.profile.as_deref()) {
-        (Some(model), _) => model,
-        (None, Some(profile)) => profile_preset(Some(profile)),
-        (None, None) => design.delay_model,
-    };
+    let base = resolve_base_model(
+        design.delay_model,
+        request.model,
+        request.profile.as_deref(),
+    );
     let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
     let estimated_delay_ns = estimate_delay_ns(&design.graph, &effective);
     Ok(Json(TimingResponse {
@@ -883,6 +896,12 @@ async fn design_timing(
 struct PathsQuery {
     limit: Option<usize>,
     to: Option<u32>,
+    // Optional timing model so per-path delays track the client's retune
+    // settings (same resolution as `/timing`). `model` is a JSON-encoded
+    // DelayModel; an unparseable value falls back to the profile/default.
+    profile: Option<String>,
+    speed_grade: Option<String>,
+    model: Option<String>,
 }
 
 async fn paths(
@@ -892,7 +911,18 @@ async fn paths(
 ) -> Result<Json<PathsResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
     let limit = query.limit.unwrap_or(25).min(500);
-    Ok(Json(design.analysis.paths(&design.graph, limit, query.to)))
+    let model_override = query
+        .model
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<DelayModel>(s).ok());
+    let base = resolve_base_model(design.delay_model, model_override, query.profile.as_deref());
+    let effective = base.scaled(speed_grade_factor(query.speed_grade.as_deref()));
+    Ok(Json(design.analysis.paths_with_model(
+        &design.graph,
+        &effective,
+        limit,
+        query.to,
+    )))
 }
 
 #[derive(Debug, Deserialize)]

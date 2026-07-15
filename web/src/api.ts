@@ -1,8 +1,8 @@
 // Typed API client mirroring docs/API.md. All calls go through the /api proxy.
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
-import { parseRetryAfterMs } from './lib/retry'
 import type {
+  DelayModel,
   EndpointsResponse,
   ExamplesResponse,
   FanoutResponse,
@@ -24,20 +24,17 @@ import type {
 export class ApiRequestError extends Error {
   status: number
   log?: string
-  retryAfterMs?: number
-  constructor(message: string, status: number, log?: string, retryAfterMs?: number) {
+  constructor(message: string, status: number, log?: string) {
     super(message)
     this.name = 'ApiRequestError'
     this.status = status
     this.log = log
-    this.retryAfterMs = retryAfterMs
   }
 }
 
 async function parseError(res: Response): Promise<ApiRequestError> {
   let message = `${res.status} ${res.statusText}`
   let log: string | undefined
-  const retryAfterMs = parseRetryAfterMs(res.headers.get('Retry-After'))
   try {
     const body = await res.json()
     if (body && typeof body === 'object') {
@@ -47,7 +44,7 @@ async function parseError(res: Response): Promise<ApiRequestError> {
   } catch {
     // non-JSON error body; keep status text
   }
-  return new ApiRequestError(message, res.status, log, retryAfterMs)
+  return new ApiRequestError(message, res.status, log)
 }
 
 async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
@@ -89,11 +86,21 @@ export function getEndpoints(id: string): Promise<EndpointsResponse> {
 
 export function getPaths(
   id: string,
-  opts: { limit?: number; to?: number } = {},
+  opts: {
+    limit?: number
+    to?: number
+    // Timing model so per-path delays track the client's retune settings.
+    profile?: string
+    speed_grade?: string
+    model?: DelayModel
+  } = {},
 ): Promise<PathsResponse> {
   const p = new URLSearchParams()
   if (opts.limit != null) p.set('limit', String(opts.limit))
   if (opts.to != null) p.set('to', String(opts.to))
+  if (opts.profile != null) p.set('profile', opts.profile)
+  if (opts.speed_grade != null) p.set('speed_grade', opts.speed_grade)
+  if (opts.model != null) p.set('model', JSON.stringify(opts.model))
   const qs = p.toString()
   return getJson<PathsResponse>(
     `/api/design/${encodeURIComponent(id)}/paths${qs ? `?${qs}` : ''}`,

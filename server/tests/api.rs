@@ -1170,6 +1170,18 @@ endmodule
             .all(|node| node.get("width").is_none()),
         "width must be absent without group_vectors"
     );
+    let plain_register_names: Vec<_> = plain["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["register"] == true)
+        .map(|node| node["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        plain_register_names,
+        (0..8).map(|bit| format!("q[{bit}]")).collect::<Vec<_>>(),
+        "ungrouped register nodes retain their individual bit indices"
+    );
 
     // With grouping the bus collapses to one width-8 register node.
     let grouped = get_json(
@@ -1201,6 +1213,7 @@ endmodule
         .iter()
         .find(|node| node["kind"] == "cell")
         .expect("the register bus is a cell group node");
+    assert_eq!(group["name"], "q[7:0]");
     assert_eq!(group["width"].as_u64(), Some(8));
     assert_eq!(group["members"].as_array().unwrap().len(), 8);
     let synthetic_id = group["id"].as_u64().unwrap();

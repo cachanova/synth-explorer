@@ -273,13 +273,20 @@ Response:
 
 Returns 404 if the design id is not in the cache (e.g. expired — re-synthesize).
 
-## GET `/api/design/:id/paths?limit=25&to=<node_id>`
+## GET `/api/design/:id/paths?limit=25&to=<node_id>&profile=<p>&speed_grade=<g>&model=<json>`
 
 Ranked longest structural paths (deepest first). Paths with the same logical
 endpoint, depth, and normalized structural route are grouped into bit cohorts;
 different vector-bit routes remain separate. Direct registered-output aliases
 share the register endpoint and do not create a duplicate zero-depth path.
 With `to`, only variants ending at that node are returned.
+
+The optional `profile` / `speed_grade` / `model` params delay-cost each path
+with the same model resolution as `POST /api/design/:id/timing` (so per-path
+`estimated_delay_ns` tracks the client's retune settings). `model` is a
+URL-encoded JSON `DelayModel`; an unparseable value falls back to the
+profile/default. Ranking and truncation are still by structural depth, not
+delay.
 
 ```ts
 {
@@ -299,6 +306,13 @@ With `to`, only variants ending at that node are returned.
     endpoint: NodeRef;           // FF cell (D) / output port bit / blackbox
     endpoint_port: string;       // "D", output port name, ...
     nodes: NodeRef[];            // startpoint -> ... -> endpoint, capped at 512
+    estimated_delay_ns?: number; // rough per-path delay, same model as the
+                                 // overview estimate (uses the design's
+                                 // synth-time delay model, not /timing retunes).
+                                 // Over ALL endpoints the max equals stats for
+                                 // register-bound designs, but this list is
+                                 // depth-sorted and truncated, so its max may
+                                 // be lower than stats.estimated_delay_ns.
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
   truncated: boolean;            // response limit or bounded route sampling hit
