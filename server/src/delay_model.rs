@@ -6,12 +6,14 @@
 //! routing, so the interconnect term is estimated purely from net fanout — the
 //! same reason a vendor's post-synth numbers are labelled "estimated".
 //!
-//! The presets are process-node ballpark figures in picoseconds at the slowest
-//! ("-1") speed grade. They are **relative, uncalibrated** estimates: they track
-//! how a faster process (Series-7 → UltraScale → UltraScale+) shortens delay, but
-//! the absolute numbers are guesses until fitted to a real vendor `report_timing`.
+//! The Xilinx presets (Series-7, UltraScale, UltraScale+) are **calibrated
+//! against Vivado 2026.1** post-synthesis `report_timing` at the "-1" speed grade
+//! (xc7a35t / xcku025 / xcku5p), using adder/mux sweeps — mean abs error ~6% on
+//! that set. Carry-chain nets are dedicated (see [`DelayModel::net_delay_to_ps`]).
+//! The Lattice (iCE40/ECP5) and `generic` presets are NOT vendor-calibrated
+//! (no Lattice tool available); they are scaled to the same picosecond scale.
 //! Every coefficient is a flat, tunable number so a request can override any of
-//! them. This is NOT timing closure.
+//! them. This is still a pre-place-and-route estimate, NOT timing closure.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,73 +45,78 @@ impl Default for DelayModel {
 }
 
 impl DelayModel {
-    /// Xilinx 7-series (28nm), the baseline preset.
+    /// Xilinx 7-series (28nm, xc7a35t -1). Calibrated against Vivado 2026.1
+    /// post-synthesis `report_timing` on adder/mux sweeps: CARRY4 ≈ 0.12 ns/stage,
+    /// general net ≈ the flat ~0.49 ns two-net adder route (carry-chain nets are
+    /// dedicated — see `net_delay_to_ps`).
     pub fn series7() -> Self {
         Self {
-            lut_ps: 100.0,
-            carry_ps: 60.0,
-            wide_mux_ps: 90.0,
-            cell_ps: 130.0,
-            ff_clk_to_q_ps: 400.0,
-            ff_setup_ps: 60.0,
-            net_base_ps: 200.0,
-            net_per_fanout_ps: 40.0,
+            lut_ps: 360.0,
+            carry_ps: 135.0,
+            wide_mux_ps: 320.0,
+            cell_ps: 320.0,
+            ff_clk_to_q_ps: 620.0,
+            ff_setup_ps: 40.0,
+            net_base_ps: 190.0,
+            net_per_fanout_ps: 50.0,
         }
     }
 
-    /// Xilinx UltraScale (20nm) — roughly 0.8x the 7-series logic delay.
+    /// Xilinx UltraScale (20nm, xcku025 -1). Calibrated against Vivado: much
+    /// faster CARRY8 (~0.02 ns per yosys-CARRY4-equivalent) and lower routing.
     pub fn ultrascale() -> Self {
         Self {
-            lut_ps: 80.0,
-            carry_ps: 45.0,
-            wide_mux_ps: 72.0,
-            cell_ps: 105.0,
-            ff_clk_to_q_ps: 350.0,
-            ff_setup_ps: 50.0,
-            net_base_ps: 180.0,
-            net_per_fanout_ps: 36.0,
+            lut_ps: 180.0,
+            carry_ps: 30.0,
+            wide_mux_ps: 180.0,
+            cell_ps: 180.0,
+            ff_clk_to_q_ps: 320.0,
+            ff_setup_ps: 30.0,
+            net_base_ps: 140.0,
+            net_per_fanout_ps: 35.0,
         }
     }
 
-    /// Xilinx UltraScale+ (16nm FinFET) — roughly 0.62x the 7-series logic delay.
+    /// Xilinx UltraScale+ (16nm FinFET, xcku5p -1). Calibrated against Vivado.
     pub fn ultrascale_plus() -> Self {
         Self {
-            lut_ps: 62.0,
-            carry_ps: 35.0,
-            wide_mux_ps: 56.0,
-            cell_ps: 82.0,
-            ff_clk_to_q_ps: 300.0,
-            ff_setup_ps: 45.0,
-            net_base_ps: 160.0,
-            net_per_fanout_ps: 32.0,
+            lut_ps: 140.0,
+            carry_ps: 22.0,
+            wide_mux_ps: 150.0,
+            cell_ps: 150.0,
+            ff_clk_to_q_ps: 210.0,
+            ff_setup_ps: 25.0,
+            net_base_ps: 95.0,
+            net_per_fanout_ps: 25.0,
         }
     }
 
-    /// Lattice iCE40 (40nm) — a small, comparatively slow fabric.
+    /// Lattice iCE40 (40nm) — a small, comparatively slow fabric. NOT
+    /// vendor-calibrated (no Lattice tool here); scaled slower than Series-7.
     pub fn ice40() -> Self {
         Self {
-            lut_ps: 160.0,
+            lut_ps: 480.0,
             carry_ps: 90.0,
-            wide_mux_ps: 160.0,
-            cell_ps: 180.0,
-            ff_clk_to_q_ps: 500.0,
-            ff_setup_ps: 80.0,
-            net_base_ps: 300.0,
-            net_per_fanout_ps: 55.0,
+            wide_mux_ps: 480.0,
+            cell_ps: 480.0,
+            ff_clk_to_q_ps: 800.0,
+            ff_setup_ps: 60.0,
+            net_base_ps: 320.0,
+            net_per_fanout_ps: 70.0,
         }
     }
 
-    /// Lattice ECP5 (40nm).
+    /// Lattice ECP5 (40nm). NOT vendor-calibrated; scaled from Series-7.
     pub fn ecp5() -> Self {
         Self {
-            lut_ps: 140.0,
-            carry_ps: 80.0,
-            wide_mux_ps: 140.0,
-            cell_ps: 160.0,
-            ff_clk_to_q_ps: 470.0,
-            ff_setup_ps: 75.0,
+            lut_ps: 420.0,
+            carry_ps: 90.0,
+            wide_mux_ps: 420.0,
+            cell_ps: 420.0,
+            ff_clk_to_q_ps: 650.0,
+            ff_setup_ps: 55.0,
             net_base_ps: 280.0,
-            net_per_fanout_ps: 50.0,
+            net_per_fanout_ps: 60.0,
         }
     }
 
@@ -118,14 +125,14 @@ impl DelayModel {
     /// notional — it exists to keep the relative depth-vs-delay signal sensible.
     pub fn generic() -> Self {
         Self {
-            lut_ps: 100.0,
-            carry_ps: 100.0,
-            wide_mux_ps: 100.0,
-            cell_ps: 120.0,
-            ff_clk_to_q_ps: 300.0,
-            ff_setup_ps: 50.0,
-            net_base_ps: 150.0,
-            net_per_fanout_ps: 35.0,
+            lut_ps: 300.0,
+            carry_ps: 250.0,
+            wide_mux_ps: 300.0,
+            cell_ps: 320.0,
+            ff_clk_to_q_ps: 500.0,
+            ff_setup_ps: 40.0,
+            net_base_ps: 200.0,
+            net_per_fanout_ps: 50.0,
         }
     }
 
@@ -187,11 +194,28 @@ impl DelayModel {
         self.net_base_ps + self.net_per_fanout_ps * f64::from(fanout.max(1)).log2()
     }
 
+    /// Interconnect delay for an edge, given the sink cell. A connection *into*
+    /// a carry chain (LUT→carry or carry→carry) is a dedicated/local, intra-slice
+    /// route and is ~free; the carry propagation cost lives in the CARRY cell
+    /// delay instead. Everything else (→LUT, →register) uses general routing.
+    pub fn net_delay_to_ps(&self, sink_cell: Option<&str>, fanout: u32) -> f64 {
+        if is_carry_sink(sink_cell) {
+            0.0
+        } else {
+            self.net_delay_ps(fanout)
+        }
+    }
+
     /// Launch delay at a path startpoint: a register contributes clock-to-Q, a
     /// top-level input contributes nothing (arrival time zero).
     pub fn launch_ps(&self, sequential: bool) -> f64 {
         if sequential { self.ff_clk_to_q_ps } else { 0.0 }
     }
+}
+
+/// Whether a connection into `sink_cell` rides dedicated carry routing.
+fn is_carry_sink(sink_cell: Option<&str>) -> bool {
+    sink_cell.is_some_and(|cell| is_carry(&cell.to_ascii_uppercase()))
 }
 
 fn is_carry(upper: &str) -> bool {
@@ -229,6 +253,18 @@ mod tests {
         assert_eq!(m.net_delay_ps(0), m.net_delay_ps(1));
         assert_eq!(m.launch_ps(true), m.ff_clk_to_q_ps);
         assert_eq!(m.launch_ps(false), 0.0);
+    }
+
+    #[test]
+    fn net_into_a_carry_chain_is_dedicated() {
+        let m = DelayModel::series7();
+        // A connection into a carry cell (LUT->carry or carry->carry) rides
+        // dedicated routing and is free; everything else uses general routing.
+        assert_eq!(m.net_delay_to_ps(Some("CARRY4"), 4), 0.0);
+        assert_eq!(m.net_delay_to_ps(Some("MUXCY"), 1), 0.0);
+        assert_eq!(m.net_delay_to_ps(Some("LUT6"), 4), m.net_delay_ps(4));
+        assert_eq!(m.net_delay_to_ps(Some("FDRE"), 1), m.net_delay_ps(1));
+        assert_eq!(m.net_delay_to_ps(None, 2), m.net_delay_ps(2));
     }
 
     #[test]

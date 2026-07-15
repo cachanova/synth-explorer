@@ -2482,7 +2482,11 @@ fn compute_depths(
                     },
                 )
             };
-            let net = model.net_delay_ps(fanout_of(graph, edge.from));
+            // The sink is `id`; a connection into a carry chain is dedicated.
+            let net = model.net_delay_to_ps(
+                graph.nodes[id as usize].cell_type.as_deref(),
+                fanout_of(graph, edge.from),
+            );
             if base_delay + net > best_delay {
                 best_delay = base_delay + net;
                 best_bd = base_bd;

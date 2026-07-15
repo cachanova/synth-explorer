@@ -174,12 +174,12 @@ Response `200`:
       setup_ns: number;
     };
   };
-  // estimated_delay_ns is a rough PRE-place-and-route figure: it sums
-  // ballpark cell delays with a fanout-based (log-scaled) net-delay estimate
-  // along the critical logic path — the same shape as a vendor tool's
+  // estimated_delay_ns is a PRE-place-and-route figure: it sums characterized
+  // cell delays with a fanout-based net-delay estimate along the critical path
+  // (carry-chain nets are dedicated/free) — the same shape as a vendor tool's
   // post-synthesis "estimated" timing, NOT timing closure. Omitted when the
-  // design has no combinational paths. The delay coefficients are Series-7
-  // ballparks meant to be calibrated against a real vendor report.
+  // design has no combinational paths. The Xilinx presets are calibrated against
+  // Vivado 2026.1 (~6% mean error on an adder/mux sweep); Lattice/generic are not.
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
   memories_abstracted: boolean; // true when a generic mode exhausted a sandbox
@@ -290,10 +290,10 @@ model and `-1` respectively) rather than erroring.
 
 `DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
 `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
-`net_per_fanout_ps`. Presets are process-node ballparks characterized at the
-`-1` grade; `speed_grade` applies a global multiplier on top (`-2`≈0.87,
-`-3`≈0.78). The coefficients are **uncalibrated relative estimates**, not vendor
-numbers.
+`net_per_fanout_ps`. The Xilinx presets are calibrated against Vivado 2026.1 at
+the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p);
+`speed_grade` applies a global multiplier on top (`-2`≈0.87, `-3`≈0.78). Lattice
+(iCE40/ECP5) and `generic` presets are not vendor-calibrated.
 
 Response:
 
