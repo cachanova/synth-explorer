@@ -1707,8 +1707,10 @@ impl Analysis {
 
     /// Estimated delay (ns) for a single endpoint's critical path, using the
     /// same accounting as the overview estimate: arrival at the last driver's
-    /// output, plus that net, plus register setup. The max over all endpoints'
-    /// paths therefore matches the overview figure for register-bound designs.
+    /// output, plus that net, plus register setup. Taken over *all* endpoints
+    /// the max matches the overview figure for register-bound designs — but the
+    /// `paths()` response is sorted by depth and truncated, so a slow-but-shallow
+    /// path can be omitted and the max over the returned list may be lower.
     fn path_delay_ns(&self, graph: &Graph, target: &EndpointTarget) -> Option<f64> {
         let model = &self.delay_model;
         let arrival_ps = match target.edge {

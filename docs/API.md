@@ -292,9 +292,11 @@ With `to`, only variants ending at that node are returned.
     nodes: NodeRef[];            // startpoint -> ... -> endpoint, capped at 512
     estimated_delay_ns?: number; // rough per-path delay, same model as the
                                  // overview estimate (uses the design's
-                                 // synth-time delay model, not /timing retunes);
-                                 // the max across paths matches stats for
-                                 // register-bound designs
+                                 // synth-time delay model, not /timing retunes).
+                                 // Over ALL endpoints the max equals stats for
+                                 // register-bound designs, but this list is
+                                 // depth-sorted and truncated, so its max may
+                                 // be lower than stats.estimated_delay_ns.
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
   truncated: boolean;            // response limit or bounded route sampling hit
