@@ -88,15 +88,21 @@ export function Paths() {
             <th className="num">#</th>
             <th
               className="num sortable"
-              onClick={() => setSortBy('depth')}
+              onClick={() => {
+                setSortBy('depth')
+                setOpen(null)
+              }}
               title="Sort by structural depth"
             >
               Depth{sortBy === 'depth' ? ' ▾' : ''}
             </th>
             <th
               className="num sortable"
-              onClick={() => setSortBy('delay')}
-              title="Sort by estimated delay"
+              onClick={() => {
+                setSortBy('delay')
+                setOpen(null)
+              }}
+              title="Sort by estimated delay (reorders the depth-ranked paths shown; the globally slowest may lie outside them)"
             >
               Est. delay{sortBy === 'delay' ? ' ▾' : ''}
             </th>
