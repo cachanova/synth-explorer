@@ -264,13 +264,20 @@ Response:
 
 Returns 404 if the design id is not in the cache (e.g. expired — re-synthesize).
 
-## GET `/api/design/:id/paths?limit=25&to=<node_id>`
+## GET `/api/design/:id/paths?limit=25&to=<node_id>&profile=<p>&speed_grade=<g>&model=<json>`
 
 Ranked longest structural paths (deepest first). Paths with the same logical
 endpoint, depth, and normalized structural route are grouped into bit cohorts;
 different vector-bit routes remain separate. Direct registered-output aliases
 share the register endpoint and do not create a duplicate zero-depth path.
 With `to`, only variants ending at that node are returned.
+
+The optional `profile` / `speed_grade` / `model` params delay-cost each path
+with the same model resolution as `POST /api/design/:id/timing` (so per-path
+`estimated_delay_ns` tracks the client's retune settings). `model` is a
+URL-encoded JSON `DelayModel`; an unparseable value falls back to the
+profile/default. Ranking and truncation are still by structural depth, not
+delay.
 
 ```ts
 {

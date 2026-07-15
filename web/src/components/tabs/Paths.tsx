@@ -9,6 +9,7 @@ import {
   nodeSublabel,
   shortNetName,
 } from '../../lib/prettyType'
+import { loadTimingSettings, timingRequest } from '../../lib/timingSettings'
 import { useStore } from '../../store'
 import type {
   EndpointKind,
@@ -27,11 +28,29 @@ interface RouteVariant {
 export function Paths() {
   const store = useStore()
   const id = store.design?.design_id ?? null
-  const { data, loading, error } = useDesignData(id, (designId) =>
-    getPaths(designId, { limit: 25 }),
+  // Cost per-path delays with the same retune settings as the timing panel,
+  // read from localStorage on mount (the tab remounts on switch).
+  const timingReq = useMemo(() => timingRequest(loadTimingSettings()), [])
+  const { data, loading, error } = useDesignData(
+    id,
+    (designId) => getPaths(designId, { limit: 25, ...timingReq }),
+    JSON.stringify(timingReq),
   )
   const [open, setOpen] = useState<number | null>(null)
-  const variants = useMemo(() => routeVariants(data?.paths ?? []), [data])
+  const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
+  const sortedPaths = useMemo(() => {
+    const paths = [...(data?.paths ?? [])]
+    if (sortBy === 'delay') {
+      paths.sort(
+        (a, b) =>
+          (b.estimated_delay_ns ?? -1) - (a.estimated_delay_ns ?? -1) ||
+          b.depth - a.depth,
+      )
+    }
+    // 'depth' keeps the backend order (already sorted deepest-first).
+    return paths
+  }, [data, sortBy])
+  const variants = useMemo(() => routeVariants(sortedPaths), [sortedPaths])
 
   if (!store.design) return <div className="empty-state">No design yet.</div>
   if (loading && !data) return <div className="empty-state">Loading paths…</div>
@@ -67,8 +86,20 @@ export function Paths() {
         <thead>
           <tr>
             <th className="num">#</th>
-            <th className="num">Depth</th>
-            <th className="num">Est. delay</th>
+            <th
+              className="num sortable"
+              onClick={() => setSortBy('depth')}
+              title="Sort by structural depth"
+            >
+              Depth{sortBy === 'depth' ? ' ▾' : ''}
+            </th>
+            <th
+              className="num sortable"
+              onClick={() => setSortBy('delay')}
+              title="Sort by estimated delay"
+            >
+              Est. delay{sortBy === 'delay' ? ' ▾' : ''}
+            </th>
             <th>Class</th>
             <th>Startpoint</th>
             <th>Logical endpoint</th>
@@ -77,7 +108,7 @@ export function Paths() {
           </tr>
         </thead>
         <tbody>
-          {data.paths.map((path, index) => (
+          {sortedPaths.map((path, index) => (
             <PathRow
               key={pathKey(path, index)}
               index={index}

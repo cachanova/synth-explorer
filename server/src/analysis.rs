@@ -1115,7 +1115,31 @@ impl Analysis {
                 .is_some_and(|sources| sources.iter().any(|src| spans_outside(src)))
     }
 
+    /// Longest structural paths, delay-costed with the design's synth-time model.
     pub fn paths(&self, graph: &Graph, limit: usize, to: Option<NodeId>) -> PathsResponse {
+        self.paths_with_model(graph, &self.delay_model, limit, to)
+    }
+
+    /// Like [`Analysis::paths`], but delay-costs each path with a caller-supplied
+    /// model (e.g. a client's retune), so per-path delays track the overview.
+    pub fn paths_with_model(
+        &self,
+        graph: &Graph,
+        model: &DelayModel,
+        limit: usize,
+        to: Option<NodeId>,
+    ) -> PathsResponse {
+        // Path structure (targets, routes) is model-independent; only the delay
+        // numbers depend on the model. Reuse the synth-time arrivals when the
+        // caller's model matches, else recompute the delay DP for it.
+        let recomputed;
+        let node_delay: &[f64] = if *model == self.delay_model {
+            &self.node_delay
+        } else {
+            let loop_set: HashSet<NodeId> = find_comb_loops(graph).into_iter().collect();
+            recomputed = compute_depths(graph, &loop_set, model).node_delay;
+            &recomputed
+        };
         const TARGETS_PER_GROUP_CAP: usize = 64;
         let candidate_cap = limit.max(1).saturating_mul(16).min(8000);
         let mut total_targets = 0;
@@ -1200,8 +1224,14 @@ impl Analysis {
                 break;
             }
             let per_path_cap = PATH_NODE_CAP.min(reconstruction_budget);
-            let (path, clipped, consumed_nodes) =
-                self.path_for_target(graph, target, per_path_cap, &alias_lookup);
+            let (path, clipped, consumed_nodes) = self.path_for_target(
+                graph,
+                target,
+                per_path_cap,
+                &alias_lookup,
+                node_delay,
+                model,
+            );
             reconstruction_budget = reconstruction_budget.saturating_sub(consumed_nodes);
             reconstructed_candidates += 1;
             route_clipped |= clipped;
@@ -1633,6 +1663,8 @@ impl Analysis {
         target: &EndpointTarget,
         node_cap: usize,
         alias_lookup: &RegisterAliasLookup<'_>,
+        node_delay: &[f64],
+        model: &DelayModel,
     ) -> (PathEntry, bool, usize) {
         debug_assert!(node_cap >= 2);
         let mut node_ids = vec![target.endpoint];
@@ -1685,7 +1717,7 @@ impl Analysis {
         } else {
             Vec::new()
         };
-        let estimated_delay_ns = self.path_delay_ns(graph, target);
+        let estimated_delay_ns = self.path_delay_ns(graph, target, node_delay, model);
         (
             PathEntry {
                 depth: target.depth,
@@ -1711,15 +1743,20 @@ impl Analysis {
     /// the max matches the overview figure for register-bound designs — but the
     /// `paths()` response is sorted by depth and truncated, so a slow-but-shallow
     /// path can be omitted and the max over the returned list may be lower.
-    fn path_delay_ns(&self, graph: &Graph, target: &EndpointTarget) -> Option<f64> {
-        let model = &self.delay_model;
+    fn path_delay_ns(
+        &self,
+        graph: &Graph,
+        target: &EndpointTarget,
+        node_delay: &[f64],
+        model: &DelayModel,
+    ) -> Option<f64> {
         let arrival_ps = match target.edge {
             Some(edge_idx) => {
                 let from = graph.edges[edge_idx].from;
                 // A comb driver contributes its computed arrival; a register/input
                 // driver launches the path (clk-to-Q / zero), mirroring the DP.
                 let base = if is_depth_node(graph, from) {
-                    *self.node_delay.get(from as usize)?
+                    *node_delay.get(from as usize)?
                 } else {
                     model.launch_ps(graph.nodes.get(from as usize)?.seq)
                 };
@@ -3736,6 +3773,22 @@ mod tests {
             (worst - overall).abs() < 1e-6,
             "worst path {worst} should match overview {overall}",
         );
+    }
+
+    #[test]
+    fn paths_with_model_retunes_per_path_delays() {
+        let (graph, analysis) = fixture("reg_mux_rtl.json");
+        let worst = |resp: &PathsResponse| {
+            resp.paths
+                .iter()
+                .filter_map(|p| p.estimated_delay_ns)
+                .fold(0.0f64, f64::max)
+        };
+        let s7 = analysis.paths_with_model(&graph, &DelayModel::series7(), 25, None);
+        let usp = analysis.paths_with_model(&graph, &DelayModel::ultrascale_plus(), 25, None);
+        // A faster model shrinks the per-path delays without changing structure.
+        assert_eq!(s7.paths.len(), usp.paths.len());
+        assert!(worst(&usp) < worst(&s7), "ultrascale+ should be faster");
     }
 
     #[test]
