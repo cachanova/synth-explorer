@@ -235,6 +235,7 @@ export interface TimingPath {
   endpoint: NodeRef // FF cell (D) / output port bit / blackbox
   endpoint_port: string // "D", output port name, ...
   nodes: NodeRef[] // startpoint -> ... -> endpoint, in order
+  estimated_delay_ns?: number // rough per-path delay (same model as overview)
 }
 
 export interface PathsResponse {
