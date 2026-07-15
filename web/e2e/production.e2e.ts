@@ -12,6 +12,60 @@ async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
   return box
 }
 
+test('unlocks every installed Vivado target through a password-manager form', async ({
+  page,
+}) => {
+  const accessKey = 'a'.repeat(64)
+  await page.route('**/healthz', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'ok',
+        commit: 'test',
+        version: 'test',
+        yosys_version: 'Yosys test',
+        vivado_version: 'Vivado v2026.1',
+        vivado_access_protected: true,
+      }),
+    })
+  })
+  await page.route('**/api/vivado/access', async (route) => {
+    expect(route.request().headers().authorization).toBe(`Bearer ${accessKey}`)
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        parts: [
+          { name: 'xc7a35tcpg236-1', family: 'artix7' },
+          { name: 'xcku025-ffva1156-2-e', family: 'kintexu' },
+          { name: 'xczu3eg-sbva484-1-e', family: 'zynquplus' },
+        ],
+      }),
+    })
+  })
+
+  await page.goto('/')
+  await page.getByLabel('Synth tool').selectOption('vivado')
+
+  const password = page.getByLabel('API key', { exact: true })
+  await expect(password).toHaveAttribute('type', 'password')
+  await expect(password).toHaveAttribute('name', 'password')
+  await expect(password).toHaveAttribute('autocomplete', 'current-password')
+  await expect(page.locator('input[name="username"]')).toHaveCount(0)
+  await expect(page.locator('form[autocomplete="on"]')).toBeVisible()
+  await password.fill(accessKey)
+  await page.getByRole('button', { name: 'Unlock', exact: true }).click()
+
+  await expect(page.getByLabel('Synth tool')).toHaveValue('vivado')
+  await expect(page.getByLabel('Mode')).toHaveCount(0)
+  await expect(page.getByLabel('Target')).toHaveValue('xc7a35tcpg236-1')
+  await expect(page.getByLabel('Target').locator('option')).toHaveCount(3)
+  await expect(page.getByText('Flags', { exact: true })).toBeVisible()
+  await page.getByTitle('Add or remove synthesis flags for this mode').click()
+  await expect(page.getByText('-retiming', { exact: true })).toBeVisible()
+})
+
 test('synthesizes from the webpage with the default Yosys flags', async ({
   page,
 }) => {

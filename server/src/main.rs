@@ -16,18 +16,28 @@ async fn main() -> anyhow::Result<()> {
     let yosys_version = yosys::preflight_yosys()
         .await
         .context("Yosys startup preflight failed")?;
-    let vivado_version = vivado::preflight_vivado()
+    let vivado_backend = vivado::preflight_vivado()
         .await
         .context("Vivado startup preflight failed")?;
-    let vivado_access = load_vivado_access(vivado_version.is_some())?;
+    let vivado_access = load_vivado_access(vivado_backend.is_some())?;
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
     let app = api::app(api::AppState::with_backends_and_vivado_access(
         yosys_version.clone(),
-        vivado_version.clone(),
+        vivado_backend.clone(),
         vivado_access,
     ));
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    tracing::info!(bind_addr, yosys_version, vivado_version, "server_started");
+    let vivado_version = vivado_backend.as_ref().map(|backend| &backend.version);
+    let vivado_parts = vivado_backend
+        .as_ref()
+        .map_or(0, |backend| backend.parts.len());
+    tracing::info!(
+        bind_addr,
+        yosys_version,
+        vivado_version,
+        vivado_parts,
+        "server_started"
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }

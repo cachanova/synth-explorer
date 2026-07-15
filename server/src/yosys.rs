@@ -65,7 +65,7 @@ pub struct SourceFile {
     pub content: String,
 }
 
-pub const SUPPORTED_VIVADO_PART: &str = "xc7a35tcpg236-1";
+pub const DEFAULT_VIVADO_PART: &str = "xc7a35tcpg236-1";
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -206,10 +206,10 @@ impl SynthRequest {
                     "vivado currently supports only gates mode".to_owned(),
                 ));
             }
-            SynthTool::Vivado if self.target.as_deref() != Some(SUPPORTED_VIVADO_PART) => {
-                return Err(YosysError::Validation(format!(
-                    "unsupported vivado target; expected {SUPPORTED_VIVADO_PART}"
-                )));
+            SynthTool::Vivado if !self.target.as_deref().is_some_and(valid_vivado_part_name) => {
+                return Err(YosysError::Validation(
+                    "vivado target must be a valid installed part name".to_owned(),
+                ));
             }
             SynthTool::Vivado
                 if extra_args.iter().any(|arg| {
@@ -233,6 +233,14 @@ impl SynthRequest {
             extra_args,
         })
     }
+}
+
+pub(crate) fn valid_vivado_part_name(target: &str) -> bool {
+    !target.is_empty()
+        && target.len() <= 128
+        && target
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 impl ValidatedSynth {
@@ -699,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn vivado_validates_mode_and_target_but_accepts_safe_synth_design_flags() {
+    fn vivado_validates_mode_and_target_shape_but_accepts_installed_part_names() {
         let request = SynthRequest {
             files: vec![SourceFile {
                 name: "design.sv".to_owned(),
@@ -708,23 +716,52 @@ mod tests {
             top: Some("top".to_owned()),
             tool: SynthTool::Vivado,
             mode: SynthMode::Gates,
-            target: Some(SUPPORTED_VIVADO_PART.to_owned()),
+            target: Some(DEFAULT_VIVADO_PART.to_owned()),
             extra_args: Some("-retiming".to_owned()),
         };
         let validated = request.validate().unwrap();
         assert_eq!(validated.extra_args, ["-retiming"]);
+
+        let ultrascale_plus = SynthRequest {
+            files: validated.files.clone(),
+            top: validated.top.clone(),
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some("xczu3eg-sbva484-1-e".to_owned()),
+            extra_args: None,
+        };
+        assert_eq!(
+            ultrascale_plus.validate().unwrap().target.as_deref(),
+            Some("xczu3eg-sbva484-1-e")
+        );
 
         let request = SynthRequest {
             files: validated.files,
             top: validated.top,
             tool: SynthTool::Vivado,
             mode: SynthMode::Rtl,
-            target: Some(SUPPORTED_VIVADO_PART.to_owned()),
+            target: Some(DEFAULT_VIVADO_PART.to_owned()),
             extra_args: None,
         };
         assert_eq!(
             request.validate().unwrap_err().to_string(),
             "vivado currently supports only gates mode"
+        );
+
+        let unsafe_target = SynthRequest {
+            files: vec![SourceFile {
+                name: "design.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some("xc7a35t;exec".to_owned()),
+            extra_args: None,
+        };
+        assert_eq!(
+            unsafe_target.validate().unwrap_err().to_string(),
+            "vivado target must be a valid installed part name"
         );
     }
 
@@ -739,7 +776,7 @@ mod tests {
                 top: Some("top".to_owned()),
                 tool: SynthTool::Vivado,
                 mode: SynthMode::Gates,
-                target: Some(SUPPORTED_VIVADO_PART.to_owned()),
+                target: Some(DEFAULT_VIVADO_PART.to_owned()),
                 extra_args: Some(flags.to_owned()),
             };
             assert_eq!(

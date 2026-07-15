@@ -18,6 +18,7 @@ import type {
   SynthesizeResponse,
   TimingRequest,
   TimingResponse,
+  VivadoAccessResponse,
   XilinxFamily,
 } from './types'
 
@@ -70,12 +71,15 @@ export async function synthesize(
   return (await res.json()) as SynthesizeResponse
 }
 
-export async function unlockVivado(accessKey: string): Promise<void> {
+export async function unlockVivado(
+  accessKey: string,
+): Promise<VivadoAccessResponse> {
   const res = await fetch('/api/vivado/access', {
     method: 'POST',
     headers: { Authorization: `Bearer ${accessKey}` },
   })
   if (!res.ok) throw await parseError(res)
+  return (await res.json()) as VivadoAccessResponse
 }
 
 export function getDesign(id: string): Promise<SynthesizeResponse> {
@@ -248,12 +252,8 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
 
 export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
   { value: 'yosys', label: 'Yosys' },
-  { value: 'vivado', label: 'Vivado (owner key)' },
+  { value: 'vivado', label: 'Vivado (API key)' },
 ]
-
-export const VIVADO_TARGETS = [
-  { value: 'xc7a35tcpg236-1', label: 'Artix-7 XC7A35T (xc7a35tcpg236-1)' },
-] as const
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs
 // CARRY8), BRAM, and DSP primitives, so it makes the netlist match the vendor

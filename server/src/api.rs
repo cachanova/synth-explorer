@@ -9,7 +9,7 @@ use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use crate::synthesis::{SynthesisError, run_synthesis};
-use crate::vivado::VivadoError;
+use crate::vivado::{VivadoBackend, VivadoError, VivadoPart};
 use crate::yosys::{
     MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, SynthTool, YosysError,
 };
@@ -46,6 +46,8 @@ pub struct AppState {
     running: Arc<Semaphore>,
     metadata: Arc<BuildMetadata>,
     vivado_access: Option<Arc<VivadoAccess>>,
+    vivado_parts: Arc<Vec<VivadoPart>>,
+    vivado_families: Arc<HashMap<String, String>>,
 }
 
 impl Default for AppState {
@@ -56,21 +58,17 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new(yosys_version: impl Into<String>) -> Self {
-        Self::with_backends(yosys_version, None)
-    }
-
-    pub fn with_backends(yosys_version: impl Into<String>, vivado_version: Option<String>) -> Self {
-        Self::with_backends_and_vivado_access(yosys_version, vivado_version, None)
+        Self::with_backends_and_vivado_access(yosys_version, None, None)
     }
 
     pub fn with_backends_and_vivado_access(
         yosys_version: impl Into<String>,
-        vivado_version: Option<String>,
+        vivado_backend: Option<VivadoBackend>,
         vivado_access: Option<VivadoAccess>,
     ) -> Self {
         Self::with_cache_config(
             yosys_version,
-            vivado_version,
+            vivado_backend,
             vivado_access,
             DESIGN_CACHE_BUDGET_BYTES,
             DESIGN_CACHE_TTL,
@@ -79,11 +77,18 @@ impl AppState {
 
     fn with_cache_config(
         yosys_version: impl Into<String>,
-        vivado_version: Option<String>,
+        vivado_backend: Option<VivadoBackend>,
         vivado_access: Option<VivadoAccess>,
         cache_budget_bytes: usize,
         cache_ttl: Duration,
     ) -> Self {
+        let (vivado_version, vivado_parts) = vivado_backend
+            .map(|backend| (Some(backend.version), backend.parts))
+            .unwrap_or_default();
+        let vivado_families = vivado_parts
+            .iter()
+            .map(|part| (part.name.clone(), part.family.clone()))
+            .collect();
         Self {
             cache: Arc::new(RwLock::new(DesignCache::new(cache_budget_bytes, cache_ttl))),
             flights: Arc::new(SynthesisFlights::new()),
@@ -97,6 +102,8 @@ impl AppState {
                 vivado_version,
             }),
             vivado_access: vivado_access.map(Arc::new),
+            vivado_parts: Arc::new(vivado_parts),
+            vivado_families: Arc::new(vivado_families),
         }
     }
 }
@@ -574,6 +581,7 @@ async fn synthesize(
     }
     if validated.tool == SynthTool::Vivado {
         require_vivado_access(&state, &headers)?;
+        require_vivado_target(&state, validated.target.as_deref())?;
     }
     let design_id = validated.design_id();
     let tool = validated.tool.to_string();
@@ -644,7 +652,7 @@ async fn synthesize(
 async fn vivado_access(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<StatusCode, ApiError> {
+) -> Result<Json<VivadoAccessResponse>, ApiError> {
     if state.metadata.vivado_version.is_none() {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -652,7 +660,14 @@ async fn vivado_access(
         ));
     }
     require_vivado_access(&state, &headers)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(VivadoAccessResponse {
+        parts: (*state.vivado_parts).clone(),
+    }))
+}
+
+#[derive(Debug, Serialize)]
+struct VivadoAccessResponse {
+    parts: Vec<VivadoPart>,
 }
 
 fn require_vivado_access(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
@@ -669,6 +684,16 @@ fn require_vivado_access(state: &AppState, headers: &HeaderMap) -> Result<(), Ap
         ));
     }
     Ok(())
+}
+
+fn require_vivado_target(state: &AppState, target: Option<&str>) -> Result<(), ApiError> {
+    if target.is_some_and(|target| state.vivado_families.contains_key(target)) {
+        return Ok(());
+    }
+    Err(ApiError::new(
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "vivado target is not installed on this deployment",
+    ))
 }
 
 async fn wait_for_flight(mut receiver: watch::Receiver<Option<FlightResult>>) -> FlightResult {
@@ -789,7 +814,12 @@ async fn synthesize_uncached(
     if validated.tool == SynthTool::Vivado {
         ranges.extend(vivado_procedural_ranges(&procedural_targets));
     }
-    let delay_model = default_delay_model(validated, &mode);
+    let vivado_family = validated
+        .target
+        .as_deref()
+        .and_then(|target| state.vivado_families.get(target))
+        .map(String::as_str);
+    let delay_model = default_delay_model(validated, &mode, vivado_family);
     let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
@@ -1502,10 +1532,20 @@ fn mode_string(mode: SynthMode) -> String {
     mode.to_string()
 }
 
-fn default_delay_model(validated: &crate::yosys::ValidatedSynth, mode: &str) -> DelayModel {
+fn default_delay_model(
+    validated: &crate::yosys::ValidatedSynth,
+    mode: &str,
+    vivado_family: Option<&str>,
+) -> DelayModel {
     if validated.tool == SynthTool::Vivado {
-        return match validated.target.as_deref() {
-            Some(target) if target.starts_with("xc7") => DelayModel::series7(),
+        return match vivado_family.map(str::to_ascii_lowercase).as_deref() {
+            Some(family) if family.contains("uplus") => DelayModel::ultrascale_plus(),
+            Some(family) if family.ends_with('u') => DelayModel::ultrascale(),
+            Some(family)
+                if family.ends_with('7') || family.ends_with("7l") || family.ends_with("zynq") =>
+            {
+                DelayModel::series7()
+            }
             _ => DelayModel::generic(),
         };
     }
@@ -1544,6 +1584,16 @@ mod tests {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         VivadoAccess::from_digest_hexes([digest.as_str()]).unwrap()
+    }
+
+    fn test_vivado_backend() -> VivadoBackend {
+        VivadoBackend {
+            version: "Vivado v2026.1".to_owned(),
+            parts: vec![VivadoPart {
+                name: "xc7a35tcpg236-1".to_owned(),
+                family: "artix7".to_owned(),
+            }],
+        }
     }
 
     fn authorized_request(builder: axum::http::request::Builder) -> axum::http::request::Builder {
@@ -1591,8 +1641,34 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            default_delay_model(&validated, "gates"),
+            default_delay_model(&validated, "gates", Some("artix7")),
             DelayModel::series7()
+        );
+    }
+
+    #[test]
+    fn vivado_ultrascale_families_use_matching_delay_models() {
+        let mut validated = SynthRequest {
+            files: vec![SourceFile {
+                name: "top.sv".to_owned(),
+                content: "module top; endmodule".to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some("xcku025-ffva1156-2-e".to_owned()),
+            extra_args: None,
+        }
+        .validate()
+        .unwrap();
+        assert_eq!(
+            default_delay_model(&validated, "gates", Some("kintexu")),
+            DelayModel::ultrascale()
+        );
+        validated.target = Some("xczu3eg-sbva484-1-e".to_owned());
+        assert_eq!(
+            default_delay_model(&validated, "gates", Some("zynquplus")),
+            DelayModel::ultrascale_plus()
         );
     }
 
@@ -1889,7 +1965,7 @@ mod tests {
     async fn vivado_access_endpoint_requires_the_owner_key() {
         let state = AppState::with_backends_and_vivado_access(
             "Yosys test-version",
-            Some("Vivado v2026.1".to_owned()),
+            Some(test_vivado_backend()),
             Some(test_vivado_access()),
         );
 
@@ -1924,14 +2000,18 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(authorized.status(), StatusCode::NO_CONTENT);
+        assert_eq!(authorized.status(), StatusCode::OK);
+        let body = authorized.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["parts"][0]["name"], "xc7a35tcpg236-1");
+        assert_eq!(body["parts"][0]["family"], "artix7");
     }
 
     #[tokio::test]
     async fn vivado_synthesis_rejects_unauthorized_requests_before_execution() {
         let state = AppState::with_backends_and_vivado_access(
             "Yosys test-version",
-            Some("Vivado v2026.1".to_owned()),
+            Some(test_vivado_backend()),
             Some(test_vivado_access()),
         );
         let request = serde_json::json!({
@@ -1958,6 +2038,42 @@ mod tests {
         assert_eq!(
             body["error"],
             "valid owner access key required for Vivado synthesis"
+        );
+    }
+
+    #[tokio::test]
+    async fn vivado_synthesis_rejects_targets_outside_the_startup_catalog() {
+        let state = AppState::with_backends_and_vivado_access(
+            "Yosys test-version",
+            Some(test_vivado_backend()),
+            Some(test_vivado_access()),
+        );
+        let request = serde_json::json!({
+            "files": [{"name": "top.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "tool": "vivado",
+            "mode": "gates",
+            "target": "xczu3eg-sbva484-1-e"
+        });
+        let response = app(state)
+            .oneshot(
+                authorized_request(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/synthesize")
+                        .header(header::CONTENT_TYPE, "application/json"),
+                )
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"],
+            "vivado target is not installed on this deployment"
         );
     }
 

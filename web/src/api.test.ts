@@ -97,10 +97,21 @@ describe('Vivado owner access', () => {
     '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 
   it('verifies the owner key without putting it in the URL or body', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    const catalog = {
+      parts: [
+        { name: 'xc7a35tcpg236-1', family: 'artix7' },
+        { name: 'xcku025-ffva1156-2-e', family: 'kintexu' },
+      ],
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(catalog), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
     vi.stubGlobal('fetch', fetchMock)
 
-    await unlockVivado(accessKey)
+    await expect(unlockVivado(accessKey)).resolves.toEqual(catalog)
 
     expect(fetchMock).toHaveBeenCalledWith('/api/vivado/access', {
       method: 'POST',

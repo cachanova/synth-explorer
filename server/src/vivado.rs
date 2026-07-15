@@ -1,7 +1,9 @@
 use crate::netlist::{NetlistError, parse_value, select_top};
 use crate::yosys::{
     MemoryHandling, SynthMode, SynthTool, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
+    valid_vivado_part_name,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt::Write as _;
 #[cfg(target_os = "linux")]
@@ -20,7 +22,8 @@ const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const JSON_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
 const VIVADO_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const NORMALIZE_TIMEOUT: Duration = Duration::from_secs(60);
-const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(15);
+const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
+const PART_MARKER: &str = "SYNTH_EXPLORER_PART\t";
 #[cfg(target_os = "linux")]
 const CHILD_ADDRESS_SPACE_LIMIT: libc::rlim_t = 16 * 1024 * 1024 * 1024;
 #[cfg(target_os = "linux")]
@@ -52,13 +55,26 @@ pub enum VivadoError {
     Netlist(#[from] NetlistError),
 }
 
-/// Return the configured Vivado version, or `None` when this deployment has no
-/// Vivado backend. Merely having the UI does not advertise an unavailable tool.
-pub async fn preflight_vivado() -> Result<Option<String>, VivadoError> {
+#[derive(Debug, Clone)]
+pub struct VivadoBackend {
+    pub version: String,
+    pub parts: Vec<VivadoPart>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VivadoPart {
+    pub name: String,
+    pub family: String,
+}
+
+/// Return the configured Vivado version and installed part catalog, or `None`
+/// when this deployment has no Vivado backend. Merely having the UI does not
+/// advertise an unavailable tool.
+pub async fn preflight_vivado() -> Result<Option<VivadoBackend>, VivadoError> {
     let Some(vivado_bin) = std::env::var_os("VIVADO_BIN") else {
         return Ok(None);
     };
-    let mut command = Command::new(vivado_bin);
+    let mut command = Command::new(&vivado_bin);
     command.arg("-version").kill_on_drop(true);
     let output = timeout(PREFLIGHT_TIMEOUT, command.output())
         .await
@@ -81,7 +97,41 @@ pub async fn preflight_vivado() -> Result<Option<String>, VivadoError> {
             "vivado returned an empty version",
         )));
     }
-    Ok(Some(version))
+    let temp = TempDir::new()?;
+    let catalog_script = temp.path().join("catalog.tcl");
+    fs::write(
+        &catalog_script,
+        "foreach part [lsort [get_parts]] {\n\
+         \tputs \"SYNTH_EXPLORER_PART\\t$part\\t[get_property FAMILY $part]\"\n\
+         }\n",
+    )
+    .await?;
+    let mut command = Command::new(vivado_bin);
+    command
+        .arg("-mode")
+        .arg("batch")
+        .arg("-nojournal")
+        .arg("-nolog")
+        .arg("-notrace")
+        .arg("-source")
+        .arg(&catalog_script)
+        .current_dir(temp.path())
+        .kill_on_drop(true);
+    let output = timeout(PREFLIGHT_TIMEOUT, command.output())
+        .await
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "vivado part catalog check timed out",
+            )
+        })??;
+    if !output.status.success() {
+        return Err(VivadoError::Vivado {
+            log: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        });
+    }
+    let parts = parse_part_catalog(&String::from_utf8_lossy(&output.stdout))?;
+    Ok(Some(VivadoBackend { version, parts }))
 }
 
 fn parse_version_banner(output: &str) -> Option<&str> {
@@ -91,6 +141,40 @@ fn parse_version_banner(output: &str) -> Option<&str> {
             .filter(|prefix| prefix.eq_ignore_ascii_case("vivado "))
             .map(|_| line)
     })
+}
+
+fn parse_part_catalog(output: &str) -> Result<Vec<VivadoPart>, VivadoError> {
+    let mut parts = output
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix(PART_MARKER))
+        .map(|line| {
+            let (name, family) = line.split_once('\t').ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "vivado returned a malformed part catalog entry",
+                )
+            })?;
+            if !valid_vivado_part_name(name) || family.is_empty() || family.len() > 128 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "vivado returned an invalid part catalog entry",
+                ));
+            }
+            Ok(VivadoPart {
+                name: name.to_owned(),
+                family: family.to_owned(),
+            })
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    parts.sort_by(|a, b| (&a.family, &a.name).cmp(&(&b.family, &b.name)));
+    parts.dedup_by(|a, b| a.name == b.name);
+    if parts.is_empty() {
+        return Err(VivadoError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "vivado returned an empty part catalog",
+        )));
+    }
+    Ok(parts)
 }
 
 /// Run Vivado synthesis, then normalize its structural Verilog into the Yosys
@@ -430,7 +514,7 @@ mod tests {
             top: Some("top".to_owned()),
             tool: SynthTool::Vivado,
             mode: SynthMode::Gates,
-            target: Some(crate::yosys::SUPPORTED_VIVADO_PART.to_owned()),
+            target: Some(crate::yosys::DEFAULT_VIVADO_PART.to_owned()),
             extra_args: Vec::new(),
         }
     }
@@ -472,6 +556,33 @@ mod tests {
             parse_version_banner(output),
             Some("vivado v2026.1 (64-bit)")
         );
+    }
+
+    #[test]
+    fn part_catalog_parser_sorts_and_deduplicates_installed_parts() {
+        let output = "noise\n\
+            SYNTH_EXPLORER_PART\txcku025-ffva1156-2-e\tkintexu\n\
+            SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\n\
+            SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\n";
+        assert_eq!(
+            parse_part_catalog(output).unwrap(),
+            vec![
+                VivadoPart {
+                    name: "xc7a35tcpg236-1".to_owned(),
+                    family: "artix7".to_owned(),
+                },
+                VivadoPart {
+                    name: "xcku025-ffva1156-2-e".to_owned(),
+                    family: "kintexu".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn part_catalog_parser_rejects_empty_or_unsafe_catalogs() {
+        assert!(parse_part_catalog("Vivado v2026.1").is_err());
+        assert!(parse_part_catalog("SYNTH_EXPLORER_PART\txc7a35t;exec\tartix7\n").is_err());
     }
 
     #[test]

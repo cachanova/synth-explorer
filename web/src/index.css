@@ -333,6 +333,52 @@ a:hover {
   align-self: center;
 }
 
+/* ---- Vivado owner unlock ---- */
+.unlock-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 65%);
+}
+.unlock-dialog {
+  width: min(420px, 100%);
+  padding: 18px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgb(0 0 0 / 55%);
+}
+.unlock-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.unlock-dialog p {
+  margin: 0 0 14px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.unlock-password {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+.unlock-password input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 8px;
+  font-family: var(--mono);
+}
+.unlock-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
 /* ---- file tabs ---- */
 .file-tabs {
   display: flex;
