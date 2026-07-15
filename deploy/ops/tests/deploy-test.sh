@@ -195,6 +195,22 @@ fi
 clear_deployment_state
 PUBLIC_HEALTH_MODE=exact
 
+# The stronger runtime health predicate must accept real version strings. Keep
+# this fixture beside the deployment tests because ordinary CI images do not
+# contain Vivado and therefore exercise only the Yosys health branch.
+health_fixture="${TEST_DIR}/vivado-health.json"
+jq --null-input --arg commit "${EXPECTED_COMMIT}" \
+  '{status: "ok", commit: $commit, yosys_version: "Yosys 0.67", vivado_version: "Vivado v2026.1 (64-bit)"}' \
+  >"${health_fixture}"
+jq --exit-status --arg commit "${EXPECTED_COMMIT}" \
+  '.status == "ok" and .commit == $commit
+    and ((.yosys_version | type) == "string")
+    and (.yosys_version | contains("0.67"))
+    and ((.vivado_version | type) == "string")
+    and (.vivado_version | ascii_downcase | contains("vivado v2026.1"))' \
+  "${health_fixture}" >/dev/null \
+  || fail 'Vivado runtime health predicate rejected valid version strings'
+
 # Retention keeps exactly the active and previous release/image.
 : >"${CALL_LOG}"
 mkdir -p -- "${OLD_RELEASE_FIXTURE}"

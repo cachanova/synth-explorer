@@ -66,13 +66,17 @@ main() {
   if [[ "${vivado_required}" == 1 ]]; then
     jq --exit-status --arg commit "${expected_commit}" \
       '.status == "ok" and .commit == $commit
-        and (.yosys_version | type == "string" and contains("0.67"))
-        and (.vivado_version | type == "string" and ascii_downcase | contains("vivado v2026.1"))' \
+        and ((.yosys_version | type) == "string")
+        and (.yosys_version | contains("0.67"))
+        and ((.vivado_version | type) == "string")
+        and (.vivado_version | ascii_downcase | contains("vivado v2026.1"))' \
       "${health_file}" >/dev/null \
       || die "health response did not match the deployed commit, Yosys 0.67, and Vivado 2026.1"
   else
     jq --exit-status --arg commit "${expected_commit}" \
-      '.status == "ok" and .commit == $commit and (.yosys_version | type == "string" and contains("0.67"))' \
+      '.status == "ok" and .commit == $commit
+        and ((.yosys_version | type) == "string")
+        and (.yosys_version | contains("0.67"))' \
       "${health_file}" >/dev/null \
       || die "health response did not match the deployed commit and Yosys 0.67"
   fi
