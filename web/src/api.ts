@@ -2,6 +2,7 @@
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import type {
+  DelayModel,
   EndpointsResponse,
   ExamplesResponse,
   FanoutResponse,
@@ -83,11 +84,21 @@ export function getEndpoints(id: string): Promise<EndpointsResponse> {
 
 export function getPaths(
   id: string,
-  opts: { limit?: number; to?: number } = {},
+  opts: {
+    limit?: number
+    to?: number
+    // Timing model so per-path delays track the client's retune settings.
+    profile?: string
+    speed_grade?: string
+    model?: DelayModel
+  } = {},
 ): Promise<PathsResponse> {
   const p = new URLSearchParams()
   if (opts.limit != null) p.set('limit', String(opts.limit))
   if (opts.to != null) p.set('to', String(opts.to))
+  if (opts.profile != null) p.set('profile', opts.profile)
+  if (opts.speed_grade != null) p.set('speed_grade', opts.speed_grade)
+  if (opts.model != null) p.set('model', JSON.stringify(opts.model))
   const qs = p.toString()
   return getJson<PathsResponse>(
     `/api/design/${encodeURIComponent(id)}/paths${qs ? `?${qs}` : ''}`,
