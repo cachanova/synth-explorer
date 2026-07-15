@@ -8,7 +8,8 @@ analysis path. The first supported target is the BASIC-tier Artix-7 part
 Vivado is never copied into the application image. A deployment enables the
 tool by mounting an administrator-provisioned installation and license, then
 setting `VIVADO_BIN`. Without that variable, startup remains Yosys-only and the
-web client hides the Vivado tool.
+web client hides the Vivado tool. With Vivado enabled, the server also requires
+an owner access-key digest and rejects every unauthenticated Vivado request.
 
 ## Netlist path
 
@@ -43,6 +44,7 @@ shape without adding AMD files to the image:
 export IMAGE_REF=synth-explorer:vivado
 export VIVADO_INSTALL_ROOT=/mnt/synth-explorer-vivado/amd/install
 export VIVADO_LICENSE_FILE=/mnt/synth-explorer-vivado/amd/license/Xilinx.lic
+export VIVADO_ACCESS_TOKEN_SHA256="$(printf '%s' "$VIVADO_OWNER_KEY" | sha256sum | awk '{print $1}')"
 
 docker compose \
   -f deploy/compose.prod.yml \
@@ -58,6 +60,31 @@ Docker network namespace, so the overlay
 uses host networking. The application binds only to `127.0.0.1:8787`, and Caddy
 proxies that loopback address. The dedicated CX33 runs only this application;
 tune upward only if measured designs need it.
+
+## Owner access key
+
+The public production interface keeps Yosys open to everyone and permits only
+the maintainer to select or invoke Vivado. Generate a 256-bit hexadecimal key
+once and save the raw value in the maintainer's password manager:
+
+```bash
+openssl rand -hex 32
+```
+
+Never commit, upload, or place the raw key in GitHub Actions. Production stores
+only `SHA-256(key)` in
+`/opt/synth-explorer/state/vivado-access-token.sha256`, owned by the deployment
+user with mode `0600`. The deployment script validates that file before
+starting Compose. It generates a separate ephemeral key for the deployment's
+real Vivado smoke test, passes only that key's digest to the container, and
+discards the raw smoke key when the deployment process exits.
+
+The browser asks for the owner key when Vivado is selected. The raw key remains
+only in that tab's memory, is transmitted over HTTPS in the Authorization
+header, and must be entered again after a reload. The server hashes the supplied
+key and compares the digest in constant time; it never stores or logs the raw
+key. Someone who obtains the host-side digest cannot submit that digest as the
+key because it is hashed again before comparison.
 
 On Hetzner, `/mnt/synth-explorer-vivado` should be a real attached Cloud Volume,
 not a Docker named volume (which otherwise consumes the server's root disk).
@@ -83,10 +110,10 @@ contain the installer, installed Vivado tree, AMD account token, or license.
 
 The checked-in overlay is a packaging primitive for local use or a dedicated,
 properly licensed worker. It is not authorization to offer public multi-tenant
-Vivado synthesis. Before connecting a public Synth Explorer service to that
-worker, obtain written AMD confirmation that the intended hosted use is
-permitted, or adopt a customer-side BYOL execution model. Keep the existing
-Yosys-only production deployment until that decision is resolved.
+Vivado synthesis. The production integration therefore permits only the named
+license owner to invoke Vivado; public users receive Yosys. A future public
+Vivado path should use a customer-side runner/import model or wait for written
+AMD authorization for hosted use.
 
 Current AMD references:
 

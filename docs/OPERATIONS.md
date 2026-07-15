@@ -280,8 +280,17 @@ curl --fail --silent --show-error https://synthexplorer.dev/healthz | jq
 ./deploy/ops/smoke-test.sh https://synthexplorer.dev "$(git rev-parse origin/main)"
 ```
 
-The health response must report `status: ok`, the deployed commit, Yosys, and
-Vivado 2026.1.
+The health response must report `status: ok`, the deployed commit, Yosys, Vivado
+2026.1, and `vivado_access_protected: true`. The host deployment performs its
+Vivado check with a one-deploy ephemeral key. To run the full Vivado smoke test
+manually, provide the owner key only in the invoking shell:
+
+```bash
+read -rsp 'Vivado owner key: ' VIVADO_SMOKE_ACCESS_TOKEN; echo
+export VIVADO_SMOKE_ACCESS_TOKEN VIVADO_REQUIRED=1
+./deploy/ops/smoke-test.sh https://synthexplorer.dev "$(git rev-parse origin/main)"
+unset VIVADO_SMOKE_ACCESS_TOKEN VIVADO_REQUIRED
+```
 
 ## Routine deployments and rollback
 

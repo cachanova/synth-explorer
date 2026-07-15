@@ -49,6 +49,26 @@ export SMOKE_LOG
 # shellcheck source=/dev/null
 source "${CURRENT_RELEASE_FIXTURE}/ops/deploy.sh"
 
+# Production keeps only the owner's digest on disk and generates a one-deploy
+# smoke key in memory. The digest file must fail closed on shape or permissions.
+if (configure_vivado_access >/dev/null 2>&1); then
+  fail 'missing Vivado owner digest unexpectedly passed validation'
+fi
+printf '%064d\n' 0 >"${VIVADO_ACCESS_DIGEST_FILE}"
+chmod 0644 "${VIVADO_ACCESS_DIGEST_FILE}"
+if (configure_vivado_access >/dev/null 2>&1); then
+  fail 'world-readable Vivado owner digest unexpectedly passed validation'
+fi
+chmod 0600 "${VIVADO_ACCESS_DIGEST_FILE}"
+configure_vivado_access
+[[ "${VIVADO_ACCESS_TOKEN_SHA256}" == "$(printf '%064d' 0)" ]] \
+  || fail 'Vivado owner digest was not exported exactly'
+[[ "${VIVADO_SMOKE_ACCESS_TOKEN}" =~ ^[a-f0-9]{64}$ ]] \
+  || fail 'deployment smoke key was not a 256-bit hexadecimal token'
+[[ "${VIVADO_DEPLOY_TOKEN_SHA256}" == "$(
+  printf '%s' "${VIVADO_SMOKE_ACCESS_TOKEN}" | sha256sum | awk '{print $1}'
+)" ]] || fail 'deployment smoke digest did not match its ephemeral token'
+
 # Invoking through current/ must resolve the physical release, never current
 # itself (which would turn the symlink into a self-reference on success).
 ln -sfn -- "${CURRENT_RELEASE_FIXTURE}" "${CURRENT_LINK}"

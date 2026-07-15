@@ -33,9 +33,14 @@ main() {
   local health_file synth_file flags_synth_file design_file matrix_file
   local payload_file flags_payload_file matrix_payload_file source_file design_id flags_design_id
   local default_cells flags_cells mode matrix_design_id
-  local vivado_design_id vivado_required=${VIVADO_REQUIRED:-0}
+  local vivado_design_id unauthorized_status vivado_required=${VIVADO_REQUIRED:-0}
+  local vivado_access_token=${VIVADO_SMOKE_ACCESS_TOKEN:-}
   [[ "${vivado_required}" == 0 || "${vivado_required}" == 1 ]] \
     || die "VIVADO_REQUIRED must be 0 or 1"
+  if [[ "${vivado_required}" == 1 ]]; then
+    [[ "${vivado_access_token}" =~ ^[a-fA-F0-9]{64}$ ]] \
+      || die "VIVADO_SMOKE_ACCESS_TOKEN must be a 256-bit hexadecimal key"
+  fi
   temporary_dir="$(mktemp -d)"
   health_file="${temporary_dir}/health.json"
   synth_file="${temporary_dir}/synthesize.json"
@@ -69,7 +74,8 @@ main() {
         and ((.yosys_version | type) == "string")
         and (.yosys_version | contains("0.67"))
         and ((.vivado_version | type) == "string")
-        and (.vivado_version | ascii_downcase | contains("vivado v2026.1"))' \
+        and (.vivado_version | ascii_downcase | contains("vivado v2026.1"))
+        and .vivado_access_protected == true' \
       "${health_file}" >/dev/null \
       || die "health response did not match the deployed commit, Yosys 0.67, and Vivado 2026.1"
   else
@@ -143,7 +149,17 @@ main() {
   if [[ "${vivado_required}" == 1 ]]; then
     jq '. + {tool: "vivado", mode: "gates", target: "xc7a35tcpg236-1"} | del(.extra_args)' \
       "${payload_file}" >"${matrix_payload_file}"
-    curl --fail-with-body --show-error --silent \
+    unauthorized_status="$(curl --show-error --silent \
+      --connect-timeout 5 --max-time 15 \
+      --header 'content-type: application/json' \
+      --data-binary "@${matrix_payload_file}" \
+      --output "${matrix_file}" --write-out '%{http_code}' \
+      "${base_url}/api/synthesize")"
+    [[ "${unauthorized_status}" == 401 ]] \
+      || die "public Vivado synthesis was not rejected with 401"
+
+    printf 'header = "Authorization: Bearer %s"\n' "${vivado_access_token}" | \
+      curl --config - --fail-with-body --show-error --silent \
       --connect-timeout 5 --max-time 360 \
       --header 'content-type: application/json' \
       --data-binary "@${matrix_payload_file}" \

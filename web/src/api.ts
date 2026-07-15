@@ -53,14 +53,29 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return (await res.json()) as T
 }
 
-export async function synthesize(req: SynthesizeRequest): Promise<SynthesizeResponse> {
+export async function synthesize(
+  req: SynthesizeRequest,
+  vivadoAccessKey?: string,
+): Promise<SynthesizeResponse> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (req.tool === 'vivado' && vivadoAccessKey) {
+    headers.Authorization = `Bearer ${vivadoAccessKey}`
+  }
   const res = await fetch('/api/synthesize', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify(req),
   })
   if (!res.ok) throw await parseError(res)
   return (await res.json()) as SynthesizeResponse
+}
+
+export async function unlockVivado(accessKey: string): Promise<void> {
+  const res = await fetch('/api/vivado/access', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessKey}` },
+  })
+  if (!res.ok) throw await parseError(res)
 }
 
 export function getDesign(id: string): Promise<SynthesizeResponse> {
@@ -233,7 +248,7 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
 
 export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
   { value: 'yosys', label: 'Yosys' },
-  { value: 'vivado', label: 'Vivado' },
+  { value: 'vivado', label: 'Vivado (owner key)' },
 ]
 
 export const VIVADO_TARGETS = [

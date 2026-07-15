@@ -20,12 +20,23 @@ and external monitoring:
   version: string;       // server crate version
   yosys_version: string; // captured by the required startup preflight
   vivado_version?: string; // present only when VIVADO_BIN passed preflight
+  vivado_access_protected?: boolean; // true when the optional Vivado backend requires an owner key
 }
 ```
 
 The server does not start if the required Yosys preflight fails, or if
 `VIVADO_BIN` is configured and its optional preflight fails. The web client
-only exposes the Vivado synthesis tool when `vivado_version` is present.
+only exposes the Vivado synthesis tool when `vivado_version` is present. A
+configured Vivado backend also requires `VIVADO_ACCESS_TOKEN_SHA256`; startup
+fails closed when the digest is missing or invalid.
+
+## POST `/api/vivado/access`
+
+Verifies the owner API key before the web client enables Vivado for the current
+browser tab. Send the 256-bit hexadecimal key in
+`Authorization: Bearer <key>`. The key is hashed by the server and compared in
+constant time with the configured SHA-256 digest. Success returns `204`; a
+missing or invalid key returns `401` with a `WWW-Authenticate` challenge.
 
 ## Shared shapes
 
@@ -108,6 +119,9 @@ conflicting combinations return a synthesis error with the Yosys log.
 The Vivado tool initially supports `gates` mode and the fixed free-tier Artix-7
 part `xc7a35tcpg236-1`; its flags are appended to `synth_design`. A deployment
 without a configured Vivado backend returns `503` before scheduling synthesis.
+Vivado requests also require the same owner bearer key used by
+`/api/vivado/access`; unauthorized requests return `401` before cache lookup or
+tool execution. Yosys requests remain public and require no authorization.
 
 Response `200`:
 

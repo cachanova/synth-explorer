@@ -167,6 +167,7 @@ export interface Store {
   vivadoTarget: string
   vivadoExtraArgs: string
   vivadoAvailable: boolean
+  vivadoUnlocked: boolean
   examples: Example[]
 
   setActiveFileName: (name: string) => void
@@ -180,6 +181,7 @@ export interface Store {
   setExtraArgs: (a: string) => void
   setVivadoTarget: (target: string) => void
   setVivadoExtraArgs: (args: string) => void
+  unlockVivado: (accessKey: string) => Promise<boolean>
   loadExample: (ex: Example) => void
 
   // synthesis
@@ -244,6 +246,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [vivadoTarget, setVivadoTargetState] = useState('xc7a35tcpg236-1')
   const [vivadoExtraArgs, setVivadoExtraArgsState] = useState('')
   const [vivadoAvailable, setVivadoAvailable] = useState(false)
+  const [vivadoUnlocked, setVivadoUnlocked] = useState(false)
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -301,6 +304,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
+  const vivadoAccessKeyRef = useRef('')
 
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
@@ -498,6 +502,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const setSynthTool = useCallback(
     (value: SynthTool) => {
+      if (value === 'vivado' && !vivadoAccessKeyRef.current) return
       if (synthToolRef.current === value) return
       synthToolRef.current = value
       markInputChanged()
@@ -505,6 +510,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [markInputChanged],
   )
+
+  const unlockVivado = useCallback(async (accessKey: string) => {
+    const normalized = accessKey.trim()
+    if (!/^[0-9a-fA-F]{64}$/.test(normalized)) {
+      setError({ message: 'Vivado owner key must be exactly 64 hexadecimal characters' })
+      return false
+    }
+    try {
+      await api.unlockVivado(normalized)
+      vivadoAccessKeyRef.current = normalized
+      setVivadoUnlocked(true)
+      setError(null)
+      return true
+    } catch (e) {
+      const err = e as api.ApiRequestError
+      vivadoAccessKeyRef.current = ''
+      setVivadoUnlocked(false)
+      setError({ message: err.message, log: err.log, status: err.status })
+      return false
+    }
+  }, [])
 
   const setExtraArgs = useCallback(
     (value: string) => {
@@ -584,7 +610,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         synthesisKeyRef.current = running.key
         setError(null)
         try {
-          const res = await api.synthesize(running.request)
+          const res = await api.synthesize(
+            running.request,
+            running.request.tool === 'vivado'
+              ? vivadoAccessKeyRef.current
+              : undefined,
+          )
           setDesign(res)
           setDesignInputKey(running.key)
           // A source graph tracks the selected lines across synthesis. Other
@@ -596,6 +627,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           )
         } catch (e) {
           const err = e as api.ApiRequestError
+          if (running.request.tool === 'vivado' && err.status === 401) {
+            vivadoAccessKeyRef.current = ''
+            setVivadoUnlocked(false)
+            synthToolRef.current = 'yosys'
+            setSynthToolState('yosys')
+            queuedInputRef.current = null
+            markInputChanged()
+          }
           setError({ message: err.message, log: err.log, status: err.status })
           // Preserve the last valid design and graph. Their input key remains
           // unchanged, so source cross-probing stays disabled while stale.
@@ -615,7 +654,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [materializeCurrentInput])
+  }, [markInputChanged, materializeCurrentInput])
 
   const synthesize = useCallback(
     () => requestSynthesis(),
@@ -806,6 +845,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       vivadoTarget,
       vivadoExtraArgs,
       vivadoAvailable,
+      vivadoUnlocked,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -818,6 +858,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setExtraArgs,
       setVivadoTarget,
       setVivadoExtraArgs,
+      unlockVivado,
       loadExample,
       synthesizing,
       design,
@@ -852,6 +893,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       vivadoTarget,
       vivadoExtraArgs,
       vivadoAvailable,
+      vivadoUnlocked,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -864,6 +906,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setExtraArgs,
       setVivadoTarget,
       setVivadoExtraArgs,
+      unlockVivado,
       loadExample,
       synthesizing,
       design,

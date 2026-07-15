@@ -107,6 +107,7 @@ jobs:
           IMAGE_REF=synth-explorer:ci \
             VIVADO_INSTALL_ROOT=/tmp/vivado-install \
             VIVADO_LICENSE_FILE=/tmp/vivado.lic \
+            VIVADO_ACCESS_TOKEN_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
             docker compose \
               -f deploy/compose.prod.yml \
               -f deploy/compose.vivado.yml \

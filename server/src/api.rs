@@ -14,18 +14,20 @@ use crate::yosys::{
     MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, SynthTool, YosysError,
 };
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
-use axum::http::{HeaderValue, Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
+use subtle::{Choice, ConstantTimeEq};
 use tokio::sync::{RwLock, Semaphore, watch};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -43,6 +45,7 @@ pub struct AppState {
     flights: Arc<SynthesisFlights>,
     running: Arc<Semaphore>,
     metadata: Arc<BuildMetadata>,
+    vivado_access: Option<Arc<VivadoAccess>>,
 }
 
 impl Default for AppState {
@@ -57,9 +60,18 @@ impl AppState {
     }
 
     pub fn with_backends(yosys_version: impl Into<String>, vivado_version: Option<String>) -> Self {
+        Self::with_backends_and_vivado_access(yosys_version, vivado_version, None)
+    }
+
+    pub fn with_backends_and_vivado_access(
+        yosys_version: impl Into<String>,
+        vivado_version: Option<String>,
+        vivado_access: Option<VivadoAccess>,
+    ) -> Self {
         Self::with_cache_config(
             yosys_version,
             vivado_version,
+            vivado_access,
             DESIGN_CACHE_BUDGET_BYTES,
             DESIGN_CACHE_TTL,
         )
@@ -68,6 +80,7 @@ impl AppState {
     fn with_cache_config(
         yosys_version: impl Into<String>,
         vivado_version: Option<String>,
+        vivado_access: Option<VivadoAccess>,
         cache_budget_bytes: usize,
         cache_ttl: Duration,
     ) -> Self {
@@ -80,10 +93,69 @@ impl AppState {
                 commit: env::var("BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_owned()),
                 version: env!("CARGO_PKG_VERSION"),
                 yosys_version: yosys_version.into(),
+                vivado_access_protected: vivado_version.as_ref().map(|_| vivado_access.is_some()),
                 vivado_version,
             }),
+            vivado_access: vivado_access.map(Arc::new),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct VivadoAccess {
+    digests: Vec<[u8; 32]>,
+}
+
+impl VivadoAccess {
+    pub fn from_digest_hexes<'a>(
+        digests: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, &'static str> {
+        let digests = digests
+            .into_iter()
+            .map(parse_sha256_hex)
+            .collect::<Result<Vec<_>, _>>()?;
+        if digests.is_empty() {
+            return Err("at least one Vivado access digest is required");
+        }
+        Ok(Self { digests })
+    }
+
+    fn authorizes(&self, headers: &HeaderMap) -> bool {
+        let Some(token) = bearer_token(headers) else {
+            return false;
+        };
+        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return false;
+        }
+        let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+        let matched = self
+            .digests
+            .iter()
+            .fold(Choice::from(0), |matched, expected| {
+                matched | presented.ct_eq(expected)
+            });
+        bool::from(matched)
+    }
+}
+
+fn parse_sha256_hex(value: &str) -> Result<[u8; 32], &'static str> {
+    let value = value.trim();
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Vivado access digest must be exactly 64 hexadecimal characters");
+    }
+    let mut digest = [0_u8; 32];
+    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+        let pair = std::str::from_utf8(pair).map_err(|_| "Vivado access digest is not UTF-8")?;
+        digest[index] = u8::from_str_radix(pair, 16)
+            .map_err(|_| "Vivado access digest contains invalid hexadecimal")?;
+    }
+    Ok(digest)
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("bearer") && !token.contains(char::is_whitespace)).then_some(token)
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -94,6 +166,8 @@ struct BuildMetadata {
     yosys_version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     vivado_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vivado_access_protected: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -418,6 +492,12 @@ impl IntoResponse for ApiError {
         {
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
+        if response.status() == StatusCode::UNAUTHORIZED {
+            response.headers_mut().insert(
+                header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer realm=\"Vivado owner access\""),
+            );
+        }
         response
     }
 }
@@ -426,6 +506,7 @@ pub fn app(state: AppState) -> Router {
     let health_state = state.clone();
     let api = Router::new()
         .route("/synthesize", post(synthesize))
+        .route("/vivado/access", post(vivado_access))
         .route("/examples", get(examples))
         .route("/design/{id}", get(design))
         .route("/design/{id}/endpoints", get(endpoints))
@@ -481,6 +562,7 @@ async fn trace_request(request: Request<axum::body::Body>, next: Next) -> Respon
 
 async fn synthesize(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<SynthRequest>,
 ) -> Result<Json<SynthesizeResponse>, ApiError> {
     let validated = request.validate().map_err(map_yosys_error)?;
@@ -489,6 +571,9 @@ async fn synthesize(
             StatusCode::SERVICE_UNAVAILABLE,
             "vivado synthesis is not configured on this deployment",
         ));
+    }
+    if validated.tool == SynthTool::Vivado {
+        require_vivado_access(&state, &headers)?;
     }
     let design_id = validated.design_id();
     let tool = validated.tool.to_string();
@@ -554,6 +639,36 @@ async fn synthesize(
     };
     let design = wait_for_flight(receiver).await?;
     Ok(Json(design.response.clone()))
+}
+
+async fn vivado_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    if state.metadata.vivado_version.is_none() {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vivado synthesis is not configured on this deployment",
+        ));
+    }
+    require_vivado_access(&state, &headers)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn require_vivado_access(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(access) = state.vivado_access.as_ref() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "vivado access control is not configured on this deployment",
+        ));
+    };
+    if !access.authorizes(headers) {
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "valid owner access key required for Vivado synthesis",
+        ));
+    }
+    Ok(())
 }
 
 async fn wait_for_flight(mut receiver: watch::Receiver<Option<FlightResult>>) -> FlightResult {
@@ -1416,6 +1531,44 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    const TEST_VIVADO_KEY: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn test_vivado_access() -> VivadoAccess {
+        let digest = Sha256::digest(TEST_VIVADO_KEY.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        VivadoAccess::from_digest_hexes([digest.as_str()]).unwrap()
+    }
+
+    fn authorized_request(builder: axum::http::request::Builder) -> axum::http::request::Builder {
+        builder.header(header::AUTHORIZATION, format!("Bearer {TEST_VIVADO_KEY}"))
+    }
+
+    #[test]
+    fn vivado_access_hashes_the_presented_key_and_compares_the_digest() {
+        let access = test_vivado_access();
+        let mut valid = HeaderMap::new();
+        valid.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {TEST_VIVADO_KEY}")).unwrap(),
+        );
+        assert!(access.authorizes(&valid));
+
+        let stored_digest = Sha256::digest(TEST_VIVADO_KEY.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let mut digest_as_key = HeaderMap::new();
+        digest_as_key.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {stored_digest}")).unwrap(),
+        );
+        assert!(!access.authorizes(&digest_as_key));
+        assert!(!access.authorizes(&HeaderMap::new()));
+    }
+
     #[test]
     fn vivado_artix_target_uses_the_series7_delay_model() {
         let validated = SynthRequest {
@@ -1728,6 +1881,82 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn vivado_access_endpoint_requires_the_owner_key() {
+        let state = AppState::with_backends_and_vivado_access(
+            "Yosys test-version",
+            Some("Vivado v2026.1".to_owned()),
+            Some(test_vivado_access()),
+        );
+
+        let unauthorized = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/vivado/access")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            unauthorized
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .unwrap(),
+            "Bearer realm=\"Vivado owner access\""
+        );
+
+        let authorized = app(state)
+            .oneshot(
+                authorized_request(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/api/vivado/access"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorized.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn vivado_synthesis_rejects_unauthorized_requests_before_execution() {
+        let state = AppState::with_backends_and_vivado_access(
+            "Yosys test-version",
+            Some("Vivado v2026.1".to_owned()),
+            Some(test_vivado_access()),
+        );
+        let request = serde_json::json!({
+            "files": [{"name": "top.sv", "content": "module top; endmodule"}],
+            "top": "top",
+            "tool": "vivado",
+            "mode": "gates",
+            "target": "xc7a35tcpg236-1"
+        });
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/synthesize")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["error"],
+            "valid owner access key required for Vivado synthesis"
+        );
+    }
+
     async fn post_timing(state: &AppState, id: &str, body: serde_json::Value) -> Response {
         app(state.clone())
             .oneshot(
@@ -1869,6 +2098,7 @@ mod tests {
     async fn synthesized_design_that_cannot_be_retained_returns_507() {
         let state = AppState::with_cache_config(
             "Yosys test-version",
+            None,
             None,
             DESIGN_CACHE_MIN_ENTRY_BYTES - 1,
             Duration::from_secs(60),

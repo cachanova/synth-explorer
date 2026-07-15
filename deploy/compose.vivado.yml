@@ -21,6 +21,8 @@ services:
       HOME: /tmp/vivado-home
       VIVADO_BIN: /opt/AMD/2026.1/Vivado/bin/vivado
       XILINXD_LICENSE_FILE: /run/secrets/vivado.lic
+      VIVADO_ACCESS_TOKEN_SHA256: ${VIVADO_ACCESS_TOKEN_SHA256:?owner access digest is required}
+      VIVADO_DEPLOY_TOKEN_SHA256: ${VIVADO_DEPLOY_TOKEN_SHA256:-}
     volumes:
       - type: bind
         source: ${VIVADO_INSTALL_ROOT:-/mnt/synth-explorer-vivado/amd/install}

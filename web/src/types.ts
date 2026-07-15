@@ -104,6 +104,7 @@ export interface HealthResponse {
   version: string
   yosys_version: string
   vivado_version?: string
+  vivado_access_protected?: boolean
 }
 
 export interface Stats {

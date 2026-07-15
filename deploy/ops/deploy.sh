@@ -12,6 +12,7 @@ readonly ENV_FILE="${STATE_DIR}/.env"
 readonly PREVIOUS_FILE="${STATE_DIR}/.previous-image"
 readonly PREVIOUS_RELEASE_FILE="${STATE_DIR}/.previous-release"
 readonly LOCK_FILE="${STATE_DIR}/.deploy.lock"
+readonly VIVADO_ACCESS_DIGEST_FILE="${VIVADO_ACCESS_DIGEST_FILE:-${STATE_DIR}/vivado-access-token.sha256}"
 readonly PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-https://synthexplorer.dev}"
 readonly MIN_FREE_KIB=$((2 * 1024 * 1024))
 
@@ -22,6 +23,27 @@ die() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+configure_vivado_access() {
+  local -a digest_lines
+  local mode
+  [[ -f "${VIVADO_ACCESS_DIGEST_FILE}" && ! -L "${VIVADO_ACCESS_DIGEST_FILE}" ]] \
+    || die "missing regular Vivado owner digest file: ${VIVADO_ACCESS_DIGEST_FILE}"
+  mapfile -t digest_lines <"${VIVADO_ACCESS_DIGEST_FILE}"
+  [[ ${#digest_lines[@]} -eq 1 && "${digest_lines[0]}" =~ ^[a-f0-9]{64}$ ]] \
+    || die "Vivado owner digest file must contain one lowercase SHA-256 digest"
+  mode="$(stat --format='%a' "${VIVADO_ACCESS_DIGEST_FILE}")"
+  [[ "${mode}" == 600 ]] \
+    || die "Vivado owner digest file must have mode 0600"
+
+  VIVADO_ACCESS_TOKEN_SHA256="${digest_lines[0]}"
+  VIVADO_SMOKE_ACCESS_TOKEN="$(openssl rand -hex 32)"
+  VIVADO_DEPLOY_TOKEN_SHA256="$(
+    printf '%s' "${VIVADO_SMOKE_ACCESS_TOKEN}" | sha256sum | awk '{print $1}'
+  )"
+  export VIVADO_ACCESS_TOKEN_SHA256 VIVADO_DEPLOY_TOKEN_SHA256 \
+    VIVADO_SMOKE_ACCESS_TOKEN
 }
 
 valid_image_ref() {
@@ -258,9 +280,13 @@ main() {
   require_command df
   require_command flock
   require_command jq
+  require_command openssl
   require_command readlink
   require_command ln
+  require_command sha256sum
+  require_command stat
   install -d -m 0750 -- "${STATE_DIR}"
+  configure_vivado_access
   [[ -f "${COMPOSE_FILE}" ]] || die "missing ${COMPOSE_FILE}"
   [[ -f "${VIVADO_COMPOSE_FILE}" ]] || die "missing ${VIVADO_COMPOSE_FILE}"
   [[ -f "${RELEASE_DIR}/Caddyfile" ]] || die "missing ${RELEASE_DIR}/Caddyfile"

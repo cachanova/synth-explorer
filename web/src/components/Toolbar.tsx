@@ -49,7 +49,20 @@ export function Toolbar() {
         <span>Synth tool</span>
         <select
           value={store.synthTool}
-          onChange={(e) => store.setSynthTool(e.target.value as SynthTool)}
+          onChange={(e) => {
+            const tool = e.target.value as SynthTool
+            if (tool !== 'vivado' || store.vivadoUnlocked) {
+              store.setSynthTool(tool)
+              return
+            }
+            const accessKey = window.prompt(
+              'Enter the Vivado owner API key. It stays only in this browser tab’s memory.',
+            )
+            if (!accessKey) return
+            void store.unlockVivado(accessKey).then((unlocked) => {
+              if (unlocked) store.setSynthTool('vivado')
+            })
+          }}
         >
           {SYNTH_TOOL_LABELS.filter(
             (tool) => tool.value !== 'vivado' || store.vivadoAvailable,
