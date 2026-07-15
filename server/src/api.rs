@@ -674,7 +674,7 @@ async fn synthesize_uncached(
     if validated.tool == SynthTool::Vivado {
         ranges.extend(vivado_procedural_ranges(&procedural_targets));
     }
-    let delay_model = DelayModel::for_target(&mode, validated.family());
+    let delay_model = default_delay_model(validated, &mode);
     let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
@@ -1353,6 +1353,16 @@ fn mode_string(mode: SynthMode) -> String {
     mode.to_string()
 }
 
+fn default_delay_model(validated: &crate::yosys::ValidatedSynth, mode: &str) -> DelayModel {
+    if validated.tool == SynthTool::Vivado {
+        return match validated.target.as_deref() {
+            Some(target) if target.starts_with("xc7") => DelayModel::series7(),
+            _ => DelayModel::generic(),
+        };
+    }
+    DelayModel::for_target(mode, validated.family())
+}
+
 fn parse_node_ids(ids: &str) -> Result<Vec<u32>, ApiError> {
     if ids.trim().is_empty() {
         return Ok(Vec::new());
@@ -1375,6 +1385,29 @@ mod tests {
     use axum::body::Body;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    #[test]
+    fn vivado_artix_target_uses_the_series7_delay_model() {
+        let validated = SynthRequest {
+            files: vec![SourceFile {
+                name: "top.sv".to_owned(),
+                content: "module top(input logic a, output logic y); assign y = a; endmodule"
+                    .to_owned(),
+            }],
+            top: Some("top".to_owned()),
+            tool: SynthTool::Vivado,
+            mode: SynthMode::Gates,
+            target: Some("xc7a35tcpg236-1".to_owned()),
+            extra_args: None,
+        }
+        .validate()
+        .unwrap();
+
+        assert_eq!(
+            default_delay_model(&validated, "gates"),
+            DelayModel::series7()
+        );
+    }
 
     fn empty_test_design(design_id: &str) -> Arc<Design> {
         let netlist = parse_value(serde_json::json!({
