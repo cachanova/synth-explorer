@@ -99,8 +99,8 @@ describe('Vivado owner access', () => {
   it('verifies the owner key without putting it in the URL or body', async () => {
     const catalog = {
       parts: [
-        { name: 'xc7a35tcpg236-1', family: 'artix7' },
-        { name: 'xcku025-ffva1156-2-e', family: 'kintexu' },
+        { name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' },
+        { name: 'xcku025-ffva1156-2-e', family: 'kintexu', speed: '-2' },
       ],
     }
     const fetchMock = vi.fn().mockResolvedValue(

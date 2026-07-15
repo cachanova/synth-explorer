@@ -3,8 +3,9 @@
 Synth Explorer can optionally run AMD Vivado, export the synthesized structural
 Verilog, and normalize it to the same Yosys JSON contract used by every other
 analysis path. At startup the server asks Vivado for its complete installed part
-catalog. After owner authentication, every installed part is available in the
-web target selector and enforced as a server-side allowlist.
+catalog. After owner authentication, the web selectors expose its family and
+speed-grade combinations; every resolved representative part is enforced by a
+server-side allowlist.
 
 Vivado is never copied into the application image. A deployment enables the
 tool by mounting an administrator-provisioned installation and license, then
@@ -91,11 +92,22 @@ cannot submit that digest as the key because it is hashed again before
 comparison.
 
 Successful authentication returns the catalog captured from Vivado `get_parts`
-at startup. The target dropdown groups all returned parts by Vivado's `FAMILY`
-property. Synthesis rejects a target that is not in that startup catalog before
-cache lookup or execution. The UI also provides a curated multi-select for
-common `synth_design` switches; the adjacent free-form field remains available
-for advanced validated flags.
+at startup, including Vivado's `FAMILY` and `SPEED` properties. The UI exposes
+only family and speed-grade selectors. It resolves that pair to the first
+matching installed part in the deterministic startup catalog; the full resolved
+part remains in the synthesis request and response for reproducibility. This
+avoids exposing package and density choices that do not materially affect the
+small, unconstrained RTL designs Synth Explorer targets. Synthesis rejects a
+resolved part that is not in the startup catalog before cache lookup or
+execution.
+
+The UI also provides a curated multi-select for common `synth_design` switches.
+Boolean flags use a checkbox. Value-taking flags reveal a populated number field
+or a dropdown of the exact values accepted by Vivado 2026.1; unchecking one
+removes both the flag and its value. The adjacent free-form field remains
+available for advanced validated flags. Pipeline-owned arguments such as
+`-top`, `-part`, `-mode`, and `-flatten_hierarchy` are deliberately not offered
+by the menu.
 
 On Hetzner, `/mnt/synth-explorer-vivado` should be a real attached Cloud Volume,
 not a Docker named volume (which otherwise consumes the server's root disk).

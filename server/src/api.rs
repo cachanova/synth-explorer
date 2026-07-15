@@ -1592,6 +1592,7 @@ mod tests {
             parts: vec![VivadoPart {
                 name: "xc7a35tcpg236-1".to_owned(),
                 family: "artix7".to_owned(),
+                speed: "-1".to_owned(),
             }],
         }
     }
@@ -2005,6 +2006,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["parts"][0]["name"], "xc7a35tcpg236-1");
         assert_eq!(body["parts"][0]["family"], "artix7");
+        assert_eq!(body["parts"][0]["speed"], "-1");
     }
 
     #[tokio::test]

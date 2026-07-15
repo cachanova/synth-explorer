@@ -16,12 +16,27 @@ describe('flagRegistry', () => {
   })
 
   it('exposes curated Vivado synth_design flags independently of Yosys mode', () => {
-    expect(flagsForTool('vivado', 'gates').map((d) => d.flag)).toContain(
-      '-retiming',
-    )
-    expect(flagsForTool('vivado', 'gates').map((d) => d.flag)).toContain(
+    const definitions = flagsForTool('vivado', 'gates')
+    expect(definitions.map((d) => d.flag)).toContain(
       '-no_srlextract',
     )
+    expect(definitions.map((d) => d.flag)).toContain('-global_retiming')
+    expect(definitions.map((d) => d.flag)).not.toContain('-retiming')
+
+    const directive = definitions.find((d) => d.flag === '-directive')
+    expect(directive).toMatchObject({
+      value: 'select',
+      defaultValue: 'default',
+    })
+    expect(directive?.value === 'select' && directive.choices).toContain(
+      'PerformanceOptimized',
+    )
+
+    expect(definitions.find((d) => d.flag === '-max_dsp')).toMatchObject({
+      value: 'int',
+      defaultValue: '0',
+      min: -1,
+    })
     expect(flagsForTool('yosys', 'gates')).toEqual(flagsForMode('gates'))
   })
 

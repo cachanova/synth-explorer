@@ -1,15 +1,32 @@
 import type { Mode, SynthTool } from '../types'
 import { stripFlags, toggleFlag } from './synthFlags'
 
-export interface FlagDef {
+interface BaseFlagDef {
   flag: string
   label: string
   description: string
-  /** value-taking flag (renders a number field, e.g. `-widemux 5`) */
-  value?: 'int'
   /** caution shown in the menu */
   warn?: string
 }
+
+interface BooleanFlagDef extends BaseFlagDef {
+  value?: undefined
+}
+
+interface IntegerFlagDef extends BaseFlagDef {
+  value: 'int'
+  defaultValue: string
+  min?: number
+  max?: number
+}
+
+interface SelectFlagDef extends BaseFlagDef {
+  value: 'select'
+  defaultValue: string
+  choices: readonly string[]
+}
+
+export type FlagDef = BooleanFlagDef | IntegerFlagDef | SelectFlagDef
 
 // Curated, per-mode synthesis flags. Every entry was validated against the
 // production yosys (0.67) — several flags listed in older `help` output are
@@ -38,7 +55,7 @@ const XILINX: FlagDef[] = [
   { flag: '-uram', label: 'Infer UltraRAM', description: 'URAM288 for large memories (UltraScale+ only).' },
   { flag: '-dff', label: 'FF-aware mapping', description: 'Run ABC with -dff (flip-flop-aware).' },
   { flag: '-retime', label: 'Register retiming', description: 'Move registers across logic to balance path depth.' },
-  { flag: '-widemux', label: 'Infer hard muxes ≥ N', description: 'Use MUXF7/8 for muxes at or above N inputs (min 2).', value: 'int' },
+  { flag: '-widemux', label: 'Infer hard muxes ≥ N', description: 'Use MUXF7/8 for muxes at or above N inputs (min 2).', value: 'int', defaultValue: '5', min: 2 },
   { flag: '-abc9', label: 'ABC9 flow', description: 'Newer ABC9 area/delay mapping (experimental).' },
 ]
 
@@ -65,9 +82,106 @@ const ECP5: FlagDef[] = [
 
 const VIVADO: FlagDef[] = [
   {
-    flag: '-retiming',
-    label: 'Register retiming',
+    flag: '-directive',
+    label: 'Synthesis directive',
+    description: 'Select a built-in optimization strategy.',
+    value: 'select',
+    defaultValue: 'default',
+    choices: [
+      'default',
+      'RuntimeOptimized',
+      'AreaOptimized_high',
+      'AreaOptimized_medium',
+      'AlternateRoutability',
+      'AreaMapLargeShiftRegToBRAM',
+      'AreaMultThresholdDSP',
+      'FewerCarryChains',
+      'PerformanceOptimized',
+      'LogicCompaction',
+      'PowerOptimized_high',
+      'PowerOptimized_medium',
+    ],
+  },
+  {
+    flag: '-fsm_extraction',
+    label: 'FSM extraction',
+    description: 'Choose finite-state-machine extraction and encoding.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'off', 'one_hot', 'sequential', 'johnson', 'gray', 'user_encoding'],
+  },
+  {
+    flag: '-resource_sharing',
+    label: 'Resource sharing',
+    description: 'Control sharing of compatible arithmetic operators.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'on', 'off'],
+  },
+  {
+    flag: '-cascade_dsp',
+    label: 'DSP cascading',
+    description: 'Control DSP cascade inference for arithmetic structures.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'tree', 'force'],
+  },
+  {
+    flag: '-global_retiming',
+    label: 'Global retiming',
     description: 'Move registers across combinational logic to improve timing.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'on', 'off'],
+  },
+  {
+    flag: '-gated_clock_conversion',
+    label: 'Gated-clock conversion',
+    description: 'Convert supported gated clocks to clock-enable logic.',
+    value: 'select',
+    defaultValue: 'off',
+    choices: ['off', 'on', 'auto'],
+    warn: 'Effective conversion can depend on clock constraints and HDL attributes.',
+  },
+  {
+    flag: '-srl_style',
+    label: 'SRL style',
+    description: 'Choose how registers surround inferred shift-register LUTs.',
+    value: 'select',
+    defaultValue: 'srl',
+    choices: ['register', 'srl', 'srl_reg', 'reg_srl', 'reg_srl_reg'],
+  },
+  {
+    flag: '-shreg_min_size',
+    label: 'Minimum SRL length',
+    description: 'Minimum shift-register length eligible for SRL inference.',
+    value: 'int',
+    defaultValue: '3',
+    min: 1,
+  },
+  {
+    flag: '-max_bram',
+    label: 'BRAM limit',
+    description: 'Limit block RAM use; 0 keeps inferred memories out of BRAM.',
+    value: 'int',
+    defaultValue: '0',
+    min: -1,
+  },
+  {
+    flag: '-max_uram',
+    label: 'UltraRAM limit',
+    description: 'Limit UltraRAM use; 0 keeps inferred memories out of UltraRAM.',
+    value: 'int',
+    defaultValue: '0',
+    min: -1,
+  },
+  {
+    flag: '-max_dsp',
+    label: 'DSP limit',
+    description: 'Limit DSP use; 0 maps arithmetic without DSP blocks.',
+    value: 'int',
+    defaultValue: '0',
+    min: -1,
   },
   {
     flag: '-no_lc',

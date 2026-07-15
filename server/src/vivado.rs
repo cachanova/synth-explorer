@@ -65,6 +65,7 @@ pub struct VivadoBackend {
 pub struct VivadoPart {
     pub name: String,
     pub family: String,
+    pub speed: String,
 }
 
 /// Return the configured Vivado version and installed part catalog, or `None`
@@ -102,7 +103,7 @@ pub async fn preflight_vivado() -> Result<Option<VivadoBackend>, VivadoError> {
     fs::write(
         &catalog_script,
         "foreach part [lsort [get_parts]] {\n\
-         \tputs \"SYNTH_EXPLORER_PART\\t$part\\t[get_property FAMILY $part]\"\n\
+         \tputs \"SYNTH_EXPLORER_PART\\t$part\\t[get_property FAMILY $part]\\t[get_property SPEED $part]\"\n\
          }\n",
     )
     .await?;
@@ -148,13 +149,22 @@ fn parse_part_catalog(output: &str) -> Result<Vec<VivadoPart>, VivadoError> {
         .lines()
         .filter_map(|line| line.trim().strip_prefix(PART_MARKER))
         .map(|line| {
-            let (name, family) = line.split_once('\t').ok_or_else(|| {
-                std::io::Error::new(
+            let mut fields = line.split('\t');
+            let (Some(name), Some(family), Some(speed), None) =
+                (fields.next(), fields.next(), fields.next(), fields.next())
+            else {
+                return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "vivado returned a malformed part catalog entry",
-                )
-            })?;
-            if !valid_vivado_part_name(name) || family.is_empty() || family.len() > 128 {
+                ));
+            };
+            if !valid_vivado_part_name(name)
+                || family.is_empty()
+                || family.len() > 128
+                || speed.is_empty()
+                || speed.len() > 32
+                || !valid_vivado_part_name(speed)
+            {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     "vivado returned an invalid part catalog entry",
@@ -163,6 +173,7 @@ fn parse_part_catalog(output: &str) -> Result<Vec<VivadoPart>, VivadoError> {
             Ok(VivadoPart {
                 name: name.to_owned(),
                 family: family.to_owned(),
+                speed: speed.to_owned(),
             })
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
@@ -561,19 +572,21 @@ mod tests {
     #[test]
     fn part_catalog_parser_sorts_and_deduplicates_installed_parts() {
         let output = "noise\n\
-            SYNTH_EXPLORER_PART\txcku025-ffva1156-2-e\tkintexu\n\
-            SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\n\
-            SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\n";
+            SYNTH_EXPLORER_PART\txcku025-ffva1156-2-e\tkintexu\t-2\n\
+            SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\t-1\n\
+            SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\t-1\n";
         assert_eq!(
             parse_part_catalog(output).unwrap(),
             vec![
                 VivadoPart {
                     name: "xc7a35tcpg236-1".to_owned(),
                     family: "artix7".to_owned(),
+                    speed: "-1".to_owned(),
                 },
                 VivadoPart {
                     name: "xcku025-ffva1156-2-e".to_owned(),
                     family: "kintexu".to_owned(),
+                    speed: "-2".to_owned(),
                 },
             ]
         );
@@ -582,7 +595,7 @@ mod tests {
     #[test]
     fn part_catalog_parser_rejects_empty_or_unsafe_catalogs() {
         assert!(parse_part_catalog("Vivado v2026.1").is_err());
-        assert!(parse_part_catalog("SYNTH_EXPLORER_PART\txc7a35t;exec\tartix7\n").is_err());
+        assert!(parse_part_catalog("SYNTH_EXPLORER_PART\txc7a35t;exec\tartix7\t-1\n").is_err());
     }
 
     #[test]
