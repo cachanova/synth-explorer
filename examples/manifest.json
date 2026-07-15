@@ -51,21 +51,21 @@
   {
     "name": "pipe",
     "title": "Register Pipe",
-    "description": "A width- and stage-count-parameterized register pipeline with clock enable and configurable reset value.",
+    "description": "A width- and stage-count-parameterized register pipeline with clock enable, configurable reset value, and zero-stage bypass.",
     "top": "pipe",
     "files": ["pipe.sv"]
   },
   {
     "name": "srl_pipe",
     "title": "SRL Pipe",
-    "description": "A width- and stage-count-parameterized enabled pipeline written to infer FPGA shift-register LUT resources.",
+    "description": "A width- and stage-count-parameterized enabled pipeline written to infer FPGA shift-register LUT resources, with zero-stage bypass.",
     "top": "srl_pipe",
     "files": ["srl_pipe.sv"]
   },
   {
     "name": "fifo_pipe",
     "title": "FIFO Pipe",
-    "description": "A width- and stage-count-parameterized ready/valid elastic pipeline with backpressure between one-entry FIFO stages.",
+    "description": "A width- and stage-count-parameterized ready/valid elastic pipeline with backpressure and zero-stage pass-through.",
     "top": "fifo_pipe",
     "files": ["fifo_pipe.sv"]
   },

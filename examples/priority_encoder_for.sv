@@ -15,9 +15,8 @@ module priority_encoder_for #(
     index = '0;
     valid = 1'b0;
 
-    for (i = WIDTH - 1; i >= 0; i = i - 1) begin
-      if (requests[i]) begin
-        one_hot = '0;
+    for (i = 0; i < WIDTH; i = i + 1) begin
+      if (!valid && requests[i]) begin
         one_hot[i] = 1'b1;
         index = INDEX_WIDTH'(i);
         valid = 1'b1;

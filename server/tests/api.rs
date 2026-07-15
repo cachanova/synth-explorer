@@ -212,6 +212,49 @@ endmodule
 }
 
 #[tokio::test]
+async fn examples_endpoint_returns_the_parameterized_catalog() {
+    let mut app = app(AppState::default());
+    let response = get_response(&mut app, "/api/examples").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let examples = body["examples"].as_array().unwrap();
+    let names: Vec<_> = examples
+        .iter()
+        .map(|example| example["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "reg_mux",
+            "priority_encoder_case",
+            "priority_encoder_for",
+            "priority_encoder_carry",
+            "adder_chain",
+            "barrel_shifter",
+            "round_robin_arbiter",
+            "pipe",
+            "srl_pipe",
+            "fifo_pipe",
+            "inferred_fifo",
+            "async_fifo_blackbox",
+            "handshake_controller",
+        ]
+    );
+    assert!(examples.iter().all(|example| {
+        example["title"].is_string()
+            && example["description"].is_string()
+            && example["top"].is_string()
+            && example["files"].as_array().is_some_and(|files| {
+                files.len() == 1
+                    && files[0]["name"].is_string()
+                    && files[0]["content"]
+                        .as_str()
+                        .is_some_and(|content| content.contains("#("))
+            })
+    }));
+}
+
+#[tokio::test]
 async fn line_cone_returns_assign_fanin_and_validates_source_location() {
     let source = std::fs::read_to_string("../examples/adder_chain.sv").unwrap();
     let assignment_line = source
@@ -1791,7 +1834,9 @@ async fn pipe_registers_are_grouped_by_array_element() {
         .iter()
         .map(|group| group["name"].as_str().unwrap().to_owned())
         .collect();
-    let expected: BTreeSet<_> = (0..4).map(|idx| format!("stage[{idx}]")).collect();
+    let expected: BTreeSet<_> = (0..4)
+        .map(|idx| format!("with_stages.stage[{idx}]"))
+        .collect();
     assert_eq!(names, expected);
 }
 

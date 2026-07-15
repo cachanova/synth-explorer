@@ -61,11 +61,104 @@ fn is_lut_cell(cell_type: &str) -> bool {
     )
 }
 
+const EXPECTED_EXAMPLES: &[(&str, &str, &str, &str)] = &[
+    ("reg_mux", "Reg Mux", "reg_mux", "reg_mux.sv"),
+    (
+        "priority_encoder_case",
+        "Priority Encoder Case",
+        "priority_encoder_case",
+        "priority_encoder_case.sv",
+    ),
+    (
+        "priority_encoder_for",
+        "Priority Encoder For",
+        "priority_encoder_for",
+        "priority_encoder_for.sv",
+    ),
+    (
+        "priority_encoder_carry",
+        "Priority Encoder Carry",
+        "priority_encoder_carry",
+        "priority_encoder_carry.sv",
+    ),
+    (
+        "adder_chain",
+        "Adder Chain",
+        "adder_chain",
+        "adder_chain.sv",
+    ),
+    (
+        "barrel_shifter",
+        "Barrel Shifter",
+        "barrel_shifter",
+        "barrel_shifter.sv",
+    ),
+    (
+        "round_robin_arbiter",
+        "Round-Robin Arbiter",
+        "round_robin_arbiter",
+        "round_robin_arbiter.sv",
+    ),
+    ("pipe", "Register Pipe", "pipe", "pipe.sv"),
+    ("srl_pipe", "SRL Pipe", "srl_pipe", "srl_pipe.sv"),
+    ("fifo_pipe", "FIFO Pipe", "fifo_pipe", "fifo_pipe.sv"),
+    (
+        "inferred_fifo",
+        "Inferred FIFO",
+        "inferred_fifo",
+        "inferred_fifo.sv",
+    ),
+    (
+        "async_fifo_blackbox",
+        "Async FIFO IP Wrapper",
+        "async_fifo_wrapper",
+        "async_fifo_blackbox.sv",
+    ),
+    (
+        "handshake_controller",
+        "Handshake Controller",
+        "handshake_controller",
+        "handshake_controller.sv",
+    ),
+];
+
+fn run_yosys_script(script: &str) {
+    let output = std::process::Command::new("yosys")
+        .args(["-q", "-p", script])
+        .output()
+        .expect("yosys should be available for example integration tests");
+    assert!(
+        output.status.success(),
+        "yosys failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn check_example_parameters(file: &str, top: &str, parameters: &[(&str, u32)]) {
+    let mut script = format!("read_verilog -sv ../examples/{file};");
+    for (parameter, value) in parameters {
+        script.push_str(&format!(" chparam -set {parameter} {value} {top};"));
+    }
+    script.push_str(&format!(" hierarchy -check -top {top}; proc; check"));
+    run_yosys_script(&script);
+}
+
 #[tokio::test]
 async fn parameterized_example_catalog_synthesizes() {
     let manifest = std::fs::read_to_string("../examples/manifest.json").unwrap();
     let entries: Vec<serde_json::Value> = serde_json::from_str(&manifest).unwrap();
-    assert_eq!(entries.len(), 13);
+    let roster: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            (
+                entry["name"].as_str().unwrap(),
+                entry["title"].as_str().unwrap(),
+                entry["top"].as_str().unwrap(),
+                entry["files"][0].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(roster, EXPECTED_EXAMPLES);
 
     for entry in entries {
         let top = entry["top"].as_str().unwrap();
@@ -82,6 +175,123 @@ async fn parameterized_example_catalog_synthesizes() {
         let (graph, _analysis) = analyze_example(file, top, SynthMode::Rtl).await;
         assert!(!graph.nodes.is_empty(), "{file} produced an empty graph");
     }
+}
+
+#[test]
+fn examples_elaborate_with_non_default_parameters() {
+    check_example_parameters("reg_mux.sv", "reg_mux", &[("WIDTH", 3)]);
+    check_example_parameters(
+        "priority_encoder_case.sv",
+        "priority_encoder_case",
+        &[("WIDTH", 1)],
+    );
+    check_example_parameters(
+        "priority_encoder_case.sv",
+        "priority_encoder_case",
+        &[("WIDTH", 5)],
+    );
+    check_example_parameters(
+        "priority_encoder_for.sv",
+        "priority_encoder_for",
+        &[("WIDTH", 5)],
+    );
+    check_example_parameters(
+        "priority_encoder_carry.sv",
+        "priority_encoder_carry",
+        &[("WIDTH", 5)],
+    );
+    check_example_parameters(
+        "adder_chain.sv",
+        "adder_chain",
+        &[("WIDTH", 5), ("NUM_INPUTS", 3)],
+    );
+    check_example_parameters("barrel_shifter.sv", "barrel_shifter", &[("WIDTH", 1)]);
+    check_example_parameters("barrel_shifter.sv", "barrel_shifter", &[("WIDTH", 7)]);
+    check_example_parameters(
+        "round_robin_arbiter.sv",
+        "round_robin_arbiter",
+        &[("NUM_REQUESTERS", 1)],
+    );
+    check_example_parameters(
+        "round_robin_arbiter.sv",
+        "round_robin_arbiter",
+        &[("NUM_REQUESTERS", 3)],
+    );
+    check_example_parameters("pipe.sv", "pipe", &[("WIDTH", 7), ("STAGES", 0)]);
+    check_example_parameters("pipe.sv", "pipe", &[("WIDTH", 7), ("STAGES", 1)]);
+    check_example_parameters("srl_pipe.sv", "srl_pipe", &[("WIDTH", 3), ("STAGES", 0)]);
+    check_example_parameters("srl_pipe.sv", "srl_pipe", &[("WIDTH", 3), ("STAGES", 2)]);
+    check_example_parameters("fifo_pipe.sv", "fifo_pipe", &[("WIDTH", 7), ("STAGES", 0)]);
+    check_example_parameters("fifo_pipe.sv", "fifo_pipe", &[("WIDTH", 7), ("STAGES", 1)]);
+    check_example_parameters(
+        "inferred_fifo.sv",
+        "inferred_fifo",
+        &[("DATA_WIDTH", 7), ("DEPTH", 1)],
+    );
+    check_example_parameters(
+        "inferred_fifo.sv",
+        "inferred_fifo",
+        &[("DATA_WIDTH", 7), ("DEPTH", 3)],
+    );
+    check_example_parameters(
+        "async_fifo_blackbox.sv",
+        "async_fifo_wrapper",
+        &[("DATA_WIDTH", 7), ("DEPTH", 3)],
+    );
+    check_example_parameters(
+        "handshake_controller.sv",
+        "handshake_controller",
+        &[("TIMEOUT_CYCLES", 1)],
+    );
+    check_example_parameters(
+        "handshake_controller.sv",
+        "handshake_controller",
+        &[("TIMEOUT_CYCLES", 3)],
+    );
+}
+
+#[test]
+fn priority_encoder_implementations_are_equivalent() {
+    for implementation in ["priority_encoder_for", "priority_encoder_carry"] {
+        run_yosys_script(&format!(
+            "read_verilog -sv ../examples/priority_encoder_case.sv \
+             ../examples/{implementation}.sv; \
+             chparam -set WIDTH 5 priority_encoder_case; \
+             chparam -set WIDTH 5 {implementation}; \
+             proc; memory; \
+             equiv_make priority_encoder_case {implementation} equiv; \
+             prep -top equiv; equiv_simple; equiv_status -assert"
+        ));
+    }
+}
+
+#[tokio::test]
+async fn xilinx_examples_infer_shift_register_and_carry_resources() {
+    let (srl_graph, _analysis) =
+        analyze_example("srl_pipe.sv", "srl_pipe", SynthMode::Xilinx).await;
+    assert!(
+        srl_graph.nodes.iter().any(|node| {
+            matches!(
+                node.cell_type.as_deref(),
+                Some("SRL16E" | "SRLC32E" | "SRL16" | "SRLC16E")
+            )
+        }),
+        "srl_pipe should infer a Xilinx shift-register primitive"
+    );
+
+    let (carry_graph, _analysis) = analyze_example(
+        "priority_encoder_carry.sv",
+        "priority_encoder_carry",
+        SynthMode::Xilinx,
+    )
+    .await;
+    assert!(
+        carry_graph
+            .nodes
+            .iter()
+            .any(|node| { matches!(node.cell_type.as_deref(), Some("CARRY4" | "CARRY8")) }),
+        "priority_encoder_carry should infer a Xilinx carry primitive"
+    );
 }
 
 #[tokio::test]

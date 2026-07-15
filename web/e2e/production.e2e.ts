@@ -329,7 +329,9 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
 
   // Select the timeout counter update, whose focused graph includes the
   // counter register while the full diagram includes the complete controller.
-  await page.locator('.cm-line').nth(72).click()
+  await page
+    .locator('.cm-line', { hasText: 'wait_count <= wait_count + 1\'b1;' })
+    .click()
   const focusedResponse = page.waitForResponse((response) =>
     response.url().includes('/line-cone?'),
   )
@@ -366,7 +368,7 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   const supersedingRelevantResponse = page.waitForResponse((response) =>
     response.url().includes('/line-cone?'),
   )
-  await page.locator('.cm-line').nth(10).click()
+  await page.locator('.cm-line', { hasText: 'input  logic response_valid' }).click()
   expect((await supersedingRelevantResponse).ok()).toBe(true)
   await page.waitForTimeout(50)
   const inFlightRequestCount = fullNetlistRequests

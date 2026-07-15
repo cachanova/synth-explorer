@@ -4,6 +4,7 @@
 (* blackbox *)
 module async_fifo_ip #(
     parameter int unsigned DATA_WIDTH = 16,
+    parameter int unsigned DEPTH = 16,
     parameter int unsigned ADDR_WIDTH = 4
 ) (
     input  logic                  write_clk,
@@ -41,6 +42,7 @@ module async_fifo_wrapper #(
 
   async_fifo_ip #(
       .DATA_WIDTH(DATA_WIDTH),
+      .DEPTH(DEPTH),
       .ADDR_WIDTH(ADDR_WIDTH)
   ) fifo_ip (
       .write_clk(write_clk),

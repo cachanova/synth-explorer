@@ -228,7 +228,7 @@ jobs:
           # though they live under deploy/ in the repo.
           tar -czf "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
             -C deploy compose.prod.yml compose.vivado.yml Caddyfile ops/deploy.sh ops/smoke-test.sh ops/edge-smoke.sh \
-            -C "${GITHUB_WORKSPACE}" examples/05_shared_logic.sv
+            -C "${GITHUB_WORKSPACE}" examples/handshake_controller.sv
           scp -i "$HOME/.ssh/production" -o BatchMode=yes \
             -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "/tmp/synth-explorer-${DEPLOY_SHA}.tar.gz" \
