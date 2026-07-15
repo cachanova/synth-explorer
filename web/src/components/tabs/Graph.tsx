@@ -504,10 +504,17 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
 
   return (
     <div className="graph-toolbar">
-      <span className="mono" style={{ color: 'var(--text-dim)', fontSize: 12 }}>
-        {coneReq?.label ?? 'Full diagram'}
-      </span>
-      <span className="sep" />
+      {coneReq && (
+        <>
+          <span
+            className="mono"
+            style={{ color: 'var(--text-dim)', fontSize: 12 }}
+          >
+            {coneReq.label}
+          </span>
+          <span className="sep" />
+        </>
+      )}
 
       {coneReq?.kind === 'cone' && (
         <>
@@ -612,19 +619,6 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           onChange={(event) => setOpt({ focus: event.target.checked })}
         />
         Focus
-      </label>
-
-      <span className="sep" />
-      <label
-        className="toggle"
-        title="Automatically synthesize three seconds after input changes"
-      >
-        <input
-          type="checkbox"
-          checked={store.autoSynthesize}
-          onChange={(event) => store.setAutoSynthesize(event.target.checked)}
-        />
-        auto synth
       </label>
     </div>
   )

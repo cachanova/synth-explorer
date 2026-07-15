@@ -298,7 +298,13 @@ impl Graph {
                     .find_map(|bit| bit.net())
                     .and_then(|net| builder.net_names.get(&net).cloned())
             {
-                builder.nodes[node_id as usize].name = strip_bit_suffix(&name).to_owned();
+                // A one-bit cell represents exactly this Q net, so keep its
+                // index. A word-level cell still represents the whole vector.
+                builder.nodes[node_id as usize].name = if info.q_bits.len() == 1 {
+                    name
+                } else {
+                    strip_bit_suffix(&name).to_owned()
+                };
             }
             for output_port in &output_ports {
                 if let Some(bits) = cell.connections.get(output_port) {
