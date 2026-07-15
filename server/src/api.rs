@@ -9,7 +9,7 @@ use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use crate::synthesis::{SynthesisError, run_synthesis};
-use crate::vivado::{VivadoBackend, VivadoError, VivadoPart};
+use crate::vivado::{VivadoBackend, VivadoError, VivadoPart, VivadoTiming};
 use crate::yosys::{
     MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, SynthTool, YosysError,
 };
@@ -471,6 +471,12 @@ pub struct SynthesizeResponse {
     /// True when generic synthesis hit the sandbox memory limit and succeeded
     /// on the abstract-memory retry, leaving `$mem_v2` cells unmapped.
     pub memories_abstracted: bool,
+    /// Vivado's own post-synthesis `report_timing` for the worst
+    /// register-to-register path, to sit beside `stats.estimated_delay_ns`.
+    /// Absent on the Yosys path and whenever Vivado found no constrained
+    /// register-to-register path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vivado_timing: Option<VivadoTiming>,
 }
 
 #[derive(Debug, Serialize)]
@@ -871,6 +877,7 @@ async fn synthesize_uncached(
         warnings: analysis.warnings(),
         log: output.log,
         memories_abstracted,
+        vivado_timing: output.vivado_timing,
     };
     let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
     let design = Arc::new(Design {
@@ -1726,6 +1733,10 @@ mod tests {
     }
 
     fn empty_test_design(design_id: &str) -> Arc<Design> {
+        test_design(design_id, None)
+    }
+
+    fn test_design(design_id: &str, vivado_timing: Option<VivadoTiming>) -> Arc<Design> {
         let netlist = parse_value(serde_json::json!({
             "modules": {
                 "top": {}
@@ -1748,6 +1759,7 @@ mod tests {
                 warnings: analysis.warnings(),
                 log: String::new(),
                 memories_abstracted: false,
+                vivado_timing,
             },
             graph,
             analysis,
@@ -2129,6 +2141,92 @@ mod tests {
         assert_eq!(
             body["error"],
             "vivado target is not installed on this deployment"
+        );
+    }
+
+    fn sample_vivado_timing() -> VivadoTiming {
+        // The figures the real-fixture parser test in `vivado.rs` produces.
+        VivadoTiming {
+            data_path_delay_ns: 2.616,
+            logic_ns: 1.855,
+            route_ns: 0.761,
+            logic_levels: 5,
+            slack_ns: 7.280,
+            slack_met: true,
+            reference_period_ns: 10.0,
+            source: "ra_reg[1]/C".to_owned(),
+            destination: "q_reg[13]/D".to_owned(),
+        }
+    }
+
+    async fn get_design_body(state: &AppState, id: &str) -> serde_json::Value {
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/design/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// The Yosys path has no Vivado timing, and the key must be absent rather
+    /// than null so an existing client sees a byte-identical design response.
+    #[tokio::test]
+    async fn design_response_omits_vivado_timing_without_a_vivado_run() {
+        let state = AppState::default();
+        state.cache.write().await.insert(
+            "d".to_owned(),
+            test_design("d", None),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+        let body = get_design_body(&state, "d").await;
+        assert!(body.get("vivado_timing").is_none());
+    }
+
+    #[tokio::test]
+    async fn design_response_carries_vivado_timing_through_the_cache() {
+        let state = AppState::default();
+        state.cache.write().await.insert(
+            "d".to_owned(),
+            test_design("d", Some(sample_vivado_timing())),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+        let body = get_design_body(&state, "d").await;
+        assert_eq!(
+            body["vivado_timing"],
+            serde_json::json!({
+                "data_path_delay_ns": 2.616,
+                "logic_ns": 1.855,
+                "route_ns": 0.761,
+                "logic_levels": 5,
+                "slack_ns": 7.280,
+                "slack_met": true,
+                "reference_period_ns": 10.0,
+                "source": "ra_reg[1]/C",
+                "destination": "q_reg[13]/D",
+            })
+        );
+    }
+
+    /// Tier 2 is a per-design constant, so a Tier-0 retune must not disturb it.
+    #[tokio::test]
+    async fn timing_retune_leaves_the_vivado_measurement_untouched() {
+        let state = AppState::default();
+        state.cache.write().await.insert(
+            "d".to_owned(),
+            test_design("d", Some(sample_vivado_timing())),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+        let response = post_timing(&state, "d", serde_json::json!({"profile": "ice40"})).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            get_design_body(&state, "d").await["vivado_timing"]["data_path_delay_ns"],
+            2.616
         );
     }
 

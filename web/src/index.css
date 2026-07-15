@@ -814,6 +814,52 @@ table.grid tr.expanded td {
 .card .v.slack-bad {
   color: var(--red);
 }
+.slack-ok {
+  color: var(--green);
+}
+.slack-bad {
+  color: var(--red);
+}
+
+/* Estimated-vs-measured timing (Tier 0 vs Vivado's own report_timing). The
+   tag is what tells the two numbers apart, so it travels with every figure. */
+.tier-tag {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid;
+  vertical-align: middle;
+}
+.tier-measured {
+  color: var(--green);
+  border-color: var(--green);
+}
+.tier-estimated {
+  color: var(--blue);
+  border-color: var(--blue);
+}
+.vivado-compare {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-family: var(--mono);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+.vivado-path {
+  font-size: 11px;
+  font-family: var(--mono);
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
 th.sortable {
   cursor: pointer;
   user-select: none;

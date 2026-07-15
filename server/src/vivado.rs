@@ -1,4 +1,5 @@
 use crate::netlist::{NetlistError, parse_value, select_top};
+use deepsize::DeepSizeOf;
 use crate::yosys::{
     MemoryHandling, SynthMode, SynthTool, SynthesisOutput, ValidatedSynth, YosysError, run_yosys,
     valid_vivado_part_name,
@@ -20,6 +21,14 @@ use tokio::time::timeout;
 
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const JSON_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
+/// The worst-path block sits at the head of a `report_timing` report, so a
+/// bounded prefix read is enough and keeps a pathological report off the heap.
+const TIMING_REPORT_LIMIT: u64 = 256 * 1024;
+/// Period of the analysis-only reference clock applied *after* `synth_design`.
+/// It cannot change the netlist and does not affect `data_path_delay_ns`; it
+/// only sets what `slack_ns` is measured against. See `docs/API.md`.
+const REFERENCE_PERIOD_NS: f64 = 10.0;
+const TIMING_REPORT_NAME: &str = "timing.rpt";
 const VIVADO_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const NORMALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -66,6 +75,129 @@ pub struct VivadoPart {
     pub name: String,
     pub family: String,
     pub speed: String,
+}
+
+/// Vivado's own `report_timing` figures for the worst register-to-register
+/// path, measured by Vivado's timing engine on the netlist it synthesized —
+/// as opposed to the Tier-0 estimate this project computes from the graph.
+///
+/// This is still a *post-synthesis* report: routing is estimated, not placed,
+/// so it is not timing closure either. It is Vivado's own estimate, which
+/// makes it the reference our delay model is calibrated against.
+// DeepSizeOf: this rides `SynthesizeResponse` inside a cached `Design`, whose
+// weight is `deep_size_of()`. The derive accounts for the two owned strings.
+#[derive(Debug, Clone, PartialEq, Serialize, DeepSizeOf)]
+pub struct VivadoTiming {
+    /// Vivado's `Data Path Delay`: clock-to-Q + logic + route. Setup is *not*
+    /// included — it is folded into `slack_ns` — so this must not be compared
+    /// against a Tier-0 estimate without first removing that estimate's setup
+    /// term.
+    pub data_path_delay_ns: f64,
+    /// The logic (cell) share of `data_path_delay_ns`.
+    pub logic_ns: f64,
+    /// The route (net) share of `data_path_delay_ns`.
+    pub route_ns: f64,
+    /// Cell count along the path, as Vivado counts `Logic Levels`.
+    pub logic_levels: u32,
+    /// Setup slack against `reference_period_ns`, not against any user target.
+    pub slack_ns: f64,
+    /// False when Vivado reported the path as VIOLATED.
+    pub slack_met: bool,
+    /// Period of the synthetic reference clock `slack_ns` is measured against.
+    pub reference_period_ns: f64,
+    /// Launching pin, e.g. `ra_reg[1]/C`.
+    pub source: String,
+    /// Capturing pin, e.g. `q_reg[13]/D`.
+    pub destination: String,
+}
+
+/// Parse the worst-path block of a Vivado `report_timing` report.
+///
+/// Returns `None` when the report has no *constrained* path: either Vivado
+/// found no register-to-register path at all ("No timing paths found."), or
+/// every such path is unconstrained and reported as `Slack: inf` (which
+/// happens when the registers run on a clock we did not constrain, e.g. an
+/// internally generated/divided clock). An unconstrained path's delay is real
+/// but has no defined launch edge, so we decline to report it rather than
+/// present it as comparable to the estimate.
+fn parse_report_timing(report: &str) -> Option<VivadoTiming> {
+    let (slack_ns, slack_met) = parse_slack(field(report, "Slack")?)?;
+    let (data_path_delay_ns, logic_ns, route_ns) =
+        parse_data_path_delay(field(report, "Data Path Delay:")?)?;
+    let logic_levels = field(report, "Logic Levels:")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some(VivadoTiming {
+        data_path_delay_ns,
+        logic_ns,
+        route_ns,
+        logic_levels,
+        slack_ns,
+        slack_met,
+        reference_period_ns: REFERENCE_PERIOD_NS,
+        source: field(report, "Source:")?.to_owned(),
+        destination: field(report, "Destination:")?.to_owned(),
+    })
+}
+
+/// First line whose trimmed text starts with `name`, returning the remainder.
+/// `report_timing` indents these as `  Data Path Delay:        2.616ns  (...)`.
+/// Longer labels that merely share a prefix (`Destination Clock Delay (DCD):`
+/// vs `Destination:`) do not collide because `name` carries its own colon.
+fn field<'a>(report: &'a str, name: &str) -> Option<&'a str> {
+    report
+        .lines()
+        .find_map(|line| line.trim().strip_prefix(name))
+        .map(str::trim)
+}
+
+/// `(MET) :             7.280ns  (required time - arrival time)` -> (7.28, true)
+/// `(VIOLATED) :        -1.720ns (...)`                          -> (-1.72, false)
+/// `:                   inf`                                     -> None
+fn parse_slack(rest: &str) -> Option<(f64, bool)> {
+    let (label, value) = rest.split_once(':')?;
+    let met = match label.trim() {
+        "(MET)" => true,
+        "(VIOLATED)" => false,
+        // A bare `Slack:` marks an unconstrained path, whose value is `inf`.
+        _ => return None,
+    };
+    Some((parse_ns(value.split_whitespace().next()?)?, met))
+}
+
+/// `2.616ns  (logic 1.855ns (70.910%)  route 0.761ns (29.090%))`
+fn parse_data_path_delay(rest: &str) -> Option<(f64, f64, f64)> {
+    let total = parse_ns(rest.split_whitespace().next()?)?;
+    Some((
+        total,
+        labeled_ns(rest, "logic")?,
+        labeled_ns(rest, "route")?,
+    ))
+}
+
+fn labeled_ns(text: &str, label: &str) -> Option<f64> {
+    let rest = text.split_once(&format!("{label} "))?.1;
+    parse_ns(rest.split_whitespace().next()?)
+}
+
+fn parse_ns(token: &str) -> Option<f64> {
+    let value: f64 = token.strip_suffix("ns")?.parse().ok()?;
+    value.is_finite().then_some(value)
+}
+
+/// Read and parse the optional timing report. Tier 2 is additive: a missing,
+/// oversized, or unparseable report degrades to `None` and must never fail a
+/// synthesis that otherwise succeeded.
+async fn read_timing_report(path: &Path) -> Option<VivadoTiming> {
+    let file = fs::File::open(path).await.ok()?;
+    let mut bytes = Vec::new();
+    file.take(TIMING_REPORT_LIMIT)
+        .read_to_end(&mut bytes)
+        .await
+        .ok()?;
+    parse_report_timing(&String::from_utf8_lossy(&bytes))
 }
 
 /// Return the configured Vivado version and installed part catalog, or `None`
@@ -242,6 +374,9 @@ pub async fn run_vivado(input: &ValidatedSynth) -> Result<SynthesisOutput, Vivad
     if fs::metadata(&vivado_netlist_path).await.is_err() {
         return Err(VivadoError::Vivado { log: vivado_log });
     }
+    // Best-effort Tier 2: absent for a design with no constrained
+    // register-to-register path, and never a reason to fail the synthesis.
+    let vivado_timing = read_timing_report(&temp.path().join(TIMING_REPORT_NAME)).await;
     strip_vivado_preamble(&vivado_netlist_path).await?;
 
     let normalize_script_path = temp.path().join("normalize.ys");
@@ -278,6 +413,7 @@ pub async fn run_vivado(input: &ValidatedSynth) -> Result<SynthesisOutput, Vivad
         source_json: source.source_json,
         log,
         resolved_top: top.to_owned(),
+        vivado_timing,
     })
 }
 
@@ -337,7 +473,46 @@ fn build_tcl(input: &ValidatedSynth, top: &str, output: &str) -> String {
         "write_verilog -force -mode funcsim {{{output}}}"
     )
     .unwrap();
+    script.push_str(&build_timing_tcl());
     script
+}
+
+/// Vivado's own `report_timing` on the netlist `synth_design` just produced.
+///
+/// Everything here runs *after* `write_verilog`, so it cannot influence the
+/// netlist the rest of Synth Explorer analyses: `create_clock` is an
+/// analysis-only constraint and the emitted design is already on disk. That
+/// ordering is what lets Tier 2 be a pure observation of Tier 1.
+///
+/// The report is restricted to register-to-register paths. Vivado sorts by
+/// slack, and I/O paths are unconstrained here (no `set_input_delay` /
+/// `set_output_delay`), so without `-from/-to` a design's worst *slack* path
+/// can be an unconstrained I/O path dominated by IBUF/OBUF pad delay — which
+/// the Tier-0 model deliberately treats as zero-depth infrastructure and would
+/// never account for. Register-to-register is the class both tiers agree on.
+///
+/// The whole block is wrapped in `catch` because Tier 2 is additive: any Tcl
+/// error here leaves the report absent and Tier 1 synthesis untouched.
+/// No caller-supplied text is interpolated — the period is a Rust constant and
+/// clock names are positional.
+fn build_timing_tcl() -> String {
+    format!(
+        "if {{[catch {{\n\
+         \tset se_regs [all_registers]\n\
+         \tif {{[llength $se_regs] > 0}} {{\n\
+         \t\tset se_clk_ports [filter [all_fanin -flat -startpoints_only \
+         [all_registers -clock_pins]] {{CLASS == port}}]\n\
+         \t\tset se_i 0\n\
+         \t\tforeach se_port $se_clk_ports {{\n\
+         \t\t\tcreate_clock -name se_ref_clk_$se_i -period {REFERENCE_PERIOD_NS:.3} $se_port\n\
+         \t\t\tincr se_i\n\
+         \t\t}}\n\
+         \t\treport_timing -delay_type max -from $se_regs -to $se_regs -file {{{TIMING_REPORT_NAME}}}\n\
+         \t}}\n\
+         }} se_err]}} {{\n\
+         \tputs \"SYNTH_EXPLORER_TIMING_ERROR: $se_err\"\n\
+         }}\n"
+    )
 }
 
 fn build_normalize_script(top: &str) -> String {
@@ -533,13 +708,14 @@ mod tests {
     #[test]
     fn tcl_uses_fixed_basic_part_and_validated_sources() {
         let script = build_tcl(&input(), "top", "vivado-netlist.v");
-        assert_eq!(
-            script,
+        // The synthesis half is exact; the appended timing-report half is
+        // asserted separately by the tests below.
+        assert!(script.starts_with(
             "read_verilog -sv {a.sv}\n\
              read_verilog -sv {top.sv}\n\
              synth_design -top {top} -part {xc7a35tcpg236-1} -flatten_hierarchy full\n\
              write_verilog -force -mode funcsim {vivado-netlist.v}\n"
-        );
+        ));
     }
 
     #[test]
@@ -596,6 +772,107 @@ mod tests {
     fn part_catalog_parser_rejects_empty_or_unsafe_catalogs() {
         assert!(parse_part_catalog("Vivado v2026.1").is_err());
         assert!(parse_part_catalog("SYNTH_EXPLORER_PART\txc7a35t;exec\tartix7\t-1\n").is_err());
+    }
+
+    // Every fixture below is verbatim `report_timing` output captured from the
+    // real Vivado 2026.1 install (xc7a35tcpg236-1), not hand-written.
+    const MET_REPORT: &str = include_str!("../tests/fixtures/vivado_report_timing_met.rpt");
+    const VIOLATED_REPORT: &str =
+        include_str!("../tests/fixtures/vivado_report_timing_violated.rpt");
+    const NO_PATHS_REPORT: &str =
+        include_str!("../tests/fixtures/vivado_report_timing_no_paths.rpt");
+    const UNCONSTRAINED_REPORT: &str =
+        include_str!("../tests/fixtures/vivado_report_timing_unconstrained.rpt");
+
+    #[test]
+    fn timing_parser_reads_every_field_of_a_real_met_report() {
+        assert_eq!(
+            parse_report_timing(MET_REPORT).unwrap(),
+            VivadoTiming {
+                data_path_delay_ns: 2.616,
+                logic_ns: 1.855,
+                route_ns: 0.761,
+                logic_levels: 5,
+                slack_ns: 7.280,
+                slack_met: true,
+                reference_period_ns: 10.0,
+                source: "ra_reg[1]/C".to_owned(),
+                destination: "q_reg[13]/D".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn timing_parser_reads_a_real_violated_report_as_negative_slack() {
+        let timing = parse_report_timing(VIOLATED_REPORT).unwrap();
+        assert_eq!(timing.slack_ns, -1.720);
+        assert!(!timing.slack_met);
+    }
+
+    /// The met and violated fixtures are the same design reported against a
+    /// 10ns and a 1ns reference clock. Vivado's `Data Path Delay` is identical
+    /// across both while slack moves by exactly the 9ns period change — the
+    /// property that lets us report a delay under an arbitrary reference clock.
+    #[test]
+    fn reference_period_moves_slack_but_never_the_reported_delay() {
+        let met = parse_report_timing(MET_REPORT).unwrap();
+        let violated = parse_report_timing(VIOLATED_REPORT).unwrap();
+        assert_eq!(met.data_path_delay_ns, violated.data_path_delay_ns);
+        assert_eq!(met.logic_ns, violated.logic_ns);
+        assert_eq!(met.route_ns, violated.route_ns);
+        assert_eq!(met.logic_levels, violated.logic_levels);
+        assert!((met.slack_ns - violated.slack_ns - 9.0).abs() < 1e-9);
+    }
+
+    /// `logic + route` is the whole of `Data Path Delay`; setup is not in it.
+    #[test]
+    fn reported_logic_and_route_account_for_the_whole_data_path() {
+        let timing = parse_report_timing(MET_REPORT).unwrap();
+        assert!((timing.logic_ns + timing.route_ns - timing.data_path_delay_ns).abs() < 1e-9);
+    }
+
+    /// A design whose registers all run on an internally generated clock: we
+    /// constrain no port, so Vivado reports the path with `Slack: inf`. The
+    /// delay is real but has no launch edge, so we report nothing.
+    #[test]
+    fn timing_parser_declines_a_real_unconstrained_report() {
+        assert!(UNCONSTRAINED_REPORT.contains("Data Path Delay:        2.522ns"));
+        assert_eq!(parse_report_timing(UNCONSTRAINED_REPORT), None);
+    }
+
+    #[test]
+    fn timing_parser_declines_a_real_report_with_no_register_paths() {
+        assert_eq!(parse_report_timing(NO_PATHS_REPORT), None);
+    }
+
+    #[test]
+    fn timing_parser_declines_truncated_or_unrelated_output() {
+        assert_eq!(parse_report_timing(""), None);
+        assert_eq!(parse_report_timing("Vivado v2026.1"), None);
+        // A slack line alone is not a usable report.
+        assert_eq!(parse_report_timing("Slack (MET) :  7.280ns"), None);
+    }
+
+    /// `Destination:` must not be satisfied by `Destination Clock Delay (DCD):`,
+    /// which appears first in some reports.
+    #[test]
+    fn timing_field_lookup_does_not_confuse_similarly_prefixed_labels() {
+        let timing = parse_report_timing(MET_REPORT).unwrap();
+        assert_eq!(timing.destination, "q_reg[13]/D");
+        assert_eq!(timing.source, "ra_reg[1]/C");
+    }
+
+    #[test]
+    fn timing_tcl_reports_after_write_verilog_and_cannot_fail_synthesis() {
+        let script = build_tcl(&input(), "top", "vivado-netlist.v");
+        let write = script.find("write_verilog").unwrap();
+        let report = script.find("report_timing").unwrap();
+        // Ordering is the guarantee that Tier 2 cannot perturb the netlist.
+        assert!(write < script.find("create_clock").unwrap());
+        assert!(write < report);
+        assert!(script.contains("catch"));
+        assert!(script.contains("-period 10.000"));
+        assert!(script.contains("report_timing -delay_type max -from $se_regs -to $se_regs"));
     }
 
     #[test]

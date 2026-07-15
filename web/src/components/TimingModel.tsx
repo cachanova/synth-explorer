@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { retuneTiming } from '../api'
-import { ESTIMATED_TIMING_CAVEAT, fmaxMhz, slackNs } from '../lib/timing'
+import {
+  ESTIMATED_TIMING_CAVEAT,
+  VIVADO_TIMING_CAVEAT,
+  dataPathEstimateNs,
+  estimateErrorPct,
+  fmaxMhz,
+  slackNs,
+} from '../lib/timing'
 import {
   DELAY_FIELDS,
   PROFILE_OPTIONS,
@@ -11,7 +18,12 @@ import {
   type ProfileChoice,
   type TimingSettings,
 } from '../lib/timingSettings'
-import type { DelayBreakdown, DelayModel, SpeedGrade } from '../types'
+import type {
+  DelayBreakdown,
+  DelayModel,
+  SpeedGrade,
+  VivadoTiming,
+} from '../types'
 import { Card } from './Card'
 
 /**
@@ -19,15 +31,22 @@ import { Card } from './Card'
  * lets the user retune it (delay profile, speed grade, or hand-edited
  * coefficients) via `POST /api/design/:id/timing` — no re-synthesis. Settings
  * persist in localStorage. Keyed by design id so it remounts per design.
+ *
+ * When the design came from the Vivado backend, `vivadoTiming` carries Vivado's
+ * own report_timing for the same design and is shown beside the estimate. It is
+ * a per-design constant, so it is a prop rather than part of the retune
+ * response — a retune changes only the estimate.
  */
 export function TimingModel({
   designId,
   fallbackDelayNs,
   fallbackBreakdown,
+  vivadoTiming,
 }: {
   designId: string
   fallbackDelayNs: number | null
   fallbackBreakdown?: DelayBreakdown
+  vivadoTiming?: VivadoTiming
 }) {
   const [settings, setSettings] = useState<TimingSettings>(loadTimingSettings)
   const [result, setResult] = useState<{
@@ -116,6 +135,14 @@ export function TimingModel({
         <BreakdownBar breakdown={breakdown} total={delayNs} />
       )}
 
+      {vivadoTiming && (
+        <VivadoTimingPanel
+          timing={vivadoTiming}
+          estimateNs={delayNs}
+          breakdown={breakdown}
+        />
+      )}
+
       <div className="timing-controls">
         <label className="field">
           <span>Delay profile</span>
@@ -191,6 +218,75 @@ export function TimingModel({
 
       <div className="caveat" style={{ marginTop: 8 }}>
         {ESTIMATED_TIMING_CAVEAT}
+      </div>
+    </>
+  )
+}
+
+/**
+ * Vivado's measured report_timing beside our estimate. The headline pair is
+ * deliberately like-for-like: Vivado's Data Path Delay excludes FF setup, so
+ * the estimate it is compared against has its setup term removed rather than
+ * using the (setup-inclusive) critical-path delay shown above.
+ */
+function VivadoTimingPanel({
+  timing,
+  estimateNs,
+  breakdown,
+}: {
+  timing: VivadoTiming
+  estimateNs: number | null
+  breakdown?: DelayBreakdown
+}) {
+  const comparable =
+    estimateNs != null ? dataPathEstimateNs(estimateNs, breakdown) : null
+  const errorPct =
+    comparable != null
+      ? estimateErrorPct(comparable, timing.data_path_delay_ns)
+      : null
+
+  return (
+    <>
+      <div className="section-title">
+        Vivado timing <span className="tier-tag tier-measured">measured</span>
+      </div>
+      <div className="cards">
+        <Card
+          k="Vivado data-path delay"
+          v={`${timing.data_path_delay_ns.toFixed(2)} ns`}
+          accent
+        />
+        <Card k="Logic" v={`${timing.logic_ns.toFixed(2)} ns`} />
+        <Card k="Route" v={`${timing.route_ns.toFixed(2)} ns`} />
+        <Card k="Logic levels" v={timing.logic_levels} />
+      </div>
+
+      {comparable != null && errorPct != null && (
+        <div className="vivado-compare">
+          <span className="tier-tag tier-estimated">estimated</span>
+          <b>{comparable.toFixed(2)} ns</b>
+          <span className="faint">vs</span>
+          <span className="tier-tag tier-measured">measured</span>
+          <b>{timing.data_path_delay_ns.toFixed(2)} ns</b>
+          <span className={errorPct >= 0 ? 'slack-ok' : 'slack-bad'}>
+            {errorPct >= 0 ? '+' : ''}
+            {errorPct.toFixed(1)}%
+          </span>
+          <span className="faint">
+            — both excluding FF setup, which Vivado folds into slack
+          </span>
+        </div>
+      )}
+
+      <div className="faint vivado-path" title="Vivado's worst-path endpoints">
+        {timing.source} → {timing.destination} · slack{' '}
+        {timing.slack_ns >= 0 ? '+' : ''}
+        {timing.slack_ns.toFixed(2)} ns vs the {timing.reference_period_ns} ns
+        reference clock ({timing.slack_met ? 'met' : 'violated'})
+      </div>
+
+      <div className="caveat" style={{ marginTop: 8 }}>
+        {VIVADO_TIMING_CAVEAT}
       </div>
     </>
   )
