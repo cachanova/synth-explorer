@@ -1,0 +1,1342 @@
+{
+  "creator": "Yosys 0.64 (git sha1 6d2c445ae-dirty, g++ 15.2.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]",
+  "modules": {
+    "pipe": {
+      "attributes": {
+        "dynports": "00000000000000000000000000000001",
+        "top": "00000000000000000000000000000001",
+        "src": "pipe.sv:1.1-32.10"
+      },
+      "parameter_default_values": {
+        "RESET_VALUE": "00000000",
+        "STAGES": "00000000000000000000000000000100",
+        "WIDTH": "00000000000000000000000000001000"
+      },
+      "ports": {
+        "clk": {
+          "direction": "input",
+          "bits": [
+            2
+          ]
+        },
+        "rst": {
+          "direction": "input",
+          "bits": [
+            3
+          ]
+        },
+        "en": {
+          "direction": "input",
+          "bits": [
+            4
+          ]
+        },
+        "data_in": {
+          "direction": "input",
+          "bits": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        "data_out": {
+          "direction": "output",
+          "bits": [
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ]
+        }
+      },
+      "cells": {
+        "$auto$ff.cc:337:slice$1574": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              5
+            ],
+            "Q": [
+              21
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1575": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              6
+            ],
+            "Q": [
+              22
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1576": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              7
+            ],
+            "Q": [
+              23
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1577": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              8
+            ],
+            "Q": [
+              24
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1578": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              9
+            ],
+            "Q": [
+              25
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1579": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              10
+            ],
+            "Q": [
+              26
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1580": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              11
+            ],
+            "Q": [
+              27
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1581": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              12
+            ],
+            "Q": [
+              28
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1582": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              21
+            ],
+            "Q": [
+              29
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1583": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              22
+            ],
+            "Q": [
+              30
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1584": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              23
+            ],
+            "Q": [
+              31
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1585": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              24
+            ],
+            "Q": [
+              32
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1586": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              25
+            ],
+            "Q": [
+              33
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1587": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              26
+            ],
+            "Q": [
+              34
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1588": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              27
+            ],
+            "Q": [
+              35
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1589": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              28
+            ],
+            "Q": [
+              36
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1590": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              29
+            ],
+            "Q": [
+              37
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1591": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              30
+            ],
+            "Q": [
+              38
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1592": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              31
+            ],
+            "Q": [
+              39
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1593": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              32
+            ],
+            "Q": [
+              40
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1594": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              33
+            ],
+            "Q": [
+              41
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1595": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              34
+            ],
+            "Q": [
+              42
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1596": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              35
+            ],
+            "Q": [
+              43
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1597": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              36
+            ],
+            "Q": [
+              44
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1598": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              37
+            ],
+            "Q": [
+              13
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1599": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              38
+            ],
+            "Q": [
+              14
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1600": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              39
+            ],
+            "Q": [
+              15
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1601": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              40
+            ],
+            "Q": [
+              16
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1602": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              41
+            ],
+            "Q": [
+              17
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1603": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              42
+            ],
+            "Q": [
+              18
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1604": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              43
+            ],
+            "Q": [
+              19
+            ],
+            "R": [
+              3
+            ]
+          }
+        },
+        "$auto$ff.cc:337:slice$1605": {
+          "hide_name": 1,
+          "type": "FDRE",
+          "parameters": {
+            "INIT": "x"
+          },
+          "attributes": {
+            "always_ff": "00000000000000000000000000000001",
+            "module_not_derived": "00000000000000000000000000000001",
+            "src": "pipe.sv:18.5-27.8|/usr/bin/../share/yosys/xilinx/ff_map.v:68.41-68.95"
+          },
+          "port_directions": {
+            "C": "input",
+            "CE": "input",
+            "D": "input",
+            "Q": "output",
+            "R": "input"
+          },
+          "connections": {
+            "C": [
+              2
+            ],
+            "CE": [
+              4
+            ],
+            "D": [
+              44
+            ],
+            "Q": [
+              20
+            ],
+            "R": [
+              3
+            ]
+          }
+        }
+      },
+      "netnames": {
+        "clk": {
+          "hide_name": 0,
+          "bits": [
+            2
+          ],
+          "attributes": {
+            "src": "pipe.sv:6.30-6.33"
+          }
+        },
+        "data_in": {
+          "hide_name": 0,
+          "bits": [
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "attributes": {
+            "src": "pipe.sv:9.30-9.37"
+          }
+        },
+        "data_out": {
+          "hide_name": 0,
+          "bits": [
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "attributes": {
+            "src": "pipe.sv:10.30-10.38"
+          }
+        },
+        "en": {
+          "hide_name": 0,
+          "bits": [
+            4
+          ],
+          "attributes": {
+            "src": "pipe.sv:8.30-8.32"
+          }
+        },
+        "rst": {
+          "hide_name": 0,
+          "bits": [
+            3
+          ],
+          "attributes": {
+            "src": "pipe.sv:7.30-7.33"
+          }
+        },
+        "with_stages.stage[0]": {
+          "hide_name": 0,
+          "bits": [
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28
+          ],
+          "attributes": {
+            "src": "pipe.sv:16.23-16.28"
+          }
+        },
+        "with_stages.stage[1]": {
+          "hide_name": 0,
+          "bits": [
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36
+          ],
+          "attributes": {
+            "src": "pipe.sv:16.23-16.28"
+          }
+        },
+        "with_stages.stage[2]": {
+          "hide_name": 0,
+          "bits": [
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44
+          ],
+          "attributes": {
+            "src": "pipe.sv:16.23-16.28"
+          }
+        },
+        "with_stages.stage[3]": {
+          "hide_name": 0,
+          "bits": [
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20
+          ],
+          "attributes": {
+            "src": "pipe.sv:16.23-16.28"
+          }
+        }
+      }
+    }
+  }
+}

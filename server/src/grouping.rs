@@ -516,6 +516,7 @@ mod tests {
             cell_info: HashMap::new(),
             blackboxes: Vec::new(),
             signal_fanout: HashMap::new(),
+            clock_network: Vec::new(),
         }
     }
 

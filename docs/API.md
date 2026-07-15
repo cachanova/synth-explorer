@@ -166,7 +166,7 @@ Response `200`:
       carry_special: number;
       infrastructure: number;
     };
-    estimated_delay_ns?: number; // rough worst-case combinational delay (see below)
+    estimated_delay_ns?: number; // rough worst-case path delay (see below)
     estimated_delay_breakdown?: {  // how estimated_delay_ns splits (ns); the
       launch_ns: number;           // four terms sum to estimated_delay_ns
       logic_ns: number;
@@ -177,13 +177,17 @@ Response `200`:
   // estimated_delay_ns is a PRE-place-and-route figure: it sums characterized
   // cell delays with a fanout-based net-delay estimate along the critical path
   // (carry-chain nets are dedicated/free) — the same shape as a vendor tool's
-  // post-synthesis "estimated" timing, NOT timing closure. Omitted when the
-  // design has no combinational paths. A relative guide: the ordering of paths
-  // is far more trustworthy than the absolute value. The coefficients are being
-  // re-derived against real Vivado ground truth (see `calibration/`), and the
-  // model is known to over- and under-estimate in ways a flat per-cell model
-  // cannot fix — most of all because Yosys and Vivado map the same RTL to
-  // structurally different netlists. Use the Vivado backend to time Vivado's.
+  // post-synthesis "estimated" timing, NOT timing closure. A path runs from a
+  // register (clk-to-Q) or an input to a register data pin or a top-level
+  // output; a direct register-to-register hop is a path with zero logic levels.
+  // The clock network is not a data path, and neither is a route that ends only
+  // at a control pin (CE/R). Omitted when the design has no timing paths at
+  // all. A relative guide: the ordering of paths is far more trustworthy than
+  // the absolute value. The coefficients are being re-derived against real
+  // Vivado ground truth (see `calibration/`), and the model is known to over-
+  // and under-estimate in ways a flat per-cell model cannot fix — most of all
+  // because Yosys and Vivado map the same RTL to structurally different
+  // netlists. Use the Vivado backend to time Vivado's.
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
   memories_abstracted: boolean; // true when a generic mode exhausted a sandbox
@@ -390,7 +394,7 @@ Response:
 
 ```ts
 {
-  estimated_delay_ns: number | null;  // null when the design has no comb paths
+  estimated_delay_ns: number | null;  // null when the design has no timing paths
   estimated_delay_breakdown?: { launch_ns; logic_ns; net_ns; setup_ns }; // sums to delay
   model: DelayModel;                   // base coefficients used, pre speed-grade
                                        // (so a client can populate an editor)

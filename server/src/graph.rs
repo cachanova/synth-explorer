@@ -3,7 +3,7 @@ use crate::netlist::{
     binary_string_to_u64, module_blackboxes,
 };
 use deepsize::DeepSizeOf;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 pub type NodeId = u32;
 
@@ -63,6 +63,9 @@ pub struct Graph {
     pub cell_info: HashMap<NodeId, CellInfo>,
     pub blackboxes: Vec<NodeId>,
     pub(crate) signal_fanout: HashMap<(NodeId, String, Option<u32>), usize>,
+    /// Per-node: whether the node belongs to the clock distribution network.
+    /// See [`clock_network_nodes`].
+    pub(crate) clock_network: Vec<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -295,6 +298,12 @@ impl Graph {
         }
 
         let signal_fanout = build_signal_fanout(&builder.edges);
+        let clock_network = clock_network_nodes(
+            &builder.nodes,
+            &builder.edges,
+            &builder.outgoing,
+            &builder.incoming,
+        );
         Ok(Self {
             nodes: builder.nodes,
             edges: builder.edges,
@@ -306,6 +315,7 @@ impl Graph {
             cell_info: builder.cell_info,
             blackboxes: builder.blackboxes,
             signal_fanout,
+            clock_network,
         })
     }
 
@@ -328,6 +338,15 @@ impl Graph {
             .is_some_and(|node| matches!(node.kind, NodeKind::Cell) && !node.seq)
     }
 
+    /// Whether this node distributes a clock rather than data — see
+    /// [`clock_network_nodes`].
+    pub fn is_clock_network(&self, id: NodeId) -> bool {
+        self.clock_network
+            .get(id as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// Number of sink pins driven by this exact output port and net bit.
     /// Keeping this precomputed avoids quadratic scans for high-fanout controls.
     pub fn signal_fanout(&self, edge: &Edge) -> usize {
@@ -336,6 +355,79 @@ impl Graph {
             .copied()
             .unwrap_or(1)
     }
+}
+
+/// An edge that lands on a storage cell's clock (or latch gate) pin.
+fn is_clock_pin_edge(nodes: &[Node], edge: &Edge) -> bool {
+    nodes.get(edge.to as usize).is_some_and(|sink| {
+        sink.kind == NodeKind::Cell
+            && sink.seq
+            && sink
+                .cell_type
+                .as_deref()
+                .is_some_and(|cell_type| is_clock_pin_for_cell(cell_type, &edge.to_port))
+    })
+}
+
+/// Nodes that distribute a clock rather than data — with `synth_xilinx`
+/// defaults, `clk` → `IBUF` → `BUFG` → every `FDRE`'s `C` pin.
+///
+/// A clock is not data. Walking this chain as ordinary combinational logic
+/// charges a buffer delay per stage plus a register setup at the end, which is
+/// how a shallow sequential design reports its own clock tree as the critical
+/// path.
+///
+/// The rule is about where a signal *goes*, not what drives it: an `IBUF` on a
+/// data port stays a data-path node, and a buffer whose output also reaches a
+/// data pin is not clock-only. A node qualifies when it drives at least one
+/// sink and every sink is either a clock pin or another clock-only node.
+///
+/// Computed as a reverse worklist fixpoint: linear in edges, and a cyclic
+/// buffer ring — which is not a clock tree — is never marked, so it stays
+/// visible to combinational-loop detection.
+fn clock_network_nodes(
+    nodes: &[Node],
+    edges: &[Edge],
+    outgoing: &[Vec<usize>],
+    incoming: &[Vec<usize>],
+) -> Vec<bool> {
+    // Sinks that are not yet known to be clock-only. A node with none left is
+    // part of the clock network.
+    let mut pending: Vec<usize> = outgoing
+        .iter()
+        .map(|out| {
+            out.iter()
+                .filter(|idx| !is_clock_pin_edge(nodes, &edges[**idx]))
+                .count()
+        })
+        .collect();
+
+    let mut clock_only = vec![false; nodes.len()];
+    let mut queue: VecDeque<NodeId> = VecDeque::new();
+    for (id, out) in outgoing.iter().enumerate() {
+        // A node driving nothing is dangling, not a clock.
+        if !out.is_empty() && pending[id] == 0 {
+            clock_only[id] = true;
+            queue.push_back(id as NodeId);
+        }
+    }
+
+    while let Some(id) = queue.pop_front() {
+        for edge_idx in &incoming[id as usize] {
+            let edge = &edges[*edge_idx];
+            // Already excluded from the driver's count.
+            if is_clock_pin_edge(nodes, edge) {
+                continue;
+            }
+            let from = edge.from as usize;
+            pending[from] = pending[from].saturating_sub(1);
+            if pending[from] == 0 && !clock_only[from] && !outgoing[from].is_empty() {
+                clock_only[from] = true;
+                queue.push_back(edge.from);
+            }
+        }
+    }
+    clock_only
 }
 
 fn build_signal_fanout(edges: &[Edge]) -> HashMap<(NodeId, String, Option<u32>), usize> {
@@ -441,9 +533,7 @@ pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
         return is_sequential_type(cell_type);
     }
     if matches!(upper_port.as_str(), "G" | "GE") {
-        let upper_type = cell_type.to_ascii_uppercase();
-        return upper_type.contains("LATCH")
-            || matches!(upper_type.as_str(), "LDCE" | "LDPE" | "LDCPE");
+        return is_latch_type(cell_type);
     }
     upper_port == "T"
         && matches!(
@@ -452,6 +542,44 @@ pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
         )
 }
 
+/// Level-sensitive storage: yosys `$dlatch`/`$adlatch`/`$_DLATCH_*` and the
+/// Xilinx `LD*` primitives.
+pub fn is_latch_type(cell_type: &str) -> bool {
+    let upper = cell_type.to_ascii_uppercase();
+    upper.contains("LATCH") || matches!(upper.as_str(), "LDCE" | "LDPE" | "LDCPE")
+}
+
+/// The pin that clocks a storage cell: a register's clock, or a latch's
+/// transparent gate. A signal that reaches only these pins is a clock, not
+/// data.
+///
+/// Deliberately narrower than [`is_control_pin_for_cell`]. A clock *enable*
+/// (`FDRE`'s `CE`, `$dffe`'s `EN`) and a reset (`R`/`S`) are control pins, but
+/// they are still setup-constrained data paths that must keep their timing.
+/// Only the pin that actually clocks the cell belongs to the clock network.
+pub fn is_clock_pin_for_cell(cell_type: &str, port: &str) -> bool {
+    let upper = port.to_ascii_uppercase();
+    // Unambiguous on any cell, including a user blackbox. `$mem` spells its
+    // ports `RD_CLK`/`WR_CLK`.
+    if upper == "CLK" || upper.ends_with("_CLK") {
+        return true;
+    }
+    // On a blackbox, a port named `C`/`E`/`G` is just as likely to be data, so
+    // only a recognized storage primitive gets the short spellings.
+    if !is_sequential_type(cell_type) {
+        return false;
+    }
+    match upper.as_str() {
+        // Xilinx `FD*`/`LD*` and yosys `$_DFF_*` spell the clock `C`.
+        "C" => true,
+        // A latch's gate is clock-like: `$dlatch` calls it `EN`, `$_DLATCH_*`
+        // calls it `E`, and Xilinx `LD*` call it `G`. `$dffe`/`$_DFFE_*` use
+        // those same spellings for a clock *enable*, which is data — hence the
+        // latch-only test.
+        "G" | "E" | "EN" => is_latch_type(cell_type),
+        _ => false,
+    }
+}
 fn output_ports(cell: &YosysCell) -> HashSet<String> {
     let mut ports: HashSet<String> = cell
         .port_directions
@@ -714,5 +842,62 @@ fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
         "IBUF" | "OBUF" | "OBUFT" | "IOBUF" | "BUFG" | "BUFGCE" | "BUFGCTRL" | "BUFH" | "SB_GB"
         | "$_BUF_" => Some(VendorPrimitiveClass::Combinational { depth_weight: 0 }),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_pin_that_clocks_a_cell_is_a_clock_pin() {
+        // The register clock: Xilinx spells it `C`, yosys `$dff`/`$_DFF_*` `CLK`.
+        assert!(is_clock_pin_for_cell("FDRE", "C"));
+        assert!(is_clock_pin_for_cell("FDRE", "c"));
+        assert!(is_clock_pin_for_cell("$dff", "CLK"));
+        assert!(is_clock_pin_for_cell("$_DFF_P_", "C"));
+        // A memory's clocks keep their `RD_`/`WR_` prefixes.
+        assert!(is_clock_pin_for_cell("$mem_v2", "RD_CLK"));
+
+        // A clock *enable* and a reset are control pins, but they are real
+        // setup-constrained data paths: timing them is correct, so they must
+        // not be mistaken for the clock network.
+        for pin in ["D", "CE", "R", "S", "Q"] {
+            assert!(!is_clock_pin_for_cell("FDRE", pin), "FDRE.{pin}");
+        }
+        assert!(!is_clock_pin_for_cell("$dffe", "EN"));
+        assert!(!is_clock_pin_for_cell("$_DFFE_PP_", "E"));
+
+        // A latch is transparent while its gate is asserted, and the gate is
+        // clock-like. `$dffe` and `$dlatch` share the `EN`/`E` spelling, so the
+        // gate reading is latch-only.
+        assert!(is_clock_pin_for_cell("$dlatch", "EN"));
+        assert!(is_clock_pin_for_cell("$_DLATCH_P_", "E"));
+        assert!(is_clock_pin_for_cell("LDCE", "G"));
+        // `GE` is a gate *enable*, which is data.
+        assert!(!is_clock_pin_for_cell("LDCE", "GE"));
+
+        // On a blackbox, a port named `C`/`E`/`G` is just as likely to be data,
+        // so only the unambiguous spelling counts.
+        assert!(is_clock_pin_for_cell("my_ip_core", "CLK"));
+        assert!(!is_clock_pin_for_cell("my_ip_core", "C"));
+        assert!(!is_clock_pin_for_cell("LUT3", "I0"));
+    }
+
+    #[test]
+    fn latch_types_are_recognized_across_spellings() {
+        for latch in [
+            "$dlatch",
+            "$adlatch",
+            "$_DLATCH_P_",
+            "LDCE",
+            "LDPE",
+            "LDCPE",
+        ] {
+            assert!(is_latch_type(latch), "{latch}");
+        }
+        for not_latch in ["FDRE", "$dff", "$dffe", "LUT6"] {
+            assert!(!is_latch_type(not_latch), "{not_latch}");
+        }
     }
 }
