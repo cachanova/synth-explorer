@@ -153,6 +153,12 @@ Response `200`:
       infrastructure: number;
     };
     estimated_delay_ns?: number; // rough worst-case combinational delay (see below)
+    estimated_delay_breakdown?: {  // how estimated_delay_ns splits (ns); the
+      launch_ns: number;           // four terms sum to estimated_delay_ns
+      logic_ns: number;
+      net_ns: number;
+      setup_ns: number;
+    };
   };
   // estimated_delay_ns is a rough PRE-place-and-route figure: it sums
   // ballpark cell delays with a fanout-based (log-scaled) net-delay estimate
@@ -280,6 +286,7 @@ Response:
 ```ts
 {
   estimated_delay_ns: number | null;  // null when the design has no comb paths
+  estimated_delay_breakdown?: { launch_ns; logic_ns; net_ns; setup_ns }; // sums to delay
   model: DelayModel;                   // base coefficients used, pre speed-grade
                                        // (so a client can populate an editor)
 }

@@ -121,6 +121,7 @@ export interface Stats {
   // fanout-estimated routing), NOT timing closure. Absent when the design has
   // no combinational paths.
   estimated_delay_ns?: number
+  estimated_delay_breakdown?: DelayBreakdown
 }
 
 export interface DepthSummary {
@@ -161,6 +162,14 @@ export type DelayProfile =
 
 export type SpeedGrade = '-1' | '-2' | '-3'
 
+// Critical-path delay split; the four terms sum to estimated_delay_ns.
+export interface DelayBreakdown {
+  launch_ns: number
+  logic_ns: number
+  net_ns: number
+  setup_ns: number
+}
+
 export interface TimingRequest {
   profile?: DelayProfile // omitted -> the design's synth-time model
   speed_grade?: SpeedGrade // omitted -> -1
@@ -169,6 +178,7 @@ export interface TimingRequest {
 
 export interface TimingResponse {
   estimated_delay_ns: number | null // null when no combinational paths
+  estimated_delay_breakdown?: DelayBreakdown
   model: DelayModel // base coefficients used (pre speed-grade)
 }
 
