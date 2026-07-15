@@ -1,13 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  analysisNeedsRefresh,
-  automaticRetryForFailure,
-  clearAutomaticQueuedSynthesis,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
-  shouldRunAutomaticRetry,
-  supersedeAutomaticRetryGeneration,
   synthesisInput,
 } from './lib/liveAnalysis'
 import { buildSynthesizeRequest } from './lib/synthesize'
@@ -89,27 +84,24 @@ describe('latest-only synthesis queue', () => {
     const running = input('A', 1)
     const newest = input('C', 3)
 
-    expect(queuedSynthesisForRequest(running.key, newest, 'automatic')).toEqual({
-      ...newest,
-      origin: 'automatic',
-    })
+    expect(queuedSynthesisForRequest(running.key, newest)).toEqual(newest)
   })
 
   it('discards a queued edit when the current input reverts to the running input', () => {
     const running = input('A', 1)
     const obsolete = input('B', 2)
-    const queued = queuedSynthesisForRequest(running.key, obsolete, 'automatic')
+    const queued = queuedSynthesisForRequest(running.key, obsolete)
 
     expect(retainQueuedSynthesis(queued, running.revision)).toBeNull()
     expect(retainQueuedSynthesis(queued, obsolete.revision)).toBe(queued)
-    expect(queuedSynthesisForRequest(running.key, running, 'automatic')).toBeNull()
+    expect(queuedSynthesisForRequest(running.key, running)).toBeNull()
   })
 
-  it('discards a queued input when a newer edit is still inside the idle window', () => {
+  it('discards a queued input after a newer edit', () => {
     const inputB = input('B', 2)
     const current = input('C', 3)
-    const queued = queuedSynthesisForRequest('running', inputB, 'automatic')
-    const currentQueue = queuedSynthesisForRequest('running', current, 'automatic')
+    const queued = queuedSynthesisForRequest('running', inputB)
+    const currentQueue = queuedSynthesisForRequest('running', current)
 
     expect(retainQueuedSynthesis(queued, current.revision)).toBeNull()
     expect(retainQueuedSynthesis(currentQueue, current.revision)).toBe(currentQueue)
@@ -131,125 +123,6 @@ describe('latest-only synthesis queue', () => {
       3,
     )
 
-    expect(queuedSynthesisForRequest(running.key, reverted, 'automatic')).toBeNull()
-    expect(analysisNeedsRefresh(reverted.key, running.key, null)).toBe(false)
-  })
-
-  it('pausing clears an automatic queued request but preserves a manual one', () => {
-    const requested = input('B', 2)
-    const automatic = queuedSynthesisForRequest('running', requested, 'automatic')
-    const manual = queuedSynthesisForRequest('running', requested, 'manual')
-
-    expect(clearAutomaticQueuedSynthesis(automatic)).toBeNull()
-    expect(clearAutomaticQueuedSynthesis(manual)).toBe(manual)
-  })
-
-  it('does not let an automatic request downgrade the same manual queue entry', () => {
-    const requested = input('B', 2)
-    const manual = queuedSynthesisForRequest('running', requested, 'manual')
-
-    expect(
-      queuedSynthesisForRequest('running', requested, 'automatic', manual),
-    ).toBe(manual)
-  })
-
-  it('refreshes when an obsolete request is running even if the last design matches', () => {
-    const current = input('A', 3)
-    const obsoleteRunning = input('B', 2)
-
-    expect(
-      analysisNeedsRefresh(current.key, current.key, obsoleteRunning.key),
-    ).toBe(true)
-    expect(analysisNeedsRefresh(current.key, current.key, current.key)).toBe(false)
-  })
-})
-
-describe('automatic synthesis retry', () => {
-  const input = (content: string, revision: number) =>
-    synthesisInput([{ name: 'top.sv', content }], 'top', 'gates', '', revision)
-
-  it('retries only the same stale automatic input after a 503', () => {
-    const failed = input('A', 2)
-    const retry = automaticRetryForFailure(
-      failed,
-      'automatic',
-      503,
-      7_000,
-      failed,
-      true,
-      'older-design',
-      4,
-      4,
-    )
-
-    expect(retry).toEqual({ input: failed, delayMs: 7_000, generation: 4 })
-    expect(shouldRunAutomaticRetry(retry!, failed, true, 'older-design', 4)).toBe(true)
-    expect(
-      automaticRetryForFailure(failed, 'manual', 503, 7_000, failed, true, null, 4, 4),
-    ).toBeNull()
-    expect(
-      automaticRetryForFailure(failed, 'automatic', 500, 7_000, failed, true, null, 4, 4),
-    ).toBeNull()
-  })
-
-  it('uses a conservative bounded fallback when Retry-After is absent', () => {
-    const failed = input('A', 2)
-    expect(
-      automaticRetryForFailure(
-        failed,
-        'automatic',
-        503,
-        undefined,
-        failed,
-        true,
-        null,
-        0,
-        0,
-      )
-        ?.delayMs,
-    ).toBe(5_000)
-  })
-
-  it('rejects retries after edits, replacement, pause, or a current design', () => {
-    const failed = input('A', 2)
-    const retry = { input: failed, delayMs: 5_000, generation: 2 }
-
-    expect(shouldRunAutomaticRetry(retry, input('B', 3), true, null, 2)).toBe(false)
-    expect(shouldRunAutomaticRetry(retry, input('A', 3), true, null, 2)).toBe(false)
-    expect(shouldRunAutomaticRetry(retry, failed, false, null, 2)).toBe(false)
-    expect(shouldRunAutomaticRetry(retry, failed, true, failed.key, 2)).toBe(false)
-  })
-
-  it('a newer manual attempt permanently supersedes a pending automatic retry', () => {
-    const failed = input('A', 2)
-    const pending = automaticRetryForFailure(
-      failed,
-      'automatic',
-      503,
-      5_000,
-      failed,
-      true,
-      null,
-      8,
-      8,
-    )!
-
-    const manualGeneration = supersedeAutomaticRetryGeneration(8)
-    expect(shouldRunAutomaticRetry(pending, failed, true, null, manualGeneration)).toBe(false)
-    for (const terminalStatus of [400, 422, 500, 504, 507]) {
-      expect(
-        automaticRetryForFailure(
-          failed,
-          'manual',
-          terminalStatus,
-          undefined,
-          failed,
-          true,
-          null,
-          manualGeneration,
-          manualGeneration,
-        ),
-      ).toBeNull()
-    }
+    expect(queuedSynthesisForRequest(running.key, reverted)).toBeNull()
   })
 })

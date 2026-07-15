@@ -11,20 +11,13 @@ import {
 import * as api from './api'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
-  analysisNeedsRefresh,
-  automaticRetryForFailure,
-  clearAutomaticQueuedSynthesis,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
-  shouldRunAutomaticRetry,
-  supersedeAutomaticRetryGeneration,
   synthesisInput,
-  type AutomaticSynthesisRetry,
   type QueuedSynthesis,
   type SourceSelection,
   type SynthesisInput,
-  type SynthesisOrigin,
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
 import type { SrcSpan } from './lib/src'
@@ -98,7 +91,6 @@ export type AnalysisState =
 type ResolvedInputIdentity = Pick<SynthesisInput, 'key' | 'revision'>
 
 const MAX_SOURCE_LINES = 200
-const AUTO_SYNTH_DELAY_MS = 3000
 
 export interface Snapshot {
   design_id: string
@@ -186,8 +178,6 @@ export interface Store {
   synthesizing: boolean
   design: SynthesizeResponse | null
   analysisState: AnalysisState
-  autoSynthesize: boolean
-  setAutoSynthesize: (enabled: boolean) => void
   error: { message: string; log?: string; status?: number } | null
   synthesize: () => Promise<void>
 
@@ -250,10 +240,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [synthesizing, setSynthesizing] = useState(false)
   const [design, setDesign] = useState<SynthesizeResponse | null>(null)
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
-  const [autoSynthesize, setAutoSynthesizeState] = useState(true)
   const [error, setError] = useState<Store['error']>(null)
-  const [automaticRetry, setAutomaticRetry] =
-    useState<AutomaticSynthesisRetry | null>(null)
 
   const [activeTab, setActiveTab] = useState<TabId>('overview')
 
@@ -280,8 +267,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const sourceSelectionRef = useRef(sourceSelection)
   sourceSelectionRef.current = sourceSelection
   const sourceSelectionActiveRef = useRef(false)
-  const designInputKeyRef = useRef(designInputKey)
-  designInputKeyRef.current = designInputKey
   const designRef = useRef(design)
   designRef.current = design
   const filesRef = useRef(files)
@@ -294,31 +279,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   extraArgsRef.current = extraArgs
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
-  const autoSynthesizeRef = useRef(autoSynthesize)
-  autoSynthesizeRef.current = autoSynthesize
   const resolvedInputRef = useRef<SynthesisInput | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
-  const retryGenerationRef = useRef(0)
-  const mountedRef = useRef(true)
-
-  const supersedeAutomaticRetry = useCallback(() => {
-    retryGenerationRef.current = supersedeAutomaticRetryGeneration(
-      retryGenerationRef.current,
-    )
-    setAutomaticRetry(null)
-  }, [])
-
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      retryGenerationRef.current = supersedeAutomaticRetryGeneration(
-        retryGenerationRef.current,
-      )
-      mountedRef.current = false
-    }
-  }, [])
 
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
@@ -345,9 +309,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const revision = inputRevisionRef.current + 1
     inputRevisionRef.current = revision
     queuedInputRef.current = null
-    supersedeAutomaticRetry()
     setInputRevision(revision)
-  }, [supersedeAutomaticRetry])
+  }, [])
 
   const resolvedCurrentInput =
     resolvedInputIdentity?.revision === inputRevision
@@ -538,9 +501,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [markInputChanged],
   )
 
-  const requestSynthesis = useCallback(async (origin: SynthesisOrigin) => {
+  const requestSynthesis = useCallback(async () => {
     // Materializing the full request (and JSON-keying source content) happens
-    // only on manual synthesis or after the idle debounce, never per keystroke.
+    // only on manual synthesis, never per keystroke.
     const requested = materializeCurrentInput()
     if (synthesisRunningRef.current) {
       // One bounded slot, always replaced by the newest complete input. A
@@ -548,29 +511,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       queuedInputRef.current = queuedSynthesisForRequest(
         synthesisKeyRef.current,
         requested,
-        origin,
-        queuedInputRef.current,
       )
       return
     }
 
     synthesisRunningRef.current = true
     setSynthesizing(true)
-    let next: QueuedSynthesis | null = { ...requested, origin }
+    let next: QueuedSynthesis | null = requested
     try {
       while (next) {
         const running: QueuedSynthesis = next
         next = null
         queuedInputRef.current = null
         synthesisKeyRef.current = running.key
-        const attemptGeneration = retryGenerationRef.current
         setError(null)
         try {
           const res = await api.synthesize(running.request)
           setDesign(res)
           setDesignInputKey(running.key)
-          designInputKeyRef.current = running.key
-          supersedeAutomaticRetry()
           // A source graph tracks the selected lines across synthesis. Other
           // explicit cones remain stable until the user asks to replace them.
           setConeReq((request) =>
@@ -581,24 +539,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           const err = e as api.ApiRequestError
           setError({ message: err.message, log: err.log, status: err.status })
-          if (
-            running.origin === 'automatic' &&
-            err.status === 503 &&
-            mountedRef.current
-          ) {
-            const retry = automaticRetryForFailure(
-              running,
-              running.origin,
-              err.status,
-              err.retryAfterMs,
-              materializeCurrentInput(),
-              autoSynthesizeRef.current,
-              designInputKeyRef.current,
-              attemptGeneration,
-              retryGenerationRef.current,
-            )
-            if (retry) setAutomaticRetry(retry)
-          }
           // Preserve the last valid design and graph. Their input key remains
           // unchanged, so source cross-probing stays disabled while stale.
         }
@@ -617,84 +557,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [materializeCurrentInput, supersedeAutomaticRetry])
+  }, [materializeCurrentInput])
 
   const synthesize = useCallback(
-    () => {
-      // This synchronous generation change wins even if React has not yet
-      // committed the state clear and an older timer callback is already queued.
-      supersedeAutomaticRetry()
-      return requestSynthesis('manual')
-    },
-    [requestSynthesis, supersedeAutomaticRetry],
+    () => requestSynthesis(),
+    [requestSynthesis],
   )
-
-  useEffect(() => {
-    if (!automaticRetry || !autoSynthesize) return
-    const timer = window.setTimeout(() => {
-      if (!mountedRef.current) return
-      const current = materializeCurrentInput()
-      if (
-        !shouldRunAutomaticRetry(
-          automaticRetry,
-          current,
-          autoSynthesizeRef.current,
-          designInputKeyRef.current,
-          retryGenerationRef.current,
-        )
-      ) {
-        setAutomaticRetry(null)
-        return
-      }
-
-      // Another exact-input automatic attempt already covers this timer. A
-      // manual attempt cannot reach this branch because it synchronously
-      // supersedes the retry generation before entering requestSynthesis.
-      if (
-        synthesisRunningRef.current &&
-        synthesisKeyRef.current === automaticRetry.input.key
-      ) {
-        setAutomaticRetry({ ...automaticRetry })
-        return
-      }
-
-      setAutomaticRetry(null)
-      void requestSynthesis('automatic')
-    }, automaticRetry.delayMs)
-    return () => window.clearTimeout(timer)
-  }, [automaticRetry, autoSynthesize, materializeCurrentInput, requestSynthesis])
-
-  const setAutoSynthesize = useCallback((enabled: boolean) => {
-    autoSynthesizeRef.current = enabled
-    if (!enabled) {
-      queuedInputRef.current = clearAutomaticQueuedSynthesis(queuedInputRef.current)
-      supersedeAutomaticRetry()
-    }
-    setAutoSynthesizeState(enabled)
-  }, [supersedeAutomaticRetry])
-
-  // Source/top/mode/argument/example changes make the prior analysis stale.
-  // Cursor movement is deliberately absent from this dependency list.
-  useEffect(() => {
-    queuedInputRef.current = retainQueuedSynthesis(
-      queuedInputRef.current,
-      inputRevision,
-    )
-    const timer = window.setTimeout(() => {
-      const current = materializeCurrentInput()
-      if (
-        autoSynthesize &&
-        analysisNeedsRefresh(
-          current.key,
-          designInputKeyRef.current,
-          synthesisRunningRef.current ? synthesisKeyRef.current : null,
-        )
-      ) {
-        void requestSynthesis('automatic')
-      }
-    }, AUTO_SYNTH_DELAY_MS)
-    return () => window.clearTimeout(timer)
-  }, [autoSynthesize, inputRevision, materializeCurrentInput, requestSynthesis])
 
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
     setGraphOptionsState((o) => ({ ...o, ...patch }))
@@ -889,8 +757,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesizing,
       design,
       analysisState,
-      autoSynthesize,
-      setAutoSynthesize,
       error,
       synthesize,
       activeTab,
@@ -930,8 +796,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesizing,
       design,
       analysisState,
-      autoSynthesize,
-      setAutoSynthesize,
       error,
       synthesize,
       activeTab,
