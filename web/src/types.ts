@@ -110,6 +110,7 @@ export interface HealthResponse {
 export interface VivadoPart {
   name: string
   family: string
+  speed: string
 }
 
 export interface VivadoAccessResponse {

@@ -288,7 +288,6 @@ a:hover {
   gap: 8px;
   padding: 6px;
   border-radius: 4px;
-  cursor: pointer;
 }
 .flags-menu-row:hover {
   background: var(--bg-2);
@@ -296,10 +295,17 @@ a:hover {
 .flags-menu-row.active {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
-.flags-menu-row > input[type='checkbox'] {
+.flags-menu-toggle {
+  display: flex;
+  flex: 1;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+.flags-menu-toggle > input[type='checkbox'] {
   margin-top: 2px;
   accent-color: var(--accent);
-  pointer-events: none;
 }
 .flags-menu-text {
   flex: 1;
@@ -328,9 +334,13 @@ a:hover {
   color: var(--warn, #d0a215);
 }
 .flags-menu-value {
-  width: 52px;
+  width: 62px;
   padding: 2px 4px;
   align-self: center;
+}
+.flags-menu-choice {
+  width: 132px;
+  max-width: 40%;
 }
 
 /* ---- Vivado owner unlock ---- */

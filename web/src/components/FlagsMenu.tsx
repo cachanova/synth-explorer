@@ -3,35 +3,63 @@ import { flagsForTool, type FlagDef } from '../lib/flagRegistry'
 import { getFlagValue, hasFlag, setFlagValue, toggleFlag } from '../lib/synthFlags'
 import type { Mode, SynthTool } from '../types'
 
-const DEFAULT_VALUES: Record<string, string> = { '-widemux': '5' }
-
-/**
- * Inline number field for a value-taking flag. Local draft state lets the user
- * clear-and-retype without the field unmounting (only non-empty values are
- * committed to the flags string), and it swallows click/keydown so editing the
- * value never toggles the row off.
- */
+/** Inline editor for a value-taking flag. Fixed Vivado choices use a select;
+ * integer flags keep a local draft so the user can clear and retype without
+ * temporarily removing the flag. Editing never toggles the containing row. */
 function ValueField({
+  definition,
   value,
   onCommit,
 }: {
+  definition: Extract<FlagDef, { value: 'int' | 'select' }>
   value: string
   onCommit: (v: string) => void
 }) {
   const [draft, setDraft] = useState(value)
   useEffect(() => setDraft(value), [value])
+
+  if (definition.value === 'select') {
+    return (
+      <select
+        className="flags-menu-value flags-menu-choice"
+        aria-label={`${definition.flag} value`}
+        value={value}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+        onChange={(event) => onCommit(event.target.value)}
+      >
+        {definition.choices.map((choice) => (
+          <option key={choice} value={choice}>
+            {choice}
+          </option>
+        ))}
+      </select>
+    )
+  }
+
+  const isValid = (candidate: string) => {
+    if (!/^-?\d+$/.test(candidate)) return false
+    const parsed = Number(candidate)
+    return (
+      (definition.min === undefined || parsed >= definition.min) &&
+      (definition.max === undefined || parsed <= definition.max)
+    )
+  }
+
   return (
     <input
       className="flags-menu-value"
       type="number"
-      min={2}
+      aria-label={`${definition.flag} value`}
+      min={definition.min}
+      max={definition.max}
       value={draft}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => e.stopPropagation()}
       onBlur={() => setDraft(value)}
       onChange={(e) => {
         setDraft(e.target.value)
-        if (e.target.value !== '') onCommit(e.target.value)
+        if (isValid(e.target.value)) onCommit(e.target.value)
       }}
     />
   )
@@ -95,9 +123,7 @@ export function FlagsMenu({
   const toggle = (def: FlagDef) => {
     const active = isActive(flags, def)
     if (def.value) {
-      onChange(
-        setFlagValue(flags, def.flag, active ? '' : (DEFAULT_VALUES[def.flag] ?? '1')),
-      )
+      onChange(setFlagValue(flags, def.flag, active ? '' : def.defaultValue))
     } else {
       onChange(toggleFlag(flags, def.flag, !active))
     }
@@ -133,29 +159,30 @@ export function FlagsMenu({
                 <div
                   key={def.flag}
                   className={`flags-menu-row${active ? ' active' : ''}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => toggle(def)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      toggle(def)
-                    }
-                  }}
                 >
-                  <input type="checkbox" checked={active} readOnly tabIndex={-1} />
-                  <div className="flags-menu-text">
-                    <div className="flags-menu-head">
-                      <code>{def.flag}</code>
-                      <span className="flags-menu-label">{def.label}</span>
+                  <label className="flags-menu-toggle">
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      aria-label={`Enable ${def.flag}`}
+                      onChange={() => toggle(def)}
+                    />
+                    <div className="flags-menu-text">
+                      <div className="flags-menu-head">
+                        <code>{def.flag}</code>
+                        <span className="flags-menu-label">{def.label}</span>
+                      </div>
+                      <div className="flags-menu-desc">
+                        {def.description}
+                        {def.warn && (
+                          <span className="flags-menu-warn"> ⚠ {def.warn}</span>
+                        )}
+                      </div>
                     </div>
-                    <div className="flags-menu-desc">
-                      {def.description}
-                      {def.warn && <span className="flags-menu-warn"> ⚠ {def.warn}</span>}
-                    </div>
-                  </div>
+                  </label>
                   {def.value && active && (
                     <ValueField
+                      definition={def}
                       value={getFlagValue(flags, def.flag) ?? ''}
                       onCommit={(v) => onChange(setFlagValue(flags, def.flag, v))}
                     />

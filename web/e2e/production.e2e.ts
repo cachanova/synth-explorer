@@ -12,7 +12,7 @@ async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
   return box
 }
 
-test('unlocks every installed Vivado target through a password-manager form', async ({
+test('unlocks Vivado family and speed presets through a password-manager form', async ({
   page,
 }) => {
   const accessKey = 'a'.repeat(64)
@@ -37,9 +37,10 @@ test('unlocks every installed Vivado target through a password-manager form', as
       contentType: 'application/json',
       body: JSON.stringify({
         parts: [
-          { name: 'xc7a35tcpg236-1', family: 'artix7' },
-          { name: 'xcku025-ffva1156-2-e', family: 'kintexu' },
-          { name: 'xczu3eg-sbva484-1-e', family: 'zynquplus' },
+          { name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' },
+          { name: 'xcku025-ffva1156-1-e', family: 'kintexu', speed: '-1' },
+          { name: 'xcku040-ffva1156-2-e', family: 'kintexu', speed: '-2' },
+          { name: 'xczu3eg-sbva484-1-e', family: 'zynquplus', speed: '-1' },
         ],
       }),
     })
@@ -59,11 +60,47 @@ test('unlocks every installed Vivado target through a password-manager form', as
 
   await expect(page.getByLabel('Synth tool')).toHaveValue('vivado')
   await expect(page.getByLabel('Mode')).toHaveCount(0)
-  await expect(page.getByLabel('Target')).toHaveValue('xc7a35tcpg236-1')
-  await expect(page.getByLabel('Target').locator('option')).toHaveCount(3)
+  await expect(page.getByLabel('Family')).toHaveValue('artix7')
+  await expect(page.getByLabel('Family').locator('option')).toHaveCount(3)
+  await expect(page.getByLabel('Speed grade')).toHaveValue('-1')
+  await expect(page.getByLabel('Speed grade')).toHaveAttribute(
+    'title',
+    'Resolved Vivado part: xc7a35tcpg236-1',
+  )
+
+  await page.getByLabel('Family').selectOption('kintexu')
+  await expect(page.getByLabel('Speed grade')).toHaveValue('-1')
+  await expect(page.getByLabel('Speed grade').locator('option')).toHaveCount(2)
+  await expect(page.getByLabel('Speed grade')).toHaveAttribute(
+    'title',
+    'Resolved Vivado part: xcku025-ffva1156-1-e',
+  )
+  await page.getByLabel('Speed grade').selectOption('-2')
+  await expect(page.getByLabel('Speed grade')).toHaveAttribute(
+    'title',
+    'Resolved Vivado part: xcku040-ffva1156-2-e',
+  )
+
   await expect(page.getByText('Flags', { exact: true })).toBeVisible()
   await page.getByTitle('Add or remove synthesis flags for this mode').click()
-  await expect(page.getByText('-retiming', { exact: true })).toBeVisible()
+  await page.getByRole('checkbox', { name: 'Enable -directive' }).check()
+  await expect(page.getByLabel('-directive value')).toHaveValue('default')
+  await page.getByLabel('-directive value').selectOption('PerformanceOptimized')
+  await expect(page.getByLabel('Synthesis flags')).toHaveValue(
+    '-directive PerformanceOptimized',
+  )
+
+  const dspLimit = page.getByRole('checkbox', { name: 'Enable -max_dsp' })
+  await dspLimit.check()
+  await expect(page.getByLabel('-max_dsp value')).toHaveValue('0')
+  await page.getByLabel('-max_dsp value').fill('24')
+  await expect(page.getByLabel('Synthesis flags')).toHaveValue(
+    '-directive PerformanceOptimized -max_dsp 24',
+  )
+  await dspLimit.uncheck()
+  await expect(page.getByLabel('Synthesis flags')).toHaveValue(
+    '-directive PerformanceOptimized',
+  )
 })
 
 test('synthesizes from the webpage with the default Yosys flags', async ({

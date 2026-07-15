@@ -18,6 +18,16 @@ export function Toolbar() {
     }
     return [...groups]
   }, [store.vivadoTargets])
+  const selectedTarget = store.vivadoTargets.find(
+    (part) => part.name === store.vivadoTarget,
+  )
+  const selectedFamily = selectedTarget?.family ?? targetGroups[0]?.[0] ?? ''
+  const familyTargets =
+    targetGroups.find(([family]) => family === selectedFamily)?.[1] ?? []
+  const selectedSpeed = selectedTarget?.speed ?? familyTargets[0]?.speed ?? ''
+  const speedGrades = [...new Set(familyTargets.map((part) => part.speed))].sort(
+    (left, right) => left.localeCompare(right, undefined, { numeric: true }),
+  )
 
   return (
     <div className="toolbar">
@@ -114,20 +124,45 @@ export function Toolbar() {
 
       {store.synthTool === 'vivado' && (
         <label className="field">
-          <span>Target</span>
+          <span>Family</span>
           <select
-            value={store.vivadoTarget}
-            title="Vivado part passed to synth_design -part."
-            onChange={(e) => store.setVivadoTarget(e.target.value)}
+            value={selectedFamily}
+            title="Filter the installed Vivado part catalog by device family."
+            onChange={(event) => {
+              const targets = targetGroups.find(
+                ([family]) => family === event.target.value,
+              )?.[1]
+              const target =
+                targets?.find((part) => part.speed === selectedSpeed) ?? targets?.[0]
+              if (target) store.setVivadoTarget(target.name)
+            }}
           >
-            {targetGroups.map(([family, parts]) => (
-              <optgroup key={family} label={family}>
-                {parts.map((part) => (
-                  <option key={part.name} value={part.name}>
-                    {part.name}
-                  </option>
-                ))}
-              </optgroup>
+            {targetGroups.map(([family]) => (
+              <option key={family} value={family}>
+                {family}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {store.synthTool === 'vivado' && (
+        <label className="field">
+          <span>Speed grade</span>
+          <select
+            value={selectedSpeed}
+            title={`Resolved Vivado part: ${store.vivadoTarget}`}
+            onChange={(event) => {
+              const target = familyTargets.find(
+                (part) => part.speed === event.target.value,
+              )
+              if (target) store.setVivadoTarget(target.name)
+            }}
+          >
+            {speedGrades.map((speed) => (
+              <option key={speed} value={speed}>
+                {speed}
+              </option>
             ))}
           </select>
         </label>
@@ -162,7 +197,7 @@ export function Toolbar() {
           <label className="field grow">
             <span>Synthesis flags</span>
             <input
-              placeholder="Vivado synth_design flags, e.g. -retiming"
+              placeholder="Vivado synth_design flags, e.g. -global_retiming on"
               title="Validated whitespace-separated flags appended to Vivado synth_design. The Flags menu edits this string; you can also type advanced flags directly."
               value={store.vivadoExtraArgs}
               onChange={(e) => store.setVivadoExtraArgs(e.target.value)}

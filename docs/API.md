@@ -44,7 +44,8 @@ authentication and is captured from `get_parts` during server startup.
 {
   parts: {
     name: string;   // full synth_design -part value
-    family: string; // Vivado FAMILY property, used to group the selector
+    family: string; // Vivado FAMILY property
+    speed: string;  // Vivado SPEED property
   }[];
 }
 ```
