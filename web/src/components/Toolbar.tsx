@@ -1,16 +1,23 @@
-import {
-  MODE_LABELS,
-  SYNTH_TOOL_LABELS,
-  VIVADO_TARGETS,
-  XILINX_FAMILY_LABELS,
-} from '../api'
+import { useMemo, useState } from 'react'
+import { MODE_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import { useStore } from '../store'
 import type { Mode, SynthTool, XilinxFamily } from '../types'
 import { FlagsMenu } from './FlagsMenu'
+import { VivadoUnlockDialog } from './VivadoUnlockDialog'
 
 export function Toolbar() {
   const store = useStore()
+  const [unlockOpen, setUnlockOpen] = useState(false)
+  const targetGroups = useMemo(() => {
+    const groups = new Map<string, typeof store.vivadoTargets>()
+    for (const part of store.vivadoTargets) {
+      const existing = groups.get(part.family)
+      if (existing) existing.push(part)
+      else groups.set(part.family, [part])
+    }
+    return [...groups]
+  }, [store.vivadoTargets])
 
   return (
     <div className="toolbar">
@@ -55,13 +62,7 @@ export function Toolbar() {
               store.setSynthTool(tool)
               return
             }
-            const accessKey = window.prompt(
-              'Enter the Vivado owner API key. It stays only in this browser tab’s memory.',
-            )
-            if (!accessKey) return
-            void store.unlockVivado(accessKey).then((unlocked) => {
-              if (unlocked) store.setSynthTool('vivado')
-            })
+            setUnlockOpen(true)
           }}
         >
           {SYNTH_TOOL_LABELS.filter(
@@ -74,23 +75,21 @@ export function Toolbar() {
         </select>
       </label>
 
-      <label className="field">
-        <span>Mode</span>
-        <select
-          value={store.synthTool === 'vivado' ? 'gates' : store.mode}
-          disabled={store.synthTool === 'vivado'}
-          onChange={(e) => store.setMode(e.target.value as Mode)}
-        >
-          {(store.synthTool === 'vivado'
-            ? MODE_LABELS.filter((m) => m.value === 'gates')
-            : MODE_LABELS
-          ).map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      {store.synthTool === 'yosys' && (
+        <label className="field">
+          <span>Mode</span>
+          <select
+            value={store.mode}
+            onChange={(e) => store.setMode(e.target.value as Mode)}
+          >
+            {MODE_LABELS.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       {store.synthTool === 'yosys' && store.mode === 'xilinx' && (
         <label className="field">
@@ -121,10 +120,14 @@ export function Toolbar() {
             title="Vivado part passed to synth_design -part."
             onChange={(e) => store.setVivadoTarget(e.target.value)}
           >
-            {VIVADO_TARGETS.map((target) => (
-              <option key={target.value} value={target.value}>
-                {target.label}
-              </option>
+            {targetGroups.map(([family, parts]) => (
+              <optgroup key={family} label={family}>
+                {parts.map((part) => (
+                  <option key={part.name} value={part.name}>
+                    {part.name}
+                  </option>
+                ))}
+              </optgroup>
             ))}
           </select>
         </label>
@@ -133,6 +136,7 @@ export function Toolbar() {
       {store.synthTool === 'yosys' ? (
         <>
           <FlagsMenu
+            tool="yosys"
             mode={store.mode}
             flags={store.extraArgs}
             onChange={(flags) => store.setExtraArgs(flags)}
@@ -148,15 +152,23 @@ export function Toolbar() {
           </label>
         </>
       ) : (
-        <label className="field grow">
-          <span>Synthesis flags</span>
-          <input
-            placeholder="Vivado synth_design flags, e.g. -retiming"
-            title="Validated whitespace-separated flags appended to Vivado synth_design."
-            value={store.vivadoExtraArgs}
-            onChange={(e) => store.setVivadoExtraArgs(e.target.value)}
+        <>
+          <FlagsMenu
+            tool="vivado"
+            mode="gates"
+            flags={store.vivadoExtraArgs}
+            onChange={(flags) => store.setVivadoExtraArgs(flags)}
           />
-        </label>
+          <label className="field grow">
+            <span>Synthesis flags</span>
+            <input
+              placeholder="Vivado synth_design flags, e.g. -retiming"
+              title="Validated whitespace-separated flags appended to Vivado synth_design. The Flags menu edits this string; you can also type advanced flags directly."
+              value={store.vivadoExtraArgs}
+              onChange={(e) => store.setVivadoExtraArgs(e.target.value)}
+            />
+          </label>
+        </>
       )}
 
       <button
@@ -173,6 +185,15 @@ export function Toolbar() {
           'Synthesize'
         )}
       </button>
+      <VivadoUnlockDialog
+        open={unlockOpen}
+        onClose={() => setUnlockOpen(false)}
+        onUnlock={async (accessKey) => {
+          const unlocked = await store.unlockVivado(accessKey)
+          if (unlocked) store.setSynthTool('vivado')
+          return unlocked
+        }}
+      />
     </div>
   )
 }

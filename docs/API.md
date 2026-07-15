@@ -35,8 +35,19 @@ fails closed when the digest is missing or invalid.
 Verifies the owner API key before the web client enables Vivado for the current
 browser tab. Send the 256-bit hexadecimal key in
 `Authorization: Bearer <key>`. The key is hashed by the server and compared in
-constant time with the configured SHA-256 digest. Success returns `204`; a
-missing or invalid key returns `401` with a `WWW-Authenticate` challenge.
+constant time with the configured SHA-256 digest. Success returns the installed
+Vivado part catalog; a missing or invalid key returns `401` with a
+`WWW-Authenticate` challenge. The catalog is disclosed only after owner
+authentication and is captured from `get_parts` during server startup.
+
+```ts
+{
+  parts: {
+    name: string;   // full synth_design -part value
+    family: string; // Vivado FAMILY property, used to group the selector
+  }[];
+}
+```
 
 ## Shared shapes
 
@@ -116,12 +127,14 @@ Retime controls simply edit that flags string.
 split on whitespace and every token must match
 `^[A-Za-z0-9_+=.,:-]+$`. Supported flags are mode-specific, and invalid or
 conflicting combinations return a synthesis error with the Yosys log.
-The Vivado tool initially supports `gates` mode and the fixed free-tier Artix-7
-part `xc7a35tcpg236-1`; its flags are appended to `synth_design`. A deployment
-without a configured Vivado backend returns `503` before scheduling synthesis.
-Vivado requests also require the same owner bearer key used by
-`/api/vivado/access`; unauthorized requests return `401` before cache lookup or
-tool execution. Yosys requests remain public and require no authorization.
+The Vivado tool uses `gates` mode and accepts any target in the deployment's
+startup `get_parts` catalog; its flags are appended to `synth_design`. Targets
+outside that allowlist return `422` before cache lookup or tool execution. A
+deployment without a configured Vivado backend returns `503` before scheduling
+synthesis. Vivado requests also require the same owner bearer key used by
+`/api/vivado/access`; unauthorized requests return `401` before catalog checks,
+cache lookup, or tool execution. Yosys requests remain public and require no
+authorization.
 
 Response `200`:
 

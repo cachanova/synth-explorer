@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { flagsForMode, type FlagDef } from '../lib/flagRegistry'
+import { flagsForTool, type FlagDef } from '../lib/flagRegistry'
 import { getFlagValue, hasFlag, setFlagValue, toggleFlag } from '../lib/synthFlags'
-import type { Mode } from '../types'
+import type { Mode, SynthTool } from '../types'
 
 const DEFAULT_VALUES: Record<string, string> = { '-widemux': '5' }
 
@@ -47,10 +47,12 @@ function isActive(flags: string, def: FlagDef): boolean {
  * truth and reflects everything selected here.
  */
 export function FlagsMenu({
+  tool,
   mode,
   flags,
   onChange,
 }: {
+  tool: SynthTool
   mode: Mode
   flags: string
   onChange: (flags: string) => void
@@ -59,7 +61,7 @@ export function FlagsMenu({
   const [query, setQuery] = useState('')
   const ref = useRef<HTMLDivElement | null>(null)
 
-  const defs = flagsForMode(mode)
+  const defs = flagsForTool(tool, mode)
   const activeCount = useMemo(
     () => defs.filter((d) => isActive(flags, d)).length,
     [defs, flags],

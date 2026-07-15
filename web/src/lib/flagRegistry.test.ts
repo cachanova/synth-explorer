@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { flagsForMode, flagsForModeChange, stripInvalidFlags } from './flagRegistry'
+import {
+  flagsForMode,
+  flagsForModeChange,
+  flagsForTool,
+  stripInvalidFlags,
+} from './flagRegistry'
 
 describe('flagRegistry', () => {
   it('exposes per-mode flags and none for rtl', () => {
@@ -8,6 +13,16 @@ describe('flagRegistry', () => {
     // ecp5 uses -noccu2, not -nocarry
     expect(flagsForMode('ecp5').some((d) => d.flag === '-nocarry')).toBe(false)
     expect(flagsForMode('rtl')).toEqual([])
+  })
+
+  it('exposes curated Vivado synth_design flags independently of Yosys mode', () => {
+    expect(flagsForTool('vivado', 'gates').map((d) => d.flag)).toContain(
+      '-retiming',
+    )
+    expect(flagsForTool('vivado', 'gates').map((d) => d.flag)).toContain(
+      '-no_srlextract',
+    )
+    expect(flagsForTool('yosys', 'gates')).toEqual(flagsForMode('gates'))
   })
 
   it('strips flags invalid for the new mode, keeping shared and free-form ones', () => {

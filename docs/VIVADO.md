@@ -2,8 +2,9 @@
 
 Synth Explorer can optionally run AMD Vivado, export the synthesized structural
 Verilog, and normalize it to the same Yosys JSON contract used by every other
-analysis path. The first supported target is the BASIC-tier Artix-7 part
-`xc7a35tcpg236-1`.
+analysis path. At startup the server asks Vivado for its complete installed part
+catalog. After owner authentication, every installed part is available in the
+web target selector and enforced as a server-side allowlist.
 
 Vivado is never copied into the application image. A deployment enables the
 tool by mounting an administrator-provisioned installation and license, then
@@ -79,12 +80,22 @@ starting Compose. It generates a separate ephemeral key for the deployment's
 real Vivado smoke test, passes only that key's digest to the container, and
 discards the raw smoke key when the deployment process exits.
 
-The browser asks for the owner key when Vivado is selected. The raw key remains
-only in that tab's memory, is transmitted over HTTPS in the Authorization
-header, and must be entered again after a reload. The server hashes the supplied
-key and compares the digest in constant time; it never stores or logs the raw
-key. Someone who obtains the host-side digest cannot submit that digest as the
-key because it is hashed again before comparison.
+The browser uses a standard single-password form when Vivado is selected, so
+password managers can save and autofill the API key without a username. The raw
+key remains only in that tab's memory, is transmitted over HTTPS in the
+Authorization header,
+and must be entered again after a reload unless the password manager fills it.
+The server hashes the supplied key and compares the digest in constant time; it
+never stores or logs the raw key. Someone who obtains the host-side digest
+cannot submit that digest as the key because it is hashed again before
+comparison.
+
+Successful authentication returns the catalog captured from Vivado `get_parts`
+at startup. The target dropdown groups all returned parts by Vivado's `FAMILY`
+property. Synthesis rejects a target that is not in that startup catalog before
+cache lookup or execution. The UI also provides a curated multi-select for
+common `synth_design` switches; the adjacent free-form field remains available
+for advanced validated flags.
 
 On Hetzner, `/mnt/synth-explorer-vivado` should be a real attached Cloud Volume,
 not a Docker named volume (which otherwise consumes the server's root disk).

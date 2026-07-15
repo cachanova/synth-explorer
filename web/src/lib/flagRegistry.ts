@@ -1,4 +1,4 @@
-import type { Mode } from '../types'
+import type { Mode, SynthTool } from '../types'
 import { stripFlags, toggleFlag } from './synthFlags'
 
 export interface FlagDef {
@@ -63,6 +63,40 @@ const ECP5: FlagDef[] = [
   { flag: '-asyncprld', label: 'Async PRLD ALDFF', description: 'Async PRLD mode for ALDFF (experimental).' },
 ]
 
+const VIVADO: FlagDef[] = [
+  {
+    flag: '-retiming',
+    label: 'Register retiming',
+    description: 'Move registers across combinational logic to improve timing.',
+  },
+  {
+    flag: '-no_lc',
+    label: 'No LUT combining',
+    description: 'Disable LUT combining during synthesis.',
+  },
+  {
+    flag: '-lut_cascade',
+    label: 'LUT cascading',
+    description: 'Allow LUT cascade optimization.',
+  },
+  {
+    flag: '-keep_equivalent_registers',
+    label: 'Keep equivalent registers',
+    description: 'Preserve registers with equivalent behavior instead of merging them.',
+  },
+  {
+    flag: '-no_srlextract',
+    label: 'No SRL extraction',
+    description: 'Keep shift registers as flip-flops instead of SRL primitives.',
+  },
+  {
+    flag: '-no_timing_driven',
+    label: 'No timing-driven synthesis',
+    description: 'Disable timing-driven optimizations.',
+    warn: 'Usually produces worse timing results.',
+  },
+]
+
 export const FLAG_REGISTRY: Partial<Record<Mode, FlagDef[]>> = {
   gates: GENERIC,
   lut4: GENERIC,
@@ -75,6 +109,10 @@ export const FLAG_REGISTRY: Partial<Record<Mode, FlagDef[]>> = {
 
 export function flagsForMode(mode: Mode): FlagDef[] {
   return FLAG_REGISTRY[mode] ?? []
+}
+
+export function flagsForTool(tool: SynthTool, mode: Mode): FlagDef[] {
+  return tool === 'vivado' ? VIVADO : flagsForMode(mode)
 }
 
 /** `-family` is value-taking and Xilinx-only; the menu never lists it (the Target

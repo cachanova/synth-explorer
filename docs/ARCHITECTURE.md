@@ -35,7 +35,7 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   JSON netlist. The Vivado path runs `synth_design`, exports structural
   Verilog, then uses a read-only Yosys pass to normalize that netlist into the
   same parser contract. Deployments only advertise Vivado when `VIVADO_BIN`
-  passes startup preflight.
+  passes startup preflight and returns a non-empty installed part catalog.
 - No database. Designs live in an in-memory store keyed by a content hash of
   (sources, tool, mode, target, args); re-synthesizing identical input is a
   cache hit.
@@ -52,10 +52,12 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
 | `ecp5` | `synth_ecp5 -top <top> -flatten` | `LUT4`, `CCU2C`, `TRELLIS_FF` |
 | `xilinx` | `synth_xilinx -top <top> -flatten` | `LUT1-6`, `CARRY4`, `FD?E` |
 
-Vivado is a separate synthesis tool, not a mode. Its first supported combination
-is `tool=vivado`, `mode=gates`, target `xc7a35tcpg236-1`; it runs
-`synth_design` and structural-Verilog normalization to produce `LUT1-6`,
-`LUT6_2`, `CARRY4`, and `FD?E` cells.
+Vivado is a separate synthesis tool, not a mode. It uses `tool=vivado` and the
+API-compatible `mode=gates` value while the webpage hides the Mode control. Any
+part returned by the deployment's startup `get_parts` catalog can be selected;
+the server checks that allowlist before scheduling `synth_design`. Structural
+Verilog normalization produces device-appropriate primitives such as LUTs,
+carry chains, and flip-flops.
 
 - Sources are written to a temp dir; the script is built programmatically
   (never shell-interpolated) as `read_verilog -sv <files>; <mode script>;

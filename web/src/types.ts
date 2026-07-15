@@ -107,6 +107,15 @@ export interface HealthResponse {
   vivado_access_protected?: boolean
 }
 
+export interface VivadoPart {
+  name: string
+  family: string
+}
+
+export interface VivadoAccessResponse {
+  parts: VivadoPart[]
+}
+
 export interface Stats {
   num_cells: number
   cells_by_type: Record<string, number>

@@ -30,6 +30,7 @@ import type {
   SynthTool,
   SynthesizeResponse,
   TimingPath,
+  VivadoPart,
 } from './types'
 
 export type TabId =
@@ -165,6 +166,7 @@ export interface Store {
   mode: Mode
   extraArgs: string
   vivadoTarget: string
+  vivadoTargets: VivadoPart[]
   vivadoExtraArgs: string
   vivadoAvailable: boolean
   vivadoUnlocked: boolean
@@ -244,6 +246,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<Mode>('gates')
   const [extraArgs, setExtraArgsState] = useState('')
   const [vivadoTarget, setVivadoTargetState] = useState('xc7a35tcpg236-1')
+  const [vivadoTargets, setVivadoTargets] = useState<VivadoPart[]>([])
   const [vivadoExtraArgs, setVivadoExtraArgsState] = useState('')
   const [vivadoAvailable, setVivadoAvailable] = useState(false)
   const [vivadoUnlocked, setVivadoUnlocked] = useState(false)
@@ -518,7 +521,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return false
     }
     try {
-      await api.unlockVivado(normalized)
+      const response = await api.unlockVivado(normalized)
+      if (response.parts.length === 0) {
+        throw new api.ApiRequestError(
+          'Vivado did not report any installed target devices',
+          503,
+        )
+      }
+      setVivadoTargets(response.parts)
+      if (!response.parts.some((part) => part.name === vivadoTargetRef.current)) {
+        const target =
+          response.parts.find((part) => part.name === 'xc7a35tcpg236-1')?.name ??
+          response.parts[0].name
+        vivadoTargetRef.current = target
+        setVivadoTargetState(target)
+      }
       vivadoAccessKeyRef.current = normalized
       setVivadoUnlocked(true)
       setError(null)
@@ -843,6 +860,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mode,
       extraArgs,
       vivadoTarget,
+      vivadoTargets,
       vivadoExtraArgs,
       vivadoAvailable,
       vivadoUnlocked,
@@ -891,6 +909,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       mode,
       extraArgs,
       vivadoTarget,
+      vivadoTargets,
       vivadoExtraArgs,
       vivadoAvailable,
       vivadoUnlocked,
