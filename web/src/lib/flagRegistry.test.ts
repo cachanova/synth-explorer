@@ -58,17 +58,23 @@ describe('flagRegistry', () => {
   it('applies each registry defaultOn flag on mode change, visibly', () => {
     // Defaults are ordinary flags in the visible string, never injected
     // server-side — the user can see and remove them.
-    expect(flagsForModeChange('', 'xilinx')).toBe('-nowidelut -noiopad')
+    expect(flagsForModeChange('', 'xilinx')).toBe(
+      '-narrowcarry 8 -nowidelut -noiopad',
+    )
     expect(flagsForModeChange('-nocarry', 'xilinx')).toBe(
-      '-nocarry -nowidelut -noiopad',
+      '-nocarry -narrowcarry 8 -nowidelut -noiopad',
+    )
+    // A user-tuned value survives the mode-change default pass.
+    expect(flagsForModeChange('-narrowcarry 4', 'xilinx')).toBe(
+      '-narrowcarry 4 -nowidelut -noiopad',
     )
     // ECP5 defaults only -noiopad: -nowidelut is Xilinx-measured evidence.
     expect(flagsForModeChange('', 'ecp5')).toBe('-noiopad')
     // Leaving a vendor mode drops its defaults with the rest of its flags.
-    expect(flagsForModeChange('-nowidelut -noiopad', 'gates')).toBe('')
+    expect(flagsForModeChange('-narrowcarry 8 -nowidelut -noiopad', 'gates')).toBe('')
     // Already-present defaults are not duplicated.
-    expect(flagsForModeChange('-nowidelut -noiopad', 'xilinx')).toBe(
-      '-nowidelut -noiopad',
+    expect(flagsForModeChange('-narrowcarry 8 -nowidelut -noiopad', 'xilinx')).toBe(
+      '-narrowcarry 8 -nowidelut -noiopad',
     )
   })
 })
