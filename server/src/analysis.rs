@@ -2400,19 +2400,46 @@ fn compute_depths(
         }
     }
 
-    // Worst arrival across every combinational node, plus that node's output
-    // net and the capturing register's setup — the estimated critical path.
+    // Worst arrival at a data sink, plus the driver's output net and the
+    // capturing register's setup — the estimated critical path. Every timing
+    // path ends at a data sink; scoring the sinks rather than every node keeps
+    // the clock tree and dangling logic out of the estimate.
     let mut best_arrival: Option<f64> = None;
     let mut best_arrival_bd: Option<DelayBreakdownPs> = None;
-    for node in &graph.nodes {
-        if depth[node.id as usize].is_none() {
+    for edge in &graph.edges {
+        if !is_data_sink_edge(graph, edge) || loop_set.contains(&edge.from) {
             continue;
         }
-        let net = model.net_delay_ps(fanout_of(graph, node.id));
-        let arrival = node_delay[node.id as usize] + net;
+        let from = edge.from;
+        let (base_delay, base_bd) =
+            if is_depth_node(graph, from) && is_depth_output_edge(graph, edge) {
+                // Unreached (or clock-network) driver: no data arrival to score.
+                if depth[from as usize].is_none() {
+                    continue;
+                }
+                (node_delay[from as usize], node_breakdown[from as usize])
+            } else if graph.nodes[from as usize].kind == NodeKind::Const {
+                // A constant tied to a data pin is not a timing path.
+                continue;
+            } else {
+                // A register drives the sink directly: it launches its own path
+                // (clk-to-Q) with zero logic levels. A top-level input starts at
+                // zero. Without this a purely register-to-register design — no
+                // combinational cells at all — would report no estimate.
+                let launch = model.launch_ps(graph.nodes[from as usize].seq);
+                (
+                    launch,
+                    DelayBreakdownPs {
+                        launch,
+                        ..Default::default()
+                    },
+                )
+            };
+        let net = model.net_delay_ps(fanout_of(graph, from));
+        let arrival = base_delay + net;
         if best_arrival.is_none_or(|current| arrival > current) {
             best_arrival = Some(arrival);
-            let mut bd = node_breakdown[node.id as usize];
+            let mut bd = base_bd;
             bd.net += net;
             best_arrival_bd = Some(bd);
         }
@@ -2454,7 +2481,52 @@ fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
 }
 
 fn is_depth_node(graph: &Graph, id: NodeId) -> bool {
+    // The clock network reaches nothing but register clock pins. It is not
+    // data, so it carries neither logical depth nor a data arrival time.
+    if graph.is_clock_network(id) {
+        return false;
+    }
     graph.is_comb(id) || is_addressable_sequential_node(graph, id)
+}
+
+/// Whether an edge lands on a sink that *closes* a timing path: a storage
+/// cell's data pin (which imposes setup) or a top-level output port.
+///
+/// Combinational fanout does not close a path — it continues into the next
+/// cell, which is scored on its own. Neither does a control pin, matching the
+/// endpoints the rest of the analysis reports (see `endpoint_data_edges`).
+/// Without this test every combinational node is an endpoint "just because it
+/// exists", which is what charges a register setup onto a clock buffer.
+fn is_data_sink_edge(graph: &Graph, edge: &Edge) -> bool {
+    if edge.control {
+        return false;
+    }
+    let Some(sink) = graph.nodes.get(edge.to as usize) else {
+        return false;
+    };
+    match sink.kind {
+        NodeKind::PortBit => {
+            matches!(
+                sink.port_dir,
+                Some(PortDirection::Output | PortDirection::Inout)
+            )
+            // A directly-registered output is reported as an alias of the
+            // register group rather than as an endpoint of its own (see
+            // `discover_endpoints`), so it closes no path here either — the
+            // driving register's own `D` endpoint already carries its timing.
+            // Scoring it as well would put a figure in the overview that no
+            // reported path can explain.
+            && direct_register_driver(graph, sink.id).is_none()
+        }
+        // An addressable sequential's `A*` select pins feed its output
+        // combinationally, so they continue the path rather than ending it.
+        NodeKind::Cell => {
+            sink.seq
+                && (!is_addressable_sequential_node(graph, edge.to)
+                    || !is_depth_input_edge(graph, edge))
+        }
+        NodeKind::Const => false,
+    }
 }
 
 fn is_depth_input_edge(graph: &Graph, edge: &Edge) -> bool {
@@ -3721,6 +3793,96 @@ mod tests {
         assert!(est > 0.3 && est < 30.0, "implausible estimate: {est} ns");
     }
 
+    /// The single node of `cell_type` in a fixture, by cell name.
+    fn cell_named<'a>(graph: &'a Graph, name: &str) -> &'a Node {
+        graph
+            .nodes
+            .iter()
+            .find(|node| node.name == name)
+            .unwrap_or_else(|| panic!("fixture has a cell named {name}"))
+    }
+
+    #[test]
+    fn clock_distribution_is_not_a_data_path() {
+        // `synth_xilinx` defaults emit clk -> IBUF -> BUFG -> every FDRE's C
+        // pin. Walked as ordinary combinational logic that chain charges a cell
+        // delay per buffer and then a register setup, so a shallow sequential
+        // design reports its own clock tree as the critical path.
+        let (graph, analysis) = fixture("pipe_clock_tree_xilinx.json");
+
+        // The clock buffer and the IBUF feeding it carry a clock, not data.
+        let bufg = cell_named(&graph, "$auto$clkbufmap.cc:261:execute$1720");
+        assert_eq!(bufg.cell_type.as_deref(), Some("BUFG"));
+        assert!(graph.is_clock_network(bufg.id));
+        assert!(graph.is_clock_network(cell_named(&graph, "$iopadmap$pipe.clk").id));
+
+        // An IBUF on a *data* port stays a data-path node — the rule is about
+        // where a signal goes, not which primitive drives it. `en` and `rst`
+        // land on control pins (CE/R) but are still real signals, not clocks.
+        for data_port in [
+            "$iopadmap$pipe.data_in",
+            "$iopadmap$pipe.data_in_7",
+            "$iopadmap$pipe.en",
+            "$iopadmap$pipe.rst",
+        ] {
+            let node = cell_named(&graph, data_port);
+            assert!(
+                !graph.is_clock_network(node.id),
+                "{data_port} is not part of the clock network",
+            );
+        }
+
+        let model = DelayModel::series7();
+        let est = analysis.estimate_timing(&graph, &model);
+        let bd = est.breakdown.expect("a registered design has a breakdown");
+        // The reported path is a real FF->FF hop: a register launches it
+        // (clk-to-Q) and no logic sits between the two registers. The bug
+        // reported launch=0 with logic=2x the buffer delay (IBUF + BUFG).
+        assert_eq!(bd.launch_ns, model.ff_clk_to_q_ps / 1000.0);
+        assert_eq!(
+            bd.logic_ns, 0.0,
+            "no clock buffer delay is on the data path"
+        );
+        assert_eq!(bd.setup_ns, model.ff_setup_ps / 1000.0);
+        let delay = est.delay_ns.expect("a registered design has an estimate");
+        assert!(
+            (delay - 0.850).abs() < 1e-9,
+            "clk-to-Q + one route + setup, not the 1.50 ns clock tree: {delay}",
+        );
+    }
+
+    #[test]
+    fn register_to_register_design_is_a_timing_path() {
+        // Nothing but 32 FDREs (`-noiopad -noclkbuf`): zero combinational
+        // cells. The DP only walks combinational nodes, so this design used to
+        // produce no estimate at all where a vendor tool reports a real
+        // clk-to-Q + route + setup number. A direct register->register
+        // connection is a timing path with zero logic levels.
+        let (graph, analysis) = fixture("pipe_registers_only_xilinx.json");
+        assert!(
+            !graph.nodes.iter().any(|node| graph.is_comb(node.id)),
+            "fixture is registers only",
+        );
+
+        let model = DelayModel::series7();
+        let est = analysis.estimate_timing(&graph, &model);
+        let delay = est
+            .delay_ns
+            .expect("a register-to-register design has an estimate");
+        let bd = est.breakdown.expect("and a breakdown");
+        assert_eq!(bd.launch_ns, model.ff_clk_to_q_ps / 1000.0);
+        assert_eq!(bd.logic_ns, 0.0, "a direct FF->FF hop has no logic levels");
+        assert_eq!(bd.net_ns, model.net_delay_ps(1) / 1000.0);
+        assert_eq!(bd.setup_ns, model.ff_setup_ps / 1000.0);
+        assert!(
+            (delay - 0.850).abs() < 1e-9,
+            "launch + net + setup: {delay}"
+        );
+        // The overview figure agrees with the stats the API serves.
+        assert_eq!(analysis.stats.estimated_delay_ns, Some(delay));
+        assert_eq!(analysis.stats.max_depth, 0, "no logic levels");
+    }
+
     #[test]
     fn paths_carry_a_per_path_delay_matching_the_overview_worst() {
         let (graph, analysis) = fixture("reg_mux_rtl.json");
@@ -4409,6 +4571,7 @@ mod tests {
             cell_info: HashMap::new(),
             blackboxes: Vec::new(),
             signal_fanout: HashMap::new(),
+            clock_network: Vec::new(),
         }
     }
 
@@ -4501,6 +4664,7 @@ mod tests {
             cell_info,
             blackboxes: Vec::new(),
             signal_fanout: HashMap::new(),
+            clock_network: Vec::new(),
         }
     }
 
@@ -4833,6 +4997,7 @@ mod tests {
             cell_info: HashMap::new(),
             blackboxes: Vec::new(),
             signal_fanout: HashMap::new(),
+            clock_network: Vec::new(),
         }
     }
 
