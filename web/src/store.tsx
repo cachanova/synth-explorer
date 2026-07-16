@@ -118,7 +118,7 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   maxNodes: DEFAULT_GRAPH_MAX_NODES,
   hideControl: true,
   hideConst: true,
-  focus: true,
+  focus: false,
   groupVectors: true,
 }
 

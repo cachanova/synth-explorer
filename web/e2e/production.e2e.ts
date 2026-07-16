@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page, type Request } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
   const box = await divider.boundingBox()
@@ -402,7 +402,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await expect(schematicTab).toHaveAttribute('aria-selected', 'true')
 })
 
-test('Focus toggles a stable relevant overlay without refetching or refitting', async ({
+test('non-focus selections preserve the full layout and Focus renders the subset', async ({
   page,
 }) => {
   await page.goto('/')
@@ -433,106 +433,92 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
     if (request.url().includes('/netlist?')) netlistRequests += 1
   })
 
-  // Select the timeout counter update, whose relevant graph includes the
-  // counter register while the context projection includes nearby controller
-  // logic.
-  await page
-    .locator('.cm-line', { hasText: 'wait_count <= wait_count + 1\'b1;' })
-    .click()
-  const focusedResponse = page.waitForResponse((response) =>
-    response.url().includes('/line-cone?'),
+  const fullResponse = page.waitForResponse((response) =>
+    response.url().includes('/netlist?'),
   )
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
-  expect((await focusedResponse).ok()).toBe(true)
+  const resolvedFullResponse = await fullResponse
+  expect(resolvedFullResponse.ok()).toBe(true)
+  expect(new URL(resolvedFullResponse.url()).searchParams.get('around')).toBeNull()
 
   const focus = page.getByLabel('Focus')
-  await expect(focus).toBeChecked()
+  await expect(focus).not.toBeChecked()
+  await expect(focus).toBeDisabled()
   await expect(page.locator('.graph-count')).toBeVisible()
-  const focusedNodeCount = await page.locator('.g-node-body').count()
-  expect(focusedNodeCount).toBeGreaterThan(0)
-  expect(lineConeRequests).toBe(1)
-  expect(netlistRequests).toBe(0)
-  expect(
-    await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
-  ).toBeGreaterThan(0)
+  const fullNodes = page.locator('.g-node-body')
+  const fullNodeIds = await fullNodes.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')),
+  )
+  expect(fullNodeIds.length).toBeGreaterThan(0)
+  expect(lineConeRequests).toBe(0)
+  expect(netlistRequests).toBe(1)
 
   const stage = page.locator('.graph-stage')
   const viewport = stage.locator('svg > g').first()
-  const retainedNode = page.locator('.g-node-body').first()
+  const retainedNode = fullNodes.first()
   await page.getByTitle('Zoom in').click()
-  const userTransform = await viewport.getAttribute('transform')
-  const retainedBox = await retainedNode.boundingBox()
-  expect(retainedBox).not.toBeNull()
-  const viewportScale = (transform: string | null) =>
-    Number(/scale\(([^)]+)\)/.exec(transform ?? '')?.[1])
+  const fullTransform = await viewport.getAttribute('transform')
+  const retainedNodeTransform = await retainedNode.getAttribute('transform')
+  expect(retainedNodeTransform).toMatch(/^translate\(/)
 
-  const contextResponse = page.waitForResponse((response) =>
-    response.url().includes('/netlist?'),
+  // A source selection fetches relevance, but the full graph and its viewport
+  // remain byte-for-byte stable while Focus is off.
+  const firstSelectionResponse = page.waitForResponse((response) =>
+    response.url().includes('/line-cone?'),
   )
-  await focus.uncheck()
-  const resolvedContextResponse = await contextResponse
-  expect(resolvedContextResponse.ok()).toBe(true)
-  const contextParams = new URL(resolvedContextResponse.url()).searchParams
-  expect(contextParams.get('hide_control')).toBe('true')
-  expect(contextParams.get('hide_const')).toBe('true')
-  expect(contextParams.get('around')).toMatch(/^\d+(,\d+)*$/)
+  await page
+    .locator('.cm-line', { hasText: 'wait_count <= wait_count + 1\'b1;' })
+    .click()
+  expect((await firstSelectionResponse).ok()).toBe(true)
+  await expect(focus).toBeEnabled()
+  await expect(focus).not.toBeChecked()
+  await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+  expect(
+    await fullNodes.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-graph-node-id')),
+    ),
+  ).toEqual(fullNodeIds)
+  await expect(viewport).toHaveAttribute('transform', fullTransform ?? '')
+  await expect(retainedNode).toHaveAttribute('transform', retainedNodeTransform ?? '')
+  expect(lineConeRequests).toBe(1)
+  expect(netlistRequests).toBe(1)
+
+  // A different selection changes only the relevance/highlight overlay.
+  const secondSelectionResponse = page.waitForResponse((response) =>
+    response.url().includes('/line-cone?'),
+  )
+  await page.locator('.cm-line', { hasText: "request_valid = 1'b1;" }).click()
+  expect((await secondSelectionResponse).ok()).toBe(true)
+  expect(
+    await fullNodes.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-graph-node-id')),
+    ),
+  ).toEqual(fullNodeIds)
+  await expect(viewport).toHaveAttribute('transform', fullTransform ?? '')
+  await expect(retainedNode).toHaveAttribute('transform', retainedNodeTransform ?? '')
+  expect(lineConeRequests).toBe(2)
+  expect(netlistRequests).toBe(1)
+
+  // Turning Focus on after a selection re-lays out only the relevant subset.
+  await focus.check()
   await expect
     .poll(async () => page.locator('.g-node-body').count())
-    .toBeGreaterThan(focusedNodeCount)
-  const laidOutNodeCount = await page.locator('.g-node-body').count()
-  await expect(focus).not.toBeChecked()
-  expect(lineConeRequests).toBe(1)
+    .toBeLessThan(fullNodeIds.length)
+  const focusedNodeCount = await page.locator('.g-node-body').count()
+  expect(focusedNodeCount).toBeGreaterThan(0)
+  expect(lineConeRequests).toBe(2)
   expect(netlistRequests).toBe(1)
 
-  const contextNodes = page.locator('.g-node-body[data-relevant="0"]')
-  const relevantNodes = page.locator('.g-node-body[data-relevant="1"]')
-  const contextEdges = page.locator('.g-edge-wrap[data-relevant="0"]')
-  expect(await contextNodes.count()).toBeGreaterThan(0)
-  expect(await contextEdges.count()).toBeGreaterThan(0)
-  expect(await relevantNodes.count()).toBe(focusedNodeCount)
-  await expect(contextNodes.first()).toHaveCSS('opacity', '0.25')
-  await expect(contextEdges.first()).toHaveCSS('opacity', '0.25')
-  expect(await page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
-  expect(await page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
-  const stabilizedBox = await retainedNode.boundingBox()
-  const stabilizedTransform = await viewport.getAttribute('transform')
-  expect(Math.abs((stabilizedBox?.x ?? 0) - retainedBox!.x)).toBeLessThan(1)
-  expect(Math.abs((stabilizedBox?.y ?? 0) - retainedBox!.y)).toBeLessThan(1)
-  expect(viewportScale(stabilizedTransform)).toBe(viewportScale(userTransform))
-
-  await focus.check()
-  await expect(contextNodes.first()).toHaveCSS('visibility', 'hidden')
-  await expect(contextEdges.first()).toHaveCSS('visibility', 'hidden')
-  expect(await page.locator('.g-node-body').count()).toBe(laidOutNodeCount)
-  expect(lineConeRequests).toBe(1)
-  expect(netlistRequests).toBe(1)
-  await expect(viewport).toHaveAttribute('transform', stabilizedTransform ?? '')
-
+  // Focus off restores the already-loaded full projection without refetching.
   await focus.uncheck()
-  await expect(contextNodes.first()).toHaveCSS('opacity', '0.25')
-  await expect(contextEdges.first()).toHaveCSS('opacity', '0.25')
-  expect(await page.locator('.g-node-body').count()).toBe(laidOutNodeCount)
-  expect(lineConeRequests).toBe(1)
+  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
+  expect(
+    await fullNodes.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-graph-node-id')),
+    ),
+  ).toEqual(fullNodeIds)
+  expect(lineConeRequests).toBe(2)
   expect(netlistRequests).toBe(1)
-  await expect(viewport).toHaveAttribute('transform', stabilizedTransform ?? '')
-
-  // A cursor move while Focus is off schedules one live source probe.
-  const burstProbeUrls: string[] = []
-  const countBurstProbe = (request: Request) => {
-    if (request.url().includes('/line-cone?')) burstProbeUrls.push(request.url())
-  }
-  page.on('request', countBurstProbe)
-  await page
-    .locator('.cm-line', { hasText: "request_valid = 1'b1;" })
-    .click()
-  const cursorLine = (
-    await page.locator('.cm-activeLineGutter').textContent()
-  )?.trim()
-  await expect.poll(() => burstProbeUrls.length).toBe(1)
-  page.off('request', countBurstProbe)
-  expect(new URL(burstProbeUrls[0]).searchParams.get('start_line')).toBe(
-    cursorLine,
-  )
 
   // Escape clears the relevant source selection from outside CodeMirror. The
   // full diagram remains without retaining a relevance highlight.
@@ -540,12 +526,7 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
-  // Two distinct context projections were fetched while Focus was off: the
-  // live source probe on `request_valid` (which maps to its register) fetched a
-  // nearby-context projection around those roots, then Escape cleared the
-  // selection and fetched the full diagram (around=[]). Both are needed because
-  // the two projections differ. (Before the source-provenance case-scan fix,
-  // `request_valid` was unmapped, so the probe fell straight back to the full
-  // diagram and Escape hit the cache — collapsing these into one fetch.)
-  expect(netlistRequests).toBe(3)
+  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
+  expect(lineConeRequests).toBe(2)
+  expect(netlistRequests).toBe(1)
 })

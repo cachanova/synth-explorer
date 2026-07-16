@@ -159,11 +159,10 @@ Compiler-Explorer-style split view, dark theme:
   - **Schematic** — the cone viewer: elkjs layered layout in a worker, SVG nodes
     (cells with type + name, ports, consts), pan/zoom, click node → expand
     cone / show src; toggles for constants and clock/reset/enable; direction
-    switch (fanin/fanout); Focus lazily loads one nearby-context projection,
-    keeps a stable shared layout, and toggles that context between hidden and
-    dimmed without refetching or refitting. With no relevant source or endpoint
-    selected, Schematic renders the capped full diagram without an overlay. Escape
-    clears a source selection.
+    switch (fanin/fanout). Schematic defaults to the capped full diagram; source
+    and endpoint selections update its relevance highlights without relayout.
+    Focus re-lays out only the selected source/cone subgraph, including when it
+    is enabled after a selection. Escape clears a source selection.
   - **Endpoints** — fuzzy-searchable registers/outputs; click → Schematic tab cone.
   - **Paths** — ranked longest paths; click → path highlighted in Schematic tab;
     per-node src hop back to editor.
