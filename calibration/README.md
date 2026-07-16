@@ -94,6 +94,24 @@ ssh deploy@<prod> "docker exec -i synth-explorer-app-1 bash -lc \
 
 Base64-pipe the payload rather than quoting scripts through two shells.
 
+## Exclude `unset` rows
+
+`report_timing` marks each net `unplaced` or `unset`. **Only `unplaced` carries a
+real estimate.** On Series-7 every `unset` row is a flat 973 ps — one distinct
+value across every driver, sink, and fanout from 1 to 104. That is invariant to
+exactly the things UG906 says the estimate keys on, so it is a placeholder, not a
+measurement. Including `unset` rows contaminates the pair table and makes clock
+nets look like data nets.
+
+## Beware bimodal pairs, and narrow samples
+
+`LUT->CARRY` on Series-7 is bimodal: 50 of 72 routed nets are 0.000 and 22 are
+exactly 0.650, with the 0.650 mode appearing in only 2 of 6 designs. A probe over
+a handful of designs can land entirely in the minority mode and report 650 as
+"the" value — which is how the free-into-carry rule briefly got recorded as wrong.
+It is right: the median is 0.000, matching the dedicated carry routing UG474
+documents. Always check `zeros` and `distinct` counts before believing a median.
+
 ## Fitting the net terms: always use per-design intercepts
 
 `net_delay = net_base_ps + net_per_fanout_ps * log2(fanout)`.

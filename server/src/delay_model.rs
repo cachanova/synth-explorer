@@ -15,19 +15,27 @@
 //! dominated and two large errors cancel there — `lut_ps` is ~3x Vivado's real
 //! LUT delay (~124 ps) while `net_base_ps` is ~2-3x too small.
 //!
-//! Known-wrong specifics, all measured (see `calibration/README.md`):
-//! * [`DelayModel::net_delay_to_ps`] treats *any* net into a carry chain as free.
-//!   True on UltraScale+ (LUT->CARRY ~33 ps), **false on Series-7**, where
-//!   LUT->CARRY is ~650 ps — slower than LUT->LUT. Only CARRY->CARRY is free
-//!   everywhere.
-//! * Route delay depends on the driver->sink cell pair, which this model has no
-//!   term for. Vivado's estimate spans 0.03-0.97 ns on slice locality, so one
-//!   flat `net_base_ps` cannot represent it.
-//! * A Yosys netlist is structurally deeper than Vivado's for the same RTL
-//!   (Yosys emits small LUT chains where Vivado packs LUT6; it infers FF chains
-//!   where Vivado infers `SRL16E`). Timing a Yosys netlist and comparing to
-//!   Vivado's number measures mapping quality as much as model error. Use the
-//!   Vivado backend when you want Vivado's netlist timed.
+//! The dominant cause is **structural, not coefficient error**. Our Yosys graph
+//! is ~2x deeper than Vivado's logic levels for the same RTL (median over the
+//! corpus; `prio_case_w32` is 9 vs 3). Yosys emits chains of small LUTs where
+//! Vivado packs LUT6, and infers FF chains where Vivado infers `SRL16E`. Feeding
+//! Vivado's *true* per-stage delays into a 2x-deeper netlist necessarily
+//! overestimates ~2x — verified: a refit to real measured values scores **91.5%**,
+//! *worse* than the 74% these compensating-error coefficients achieve (`lut_ps`
+//! ~3x high cancelling `net_base_ps` ~3x low on carry-dominated paths).
+//!
+//! So fitting per-stage coefficients against a structurally different netlist's
+//! totals is ill-posed: they are forced to absorb the depth ratio and cannot also
+//! be physically true. Use the Vivado backend when you want Vivado's netlist
+//! timed — that makes the comparison well-posed.
+//!
+//! [`DelayModel::net_delay_to_ps`] treating any net into a carry chain as free is
+//! **correct**, and measurement backs it: over the full corpus the median
+//! Series-7 `LUT->CARRY` route is 0.000 (n=72) and `CARRY->CARRY` is 0.000
+//! (n=494). It is bimodal — 22 of 72 sit at 0.650, in 2 of 6 designs — so a
+//! narrow sample can badly misread it. Carry cascade routing is dedicated and
+//! documented (UG474: "dedicated routing connects the carry chain up a column of
+//! slices").
 //!
 //! Treat the estimate as a **relative** guide — depth and delay ordering are far
 //! more trustworthy than the absolute picoseconds.
@@ -380,10 +388,21 @@ mod tests {
     }
 
     #[test]
-    fn faster_process_presets_have_shorter_lut_delay() {
-        // Series-7 → UltraScale → UltraScale+ should be monotonically faster.
-        assert!(DelayModel::series7().lut_ps > DelayModel::ultrascale().lut_ps);
-        assert!(DelayModel::ultrascale().lut_ps > DelayModel::ultrascale_plus().lut_ps);
+    fn newer_process_presets_are_faster_end_to_end() {
+        // Deliberately NOT asserted on `lut_ps`: LUT delay is *not* monotonic
+        // across these families. Vivado's own characterized data has Series-7
+        // LUT6 at 124 ps and UltraScale at ~152 ps — the newer, smaller process
+        // has the slower LUT, and the win shows up in routing and registers
+        // instead. The old test asserted monotonic lut_ps and only passed because
+        // the coefficients were guesses; real values would have failed it.
+        //
+        // What does hold is the whole-fabric picture, which is what a preset is
+        // for.
+        assert!(DelayModel::series7().ff_clk_to_q_ps > DelayModel::ultrascale().ff_clk_to_q_ps);
+        assert!(
+            DelayModel::ultrascale().ff_clk_to_q_ps > DelayModel::ultrascale_plus().ff_clk_to_q_ps
+        );
+        assert!(DelayModel::series7().carry_ps > DelayModel::ultrascale().carry_ps);
         assert_eq!(DelayModel::default(), DelayModel::series7());
     }
 
