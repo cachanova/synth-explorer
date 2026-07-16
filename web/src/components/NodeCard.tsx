@@ -1,8 +1,8 @@
 import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { controlLabel, controlsFor } from '../lib/symbols'
-import { shallowEqual, useStore } from '../store'
 import type { GraphNode } from '../types'
+import { shallowEqual, useStore } from '../useStore'
 
 export function NodeCard({
   node,

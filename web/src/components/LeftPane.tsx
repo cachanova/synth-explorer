@@ -1,4 +1,4 @@
-import { shallowEqual, useStore } from '../store'
+import { shallowEqual, useStore } from '../useStore'
 import { Editor } from './Editor'
 import { ErrorStrip } from './ErrorStrip'
 import { FileTabs } from './FileTabs'

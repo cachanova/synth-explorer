@@ -9,13 +9,14 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
-import { shallowEqual, useStore, type Store } from '../../store'
+import type { Store } from '../../store'
 import type {
   EndpointBit,
   OutputAlias,
   OutputEndpoint,
   RegisterEndpoint,
 } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { StaleResultsChip } from '../StaleResultsChip'
 

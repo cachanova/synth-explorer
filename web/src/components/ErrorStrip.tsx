@@ -1,4 +1,4 @@
-import { useStore } from '../store'
+import { useStore } from '../useStore'
 
 export function ErrorStrip() {
   const err = useStore((store) => store.error)

@@ -8,8 +8,8 @@ import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/g
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
-import { shallowEqual, useStore } from '../../store'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 

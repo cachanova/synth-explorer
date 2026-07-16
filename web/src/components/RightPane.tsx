@@ -1,5 +1,6 @@
 import { useRef, type KeyboardEvent } from 'react'
-import { shallowEqual, useStore, type TabId } from '../store'
+import type { TabId } from '../store'
+import { shallowEqual, useStore } from '../useStore'
 import { Compare } from './tabs/Compare'
 import { Endpoints } from './tabs/Endpoints'
 import { Fanout } from './tabs/Fanout'

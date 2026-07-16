@@ -1,5 +1,5 @@
-import { shallowEqual, useStore } from '../store'
 import { designSrcSpans, spansSummary, srcLabel } from '../lib/src'
+import { shallowEqual, useStore } from '../useStore'
 
 /** A clickable yosys src reference that highlights the range in the editor. */
 export function SrcLink({ src }: { src?: string | null }) {

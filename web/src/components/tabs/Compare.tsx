@@ -1,9 +1,9 @@
 import { diffCellsByType, totalCellDelta } from '../../lib/diff'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType, shortNetName } from '../../lib/prettyType'
-import { shallowEqual, useStore } from '../../store'
 import type { Snapshot } from '../../store'
 import type { TimingPath } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { ModeName } from './Overview'
 import {
   BitCohort,

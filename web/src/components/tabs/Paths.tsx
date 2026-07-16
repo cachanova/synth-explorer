@@ -11,7 +11,6 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import { loadTimingSettings, timingRequest } from '../../lib/timingSettings'
-import { shallowEqual, useStore } from '../../store'
 import type {
   EndpointKind,
   NodeRef,
@@ -19,6 +18,7 @@ import type {
   PathClass,
   TimingPath,
 } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 
 interface RouteVariant {

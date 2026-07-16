@@ -19,8 +19,8 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { StreamLanguage } from '@codemirror/language'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { shallowEqual, useStore } from '../store'
 import type { EditorHighlight } from '../store'
+import { shallowEqual, useStore } from '../useStore'
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
