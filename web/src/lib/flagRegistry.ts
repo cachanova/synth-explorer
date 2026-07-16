@@ -7,6 +7,10 @@ interface BaseFlagDef {
   description: string
   /** caution shown in the menu */
   warn?: string
+  /** applied automatically on switching to this mode; user-removable */
+  defaultOn?: boolean
+  /** shown in the menu: why this flag is on by default */
+  defaultReason?: string
 }
 
 interface BooleanFlagDef extends BaseFlagDef {
@@ -49,8 +53,26 @@ const XILINX: FlagDef[] = [
   { flag: '-nobram', label: 'No block RAM', description: 'Memories in registers/logic instead of RAMB.', warn: 'Can exhaust resources on large memories.' },
   { flag: '-nolutram', label: 'No distributed RAM', description: 'No LUT-based RAM.', warn: 'Can exhaust resources on large memories.' },
   { flag: '-nosrl', label: 'No shift-register LUTs', description: 'Shift registers as flip-flop chains.' },
-  { flag: '-nowidelut', label: 'No wide-LUT muxes', description: 'No MUXF7/MUXF8 mux resources.' },
-  { flag: '-noiopad', label: 'No I/O buffers', description: 'Skip IBUF/OBUF insertion for a cleaner netlist.' },
+  {
+    flag: '-nowidelut',
+    label: 'No wide-LUT muxes',
+    description: 'No MUXF7/MUXF8 mux resources.',
+    defaultOn: true,
+    defaultReason:
+      'Measured on the calibration corpus, wide-LUT mapping stacked MUXF7/8 ' +
+      'levels on top of the LUT tree: netlists came out 1.5\u20132\u00d7 deeper than ' +
+      "Vivado's, with more cells. Without it, depth matches Vivado's synthesis " +
+      'at median parity. Remove the flag to get the wide-LUT mapping back.',
+  },
+  {
+    flag: '-noiopad',
+    label: 'No I/O buffers',
+    description: 'Skip IBUF/OBUF insertion for a cleaner netlist.',
+    defaultOn: true,
+    defaultReason:
+      'The explorer analyzes the fabric logic; pad buffers add IBUF/OBUF ' +
+      'cells on every port that obscure the netlist without changing it.',
+  },
   { flag: '-noclkbuf', label: 'No clock buffers', description: 'Skip BUFG clock-buffer insertion.' },
   { flag: '-uram', label: 'Infer UltraRAM', description: 'URAM288 for large memories (UltraScale+ only).' },
   { flag: '-dff', label: 'FF-aware mapping', description: 'Run ABC with -dff (flip-flop-aware).' },
@@ -74,7 +96,15 @@ const ECP5: FlagDef[] = [
   { flag: '-nolutram', label: 'No distributed RAM', description: 'No LUT-based RAM.', warn: 'Can exhaust resources on large memories.' },
   { flag: '-nowidelut', label: 'No wide-LUT muxes', description: 'No PFU muxes for wide LUTs.' },
   { flag: '-nodsp', label: 'No DSP', description: 'Multipliers in logic instead of DSP.' },
-  { flag: '-noiopad', label: 'No I/O buffers', description: 'Do not insert I/O buffers.' },
+  {
+    flag: '-noiopad',
+    label: 'No I/O buffers',
+    description: 'Do not insert I/O buffers.',
+    defaultOn: true,
+    defaultReason:
+      'The explorer analyzes the fabric logic; pad buffers add cells on ' +
+      'every port that obscure the netlist without changing it.',
+  },
   { flag: '-dff', label: 'FF-aware mapping', description: 'Run ABC with -dff (flip-flop-aware).' },
   { flag: '-abc9', label: 'ABC9 flow', description: 'Newer ABC9 area/delay mapping.' },
   { flag: '-asyncprld', label: 'Async PRLD ALDFF', description: 'Async PRLD mode for ALDFF (experimental).' },
@@ -252,13 +282,16 @@ export function stripInvalidFlags(flags: string, mode: Mode): string {
   return stripFlags(flags, toStrip)
 }
 
-/** Apply the destination mode's defaults after removing incompatible flags. */
+/** Apply the destination mode's defaults after removing incompatible flags.
+ *  Defaults are ordinary registry flags marked `defaultOn` — they land in the
+ *  visible flags string, so the user can see and remove them (nothing is
+ *  injected server-side). */
 export function flagsForModeChange(flags: string, mode: Mode): string {
-  const stripped = stripInvalidFlags(flags, mode)
-  const defaultsWithoutIoPads = flagsForMode(mode).some(
-    (definition) => definition.flag === '-noiopad',
-  )
-  return defaultsWithoutIoPads
-    ? toggleFlag(stripped, '-noiopad', true)
-    : stripped
+  let next = stripInvalidFlags(flags, mode)
+  for (const definition of flagsForMode(mode)) {
+    if (definition.defaultOn) {
+      next = toggleFlag(next, definition.flag, true)
+    }
+  }
+  return next
 }

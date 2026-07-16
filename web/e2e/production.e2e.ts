@@ -182,7 +182,7 @@ test('synthesizes from the webpage with the default Yosys flags', async ({
     .locator('..')
     .locator('select')
     .selectOption('xilinx')
-  await expect(flags).toHaveValue('-noiopad')
+  await expect(flags).toHaveValue('-nowidelut -noiopad')
 
   const responsePromise = page.waitForResponse(
     (response) =>
@@ -196,7 +196,7 @@ test('synthesizes from the webpage with the default Yosys flags', async ({
   expect(response.request().postDataJSON()).toMatchObject({
     tool: 'yosys',
     mode: 'xilinx',
-    extra_args: '-noiopad',
+    extra_args: '-nowidelut -noiopad',
   })
   await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await expect(
