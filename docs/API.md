@@ -182,7 +182,10 @@ Response `200`:
   // output; a direct register-to-register hop is a path with zero logic levels.
   // The clock network is not a data path, and neither is a route that ends only
   // at a control pin (CE/R). Omitted when the design has no timing paths at
-  // all. A relative guide: the ordering of paths is far more trustworthy than
+  // all — and ALWAYS omitted (with the breakdown) in `rtl` mode: an RTL
+  // netlist keeps word-level cells ($add, $mul, shifts, …) whose delay a flat
+  // per-cell model cannot cost meaningfully, so only the depth statistics are
+  // reported there. A relative guide: the ordering of paths is far more trustworthy than
   // the absolute value. The coefficients are being re-derived against real
   // Vivado ground truth (see `calibration/`), and the model is known to over-
   // and under-estimate in ways a flat per-cell model cannot fix — most of all
@@ -419,7 +422,10 @@ Response:
 
 ```ts
 {
-  estimated_delay_ns: number | null;  // null when the design has no timing paths
+  estimated_delay_ns: number | null;  // null when the design has no timing paths,
+                                      // and always null for an `rtl`-mode design
+                                      // (see /api/synthesize: word-level cells
+                                      // cannot be costed per cell)
   estimated_delay_breakdown?: { launch_ns; logic_ns; net_ns; setup_ns }; // sums to delay
   model: DelayModel;                   // base coefficients used, pre speed-grade
                                        // (so a client can populate an editor)
@@ -474,6 +480,8 @@ delay.
                                  // register-bound designs, but this list is
                                  // depth-sorted and truncated, so its max may
                                  // be lower than stats.estimated_delay_ns.
+                                 // Always omitted for `rtl`-mode designs, like
+                                 // every other absolute delay figure.
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
   truncated: boolean;            // response limit or bounded route sampling hit

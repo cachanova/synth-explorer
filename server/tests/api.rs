@@ -11,6 +11,27 @@ async fn body_json(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+async fn post_json(
+    app: &mut axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> serde_json::Value {
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
 fn source_map_roots(
     source_map: &serde_json::Value,
     file: &str,
@@ -2089,4 +2110,77 @@ async fn get_response(app: &mut axum::Router, uri: &str) -> axum::response::Resp
         )
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn rtl_mode_hides_the_absolute_delay_estimate() {
+    let source = r#"
+module add4 (
+    input  logic       clk,
+    input  logic [3:0] a,
+    input  logic [3:0] b,
+    output logic [3:0] q
+);
+  always_ff @(posedge clk) q <= a + b;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+
+    let rtl = post_json(
+        &mut app,
+        "/api/synthesize",
+        json!({
+            "files": [{"name": "add4.sv", "content": source}],
+            "top": "add4",
+            "mode": "rtl"
+        }),
+    )
+    .await;
+    // An RTL netlist keeps word-level cells ($add here) that a per-cell model
+    // cannot cost, so the absolute estimate is withheld...
+    assert!(rtl["stats"].get("estimated_delay_ns").is_none());
+    assert!(rtl["stats"].get("estimated_delay_breakdown").is_none());
+    // ...while depth statistics stay.
+    assert!(rtl["stats"]["max_depth"].as_u64().unwrap() >= 1);
+    assert!(
+        rtl["stats"]["depths"]["input_to_register"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+
+    // A retune cannot conjure an estimate either; the resolved base model is
+    // still echoed so the client can populate its coefficient editor.
+    let design_id = rtl["design_id"].as_str().unwrap();
+    let retune = post_json(
+        &mut app,
+        &format!("/api/design/{design_id}/timing"),
+        json!({"profile": "sky130hd"}),
+    )
+    .await;
+    assert!(retune["estimated_delay_ns"].is_null());
+    assert!(retune.get("estimated_delay_breakdown").is_none());
+    assert!(retune["model"]["lut_ps"].as_f64().unwrap() > 0.0);
+
+    // Per-path delays are the same absolute estimate; paths and depths stay.
+    let paths = get_json(&mut app, &format!("/api/design/{design_id}/paths?limit=5")).await;
+    let paths = paths["paths"].as_array().unwrap();
+    assert!(!paths.is_empty());
+    for path in paths {
+        assert!(path.get("estimated_delay_ns").is_none());
+    }
+
+    // The same design through gates mode keeps its estimate: the suppression
+    // is about RTL's word-level cells, not about the design.
+    let gates = post_json(
+        &mut app,
+        "/api/synthesize",
+        json!({
+            "files": [{"name": "add4.sv", "content": source}],
+            "top": "add4",
+            "mode": "gates"
+        }),
+    )
+    .await;
+    assert!(gates["stats"]["estimated_delay_ns"].as_f64().unwrap() > 0.0);
 }
