@@ -48,10 +48,19 @@
 //! estimate is not agreement with routed silicon. Depth and delay ordering
 //! remain more trustworthy than any individual path's picoseconds.
 //!
-//! The Lattice (iCE40/ECP5) and `generic` presets are NOT vendor-calibrated
-//! (no Lattice tool available); they are scaled to the same picosecond scale.
-//! Every coefficient is a flat, tunable number so a request can override any of
-//! them. This is still a pre-place-and-route estimate, NOT timing closure.
+//! The Lattice presets are derived from measured open timing data rather than
+//! a vendor tool run: Project IceStorm's silicon-measured SDF database for
+//! iCE40 (github.com/YosysHQ/icestorm, ISC licence) and the prjtrellis timing
+//! database for ECP5 (github.com/YosysHQ/prjtrellis-db, CC0-1.0). The ASIC
+//! PDK profiles for gates mode (sky130hd / gf180mcu / asap7) are read from
+//! those PDKs' open Liberty files at the TT corner. Per-coefficient
+//! provenance lives on each preset. These are physically true per-stage
+//! values — which, as the Xilinx history above shows, can score *worse* on
+//! end-to-end totals than compensating-error fits; they serve the model's
+//! stated "relative guide" purpose rather than promising absolute accuracy.
+//! The `generic` preset remains notional. Every coefficient is a flat,
+//! tunable number so a request can override any of them. This is still a
+//! pre-place-and-route estimate, NOT timing closure.
 
 use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
@@ -75,6 +84,13 @@ pub enum DelayProfile {
     UltraScalePlus,
     Ice40,
     Ecp5,
+    /// SkyWater 130nm HD standard cells — an ASIC library for gates mode.
+    Sky130Hd,
+    /// GlobalFoundries 180nm MCU (5V) standard cells — ASIC, gates mode.
+    Gf180Mcu,
+    /// ASAP7 predictive 7nm standard cells — ASIC, gates mode. Predictive
+    /// research PDK: no silicon behind the numbers.
+    Asap7,
     Generic,
 }
 
@@ -87,6 +103,9 @@ impl DelayProfile {
             Self::UltraScalePlus => DelayModel::ultrascale_plus(),
             Self::Ice40 => DelayModel::ice40(),
             Self::Ecp5 => DelayModel::ecp5(),
+            Self::Sky130Hd => DelayModel::sky130hd(),
+            Self::Gf180Mcu => DelayModel::gf180mcu(),
+            Self::Asap7 => DelayModel::asap7(),
             Self::Generic => DelayModel::generic(),
         }
     }
@@ -99,6 +118,9 @@ impl DelayProfile {
             Some("ultrascale_plus") => Self::UltraScalePlus,
             Some("ice40") => Self::Ice40,
             Some("ecp5") => Self::Ecp5,
+            Some("sky130hd") => Self::Sky130Hd,
+            Some("gf180mcu") => Self::Gf180Mcu,
+            Some("asap7") => Self::Asap7,
             Some("generic") => Self::Generic,
             _ => Self::Series7,
         }
@@ -119,7 +141,10 @@ impl DelayProfile {
             },
             "ice40" => Self::Ice40,
             "ecp5" => Self::Ecp5,
-            // gates / lut4 / lut6 / rtl and anything unrecognized.
+            // gates / lut4 / lut6 / rtl and anything unrecognized. The ASIC
+            // PDK profiles are never a target default — gates mode is not a
+            // specific process; they are opt-in via the `profile` request
+            // field.
             _ => Self::Generic,
         }
     }
@@ -137,8 +162,20 @@ impl DelayProfile {
     /// (Series-7 routing gains more; UltraScale logic does), so splitting the
     /// term would encode that inconsistency as though it were signal.
     ///
-    /// The Lattice and generic profiles have no vendor measurement; they keep
-    /// the old hand-picked factors.
+    /// ECP5 factors are measured from prjtrellis-db (CC0-1.0): per-arc
+    /// grade-7/grade-6 and grade-8/grade-6 ratios over lut / carry / wide-mux
+    /// / clk-to-q / net-base average to 0.875 (spread 0.849–0.887) and 0.755
+    /// (spread 0.716–0.789). ECP5's real grades are named 6/7/8 with 6 the
+    /// slowest — the grade the preset is characterized at — so the generic
+    /// "-2" knob maps to grade 7 and "-3" to grade 8.
+    ///
+    /// The ASIC PDK profiles (sky130hd / gf180mcu / asap7) describe a
+    /// standard-cell library at one characterized corner (TT) — there is no
+    /// speed-grade binning to model — so they return 1.0 regardless of the
+    /// selection.
+    ///
+    /// iCE40 and generic have no grade measurement and keep the old
+    /// hand-picked factors.
     pub fn speed_grade_factor(self, grade: Option<&str>) -> f64 {
         match (self, grade) {
             (Self::Series7, Some("-2")) => 0.799,
@@ -147,6 +184,12 @@ impl DelayProfile {
             (Self::UltraScale, Some("-3")) => 0.738,
             (Self::UltraScalePlus, Some("-2")) => 0.860,
             (Self::UltraScalePlus, Some("-3")) => 0.795,
+            // prjtrellis-measured; "-2" = ECP5 grade 7, "-3" = ECP5 grade 8.
+            (Self::Ecp5, Some("-2")) => 0.875,
+            (Self::Ecp5, Some("-3")) => 0.755,
+            // A standard-cell library has no speed grades: one corner, no
+            // binning. The selection is deliberately ignored.
+            (Self::Sky130Hd | Self::Gf180Mcu | Self::Asap7, _) => 1.0,
             // Not vendor-measured.
             (_, Some("-2")) => 0.87,
             (_, Some("-3")) => 0.78,
@@ -249,32 +292,184 @@ impl DelayModel {
         }
     }
 
-    /// Lattice iCE40 (40nm) — a small, comparatively slow fabric. NOT
-    /// vendor-calibrated (no Lattice tool here); scaled slower than Series-7.
+    /// Lattice iCE40, HX grade (40nm) — a small, comparatively slow fabric.
+    /// Derived from Project IceStorm's silicon-measured timing database
+    /// (github.com/YosysHQ/icestorm `icefuzz/timings_hx8k.txt`, ISC licence;
+    /// the hx1k database is byte-identical). Each value is the max corner of
+    /// the SDF `min:typ:max` triple, worst rise/fall edge — what icetime uses
+    /// for worst-case analysis.
+    ///
+    /// Provenance per coefficient:
+    /// - `lut_ps`: `LogicCell40` IOPATH `in0->lcout` = 448.861, the worst
+    ///   input arc (in1 399.8 / in2 378.7 / in3 315.6 — pin assignment is
+    ///   unknowable pre-place, so the worst arc is the honest pick).
+    /// - `carry_ps`: `LogicCell40` IOPATH `carryin->carryout` = 126.242 per
+    ///   bit; yosys emits one `SB_CARRY` per bit, so per-cell = per-bit.
+    /// - `wide_mux_ps` / `cell_ps` = `lut_ps`: iCE40 has no wide-mux resource
+    ///   (no MUXF equivalent) — everything combinational is a LogicCell40.
+    /// - `ff_clk_to_q_ps`: `LogicCell40` IOPATH `posedge:clk->lcout` = 540.036.
+    /// - `ff_setup_ps`: intrinsic setup = SETUP(posedge:in0) 469.902 minus the
+    ///   in0->lcout arc 448.861 = 21.0. The database measures setup at the LUT
+    ///   inputs (the FF D pin physically sits behind the LUT), so the raw
+    ///   SETUP would double-count the LUT delay this model already charges.
+    /// - `net_base_ps`: one nearest-neighbour local route = Odrv4 371.713 +
+    ///   LocalMux 329.632 + InMux 259.498 = 960.8. Routing dominates this
+    ///   fabric — the previous guessed 320 was ~3x optimistic.
+    /// - `net_per_fanout_ps`: = InMux 259.498 (the worst sink gains roughly
+    ///   one extra input-mux/span hop per fanout doubling, matching the
+    ///   model's log2 damping). The least-measured iCE40 number.
+    ///
+    /// This is the HX grade (the mainstream hx1k/hx8k parts). Every LP arc in
+    /// the database is exactly 1.4739x its HX arc, so an LP preset would be
+    /// `ice40().scaled(1.474)`. Still a pre-place-and-route estimate, NOT
+    /// timing closure.
     pub fn ice40() -> Self {
         Self {
-            lut_ps: 480.0,
-            carry_ps: 90.0,
-            wide_mux_ps: 480.0,
-            cell_ps: 480.0,
-            ff_clk_to_q_ps: 800.0,
-            ff_setup_ps: 60.0,
-            net_base_ps: 320.0,
-            net_per_fanout_ps: 70.0,
+            lut_ps: 448.9,
+            carry_ps: 126.2,
+            wide_mux_ps: 448.9,
+            cell_ps: 448.9,
+            ff_clk_to_q_ps: 540.0,
+            ff_setup_ps: 21.0,
+            net_base_ps: 960.8,
+            net_per_fanout_ps: 259.5,
         }
     }
 
-    /// Lattice ECP5 (40nm). NOT vendor-calibrated; scaled from Series-7.
+    /// Lattice ECP5 (40nm), speed grade 6 — the slowest grade, matching the
+    /// convention that every preset is the baseline grade. Derived from the
+    /// prjtrellis measured timing database (github.com/YosysHQ/prjtrellis-db
+    /// `ECP5/timing/speed_6/{cells,interconnect}.json`, CC0-1.0), taking the
+    /// max of `[min,typ,max]` and the worst rise/fall edge. Faster grades are
+    /// handled by [`DelayProfile::speed_grade_factor`].
+    ///
+    /// Provenance per coefficient:
+    /// - `lut_ps` / `cell_ps`: `SLOGICB` IOPath `A0..D1 -> F0/F1` = 236 (all
+    ///   inputs identical).
+    /// - `carry_ps`: `SCCU2C` IOPath `FCI->FCO` = 71/bit x 2 bits per CCU2C
+    ///   cell = 142 — the netlist graph node is the CCU2C, so per-cell is two
+    ///   bits. Chain entry (`A0->FCO` 447) and exit (`FCI->F1` 474) are larger
+    ///   but the flat model has no such terms; unmodelled.
+    /// - `wide_mux_ps`: `SLOGICB M0->OFX0` (PFUMX) = 256; `FXA/FXB->OFX1`
+    ///   (L6MUX21) = 242; worst = 256.
+    /// - `ff_clk_to_q_ps`: `SLOGICB CLK->Q0` = 525.
+    /// - `ff_setup_ps`: measured 0 for DI0/DI1/M0/M1 — the cost sits in hold
+    ///   (303 ps), which this model has no term for; 0 is the honest value.
+    /// - `net_base_ps`: interconnect.json `f_to_span2he_e1` 196.2 +
+    ///   `span2he_to_a_e1` 498.7 = 695 — one span-2 hop, LUT output to LUT
+    ///   input.
+    /// - `net_per_fanout_ps`: prjtrellis models fanout linearly per pip class
+    ///   (1.65 + 18.5 = 20.1 ps/sink on that route); converted to this log2
+    ///   model by matching the total at fanout 8: 20.1 x 8 / log2(8) = 53.7.
+    ///
+    /// Still a pre-place-and-route estimate, NOT timing closure.
     pub fn ecp5() -> Self {
         Self {
-            lut_ps: 420.0,
-            carry_ps: 90.0,
-            wide_mux_ps: 420.0,
-            cell_ps: 420.0,
-            ff_clk_to_q_ps: 650.0,
-            ff_setup_ps: 55.0,
-            net_base_ps: 280.0,
-            net_per_fanout_ps: 60.0,
+            lut_ps: 236.0,
+            carry_ps: 142.0,
+            wide_mux_ps: 256.0,
+            cell_ps: 236.0,
+            ff_clk_to_q_ps: 525.0,
+            ff_setup_ps: 0.0,
+            net_base_ps: 695.0,
+            net_per_fanout_ps: 53.7,
+        }
+    }
+
+    /// SkyWater 130nm HD standard cells (`sky130_fd_sc_hd`) — an ASIC
+    /// profile for gates mode. Derived from the `tt_025C_1v80` Liberty tables
+    /// (upstream github.com/google/skywater-pdk-libs-sky130_fd_sc_hd,
+    /// Apache-2.0), read at an FO4-style operating point: a self-consistent
+    /// inverter FO4 slew (91.7 ps) and a load of 4x the gate's own input
+    /// capacitance, worst rise/fall arc.
+    ///
+    /// Provenance / stated assumptions:
+    /// - `lut_ps` / `cell_ps`: blend = mean of nand2_1, nor2_1, and2_1, or2_1,
+    ///   xor2_1, xnor2_1, mux2_1 worst arcs at FO4 — the model maps every
+    ///   `$_*_` gates-mode cell to a single number.
+    /// - `carry_ps`: ASSUMPTION — gates mode has no carry chains; the value is
+    ///   an and2_1 + xor2_1 stand-in (a full-adder carry+sum stage) = 519.6.
+    /// - `wide_mux_ps`: mux2_1 worst arc = 376.5.
+    /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dfxtp_1 Q<-CLK rising edge = 369.7;
+    ///   D setup_rising worst constraint at FO4 slews = 103.3.
+    /// - net terms: `net_base_ps` from the lib's "Small" wire_load model
+    ///   (fanout_length(1) x pF/len x nand2 load slope = 2.1 — sky130 wire
+    ///   loads are tiny); `net_per_fanout_ps` = nand2 delay-vs-load slope x
+    ///   one nand2 input cap = 15.0. Pre-place ASIC timing is gate-dominated,
+    ///   so the small net terms degrade gracefully.
+    pub fn sky130hd() -> Self {
+        Self {
+            lut_ps: 256.1,
+            carry_ps: 519.6,
+            wide_mux_ps: 376.5,
+            cell_ps: 256.1,
+            ff_clk_to_q_ps: 369.7,
+            ff_setup_ps: 103.3,
+            net_base_ps: 2.1,
+            net_per_fanout_ps: 15.0,
+        }
+    }
+
+    /// GlobalFoundries 180nm MCU standard cells (`gf180mcu_fd_sc_mcu7t5v0`,
+    /// 5V) — an ASIC profile for gates mode. Derived from the `tt_025C_5v00`
+    /// Liberty tables (Apache-2.0, "GlobalFoundries PDK Authors" header),
+    /// using the same FO4-style rule as [`Self::sky130hd`] (self-consistent
+    /// inverter FO4 slew 365 ps).
+    ///
+    /// Provenance / stated assumptions:
+    /// - `lut_ps` / `cell_ps`: blend of the same seven gates, worst arcs at
+    ///   FO4 = 556.2.
+    /// - `carry_ps`: ASSUMPTION — and2_1 + xor2_1 stand-in = 1213.
+    /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dffq_1 Q<-CLK rising edge = 912.6;
+    ///   D setup_rising = 250.
+    /// - net terms: ASSUMPTION — the lib ships no wire_load model, so both
+    ///   terms are nand2 slope x one nand2 input cap (0.0048 pF) = 48.3, i.e.
+    ///   wire capacitance assumed comparable to one gate input load.
+    ///
+    /// A 180nm 5V standard-cell gate really is slower than a 40nm FPGA LUT
+    /// (556 vs 449 ps bare) — three process generations outweigh FPGA
+    /// overhead; with the FPGA's local-route cost included per level, path
+    /// totals still order sensibly.
+    pub fn gf180mcu() -> Self {
+        Self {
+            lut_ps: 556.2,
+            carry_ps: 1213.0,
+            wide_mux_ps: 664.7,
+            cell_ps: 556.2,
+            ff_clk_to_q_ps: 912.6,
+            ff_setup_ps: 250.0,
+            net_base_ps: 48.3,
+            net_per_fanout_ps: 48.3,
+        }
+    }
+
+    /// ASAP7 predictive 7nm standard cells (7.5-track RVT, TT NLDM) — an ASIC
+    /// profile for gates mode. Derived from the
+    /// `asap7sc7p5t_{SIMPLE,SEQ,INVBUF}_RVT_TT_nldm` Liberty tables
+    /// (BSD-3-Clause, Arizona State University), same FO4-style rule as
+    /// [`Self::sky130hd`] (self-consistent inverter FO4 slew 29.1 ps). ASAP7
+    /// is a *predictive* research PDK: there is no silicon behind these
+    /// numbers.
+    ///
+    /// Provenance / stated assumptions:
+    /// - `lut_ps` / `cell_ps`: blend of NAND2x1, NOR2x1, AND2x2, OR2x2,
+    ///   XOR2x1, XNOR2x1 worst arcs at FO4 = 30.0. No MUX2 cell exists in this
+    ///   NLDM set, so `wide_mux_ps` = the blend.
+    /// - `carry_ps`: ASSUMPTION — AND2x2 + XOR2x1 stand-in = 67.9.
+    /// - `ff_clk_to_q_ps` / `ff_setup_ps`: DFFHQNx1 QN<-CLK rising edge =
+    ///   64.7; D setup_rising = 10.0.
+    /// - net terms: ASSUMPTION — no wire_load model; both terms = NAND2x1
+    ///   slope x one NAND2x1 input cap (0.99 fF) = 4.0.
+    pub fn asap7() -> Self {
+        Self {
+            lut_ps: 30.0,
+            carry_ps: 67.9,
+            wide_mux_ps: 30.0,
+            cell_ps: 30.0,
+            ff_clk_to_q_ps: 64.7,
+            ff_setup_ps: 10.0,
+            net_base_ps: 4.0,
+            net_per_fanout_ps: 4.0,
         }
     }
 
@@ -468,6 +663,11 @@ mod tests {
             "series7 should gain more from -3 than ultrascale+ ({s7} vs {usp})"
         );
 
+        // ECP5's factors are prjtrellis-measured per-arc ratios; the generic
+        // "-2"/"-3" knob maps to its real grades 7/8 (6 is the baseline).
+        assert_eq!(DelayProfile::Ecp5.speed_grade_factor(Some("-2")), 0.875);
+        assert_eq!(DelayProfile::Ecp5.speed_grade_factor(Some("-3")), 0.755);
+
         // -1 is the baseline every preset is characterized at, so it must not
         // scale at all — for any family, however it is spelled.
         for profile in [
@@ -485,6 +685,45 @@ mod tests {
             let g3 = profile.speed_grade_factor(Some("-3"));
             assert!(g3 < g2 && g2 < 1.0, "{profile:?}: {g3} < {g2} < 1");
         }
+
+        // The ASIC PDK profiles describe one characterized library corner —
+        // there is no grade binning — so every selection is the identity.
+        for profile in [
+            DelayProfile::Sky130Hd,
+            DelayProfile::Gf180Mcu,
+            DelayProfile::Asap7,
+        ] {
+            for grade in [None, Some("-1"), Some("-2"), Some("-3")] {
+                assert_eq!(
+                    profile.speed_grade_factor(grade),
+                    1.0,
+                    "{profile:?} must ignore speed grade {grade:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_profile_net_delay_grows_with_fanout() {
+        // Guards net_per_fanout_ps > 0 on every preset: a zero slope would
+        // make fanout invisible to the estimate.
+        for profile in [
+            DelayProfile::Series7,
+            DelayProfile::UltraScale,
+            DelayProfile::UltraScalePlus,
+            DelayProfile::Ice40,
+            DelayProfile::Ecp5,
+            DelayProfile::Sky130Hd,
+            DelayProfile::Gf180Mcu,
+            DelayProfile::Asap7,
+            DelayProfile::Generic,
+        ] {
+            let model = profile.model();
+            assert!(
+                model.net_delay_ps(10) > model.net_delay_ps(1),
+                "{profile:?}: net delay must grow with fanout"
+            );
+        }
     }
 
     #[test]
@@ -498,6 +737,9 @@ mod tests {
             ("ultrascale_plus", DelayProfile::UltraScalePlus),
             ("ice40", DelayProfile::Ice40),
             ("ecp5", DelayProfile::Ecp5),
+            ("sky130hd", DelayProfile::Sky130Hd),
+            ("gf180mcu", DelayProfile::Gf180Mcu),
+            ("asap7", DelayProfile::Asap7),
             ("generic", DelayProfile::Generic),
         ] {
             assert_eq!(DelayProfile::from_name(Some(name)), profile);

@@ -32,14 +32,47 @@ export const PROFILE_OPTIONS: { value: ProfileChoice; label: string }[] = [
   { value: 'ultrascale_plus', label: 'Xilinx UltraScale+' },
   { value: 'ice40', label: 'Lattice iCE40' },
   { value: 'ecp5', label: 'Lattice ECP5' },
+  { value: 'sky130hd', label: 'SkyWater 130nm (sky130hd)' },
+  { value: 'gf180mcu', label: 'GlobalFoundries 180nm (gf180mcu)' },
+  { value: 'asap7', label: 'ASAP7 (predictive 7nm)' },
   { value: 'generic', label: 'Generic (non-silicon)' },
 ]
+
+// ASIC standard-cell profiles are characterized at a single corner (TT); there
+// is no speed-grade binning and the server applies no grade scaling to them.
+export const PDK_PROFILES: ReadonlySet<ProfileChoice> = new Set([
+  'sky130hd',
+  'gf180mcu',
+  'asap7',
+])
 
 export const SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
   { value: '-1', label: '-1 (slowest)' },
   { value: '-2', label: '-2' },
   { value: '-3', label: '-3 (fastest)' },
 ]
+
+// ECP5's real speed grades are named 6/7/8, with 6 the slowest — the grade the
+// preset is characterized at. The wire format keeps '-1'/'-2'/'-3'; only the
+// labels change: '-2' maps to grade 7 and '-3' to grade 8 (prjtrellis-measured
+// factors on the server).
+export const ECP5_SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
+  { value: '-1', label: '6 (slowest)' },
+  { value: '-2', label: '7' },
+  { value: '-3', label: '8 (fastest)' },
+]
+
+/** Labels for the speed-grade select. ECP5 shows its real grade names (6/7/8);
+ *  `designMode` resolves the 'auto' profile when the design itself was
+ *  synthesized for an ECP5 target. */
+export function speedGradeOptions(
+  profile: ProfileChoice,
+  designMode?: string,
+): { value: SpeedGrade; label: string }[] {
+  const isEcp5 =
+    profile === 'ecp5' || (profile === 'auto' && designMode === 'ecp5')
+  return isEcp5 ? ECP5_SPEED_GRADE_OPTIONS : SPEED_GRADE_OPTIONS
+}
 
 // The eight editable coefficients, in display order, with short labels.
 export const DELAY_FIELDS: { key: keyof DelayModel; label: string }[] = [

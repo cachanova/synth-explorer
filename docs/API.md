@@ -182,7 +182,10 @@ Response `200`:
   // output; a direct register-to-register hop is a path with zero logic levels.
   // The clock network is not a data path, and neither is a route that ends only
   // at a control pin (CE/R). Omitted when the design has no timing paths at
-  // all. A relative guide: the ordering of paths is far more trustworthy than
+  // all — and ALWAYS omitted (with the breakdown) in `rtl` mode: an RTL
+  // netlist keeps word-level cells ($add, $mul, shifts, …) whose delay a flat
+  // per-cell model cannot cost meaningfully, so only the depth statistics are
+  // reported there. A relative guide: the ordering of paths is far more trustworthy than
   // the absolute value. The coefficients are being re-derived against real
   // Vivado ground truth (see `calibration/`), and the model is known to over-
   // and under-estimate in ways a flat per-cell model cannot fix — most of all
@@ -388,7 +391,8 @@ Request body (all fields optional):
 
 ```ts
 {
-  profile?: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' | 'ecp5' | 'generic';
+  profile?: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' | 'ecp5' |
+            'sky130hd' | 'gf180mcu' | 'asap7' | 'generic';
   speed_grade?: '-1' | '-2' | '-3';   // -1 slowest (default); scales all delays
   model?: DelayModel;                 // full coefficient override; wins over profile
 }
@@ -403,15 +407,25 @@ model and `-1` respectively) rather than erroring.
 `DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
 `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
 `net_per_fanout_ps`. The Xilinx presets are calibrated against Vivado 2026.1 at
-the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p);
-`speed_grade` applies a global multiplier on top (`-2`≈0.87, `-3`≈0.78). Lattice
-(iCE40/ECP5) and `generic` presets are not vendor-calibrated.
+the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p),
+with per-family Vivado-measured `speed_grade` factors. The Lattice presets are
+derived from measured open timing databases (Project IceStorm for `ice40`, the
+HX grade; prjtrellis-db for `ecp5` at speed grade 6); for `ecp5`, `-2`/`-3` map
+to its real grades 7/8 with prjtrellis-measured factors 0.875/0.755. The ASIC
+profiles (`sky130hd`, `gf180mcu`, `asap7` — for gates-mode netlists) come from
+those PDKs' open Liberty files at the TT corner and **ignore `speed_grade`**: a
+standard-cell library has no grade binning, so the multiplier is always 1.
+`generic` keeps notional values and hand-picked grade factors (`-2`≈0.87,
+`-3`≈0.78), as does `ice40` (iCE40 has no speed-grade binning of its own).
 
 Response:
 
 ```ts
 {
-  estimated_delay_ns: number | null;  // null when the design has no timing paths
+  estimated_delay_ns: number | null;  // null when the design has no timing paths,
+                                      // and always null for an `rtl`-mode design
+                                      // (see /api/synthesize: word-level cells
+                                      // cannot be costed per cell)
   estimated_delay_breakdown?: { launch_ns; logic_ns; net_ns; setup_ns }; // sums to delay
   model: DelayModel;                   // base coefficients used, pre speed-grade
                                        // (so a client can populate an editor)
@@ -466,6 +480,8 @@ delay.
                                  // register-bound designs, but this list is
                                  // depth-sorted and truncated, so its max may
                                  // be lower than stats.estimated_delay_ns.
+                                 // Always omitted for `rtl`-mode designs, like
+                                 // every other absolute delay figure.
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
   truncated: boolean;            // response limit or bounded route sampling hit

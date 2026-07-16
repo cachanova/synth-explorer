@@ -1,7 +1,7 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
     FullNetlistOptions, NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse,
-    SourceRangeMapping, Stats, Subgraph,
+    SourceRangeMapping, Stats, Subgraph, TimingEstimate,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::design_store::{DesignStore, DesignStoreError};
@@ -626,6 +626,16 @@ impl Design {
     fn estimated_heap_bytes(&self) -> usize {
         self.deep_size_of()
     }
+
+    /// RTL-mode netlists keep word-level cells (`$add`, `$mul`, shifts, …)
+    /// whose delay a flat per-cell model cannot cost meaningfully — a 64-bit
+    /// multiplier would be charged like a single gate. Absolute delay
+    /// estimates are therefore withheld for RTL designs everywhere they would
+    /// surface (`stats`, `/timing`, per-path delays); depth statistics remain.
+    /// Mirrors the stats suppression in [`build_design`].
+    fn hides_delay_estimate(&self) -> bool {
+        self.response.mode == "rtl"
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -684,13 +694,22 @@ fn build_design(stored: &StoredDesign) -> Result<Design, String> {
     analysis.extend_source_ranges(ranges, source_ranges_truncated);
     analysis.set_procedural_targets(procedural_targets);
     analysis.set_source_probe_hints(probe_hints);
+    let mut stats = analysis.stats();
+    if stored.mode == SynthMode::Rtl {
+        // An RTL netlist's word-level cells can't be costed per cell, so the
+        // absolute estimate is withheld (same absence shape as "no
+        // combinational paths"); depth stats stay. See
+        // `Design::hides_delay_estimate`.
+        stats.estimated_delay_ns = None;
+        stats.estimated_delay_breakdown = None;
+    }
     let response = SynthesizeResponse {
         design_id: stored.design_id.clone(),
         top: stored.resolved_top.clone(),
         tool: stored.tool.to_string(),
         mode: stored.mode.to_string(),
         target: stored.target.clone(),
-        stats: analysis.stats(),
+        stats,
         warnings: analysis.warnings(),
         log: stored.log.clone(),
         memories_abstracted: stored.memories_abstracted,
@@ -715,6 +734,9 @@ fn stored_delay_profile(profile: DelayProfile) -> &'static str {
         DelayProfile::UltraScalePlus => "ultrascale_plus",
         DelayProfile::Ice40 => "ice40",
         DelayProfile::Ecp5 => "ecp5",
+        DelayProfile::Sky130Hd => "sky130hd",
+        DelayProfile::Gf180Mcu => "gf180mcu",
+        DelayProfile::Asap7 => "asap7",
         DelayProfile::Generic => "generic",
     }
 }
@@ -726,6 +748,9 @@ fn parse_stored_delay_profile(profile: &str) -> Option<DelayProfile> {
         "ultrascale_plus" => Some(DelayProfile::UltraScalePlus),
         "ice40" => Some(DelayProfile::Ice40),
         "ecp5" => Some(DelayProfile::Ecp5),
+        "sky130hd" => Some(DelayProfile::Sky130Hd),
+        "gf180mcu" => Some(DelayProfile::Gf180Mcu),
+        "asap7" => Some(DelayProfile::Asap7),
         "generic" => Some(DelayProfile::Generic),
         _ => None,
     }
@@ -1306,7 +1331,17 @@ async fn design_timing(
         request.profile.as_deref(),
     );
     let effective = base.scaled(profile.speed_grade_factor(request.speed_grade.as_deref()));
-    let estimate = design.analysis.estimate_timing(&design.graph, &effective);
+    // An RTL design has no estimate under any model (see
+    // `Design::hides_delay_estimate`), so skip the recompute entirely; the
+    // resolved base model is still echoed for the coefficient editor.
+    let estimate = if design.hides_delay_estimate() {
+        TimingEstimate {
+            delay_ns: None,
+            breakdown: None,
+        }
+    } else {
+        design.analysis.estimate_timing(&design.graph, &effective)
+    };
     Ok(Json(TimingResponse {
         estimated_delay_ns: estimate.delay_ns,
         estimated_delay_breakdown: estimate.breakdown,
@@ -1344,12 +1379,17 @@ async fn paths(
         query.profile.as_deref(),
     );
     let effective = base.scaled(profile.speed_grade_factor(query.speed_grade.as_deref()));
-    Ok(Json(design.analysis.paths_with_model(
-        &design.graph,
-        &effective,
-        limit,
-        query.to,
-    )))
+    let mut response = design
+        .analysis
+        .paths_with_model(&design.graph, &effective, limit, query.to);
+    if design.hides_delay_estimate() {
+        // Per-path delays are the same absolute estimate the overview hides
+        // for RTL designs; structure, depth, and ranking stay.
+        for path in &mut response.paths {
+            path.estimated_delay_ns = None;
+        }
+    }
+    Ok(Json(response))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1949,6 +1989,28 @@ mod tests {
         );
         assert!(!access.authorizes(&digest_as_key));
         assert!(!access.authorizes(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn stored_delay_profile_round_trips_every_variant() {
+        // A stored design that fails to parse its profile fails to load, so
+        // every variant the store can write must read back as itself.
+        for profile in [
+            DelayProfile::Series7,
+            DelayProfile::UltraScale,
+            DelayProfile::UltraScalePlus,
+            DelayProfile::Ice40,
+            DelayProfile::Ecp5,
+            DelayProfile::Sky130Hd,
+            DelayProfile::Gf180Mcu,
+            DelayProfile::Asap7,
+            DelayProfile::Generic,
+        ] {
+            assert_eq!(
+                parse_stored_delay_profile(stored_delay_profile(profile)),
+                Some(profile)
+            );
+        }
     }
 
     #[test]
