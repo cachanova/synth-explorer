@@ -30,7 +30,7 @@ const programmaticUpdate = Annotation.define<boolean>()
 const secondaryLine = Decoration.line({
   attributes: {
     class: 'cm-src-hl-secondary',
-    style: 'background-color: rgba(88, 166, 255, 0.10)',
+    style: 'background-color: rgba(138, 180, 248, 0.10)',
   },
 })
 const primaryLine = Decoration.line({

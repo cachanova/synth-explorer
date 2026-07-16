@@ -1,22 +1,23 @@
 :root {
-  --bg: #0d1117;
-  --bg-1: #12161d;
-  --bg-2: #161b22;
-  --bg-3: #1c222b;
-  --panel: #12161d;
-  --border: #232a34;
-  --border-strong: #313a46;
-  --text: #d7dde5;
-  --text-dim: #9aa4b2;
-  --text-faint: #6b7482;
-  --accent: #58a6ff;
-  --accent-dim: #1f6feb;
-  --green: #3fb950;
-  --blue: #58a6ff;
-  --amber: #d29922;
-  --red: #f85149;
+  /* Graphite: neutral warm-gray dark (no blue cast), one desaturated accent. */
+  --bg: #1b1c1f;
+  --bg-1: #202225;
+  --bg-2: #26282c;
+  --bg-3: #2d3034;
+  --panel: #202225;
+  --border: #303237;
+  --border-strong: #3d4046;
+  --text: #dcdee2;
+  --text-dim: #9da1a8;
+  --text-faint: #6a6e76;
+  --accent: #8ab4f8;
+  --accent-dim: #4a6da8;
+  --green: #57ab5a;
+  --blue: #8ab4f8;
+  --amber: #c69026;
+  --red: #e5534b;
   --purple: #bc8cff;
-  --seq: #d2a8ff;
+  --seq: #c8a5f0;
   --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, 'Cascadia Code',
     Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -47,16 +48,15 @@ button {
   font-family: inherit;
   font-size: inherit;
   color: var(--text);
-  background: var(--bg-3);
+  background: var(--bg-2);
   border: 1px solid var(--border-strong);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
   line-height: 1.4;
 }
 button:hover:not(:disabled) {
-  background: var(--bg-2);
-  border-color: var(--accent-dim);
+  background: var(--bg-3);
 }
 button:disabled {
   opacity: 0.5;
@@ -64,12 +64,12 @@ button:disabled {
 }
 button.primary {
   background: var(--accent-dim);
-  border-color: var(--accent-dim);
+  border-color: transparent;
   color: #fff;
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
-  background: #388bfd;
+  background: #5679b4;
 }
 
 input,
@@ -78,16 +78,16 @@ textarea {
   font-family: inherit;
   font-size: inherit;
   color: var(--text);
-  background: var(--bg);
+  background: var(--bg-2);
   border: 1px solid var(--border-strong);
-  border-radius: 5px;
+  border-radius: 6px;
   padding: 4px 7px;
 }
 input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--accent);
+  border-color: var(--accent-dim);
 }
 
 a {
@@ -104,7 +104,7 @@ a:hover {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #2c333d;
+  background: #393b3f;
   border-radius: 5px;
 }
 ::-webkit-scrollbar-track {
@@ -402,7 +402,7 @@ a:hover {
   display: flex;
   align-items: stretch;
   gap: 2px;
-  padding: 4px 6px 0;
+  padding: 0 8px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
@@ -412,18 +412,18 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 8px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 5px 5px 0 0;
-  color: var(--text-dim);
+  padding: 6px 10px;
+  border-bottom: 2px solid transparent;
+  color: var(--text-faint);
   cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
 }
+.file-tab:hover {
+  color: var(--text-dim);
+}
 .file-tab.active {
-  background: var(--bg);
-  border-color: var(--border);
+  border-bottom-color: var(--accent);
   color: var(--text);
 }
 .file-tab:focus-visible {
@@ -464,19 +464,34 @@ a:hover {
   font-family: var(--mono);
   font-size: 13px;
 }
+/* Blend oneDark's chrome into the Graphite surfaces; the extra specificity
+   beats oneDark's single generated class. Syntax colors stay oneDark's. */
+.editor-wrap .cm-editor {
+  background: var(--bg);
+}
+.editor-wrap .cm-editor .cm-gutters {
+  background: var(--bg);
+  border-right: none;
+}
+.editor-wrap .cm-editor .cm-activeLine {
+  background: rgba(255, 255, 255, 0.03);
+}
+.editor-wrap .cm-editor .cm-activeLineGutter {
+  background: rgba(255, 255, 255, 0.03);
+}
 .cm-src-hl {
-  background: rgba(88, 166, 255, 0.22);
+  background: rgba(138, 180, 248, 0.22);
   transition: background 0.4s ease;
 }
 .cm-src-hl-fade {
-  background: rgba(88, 166, 255, 0);
+  background: rgba(138, 180, 248, 0);
 }
 
 /* ---- error strip ---- */
 .error-strip {
   flex: 0 0 auto;
   border-top: 1px solid var(--red);
-  background: rgba(248, 81, 73, 0.08);
+  background: color-mix(in srgb, var(--red) 8%, transparent);
   padding: 8px 10px;
   max-height: 40%;
   overflow: auto;
@@ -502,7 +517,7 @@ a:hover {
 .tab-bar {
   display: flex;
   gap: 2px;
-  padding: 4px 8px 0;
+  padding: 0 10px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
@@ -513,19 +528,22 @@ a:hover {
 }
 .tab {
   flex: 0 0 auto;
-  padding: 6px 12px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 6px 6px 0 0;
-  color: var(--text-dim);
+  padding: 8px 13px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-faint);
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
   background: none;
 }
+.tab:hover:not(:disabled) {
+  color: var(--text-dim);
+  background: none;
+}
 .tab.active {
-  background: var(--bg);
-  border-color: var(--border);
+  border-bottom-color: var(--accent);
   color: var(--text);
 }
 .tab .badge {
@@ -631,9 +649,9 @@ a:hover {
   margin-bottom: 14px;
 }
 .card {
-  background: var(--bg-2);
+  background: var(--bg-1);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 8px;
   padding: 10px 12px;
 }
 .card .k {
@@ -758,7 +776,7 @@ table.grid tr.expanded td {
 .warn-list li {
   padding: 4px 8px;
   border-left: 2px solid var(--amber);
-  background: rgba(210, 153, 34, 0.06);
+  background: color-mix(in srgb, var(--amber) 6%, transparent);
   margin-bottom: 4px;
   font-size: 12px;
   font-family: var(--mono);
@@ -1273,7 +1291,7 @@ th.sortable:hover {
   pointer-events: none;
 }
 .g-control-label.generated rect {
-  fill: rgba(210, 153, 34, 0.12);
+  fill: color-mix(in srgb, var(--amber) 12%, transparent);
   stroke: var(--amber);
   stroke-width: 1.2;
 }

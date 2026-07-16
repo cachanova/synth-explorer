@@ -7,7 +7,7 @@
 >
   <title id="title">Synth Explorer XOR gate with output probe</title>
   <rect x="1" y="1" width="30" height="30" rx="7" fill="#12161d" stroke="#313a46" stroke-width="1.5" />
-  <g stroke="#58a6ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.1">
+  <g stroke="#8ab4f8" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.1">
     <path d="M3.5 11h8M3.5 21h8" />
     <path d="M10 7c7 0 12 3 16 9-4 6-9 9-16 9 3.5-5.5 3.5-12.5 0-18Z" />
     <path d="M6.5 7c3.5 5.5 3.5 12.5 0 18" />
