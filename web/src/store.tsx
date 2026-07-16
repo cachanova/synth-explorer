@@ -11,6 +11,7 @@ import {
 import * as api from './api'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
+  createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
@@ -360,6 +361,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const analysisStateRef = useRef<AnalysisState>(analysisState)
   analysisStateRef.current = analysisState
 
+  const sourceProbeDebouncerRef = useRef<
+    ReturnType<typeof createSourceProbeDebouncer> | null
+  >(null)
+  if (!sourceProbeDebouncerRef.current) {
+    sourceProbeDebouncerRef.current = createSourceProbeDebouncer((selection) => {
+      if (
+        activeTabRef.current !== 'graph' ||
+        !sourceSelectionActiveRef.current
+      ) {
+        return
+      }
+      setConeReq(sourceGraphRequest(selection, nextNonce()))
+    })
+  }
+  const cancelSourceProbe = useCallback(() => {
+    sourceProbeDebouncerRef.current?.cancel()
+  }, [])
+  useEffect(() => () => cancelSourceProbe(), [cancelSourceProbe])
+
   useEffect(() => {
     if (analysisState !== 'current') {
       setEditorHighlight(null)
@@ -405,6 +425,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   )
 
   const addFile = useCallback(() => {
+    cancelSourceProbe()
     const current = filesRef.current
     let i = current.length
     let name = `file${i}.sv`
@@ -423,10 +444,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sourceSelectionActiveRef.current = false
     setSourceSelectionState(selection)
     setConeReq((request) => (request?.kind === 'source' ? null : request))
-  }, [markInputChanged])
+  }, [cancelSourceProbe, markInputChanged])
 
   const renameFile = useCallback(
     (oldName: string, newName: string) => {
+      cancelSourceProbe()
       const clean = newName.trim()
       if (!clean || !/^[A-Za-z0-9._-]+$/.test(clean)) return
       const current = filesRef.current
@@ -448,11 +470,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         cur.file === oldName ? { ...cur, file: clean } : cur,
       )
     },
-    [markInputChanged],
+    [cancelSourceProbe, markInputChanged],
   )
 
   const deleteFile = useCallback(
     (name: string) => {
+      cancelSourceProbe()
       const current = filesRef.current
       if (current.length <= 1 || !current.some((file) => file.name === name)) return
       const next = current.filter((file) => file.name !== name)
@@ -472,7 +495,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           : cur,
       )
     },
-    [markInputChanged],
+    [cancelSourceProbe, markInputChanged],
   )
 
   const setTop = useCallback(
@@ -581,6 +604,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const loadExample = useCallback(
     (ex: Example) => {
+      cancelSourceProbe()
       const nextFiles = ex.files.length ? ex.files : [DEFAULT_FILE]
       const nextTop = ex.top ?? ''
       filesRef.current = nextFiles
@@ -599,7 +623,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setConeReq((request) => (request?.kind === 'source' ? null : request))
       setTopState(nextTop)
     },
-    [markInputChanged],
+    [cancelSourceProbe, markInputChanged],
   )
 
   const requestSynthesis = useCallback(async () => {
@@ -691,6 +715,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       highlight?: number[]
     }) => {
       if (analysisStateRef.current !== 'current') return
+      cancelSourceProbe()
+      sourceSelectionActiveRef.current = false
       const nodes =
         opts.nodes && opts.nodes.length > 0
           ? opts.nodes
@@ -710,11 +736,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       setActiveTab('graph')
     },
-    [],
+    [cancelSourceProbe],
   )
 
   const showPathInGraph = useCallback((path: TimingPath) => {
     if (analysisStateRef.current !== 'current') return
+    cancelSourceProbe()
+    sourceSelectionActiveRef.current = false
     setConeReq({
       kind: 'cone',
       designId: designRef.current?.design_id ?? '',
@@ -726,7 +754,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       nonce: nextNonce(),
     })
     setActiveTab('graph')
-  }, [])
+  }, [cancelSourceProbe])
 
   const openControlCone = useCallback(
     ({
@@ -739,6 +767,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       generated?: boolean
     }) => {
       if (analysisStateRef.current !== 'current') return
+      cancelSourceProbe()
+      sourceSelectionActiveRef.current = false
       const dir = generated ? 'fanin' : 'fanout'
       setGraphOptionsState((options) => ({ ...options, hideControl: false }))
       setConeReq({
@@ -753,13 +783,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       setActiveTab('graph')
     },
-    [],
+    [cancelSourceProbe],
   )
 
   const clearGraphSelection = useCallback(() => {
+    cancelSourceProbe()
     sourceSelectionActiveRef.current = false
     setConeReq(null)
-  }, [])
+  }, [cancelSourceProbe])
 
   const highlightSources = useCallback((spans: SrcSpan[]) => {
     if (spans.length === 0) {
@@ -778,11 +809,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const setSourceSelection = useCallback(
     (file: string, startLine: number, endLine: number) => {
       const selection = normalizeSourceSelection(file, startLine, endLine)
+      const previous = sourceSelectionRef.current
+      if (
+        sourceSelectionActiveRef.current &&
+        previous.file === selection.file &&
+        previous.startLine === selection.startLine &&
+        previous.endLine === selection.endLine
+      ) {
+        return
+      }
       sourceSelectionRef.current = selection
       sourceSelectionActiveRef.current = true
       setSourceSelectionState(selection)
       if (activeTabRef.current === 'graph') {
-        setConeReq(sourceGraphRequest(selection, nextNonce()))
+        sourceProbeDebouncerRef.current?.schedule(selection)
       }
     },
     [],
@@ -790,6 +830,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const setActiveFileName = useCallback(
     (name: string) => {
+      cancelSourceProbe()
       setActiveFileNameState(name)
       const selection = { file: name, startLine: 1, endLine: 1 }
       sourceSelectionRef.current = selection
@@ -797,10 +838,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSourceSelectionState(selection)
       setConeReq((request) => (request?.kind === 'source' ? null : request))
     },
-    [],
+    [cancelSourceProbe],
   )
 
   const setActiveTabForUser = useCallback((tab: TabId) => {
+    cancelSourceProbe()
     setActiveTab(tab)
     activeTabRef.current = tab
     if (tab === 'graph') {
@@ -814,7 +856,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             : null,
       )
     }
-  }, [])
+  }, [cancelSourceProbe])
 
   const takeSnapshot = useCallback(
     async (slot: 'A' | 'B') => {

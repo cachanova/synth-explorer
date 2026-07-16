@@ -439,7 +439,7 @@ function ControlLabels({
   if (controls.length === 0) return null
 
   return (
-    <g className="g-control-labels">
+    <g className="g-control-labels" aria-hidden="true">
       {controls.map((control, index) => {
         const y = startY + 1 + index * 13
         const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
@@ -463,16 +463,8 @@ function ControlLabels({
           <g
             key={`${control.role}-${control.driver_id}-${index}`}
             className={`g-control-label${control.generated ? ' generated' : ''}${onSelect ? ' clickable' : ''}`}
-            role={onSelect ? 'button' : undefined}
-            tabIndex={onSelect ? 0 : undefined}
             onPointerDown={onSelect ? (event) => event.stopPropagation() : undefined}
             onClick={onSelect ? (event) => {
-              event.stopPropagation()
-              onSelect(control, node)
-            } : undefined}
-            onKeyDown={onSelect ? (event) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return
-              event.preventDefault()
               event.stopPropagation()
               onSelect(control, node)
             } : undefined}
@@ -499,11 +491,32 @@ interface SchematicNodeProps {
   portDirection: PortDirection
   pins: NodePins
   interactive: boolean
+  tabIndex: number
   suppressClick: { current: boolean }
+  onNodeElement: (nodeId: number, element: SVGGElement | null) => void
   onSelect: (node: GraphNode | null) => void
+  onFocusNode: (nodeId: number) => void
+  onNavigateNode: (nodeId: number, key: GraphNavigationKey) => void
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
   onExpand?: (node: GraphNode) => void
 }
+
+type GraphNavigationKey =
+  | 'ArrowLeft'
+  | 'ArrowRight'
+  | 'ArrowUp'
+  | 'ArrowDown'
+  | 'Home'
+  | 'End'
+
+const GRAPH_NAVIGATION_KEYS = new Set<string>([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+])
 
 // Hover state belongs to one node, so revealing pin labels never reconciles
 // the parent GraphView's thousands of nodes and edges.
@@ -515,8 +528,12 @@ const SchematicNode = memo(function SchematicNode({
   portDirection,
   pins,
   interactive,
+  tabIndex,
   suppressClick,
+  onNodeElement,
   onSelect,
+  onFocusNode,
+  onNavigateNode,
   onControlSelect,
   onExpand,
 }: SchematicNodeProps) {
@@ -536,14 +553,23 @@ const SchematicNode = memo(function SchematicNode({
 
   return (
     <g
+      ref={(element) => onNodeElement(node.id, element)}
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
+      data-graph-node-id={node.id}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
       role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      aria-label={interactive ? title : undefined}
+      tabIndex={interactive ? tabIndex : undefined}
+      aria-label={
+        interactive
+          ? `${title}. Enter to inspect details and controls; Shift+Enter to expand.`
+          : undefined
+      }
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
-      onFocus={interactive ? () => setFocused(true) : undefined}
+      onFocus={interactive ? () => {
+        setFocused(true)
+        onFocusNode(node.id)
+      } : undefined}
       onBlur={interactive ? () => setFocused(false) : undefined}
       onClick={interactive ? (event) => {
         event.stopPropagation()
@@ -551,6 +577,7 @@ const SchematicNode = memo(function SchematicNode({
           suppressClick.current = false
           return
         }
+        if (document.activeElement !== event.currentTarget) onFocusNode(node.id)
         onSelect(node)
       } : undefined}
       onDoubleClick={interactive && onExpand ? (event) => {
@@ -558,8 +585,19 @@ const SchematicNode = memo(function SchematicNode({
         onExpand(node)
       } : undefined}
       onKeyDown={interactive ? (event) => {
+        if (GRAPH_NAVIGATION_KEYS.has(event.key)) {
+          event.preventDefault()
+          event.stopPropagation()
+          onNavigateNode(node.id, event.key as GraphNavigationKey)
+          return
+        }
         if (event.key !== 'Enter' && event.key !== ' ') return
         event.preventDefault()
+        event.stopPropagation()
+        if (event.key === 'Enter' && event.shiftKey && onExpand) {
+          onExpand(node)
+          return
+        }
         onSelect(node)
       } : undefined}
     >
@@ -624,6 +662,9 @@ export function GraphView({
   const panState = useRef<PanState | null>(null)
   const suppressClick = useRef(false)
   const userAdjusted = useRef(false)
+  const rovingNodeId = useRef<number | null>(null)
+  const nodeElements = useRef(new Map<number, SVGGElement>())
+  const programmaticFocusNodeId = useRef<number | null>(null)
 
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
@@ -671,6 +712,146 @@ export function GraphView({
     transformRef.current = next
     viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
   }, [])
+
+  const rovingTabStopId = interactive
+    ? metadata.nodeById.has(rovingNodeId.current ?? Number.NaN)
+      ? rovingNodeId.current
+      : metadata.nodeById.has(selectedId ?? Number.NaN)
+        ? selectedId
+        : metadata.nodeById.has(rootId)
+          ? rootId
+          : (graph.nodes[0]?.id ?? null)
+    : null
+  rovingNodeId.current = rovingTabStopId
+
+  const setNodeElement = useCallback(
+    (nodeId: number, element: SVGGElement | null) => {
+      if (element) nodeElements.current.set(nodeId, element)
+      else nodeElements.current.delete(nodeId)
+    },
+    [],
+  )
+
+  const focusGraphNode = useCallback((nodeId: number) => {
+    const previous = rovingNodeId.current == null
+      ? null
+      : (nodeElements.current.get(rovingNodeId.current) ?? null)
+    previous?.setAttribute('tabindex', '-1')
+    const next = nodeElements.current.get(nodeId)
+    if (!next) return
+    rovingNodeId.current = nodeId
+    next.setAttribute('tabindex', '0')
+
+    const laidOutNode = metadata.nodeById.get(nodeId)
+    const stage = stageRef.current
+    if (laidOutNode && stage) {
+      const rect = stage.getBoundingClientRect()
+      const wrapper = stage.parentElement
+      const cardRect = wrapper
+        ?.querySelector<HTMLElement>('.node-card')
+        ?.getBoundingClientRect()
+      const bannerRect = wrapper
+        ?.querySelector<HTMLElement>('.graph-banner')
+        ?.getBoundingClientRect()
+      const shortcutRect = stage
+        .querySelector<HTMLElement>('.graph-shortcuts')
+        ?.getBoundingClientRect()
+      const zoomControlsRect = stage
+        .querySelector<HTMLElement>('.zoom-controls')
+        ?.getBoundingClientRect()
+      const transform = transformRef.current
+      const margin = 24
+      const leftBound = margin
+      const rightBound = cardRect
+        ? cardRect.left - rect.left - margin
+        : rect.width - margin
+      const topBound = bannerRect && bannerRect.height > 0
+        ? bannerRect.bottom - rect.top + margin
+        : margin
+      const bottomOverlayTop = Math.min(
+        shortcutRect?.top ?? Number.POSITIVE_INFINITY,
+        zoomControlsRect?.top ?? Number.POSITIVE_INFINITY,
+      )
+      const bottomBound = Number.isFinite(bottomOverlayTop)
+        ? bottomOverlayTop - rect.top - margin
+        : rect.height - margin
+      const left = laidOutNode.x * transform.k + transform.x
+      const right = (laidOutNode.x + laidOutNode.width) * transform.k + transform.x
+      const top = laidOutNode.y * transform.k + transform.y
+      const bottom = (laidOutNode.y + laidOutNode.height) * transform.k + transform.y
+      const dx = left < leftBound
+        ? leftBound - left
+        : right > rightBound
+          ? rightBound - right
+          : 0
+      const dy = top < topBound
+        ? topBound - top
+        : bottom > bottomBound
+          ? bottomBound - bottom
+          : 0
+      if (dx !== 0 || dy !== 0) {
+        userAdjusted.current = true
+        applyTransform({ ...transform, x: transform.x + dx, y: transform.y + dy })
+      }
+    }
+    programmaticFocusNodeId.current = nodeId
+    next.focus()
+    programmaticFocusNodeId.current = null
+  }, [applyTransform, metadata.nodeById])
+
+  const acceptGraphNodeFocus = useCallback(
+    (nodeId: number) => {
+      if (programmaticFocusNodeId.current === nodeId) return
+      focusGraphNode(nodeId)
+    },
+    [focusGraphNode],
+  )
+
+  useLayoutEffect(() => {
+    if (selectedId == null || rovingNodeId.current == null) return
+    focusGraphNode(rovingNodeId.current)
+  }, [focusGraphNode, selectedId])
+
+  const navigateGraphNode = useCallback(
+    (nodeId: number, key: GraphNavigationKey) => {
+      if (graph.nodes.length === 0) return
+      if (key === 'Home') {
+        focusGraphNode(graph.nodes[0].id)
+        return
+      }
+      if (key === 'End') {
+        focusGraphNode(graph.nodes[graph.nodes.length - 1].id)
+        return
+      }
+
+      const current = metadata.nodeById.get(nodeId)
+      if (!current) return
+      const currentX = current.x + current.width / 2
+      const currentY = current.y + current.height / 2
+      let best: { id: number; score: number } | null = null
+      for (const candidate of graph.nodes) {
+        if (candidate.id === nodeId) continue
+        const dx = candidate.x + candidate.width / 2 - currentX
+        const dy = candidate.y + candidate.height / 2 - currentY
+        const inDirection =
+          (key === 'ArrowLeft' && dx < 0) ||
+          (key === 'ArrowRight' && dx > 0) ||
+          (key === 'ArrowUp' && dy < 0) ||
+          (key === 'ArrowDown' && dy > 0)
+        if (!inDirection) continue
+        const primary = key === 'ArrowLeft' || key === 'ArrowRight'
+          ? Math.abs(dx)
+          : Math.abs(dy)
+        const cross = key === 'ArrowLeft' || key === 'ArrowRight'
+          ? Math.abs(dy)
+          : Math.abs(dx)
+        const score = primary + cross * 0.5
+        if (!best || score < best.score) best = { id: candidate.id, score }
+      }
+      if (best) focusGraphNode(best.id)
+    },
+    [focusGraphNode, graph.nodes, metadata.nodeById],
+  )
 
   const fit = useCallback(() => {
     const stage = stageRef.current
@@ -801,7 +982,7 @@ export function GraphView({
     svgRef.current?.classList.remove('panning')
   }, [active])
 
-  const zoomBy = (factor: number) => {
+  const zoomBy = useCallback((factor: number) => {
     userAdjusted.current = true
     const rect = stageRef.current?.getBoundingClientRect()
     const centerX = rect ? rect.width / 2 : 0
@@ -809,7 +990,48 @@ export function GraphView({
     applyTransform(
       zoomViewportAt(transformRef.current, centerX, centerY, factor),
     )
-  }
+  }, [applyTransform])
+
+  const onViewportKeyDown = useCallback(
+    (event: React.KeyboardEvent<SVGSVGElement>) => {
+      if (event.target !== event.currentTarget) return
+      const step = event.shiftKey ? 80 : 32
+      let handled = true
+      switch (event.key) {
+        case 'ArrowLeft':
+          applyTransform(panViewport(transformRef.current, step, 0))
+          break
+        case 'ArrowRight':
+          applyTransform(panViewport(transformRef.current, -step, 0))
+          break
+        case 'ArrowUp':
+          applyTransform(panViewport(transformRef.current, 0, step))
+          break
+        case 'ArrowDown':
+          applyTransform(panViewport(transformRef.current, 0, -step))
+          break
+        case '+':
+        case '=':
+          zoomBy(1.25)
+          break
+        case '-':
+        case '_':
+          zoomBy(0.8)
+          break
+        case '0':
+          userAdjusted.current = false
+          fit()
+          break
+        default:
+          handled = false
+      }
+      if (!handled) return
+      userAdjusted.current = event.key !== '0'
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    [applyTransform, fit, zoomBy],
+  )
 
   useEffect(() => {
     const stage = stageRef.current
@@ -825,7 +1047,11 @@ export function GraphView({
         ref={svgRef}
         width="100%"
         height="100%"
+        role="region"
+        aria-label="Schematic viewport. Use arrow keys to pan, plus and minus to zoom, and zero to fit."
+        tabIndex={0}
         onWheel={onWheel}
+        onKeyDown={onViewportKeyDown}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={finishPan}
@@ -919,8 +1145,12 @@ export function GraphView({
               portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
               pins={metadata.pinsById.get(laidOutNode.id) ?? { incoming: [], outgoing: [] }}
               interactive={interactive}
+              tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
               suppressClick={suppressClick}
+              onNodeElement={setNodeElement}
               onSelect={onSelect}
+              onFocusNode={acceptGraphNodeFocus}
+              onNavigateNode={navigateGraphNode}
               onControlSelect={onControlSelect}
               onExpand={onExpand}
             />
@@ -928,11 +1158,18 @@ export function GraphView({
         </g>
       </svg>
 
+      {interactive && (
+        <div className="graph-shortcuts" role="note">
+          Node arrows move focus · Enter inspects · Shift+Enter or double-click
+          expands · Esc clears · Viewport arrows pan · +/− zoom · 0 fits
+        </div>
+      )}
+
       <div className="zoom-controls">
-        <button onClick={() => zoomBy(1.25)} title="Zoom in">
+        <button onClick={() => zoomBy(1.25)} title="Zoom in" aria-label="Zoom in">
           +
         </button>
-        <button onClick={() => zoomBy(0.8)} title="Zoom out">
+        <button onClick={() => zoomBy(0.8)} title="Zoom out" aria-label="Zoom out">
           −
         </button>
         <button
@@ -941,6 +1178,7 @@ export function GraphView({
             fit()
           }}
           title="Fit to view"
+          aria-label="Fit schematic to view"
         >
           ⤢
         </button>
