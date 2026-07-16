@@ -87,6 +87,17 @@ export function Graph({ active }: { active: boolean }) {
   // single-entry shape bounds retained memory when designs or options change.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
 
+  useEffect(() => {
+    if (!active) return
+    const clearSelection = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      setSelected(null)
+      clearGraphSelection()
+    }
+    window.addEventListener('keydown', clearSelection)
+    return () => window.removeEventListener('keydown', clearSelection)
+  }, [active, clearGraphSelection])
+
   // Every option here changes what the server returns, so a change refetches.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.focus}|${graphOptions.groupVectors}`
   const fullGraphKey = design

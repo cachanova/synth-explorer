@@ -1,5 +1,6 @@
 import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
+import { controlLabel, controlsFor } from '../lib/symbols'
 import { shallowEqual, useStore } from '../store'
 import type { GraphNode } from '../types'
 
@@ -16,12 +17,18 @@ export function NodeCard({
   onExpand?: () => void
 }) {
   const store = useStore(
-    ({ files, highlightSources, openCone }) => ({ files, highlightSources, openCone }),
+    ({ files, highlightSources, openCone, openControlCone }) => ({
+      files,
+      highlightSources,
+      openCone,
+      openControlCone,
+    }),
     shallowEqual,
   )
   const params = node.params ? Object.entries(node.params) : []
   const spans = designSrcSpans(node.src, store.files)
   const name = displayNodeName(node, drivingNet)
+  const controls = controlsFor(node)
 
   return (
     <div className="node-card">
@@ -108,6 +115,32 @@ export function NodeCard({
           ))}
         </div>
       </details>
+
+      {controls.length > 0 && (
+        <div style={{ margin: '8px 0' }}>
+          <div className="section-title" style={{ margin: '8px 0 4px' }}>
+            Controls
+          </div>
+          <div className="chain">
+            {controls.map((control, index) => (
+              <button
+                key={`${control.role}-${control.driver_id}-${index}`}
+                className="hop"
+                onClick={() =>
+                  store.openControlCone({
+                    node: control.driver_id,
+                    label: controlLabel(control),
+                    generated: control.generated,
+                  })
+                }
+              >
+                <span className="t">{control.role}</span>
+                <span className="n">{controlLabel(control)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="actions">
         <button

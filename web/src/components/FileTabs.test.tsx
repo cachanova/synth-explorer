@@ -1,0 +1,33 @@
+import { renderToStaticMarkup } from 'react-dom/server'
+import { describe, expect, it, vi } from 'vitest'
+
+vi.mock('../store', () => ({
+  shallowEqual: Object.is,
+  useStore: () => ({
+    files: [
+      { name: 'top.sv', content: '' },
+      { name: 'alu.sv', content: '' },
+      { name: 'regs.sv', content: '' },
+    ],
+    activeFileName: 'alu.sv',
+    setActiveFileName: vi.fn(),
+    renameFile: vi.fn(),
+    deleteFile: vi.fn(),
+    addFile: vi.fn(),
+  }),
+}))
+
+import { FileTabs } from './FileTabs'
+
+describe('FileTabs', () => {
+  it('uses one selected file tab stop linked to the editor panel', () => {
+    const markup = renderToStaticMarkup(<FileTabs />)
+    const tabs = markup.match(/<div[^>]*role="tab"[^>]*>/g) ?? []
+
+    expect(tabs).toHaveLength(3)
+    expect(tabs.filter((tab) => tab.includes('aria-selected="true"'))).toHaveLength(1)
+    expect(tabs.filter((tab) => tab.includes('tabindex="0"'))).toHaveLength(1)
+    expect(tabs.filter((tab) => tab.includes('tabindex="-1"'))).toHaveLength(2)
+    expect(tabs.every((tab) => tab.includes('aria-controls="source-editor-panel"'))).toBe(true)
+  })
+})

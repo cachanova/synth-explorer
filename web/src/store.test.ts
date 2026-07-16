@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
+  createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
   retainQueuedSynthesis,
@@ -112,6 +113,41 @@ describe('source selection normalization', () => {
       startLine: 1,
       endLine: 1,
     })
+  })
+})
+
+describe('source probe debounce', () => {
+  it('runs only the latest scheduled selection after the quiet period', () => {
+    vi.useFakeTimers()
+    const selections: ReturnType<typeof normalizeSourceSelection>[] = []
+    const debounce = createSourceProbeDebouncer((selection) => {
+      selections.push(selection)
+    }, 250)
+
+    debounce.schedule(normalizeSourceSelection('top.sv', 4, 4))
+    vi.advanceTimersByTime(200)
+    debounce.schedule(normalizeSourceSelection('top.sv', 9, 11))
+    vi.advanceTimersByTime(249)
+    expect(selections).toEqual([])
+
+    vi.advanceTimersByTime(1)
+    expect(selections).toEqual([
+      { file: 'top.sv', startLine: 9, endLine: 11 },
+    ])
+    vi.useRealTimers()
+  })
+
+  it('cancels a pending probe', () => {
+    vi.useFakeTimers()
+    const onProbe = vi.fn()
+    const debounce = createSourceProbeDebouncer(onProbe, 250)
+
+    debounce.schedule(normalizeSourceSelection('top.sv', 4, 4))
+    debounce.cancel()
+    vi.runAllTimers()
+
+    expect(onProbe).not.toHaveBeenCalled()
+    vi.useRealTimers()
   })
 })
 
