@@ -6,28 +6,34 @@
 //! routing, so the interconnect term is estimated purely from net fanout — the
 //! same reason a vendor's post-synth numbers are labelled "estimated".
 //!
-//! # Accuracy: currently poor, and the coefficients are known to be wrong
+//! # Calibration basis: Vivado's estimator on *our own* netlists
 //!
-//! These presets were fitted in #51 against adder/mux sweeps and scored ~6% mean
-//! error **on that set**. That number does not generalize and should not be
-//! quoted: measured against a representative corpus (`calibration/`, 24 designs
-//! x 3 families), the mean absolute error is **~74%**. The adders-only corpus hid this, because adder paths are carry-
-//! dominated and two large errors cancel there — `lut_ps` is ~3x Vivado's real
-//! LUT delay (~124 ps) while `net_base_ps` is ~2-3x too small.
+//! The Xilinx presets are fitted against Vivado 2026.1's post-synthesis
+//! `report_timing` run on **the netlists this app produces** (Yosys
+//! `synth_xilinx` with the shipped `-nowidelut` default, exported as EDIF and
+//! imported into Vivado, out-of-context, -1 speed grade). Same netlist on both
+//! sides, so the delay model is the only variable. Earlier fits compared our
+//! model on the Yosys netlist against Vivado's model on *Vivado's own,
+//! structurally different* netlist — an ill-posed target (two variables at
+//! once) that forced coefficients to absorb a ~2x depth ratio; those scored
+//! ~74% mean error, and physically true per-cell values scored *worse* (91.5%)
+//! against it.
 //!
-//! The dominant cause is **structural, not coefficient error**. Our Yosys graph
-//! is ~2x deeper than Vivado's logic levels for the same RTL (median over the
-//! corpus; `prio_case_w32` is 9 vs 3). Yosys emits chains of small LUTs where
-//! Vivado packs LUT6, and infers FF chains where Vivado infers `SRL16E`. Feeding
-//! Vivado's *true* per-stage delays into a 2x-deeper netlist necessarily
-//! overestimates ~2x — verified: a refit to real measured values scores **91.5%**,
-//! *worse* than the 74% these compensating-error coefficients achieve (`lut_ps`
-//! ~3x high cancelling `net_base_ps` ~3x low on carry-dominated paths).
+//! Against the well-posed target (24-design corpus x 3 families, 56 scored
+//! paths), these coefficients land at **15.6% mean / 10.7% median** absolute
+//! error vs Vivado's data-path estimate: Series-7 12.9%/9.4%, UltraScale
+//! 18.6%/15.8%, UltraScale+ 15.4%/11.5%. Individual paths can still be off by
+//! 40-60% — the worst cases are designs where Vivado's estimator picks a
+//! structurally different worst path than we do (e.g. `inferred_fifo_d16` on
+//! Series-7: our depth-4 memory path vs its 1-level path).
 //!
-//! So fitting per-stage coefficients against a structurally different netlist's
-//! totals is ill-posed: they are forced to absorb the depth ratio and cannot also
-//! be physically true. Use the Vivado backend when you want Vivado's netlist
-//! timed — that makes the comparison well-posed.
+//! The cell terms are physical: Vivado's own per-cell charges along real paths
+//! of our netlists (path tables / `get_speed_models`). Only the two net terms
+//! are fitted numerically, per family (see `calibration/README.md` for the
+//! method and its traps). One modelling compromise is documented per preset:
+//! a single `carry_ps` cannot represent chain entry vs cascade, and the right
+//! constant differs by family — Series-7 wants the amortized mean, UltraScale
+//! and UltraScale+ want the near-free cascade arc.
 //!
 //! [`DelayModel::net_delay_to_ps`] treating any net into a carry chain as free is
 //! **correct**, and measurement backs it: over the full corpus the median
@@ -37,8 +43,10 @@
 //! documented (UG474: "dedicated routing connects the carry chain up a column of
 //! slices").
 //!
-//! Treat the estimate as a **relative** guide — depth and delay ordering are far
-//! more trustworthy than the absolute picoseconds.
+//! The estimate is still pre-place-and-route: both we and Vivado are
+//! *estimating* interconnect at this stage, so agreement with Vivado's
+//! estimate is not agreement with routed silicon. Depth and delay ordering
+//! remain more trustworthy than any individual path's picoseconds.
 //!
 //! The Lattice (iCE40/ECP5) and `generic` presets are NOT vendor-calibrated
 //! (no Lattice tool available); they are scaled to the same picosecond scale.
@@ -176,49 +184,68 @@ impl Default for DelayModel {
 }
 
 impl DelayModel {
-    /// Xilinx 7-series (28nm, xc7a35t -1). Calibrated against Vivado 2026.1
-    /// post-synthesis `report_timing` on adder/mux sweeps: CARRY4 ≈ 0.12 ns/stage,
-    /// general net ≈ the flat ~0.49 ns two-net adder route (carry-chain nets are
-    /// dedicated — see `net_delay_to_ps`).
+    /// Xilinx 7-series (28nm, xc7a35t -1). Cell terms are Vivado 2026.1's own
+    /// per-cell charges along real paths of *our* netlists (EDIF import; see
+    /// module docs): LUT 143 ps is the corpus-weighted mean arc (the common
+    /// LUT6 arc is 124), CARRY4 192 ps amortizes chain entry (S→CO ~533) /
+    /// cascade (CI→CO 117) / exit (CI→O ~330) at the corpus's chain lengths,
+    /// FDRE C→Q is 456, and RAMD32 read ~315 sets `cell_ps`. The net base is
+    /// fitted per family against the same measurement (the measured per-net
+    /// median is 657 with per-design spread 413–947; the fit lands higher
+    /// partly because our worst path may launch from an input while Vivado's
+    /// always starts with a clk-to-Q); the fanout slope is the shared
+    /// within-design regression over Vivado's per-net estimates.
     pub fn series7() -> Self {
         Self {
-            lut_ps: 360.0,
-            carry_ps: 135.0,
-            wide_mux_ps: 320.0,
+            lut_ps: 143.0,
+            carry_ps: 192.0,
+            wide_mux_ps: 250.0,
             cell_ps: 320.0,
-            ff_clk_to_q_ps: 620.0,
+            ff_clk_to_q_ps: 456.0,
             ff_setup_ps: 40.0,
-            net_base_ps: 190.0,
-            net_per_fanout_ps: 50.0,
+            net_base_ps: 773.0,
+            net_per_fanout_ps: 29.0,
         }
     }
 
-    /// Xilinx UltraScale (20nm, xcku025 -1). Calibrated against Vivado: much
-    /// faster CARRY8 (~0.02 ns per yosys-CARRY4-equivalent) and lower routing.
+    /// Xilinx UltraScale (20nm, xcku035 -1). Same basis as [`Self::series7`].
+    /// Unlike Series-7, the amortized per-CARRY8 mean (~210 ps) badly misfits:
+    /// Vivado's worst path enters a carry chain near its top bit because the
+    /// CIN→CO7 cascade is nearly free, so `carry_ps` is anchored to that
+    /// cascade arc (35 ps) and the entry cost is absorbed by the fitted net
+    /// base. FDRE C→Q 140 and LUT 136 are Vivado's path-table charges; MUXF7
+    /// ~110 from `get_speed_models`; RAMD32 scaled from the Series-7
+    /// measurement (no US path data).
     pub fn ultrascale() -> Self {
         Self {
-            lut_ps: 180.0,
-            carry_ps: 30.0,
-            wide_mux_ps: 180.0,
-            cell_ps: 180.0,
-            ff_clk_to_q_ps: 320.0,
+            lut_ps: 136.0,
+            carry_ps: 35.0,
+            wide_mux_ps: 110.0,
+            cell_ps: 300.0,
+            ff_clk_to_q_ps: 140.0,
             ff_setup_ps: 30.0,
-            net_base_ps: 140.0,
-            net_per_fanout_ps: 35.0,
+            net_base_ps: 136.0,
+            net_per_fanout_ps: 28.0,
         }
     }
 
-    /// Xilinx UltraScale+ (16nm FinFET, xcku5p -1). Calibrated against Vivado.
+    /// Xilinx UltraScale+ (16nm FinFET, xcku5p -1). Same basis as
+    /// [`Self::ultrascale`], with cell anchors scaled by the per-arc
+    /// UltraScale+/UltraScale ratios from `get_speed_models` (cascade 0.8x,
+    /// FF C→Q 98 ps = the low speed-model variant, matching how Vivado charged
+    /// the low variant on UltraScale paths; LUTs are *not* faster than
+    /// UltraScale's). Net terms fitted; Vivado's unplaced route estimate here
+    /// is tiny and often literally zero.
     pub fn ultrascale_plus() -> Self {
         Self {
-            lut_ps: 140.0,
-            carry_ps: 22.0,
-            wide_mux_ps: 150.0,
-            cell_ps: 150.0,
-            ff_clk_to_q_ps: 210.0,
+            lut_ps: 146.0,
+            carry_ps: 28.0,
+            wide_mux_ps: 90.0,
+            cell_ps: 200.0,
+            ff_clk_to_q_ps: 98.0,
             ff_setup_ps: 25.0,
-            net_base_ps: 95.0,
-            net_per_fanout_ps: 25.0,
+            net_base_ps: 51.0,
+            net_per_fanout_ps: 20.0,
         }
     }
 

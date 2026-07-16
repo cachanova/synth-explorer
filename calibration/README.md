@@ -6,6 +6,16 @@ Vivado's `report_timing` on a **synthesized, not placed** design — the same th
 the app reports. It is not timing closure; there is no placement, so both Vivado
 and we estimate interconnect rather than measure it.
 
+The canonical fit target is Vivado's estimator run on **our own netlists**:
+Yosys `synth_xilinx` output (with the app's `-nowidelut` default), exported as
+EDIF and imported into Vivado out-of-context, then timed at the -1 grade. Same
+netlist on both sides, so the delay model is the only variable. Do **not** fit
+against Vivado timing its own synthesis of the RTL: Vivado's netlist is
+structurally different (~2x shallower — LUT6 packing, `SRL16E` inference), so
+coefficients fitted to its totals must absorb the depth ratio and cannot also
+be physically true. That ill-posed target is what the pre-2026 ~74%-error
+coefficients were fitted to.
+
 The quantity compared is Vivado's **`Data Path Delay`**, which is
 clock-to-Q + logic + route. Setup is *not* in it (Vivado folds setup into slack),
 so it pairs with our `launch + logic + net` and deliberately excludes our `setup`
@@ -163,12 +173,38 @@ a handful of designs can land entirely in the minority mode and report 650 as
 It is right: the median is 0.000, matching the dedicated carry routing UG474
 documents. Always check `zeros` and `distinct` counts before believing a median.
 
-## Fitting the net terms: always use per-design intercepts
+## Fitting: cells are measured, only the net terms are fitted
 
-`net_delay = net_base_ps + net_per_fanout_ps * log2(fanout)`.
+The cell terms (`lut_ps`, `carry_ps`, `ff_clk_to_q_ps`, …) are **not fitted**:
+they come straight from Vivado's own per-cell charges along real paths of our
+EDIF-imported netlists (`cells.tcl` `CELL:` rows, cross-checked against
+`speed_models.tcl`). Now that the netlist matches, those physical values
+transfer. The one judgment call is `carry_ps`: a single constant cannot
+represent chain entry (S→CO, ~533 ps on Series-7) vs cascade (CI→CO, 117 ps),
+and the right compromise differs by family. Series-7 uses the corpus-weighted
+mean charge per CARRY4 (192 ps). UltraScale/UltraScale+ must use the cascade
+arc (35/28 ps): their cascade is nearly free, so Vivado's worst path enters
+chains near the top bit and an amortized mean overestimates long chains badly.
 
-**Never fit this by pooling nets across designs.** Each design sits at its own
-baseline net delay, so a pooled regression measures the design mix, not the
+`net_delay = net_base_ps + net_per_fanout_ps * log2(fanout)` supplies the only
+fitted numbers, per family:
+
+- `net_per_fanout_ps` comes from the `NET:` rows (see below).
+- `net_base_ps` is then least-squares fitted on the EDIF target's per-case
+  totals with every other term held fixed. The Series-7 fit (773 ps) lands
+  above the directly measured per-net median (657 ps, per-design spread
+  413–947): partly real spread, partly that our worst path may launch from an
+  input (zero launch) where Vivado's data path always starts with a clk-to-Q.
+  On UltraScale the per-net measurement (252 ps) actively misfits the target —
+  Vivado's US/US+ unplaced route estimates are bimodal and often literally
+  0.000 — so the fitted values (136/51 ps) are the ones shipped.
+
+When fitting from `NET:` rows, exclude nets whose *sink* is a carry cell —
+`net_delay_to_ps` charges those 0 (dedicated routing), so leaving them in drags
+every carry-heavy design's intercept toward zero.
+
+**Never fit net terms by pooling nets across designs.** Each design sits at its
+own baseline net delay, so a pooled regression measures the design mix, not the
 silicon. On Series-7 the pooled fit reports r = **-0.09** and a *negative* slope
 — "post-synthesis routing has no fanout dependence". That is Simpson's paradox:
 within `barrel_w32` alone the correlation is r = **+0.95**. `adder_chain_w32n4`'s

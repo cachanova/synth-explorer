@@ -3835,19 +3835,27 @@ mod tests {
         let model = DelayModel::series7();
         let est = analysis.estimate_timing(&graph, &model);
         let bd = est.breakdown.expect("a registered design has a breakdown");
-        // The reported path is a real FF->FF hop: a register launches it
-        // (clk-to-Q) and no logic sits between the two registers. The bug
-        // reported launch=0 with logic=2x the buffer delay (IBUF + BUFG).
-        assert_eq!(bd.launch_ns, model.ff_clk_to_q_ps / 1000.0);
-        assert_eq!(
-            bd.logic_ns, 0.0,
-            "no clock buffer delay is on the data path"
+        // The reported path must be a *data* path. Which one is worst depends
+        // on the coefficients — a bare FF->FF hop (clk-to-Q + route) or a data
+        // input through its IBUF (two routes + one cell) — but the clock chain
+        // (IBUF + BUFG + every FF's C pin) must never be walked. The bug
+        // charged both clock buffers as logic: logic_ns of 2x cell_ps. A data
+        // path through at most the port IBUF can never carry more than one.
+        assert!(
+            bd.logic_ns <= model.cell_ps / 1000.0 + 1e-9,
+            "at most the data-port IBUF is logic, never the IBUF+BUFG clock \
+             chain: {} ns",
+            bd.logic_ns,
         );
         assert_eq!(bd.setup_ns, model.ff_setup_ps / 1000.0);
         let delay = est.delay_ns.expect("a registered design has an estimate");
+        // Exactly the worse of the two real data paths, from the model itself.
+        let ff_hop = model.ff_clk_to_q_ps + model.net_delay_ps(1);
+        let input_hop = 2.0 * model.net_delay_ps(1) + model.cell_ps;
+        let expected = (ff_hop.max(input_hop) + model.ff_setup_ps) / 1000.0;
         assert!(
-            (delay - 0.850).abs() < 1e-9,
-            "clk-to-Q + one route + setup, not the 1.50 ns clock tree: {delay}",
+            (delay - expected).abs() < 1e-9,
+            "a data path, not the clock tree: {delay} vs {expected}",
         );
     }
 
@@ -3874,9 +3882,10 @@ mod tests {
         assert_eq!(bd.logic_ns, 0.0, "a direct FF->FF hop has no logic levels");
         assert_eq!(bd.net_ns, model.net_delay_ps(1) / 1000.0);
         assert_eq!(bd.setup_ns, model.ff_setup_ps / 1000.0);
+        let expected = (model.ff_clk_to_q_ps + model.net_delay_ps(1) + model.ff_setup_ps) / 1000.0;
         assert!(
-            (delay - 0.850).abs() < 1e-9,
-            "launch + net + setup: {delay}"
+            (delay - expected).abs() < 1e-9,
+            "launch + net + setup: {delay} vs {expected}"
         );
         // The overview figure agrees with the stats the API serves.
         assert_eq!(analysis.stats.estimated_delay_ns, Some(delay));
