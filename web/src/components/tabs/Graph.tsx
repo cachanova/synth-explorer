@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
-import { presentGraphForFocus } from '../../lib/graphFocus'
+import { contextRootsFor } from '../../lib/graphContext'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
-import { createLatestGuard } from '../../lib/latest'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
@@ -17,7 +16,20 @@ interface FetchedSubgraph {
   designId: string
   requestKey: string
   graph: Subgraph
-  highlight: number[]
+  relevantIds: number[]
+  overlayIds: number[]
+  contextRoots: number[]
+}
+
+interface ContextSubgraph {
+  requestKey: string
+  graph: Subgraph
+}
+
+interface ExpansionState {
+  graph: Subgraph
+  droppedNodes: number
+  droppedEdges: number
 }
 
 interface DisplayedGraph {
@@ -25,11 +37,14 @@ interface DisplayedGraph {
   requestKey: string
   subgraph: Subgraph
   graph: LaidOutGraph
-  highlight: number[]
+  relevantIds: number[]
+  overlayIds: number[]
 }
 
 interface FullGraphCacheEntry {
+  baseKey: string
   key: string
+  ownerKey: string
   controller: AbortController
   promise: Promise<Subgraph>
 }
@@ -68,7 +83,8 @@ export function Graph({ active }: { active: boolean }) {
   const [fetchedSubgraph, setFetchedSubgraph] = useState<FetchedSubgraph | null>(null)
   // Neighborhoods accumulated from double-click expansions, merged on top of the
   // base subgraph before layout. Reset whenever a new base subgraph is fetched.
-  const [expansionGraph, setExpansionGraph] = useState<Subgraph | null>(null)
+  const [contextSubgraph, setContextSubgraph] = useState<ContextSubgraph | null>(null)
+  const [expansionState, setExpansionState] = useState<ExpansionState | null>(null)
   const [displayedGraph, setDisplayedGraph] = useState<DisplayedGraph | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -76,15 +92,14 @@ export function Graph({ active }: { active: boolean }) {
   const [sourceStatus, setSourceStatus] = useState<LineConeStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
-  const requestGuardRef = useRef<ReturnType<typeof createLatestGuard> | null>(null)
-  if (!requestGuardRef.current) requestGuardRef.current = createLatestGuard()
-  const requestGuard = requestGuardRef.current
+  const reqSeq = useRef(0)
+  const expansionControllers = useRef(new Set<AbortController>())
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
-  // One full projection, whether in flight or resolved, is enough for repeated
-  // Focus-off selections.
-  // The key includes every server option that changes /netlist output, and the
-  // single-entry shape bounds retained memory when designs or options change.
+  const displayedGraphRef = useRef<DisplayedGraph | null>(null)
+  // One context projection, whether in flight or resolved, is enough for all
+  // toggles of the current selection. The single-entry cache bounds memory and
+  // is replaced when the relevant roots or server options change.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
 
   useEffect(() => {
@@ -99,7 +114,7 @@ export function Graph({ active }: { active: boolean }) {
   }, [active, clearGraphSelection])
 
   // Every option here changes what the server returns, so a change refetches.
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.focus}|${graphOptions.groupVectors}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}`
   const fullGraphKey = design
     ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.groupVectors}|${graphOptions.hideControl}|${graphOptions.hideConst}`
     : null
@@ -114,7 +129,7 @@ export function Graph({ active }: { active: boolean }) {
   // only when the design or an actual /netlist option changes, or on unmount.
   useEffect(() => {
     const cached = fullGraphCache.current
-    if (cached && cached.key !== fullGraphKey) {
+    if (cached && cached.baseKey !== fullGraphKey) {
       cached.controller.abort()
       fullGraphCache.current = null
     }
@@ -123,8 +138,49 @@ export function Graph({ active }: { active: boolean }) {
     () => () => {
       fullGraphCache.current?.controller.abort()
       fullGraphCache.current = null
+      for (const inFlight of expansionControllers.current) inFlight.abort()
+      expansionControllers.current.clear()
     },
     [],
+  )
+
+  const fetchFullGraph = useCallback(
+    (requestDesignId: string, around: number[] = [], ownerKey = currentRequestKey) => {
+      if (fullGraphKey == null) return Promise.reject(new Error('missing graph cache key'))
+      if (ownerKey == null) return Promise.reject(new Error('missing graph request owner'))
+      const key = `${fullGraphKey}|${around.join(',')}`
+      const cached = fullGraphCache.current
+      if (cached?.key === key && cached.ownerKey === ownerKey) return cached.promise
+      cached?.controller.abort()
+      const fullController = new AbortController()
+      let entry: FullGraphCacheEntry
+      const promise = getNetlist(
+        requestDesignId,
+        {
+          max_nodes: graphOptions.maxNodes,
+          show_infrastructure: false,
+          group_vectors: graphOptions.groupVectors,
+          hide_control: graphOptions.hideControl,
+          hide_const: graphOptions.hideConst,
+          around,
+        },
+        fullController.signal,
+      ).catch((error) => {
+        if (fullGraphCache.current === entry) fullGraphCache.current = null
+        throw error
+      })
+      entry = { baseKey: fullGraphKey, key, ownerKey, controller: fullController, promise }
+      fullGraphCache.current = entry
+      return promise
+    },
+    [
+      fullGraphKey,
+      currentRequestKey,
+      graphOptions.groupVectors,
+      graphOptions.hideConst,
+      graphOptions.hideControl,
+      graphOptions.maxNodes,
+    ],
   )
 
   // A request can change while analysis is stale. Clear the previous source
@@ -141,7 +197,10 @@ export function Graph({ active }: { active: boolean }) {
     if (!active) return
     if (!design || fullGraphKey == null) {
       setFetchedSubgraph(null)
+      setContextSubgraph(null)
+      setExpansionState(null)
       setDisplayedGraph(null)
+      displayedGraphRef.current = null
       loadedRequestKey.current = null
       laidOutSubgraph.current = null
       return
@@ -154,36 +213,17 @@ export function Graph({ active }: { active: boolean }) {
     if (requestKey == null) return
     if (loadedRequestKey.current === requestKey) return
 
-    const myReq = requestGuard.begin()
+    const myReq = ++reqSeq.current
+    for (const inFlight of expansionControllers.current) inFlight.abort()
+    expansionControllers.current.clear()
     const controller = new AbortController()
     setLoading(true)
     setError(null)
-    setExpansionGraph(null)
+    setContextSubgraph(null)
+    setExpansionState(null)
     setSourceStatus(null)
     setSourceControl(false)
     if (request?.kind !== 'source') setSelected(null)
-    const fetchFullGraph = () => {
-      const cached = fullGraphCache.current
-      if (cached?.key === fullGraphKey) return cached.promise
-      cached?.controller.abort()
-      const fullController = new AbortController()
-      let entry: FullGraphCacheEntry
-      const promise = getNetlist(
-        requestDesignId,
-        graphOptions.maxNodes,
-        false,
-        graphOptions.groupVectors,
-        graphOptions.hideControl,
-        graphOptions.hideConst,
-        fullController.signal,
-      ).catch((error) => {
-        if (fullGraphCache.current === entry) fullGraphCache.current = null
-        throw error
-      })
-      entry = { key: fullGraphKey, controller: fullController, promise }
-      fullGraphCache.current = entry
-      return promise
-    }
     const fetchRelevantGraph =
       request?.kind === 'source'
         ? getLineCone(requestDesignId, {
@@ -221,43 +261,36 @@ export function Graph({ active }: { active: boolean }) {
           : null
     const fetchP =
       fetchRelevantGraph == null
-        ? fetchFullGraph().then((graph) => ({
+        ? fetchFullGraph(requestDesignId).then((graph) => ({
             graph,
             status: null,
             control: false,
             highlight: [],
           }))
-        : Promise.all([
-            fetchRelevantGraph,
-            graphOptions.focus ? Promise.resolve(null) : fetchFullGraph(),
-          ]).then(
-            ([relevant, full]) => {
-              const presentation = presentGraphForFocus(
-                relevant.graph,
-                full,
-                graphOptions.focus,
-                graphOptions.maxNodes,
-              )
-              return {
-                ...relevant,
-                graph: presentation.graph,
-                highlight: [
-                  ...relevant.highlight,
-                  ...presentation.relevanceHighlight,
-                ],
-              }
-            },
-          )
+        : fetchRelevantGraph
     fetchP
       .then(({ graph, status, control, highlight }) => {
-        if (controller.signal.aborted || !requestGuard.isCurrent(myReq)) return
+        if (controller.signal.aborted || myReq !== reqSeq.current) return
         loadedRequestKey.current = requestKey
         setSourceControl(control)
         const presentation = sourceProbePresentation(status)
         // A partial mapping is still useful and replaces the prior selection.
         if (presentation.acceptReturnedGraph) {
           setSourceStatus(status)
-          setFetchedSubgraph({ designId: requestDesignId, requestKey, graph, highlight })
+          const overlayIds = [
+            ...(request?.highlight ?? []),
+            ...(request?.kind === 'source' && presentation.highlightSelection
+              ? highlight
+              : []),
+          ]
+          setFetchedSubgraph({
+            designId: requestDesignId,
+            requestKey,
+            graph,
+            relevantIds: request == null ? [] : graph.nodes.map((node) => node.id),
+            overlayIds,
+            contextRoots: request == null ? [] : contextRootsFor(request, graph, highlight),
+          })
           if (status != null) setSelected(null)
         }
         // Nothing synthesizable maps to this selection — fall back to the full
@@ -271,45 +304,117 @@ export function Graph({ active }: { active: boolean }) {
         }
       })
       .catch((e) => {
-        if (controller.signal.aborted || !requestGuard.isCurrent(myReq)) return
+        if (controller.signal.aborted || myReq !== reqSeq.current) return
         setError(e instanceof ApiRequestError ? e.message : String(e))
         setLoading(false)
       })
     return () => controller.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch, fullGraphKey])
+  }, [active, analysisState, design?.design_id, coneReq?.nonce, optsKey, requestDesignMismatch, fullGraphKey, fetchFullGraph])
+
+  // Context is loaded at most once for a relevant request, the first time the
+  // user turns Focus off. It is retained thereafter so toggles are CSS-only.
+  useEffect(() => {
+    if (!active || graphOptions.focus || analysisState !== 'current') return
+    if (!design || !fetchedSubgraph || fetchedSubgraph.relevantIds.length === 0) return
+    if (fetchedSubgraph.requestKey !== currentRequestKey) return
+    if (contextSubgraph?.requestKey === fetchedSubgraph.requestKey) return
+    const owner = fetchedSubgraph
+    let cancelled = false
+    fetchFullGraph(design.design_id, owner.contextRoots, owner.requestKey)
+      .then((graph) => {
+        if (cancelled) return
+        if (loadedRequestKey.current !== owner.requestKey) return
+        setContextSubgraph({ requestKey: owner.requestKey, graph })
+      })
+      .catch((e) => {
+        if (cancelled) return
+        setError(e instanceof ApiRequestError ? e.message : String(e))
+      })
+    return () => {
+      cancelled = true
+      const cached = fullGraphCache.current
+      if (cached?.ownerKey === owner.requestKey) {
+        cached.controller.abort()
+        fullGraphCache.current = null
+      }
+    }
+  }, [
+    active,
+    analysisState,
+    contextSubgraph?.requestKey,
+    currentRequestKey,
+    design,
+    fetchedSubgraph,
+    fetchFullGraph,
+    graphOptions.focus,
+  ])
 
   // The rendered subgraph is the fetched base with every double-click expansion
   // merged on top. Memoized so a tab switch does not rebuild it and force a
   // needless relayout.
-  const combinedSubgraph = useMemo(() => {
+  const combined = useMemo(() => {
     if (!fetchedSubgraph) return null
-    return mergeSubgraphs(fetchedSubgraph.graph, expansionGraph, MAX_GRAPH_RENDER_NODES)
-  }, [fetchedSubgraph, expansionGraph])
+    const context =
+      contextSubgraph?.requestKey === fetchedSubgraph.requestKey
+        ? contextSubgraph.graph
+        : null
+    const contextual = mergeSubgraphs(
+      fetchedSubgraph.graph,
+      context,
+      graphOptions.maxNodes,
+    )
+    const expanded = mergeSubgraphs(
+      contextual.graph,
+      expansionState?.graph ?? null,
+      MAX_GRAPH_RENDER_NODES,
+    )
+    return {
+      graph: expanded.graph,
+      relevantIds: [
+        ...fetchedSubgraph.relevantIds,
+        ...(expansionState?.graph.nodes.map((node) => node.id) ?? []),
+      ],
+      expansionDroppedNodes:
+        (expansionState?.droppedNodes ?? 0) + expanded.droppedNodes,
+      expansionDroppedEdges:
+        (expansionState?.droppedEdges ?? 0) + expanded.droppedEdges,
+    }
+  }, [contextSubgraph, expansionState, fetchedSubgraph, graphOptions.maxNodes])
+  const combinedSubgraph = combined?.graph ?? null
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
     if (!active) return
     if (!fetchedSubgraph || !combinedSubgraph) return
+    if (fetchedSubgraph.requestKey !== currentRequestKey) return
     if (laidOutSubgraph.current === combinedSubgraph) return
     const owner = fetchedSubgraph
     const toLayout = combinedSubgraph
+    const previousDisplay = displayedGraphRef.current
+    const additive =
+      previousDisplay?.designId === owner.designId &&
+      previousDisplay.requestKey === owner.requestKey
+    const previousLayout = additive ? previousDisplay.graph : undefined
     let cancelled = false
     const controller = new AbortController()
     setLoading(true)
-    layoutSubgraph(toLayout, controller.signal)
+    layoutSubgraph(toLayout, controller.signal, previousLayout)
       .then((g) => {
         if (cancelled) return
-        setDisplayedGraph({
+        const nextDisplay = {
           designId: owner.designId,
           requestKey: owner.requestKey,
           subgraph: toLayout,
           graph: g,
-          highlight: owner.highlight,
-        })
+          relevantIds: combined?.relevantIds ?? owner.relevantIds,
+          overlayIds: owner.overlayIds,
+        }
+        displayedGraphRef.current = nextDisplay
+        setDisplayedGraph(nextDisplay)
         laidOutSubgraph.current = toLayout
         setLoading(false)
-        setFitNonce((n) => n + 1)
+        if (!additive) setFitNonce((n) => n + 1)
       })
       .catch((e) => {
         if (cancelled || controller.signal.aborted) return
@@ -321,7 +426,7 @@ export function Graph({ active }: { active: boolean }) {
       cancelled = true
       controller.abort()
     }
-  }, [active, fetchedSubgraph, combinedSubgraph])
+  }, [active, fetchedSubgraph, combined, combinedSubgraph, currentRequestKey])
 
   const sub = displayedGraph?.subgraph ?? null
   const laid = displayedGraph?.graph ?? null
@@ -330,35 +435,34 @@ export function Graph({ active }: { active: boolean }) {
     displayedGraph?.designId,
   )
   const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
-  const graphInteractive = analysisState === 'current' && displayedDesignCurrent
   const sourcePresentation = sourceProbePresentation(sourceStatus)
-  const displayedRequestHighlight = useMemo(
-    () =>
-      isDisplayedRequestCurrent(
-        currentRequestKey,
-        fetchedSubgraph?.requestKey,
-        displayedGraph?.requestKey,
-      )
-        ? (displayedGraph?.highlight ?? [])
-        : [],
-    [currentRequestKey, fetchedSubgraph?.requestKey, displayedGraph?.requestKey, displayedGraph?.highlight],
+  const displayedRequestCurrent = isDisplayedRequestCurrent(
+    currentRequestKey,
+    fetchedSubgraph?.requestKey,
+    displayedGraph?.requestKey,
   )
-
-  const highlight = useMemo(() => {
-    const ids = new Set<number>([
-      ...(coneReq?.highlight ?? []),
-      ...(coneReq?.kind !== 'source' || sourcePresentation.highlightSelection
-        ? displayedRequestHighlight
-        : []),
-    ])
+  const graphInteractive =
+    analysisState === 'current' && displayedDesignCurrent && displayedRequestCurrent
+  const relevantIds = useMemo(
+    () =>
+      new Set<number>(
+        displayedRequestCurrent ? (displayedGraph?.relevantIds ?? []) : [],
+      ),
+    [displayedGraph?.relevantIds, displayedRequestCurrent],
+  )
+  const overlayIds = useMemo(() => {
+    const ids = new Set<number>(
+      displayedRequestCurrent ? (displayedGraph?.overlayIds ?? []) : [],
+    )
     // A grouped bus node collapses per-bit ids the highlight set names, so it
     // must highlight when any of its members does (e.g. a path through a bus).
     for (const node of sub?.nodes ?? []) {
       if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
     }
     return ids
-  }, [coneReq, sourcePresentation.highlightSelection, displayedRequestHighlight, sub])
-  const rootId = coneReq?.kind === 'cone' ? coneReq.node : -1
+  }, [displayedGraph?.overlayIds, displayedRequestCurrent, sub])
+  const rootId =
+    displayedRequestCurrent && coneReq?.kind === 'cone' ? coneReq.node : -1
 
   // Net driven by the selected node (first outgoing edge) — lets the detail
   // card show a readable identity for hidden-name cells.
@@ -373,13 +477,20 @@ export function Graph({ active }: { active: boolean }) {
   const designId = design?.design_id
   const onExpand = useCallback(
     (node: GraphNode) => {
-      if (!designId) return
-      const ids = node.members ?? [node.id]
+      if (!designId || !graphInteractive || !displayedGraph?.requestKey) return
+      setError(null)
+      // Group projections expose a stable synthetic id. The grouped API
+      // contract resolves that id server-side, avoiding unbounded query strings
+      // and the public 200-root limit for wide vectors.
+      const ids = [node.id]
       // Guard on the last-started request sequence (bumped when a new base
       // fetch begins), not the last-completed key — otherwise an expansion that
       // resolves while a new base cone is still in-flight would leak stale nodes
-      // into it, and setExpansionGraph(null) at fetch start would not clear them.
-      const owner = requestGuard.current()
+      // into it, and clearing expansion state at fetch start would not stop it.
+      const owner = reqSeq.current
+      const ownerKey = displayedGraph.requestKey
+      const controller = new AbortController()
+      expansionControllers.current.add(controller)
       const shared = {
         node: ids[0],
         nodes: ids.length > 1 ? ids : undefined,
@@ -391,34 +502,74 @@ export function Graph({ active }: { active: boolean }) {
         group_vectors: graphOptions.groupVectors,
       }
       Promise.all([
-        getCone(designId, { ...shared, dir: 'fanin' }),
-        getCone(designId, { ...shared, dir: 'fanout' }),
+        getCone(designId, { ...shared, dir: 'fanin' }, controller.signal),
+        getCone(designId, { ...shared, dir: 'fanout' }, controller.signal),
       ])
         .then(([fanin, fanout]) => {
           // Drop stale results if a new base fetch started while fetching.
-          if (!requestGuard.isCurrent(owner)) return
+          if (
+            controller.signal.aborted ||
+            reqSeq.current !== owner ||
+            currentRequestKey !== ownerKey ||
+            loadedRequestKey.current !== ownerKey
+          ) return
           // A depth-1 neighborhood is deliberately shallow, so its truncated
           // flag (hit the depth limit) is expected and must not mark the whole
           // view truncated — only the base cone and render cap do that.
           const clear = (g: Subgraph): Subgraph => ({ ...g, truncated: false })
-          setExpansionGraph((prev) => {
-            const acc = prev ?? { nodes: [], edges: [], truncated: false }
-            return mergeSubgraphs(
-              mergeSubgraphs(acc, clear(fanin), MAX_GRAPH_RENDER_NODES),
+          setExpansionState((prev) => {
+            const acc = prev?.graph ?? { nodes: [], edges: [], truncated: false }
+            const withFanin = mergeSubgraphs(
+              acc,
+              clear(fanin),
+              MAX_GRAPH_RENDER_NODES,
+            )
+            const withFanout = mergeSubgraphs(
+              withFanin.graph,
               clear(fanout),
               MAX_GRAPH_RENDER_NODES,
             )
+            return {
+              graph: withFanout.graph,
+              droppedNodes:
+                (prev?.droppedNodes ?? 0) +
+                withFanin.droppedNodes +
+                withFanout.droppedNodes,
+              droppedEdges:
+                (prev?.droppedEdges ?? 0) +
+                withFanin.droppedEdges +
+                withFanout.droppedEdges,
+            }
           })
         })
-        .catch(() => {
-          // Expansion is best-effort; a failed neighborhood fetch leaves the
-          // current graph intact rather than surfacing an error.
+        .catch((e) => {
+          if (
+            controller.signal.aborted ||
+            reqSeq.current !== owner ||
+            currentRequestKey !== ownerKey ||
+            loadedRequestKey.current !== ownerKey
+          ) return
+          setError(
+            `Could not expand ${node.name || node.id}: ${
+              e instanceof ApiRequestError ? e.message : String(e)
+            }`,
+          )
         })
+        .finally(() => expansionControllers.current.delete(controller))
     },
-    [designId, graphOptions, requestGuard],
+    [
+      designId,
+      currentRequestKey,
+      displayedGraph?.requestKey,
+      graphInteractive,
+      graphOptions.groupVectors,
+      graphOptions.hideConst,
+      graphOptions.hideControl,
+      graphOptions.maxNodes,
+    ],
   )
 
-  const onSelect = useCallback(
+  const onGraphSelect = useCallback(
     (node: GraphNode | null) => {
       if (!graphInteractive) return
       setSelected(node)
@@ -426,7 +577,6 @@ export function Graph({ active }: { active: boolean }) {
     },
     [graphInteractive, highlightNodeSources],
   )
-
   const onControlSelect = useCallback(
     (control: NonNullable<GraphNode['controls']>[number]) => {
       if (!graphInteractive) return
@@ -438,21 +588,32 @@ export function Graph({ active }: { active: boolean }) {
     },
     [graphInteractive, openControlCone],
   )
+  const focusMode =
+    displayedRequestCurrent && relevantIds.size > 0
+      ? graphOptions.focus
+        ? 'on'
+        : 'off'
+      : undefined
 
   if (!design) return <div className="empty-state">No design yet.</div>
 
   return (
     <div className="graph-tab">
       <GraphToolbar graphInteractive={graphInteractive} />
-      <div className="graph-stage-wrap" style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
+      <div
+        className="graph-stage-wrap"
+        data-focus={focusMode}
+        style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}
+      >
         {laid && laid.nodes.length > 0 ? (
           <GraphView
             graph={laid}
             rootId={rootId}
-            highlight={highlight}
+            relevantIds={relevantIds}
+            overlayIds={overlayIds}
             selectedId={graphInteractive ? (selected?.id ?? null) : null}
             interactive={graphInteractive}
-            onSelect={onSelect}
+            onSelect={onGraphSelect}
             onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
             active={active}
@@ -513,6 +674,13 @@ export function Graph({ active }: { active: boolean }) {
               analysis limits omitted additional schematic content
             </span>
           )}
+          {(combined?.expansionDroppedNodes ?? 0) > 0 ||
+          (combined?.expansionDroppedEdges ?? 0) > 0 ? (
+            <span className="msg">
+              expansion reached the render cap — {combined?.expansionDroppedNodes ?? 0}{' '}
+              nodes and {combined?.expansionDroppedEdges ?? 0} edges omitted
+            </span>
+          ) : null}
           {sub && !sub.truncated && (
             <span className="graph-count">{sub.nodes.length} nodes · {sub.edges.length} edges</span>
           )}
@@ -665,7 +833,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
           focusAvailable
             ? graphOptions.focus
               ? 'Show only the logic relevant to this selection'
-              : 'Show the full capped diagram and highlight the relevant logic'
+              : 'Show nearby context dimmed around the relevant logic'
             : 'Focus applies to source selections and cones'
         }
       >

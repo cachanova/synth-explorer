@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   fitViewportToContent,
   panViewport,
+  preserveViewportAnchor,
   REG_BODY_HEIGHT,
   REG_CLOCK_Y_FRAC,
   REG_DATA_IN_Y_FRAC,
@@ -34,7 +35,8 @@ import type { ControlRef, GraphNode } from '../types'
 interface Props {
   graph: LaidOutGraph
   rootId: number
-  highlight: Set<number>
+  relevantIds: Set<number>
+  overlayIds: Set<number>
   selectedId: number | null
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
@@ -489,6 +491,7 @@ function ControlLabels({
 interface SchematicNodeProps {
   laidOutNode: LaidOutNode
   rootId: number
+  relevant: boolean
   highlighted: boolean
   selected: boolean
   portDirection: PortDirection
@@ -526,6 +529,7 @@ const GRAPH_NAVIGATION_KEYS = new Set<string>([
 const SchematicNode = memo(function SchematicNode({
   laidOutNode,
   rootId,
+  relevant,
   highlighted,
   selected,
   portDirection,
@@ -560,6 +564,10 @@ const SchematicNode = memo(function SchematicNode({
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       data-graph-node-id={node.id}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
+      data-relevant={relevant ? 1 : 0}
+      data-node-id={node.id}
+      data-member-count={node.members?.length}
+      data-boundary={node.is_boundary ? 'true' : undefined}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? tabIndex : undefined}
       aria-label={
@@ -649,7 +657,8 @@ const SchematicNode = memo(function SchematicNode({
 export const GraphView = memo(function GraphView({
   graph,
   rootId,
-  highlight,
+  relevantIds,
+  overlayIds,
   selectedId,
   interactive,
   onSelect,
@@ -661,6 +670,12 @@ export const GraphView = memo(function GraphView({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
+  const graphRef = useRef(graph)
+  graphRef.current = graph
+  const layoutHistory = useRef<{
+    graph: LaidOutGraph | null
+    fitNonce: number | null
+  }>({ graph: null, fitNonce: null })
   const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
   const panState = useRef<PanState | null>(null)
   const suppressClick = useRef(false)
@@ -850,21 +865,35 @@ export const GraphView = memo(function GraphView({
 
   const fit = useCallback(() => {
     const stage = stageRef.current
-    if (!stage || graph.nodes.length === 0) return
+    const currentGraph = graphRef.current
+    if (!stage || currentGraph.nodes.length === 0) return
     const rect = stage.getBoundingClientRect()
     const next = fitViewportToContent(
       rect.width,
       rect.height,
-      graph.width,
-      graph.height,
+      currentGraph.width,
+      currentGraph.height,
     )
     if (next) applyTransform(next)
-  }, [applyTransform, graph])
+  }, [applyTransform])
 
   useLayoutEffect(() => {
-    userAdjusted.current = false
-    fit()
-  }, [fit, fitNonce])
+    const previous = layoutHistory.current
+    if (previous.graph == null || previous.fitNonce !== fitNonce) {
+      userAdjusted.current = false
+      fit()
+    } else if (previous.graph !== graph) {
+      applyTransform(
+        preserveViewportAnchor(
+          transformRef.current,
+          previous.graph,
+          graph,
+          [selectedId, rootId],
+        ),
+      )
+    }
+    layoutHistory.current = { graph, fitNonce }
+  }, [applyTransform, fit, fitNonce, graph, rootId, selectedId])
 
   useEffect(() => {
     if (!active) return
@@ -1086,7 +1115,11 @@ export const GraphView = memo(function GraphView({
 
         <g ref={viewportRef}>
           {graph.edges.map((laidOutEdge, index) => {
-            const highlighted = highlight.has(laidOutEdge.from) && highlight.has(laidOutEdge.to)
+            const relevant =
+              relevantIds.size === 0 ||
+              (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
+            const highlighted =
+              overlayIds.has(laidOutEdge.from) && overlayIds.has(laidOutEdge.to)
             let points = laidOutEdge.points
             if (points.length < 2) {
               const from = metadata.nodeById.get(laidOutEdge.from)
@@ -1103,7 +1136,7 @@ export const GraphView = memo(function GraphView({
             const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
             const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
             return (
-              <g key={index}>
+              <g className="g-edge-wrap" key={index} data-relevant={relevant ? 1 : 0}>
                 <path
                   className={className}
                   d={pathD(points)}
@@ -1135,7 +1168,8 @@ export const GraphView = memo(function GraphView({
               key={laidOutNode.id}
               laidOutNode={laidOutNode}
               rootId={rootId}
-              highlighted={highlight.has(laidOutNode.id)}
+              relevant={relevantIds.size === 0 || relevantIds.has(laidOutNode.id)}
+              highlighted={overlayIds.has(laidOutNode.id)}
               selected={laidOutNode.id === selectedId}
               portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
               pins={metadata.pinsById.get(laidOutNode.id) ?? EMPTY_NODE_PINS}

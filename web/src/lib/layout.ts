@@ -75,6 +75,37 @@ export function zoomViewportAt(
   }
 }
 
+/** Keep a retained node at the same screen position after an additive layout. */
+export function preserveViewportAnchor(
+  transform: ViewportTransform,
+  previous: LaidOutGraph,
+  next: LaidOutGraph,
+  preferredIds: Array<number | null | undefined> = [],
+): ViewportTransform {
+  const previousById = new Map(previous.nodes.map((node) => [node.id, node]))
+  const nextById = new Map(next.nodes.map((node) => [node.id, node]))
+  const candidates = [
+    ...preferredIds,
+    ...previous.nodes.map((node) => node.id),
+  ]
+  for (const id of candidates) {
+    if (id == null) continue
+    const before = previousById.get(id)
+    const after = nextById.get(id)
+    if (!before || !after) continue
+    const beforeX = before.x + before.width / 2
+    const beforeY = before.y + before.height / 2
+    const afterX = after.x + after.width / 2
+    const afterY = after.y + after.height / 2
+    return {
+      ...transform,
+      x: transform.x + (beforeX - afterX) * transform.k,
+      y: transform.y + (beforeY - afterY) * transform.k,
+    }
+  }
+  return transform
+}
+
 /**
  * Center laid-out graph content in a viewport without relying on SVG viewBox
  * scaling. A hidden or not-yet-laid-out flex pane can transiently report a
@@ -188,7 +219,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 // the stack on very deep DAGs (e.g. a wide adder tree). BRANDES_KOEPF is the
 // robust fallback: slightly looser, never overflows. layoutSubgraph retries
 // with it when the premium strategy fails.
-export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF' | 'INTERACTIVE'
 
 // A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
 // triangle lower-west, and the data output (Q) at the east. These fractions of
@@ -207,8 +238,16 @@ function isRegKind(node: GraphNode): boolean {
 export function toElkGraph(
   sub: Subgraph,
   nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
+  previous?: LaidOutGraph,
 ): ElkNode {
   assertRenderableSubgraph(sub)
+  const previousById = new Map(
+    previous?.nodes.map((node) => [node.id, node] as const) ?? [],
+  )
+  const retainedPosition = (id: number) => {
+    const retained = previousById.get(id)
+    return retained ? { x: retained.x, y: retained.y } : {}
+  }
 
   // Distinct input/output pin names per node, so every component's edges route
   // to spread-out pins on the west/east sides instead of collapsing to the box
@@ -242,6 +281,7 @@ export function toElkGraph(
         id: String(n.id),
         width,
         height,
+        ...retainedPosition(n.id),
         layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
         ports: [
           {
@@ -261,7 +301,9 @@ export function toElkGraph(
     }
     const ins = inPins.get(n.id) ?? []
     const outs = outPins.get(n.id) ?? []
-    if (ins.length === 0 && outs.length === 0) return { id: String(n.id), width, height }
+    if (ins.length === 0 && outs.length === 0) {
+      return { id: String(n.id), width, height, ...retainedPosition(n.id) }
+    }
     const ports = [
       ...ins.map((pin, i) => ({
         id: `${n.id}#i:${pin}`,
@@ -280,6 +322,7 @@ export function toElkGraph(
       id: String(n.id),
       width,
       height,
+      ...retainedPosition(n.id),
       layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
       ports,
     }
@@ -309,6 +352,12 @@ export function toElkGraph(
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
       'elk.layered.nodePlacement.strategy': nodePlacement,
+      ...(previous
+        ? {
+            'elk.interactive': 'true',
+            'elk.interactiveLayout': 'true',
+          }
+        : {}),
     },
     children,
     edges,
@@ -403,11 +452,17 @@ const pending = new Map<
   number,
   { resolve: (g: ElkNode) => void; reject: (e: Error) => void }
 >()
-const LAYOUT_TIMEOUT_MS = 30_000
+export const LAYOUT_DEADLINE_MS = 10_000
 
 function abortError(): Error {
   const error = new Error('layout aborted')
   error.name = 'AbortError'
+  return error
+}
+
+function layoutTimeoutError(): Error {
+  const error = new Error('layout exceeded the 10 second safety deadline')
+  error.name = 'LayoutTimeoutError'
   return error
 }
 
@@ -475,8 +530,8 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
     })
     signal?.addEventListener('abort', onAbort, { once: true })
     timeout = setTimeout(
-      () => terminateWorker(w, new Error('elk layout timed out')),
-      LAYOUT_TIMEOUT_MS,
+      () => terminateWorker(w, layoutTimeoutError()),
+      LAYOUT_DEADLINE_MS,
     )
     const req: ElkRequest = { id, graph }
     w.postMessage(req)
@@ -499,10 +554,23 @@ export function placementForLayout(sub: Subgraph): NodePlacement {
     : 'NETWORK_SIMPLEX'
 }
 
+/** Interactive placement is bounded to the graph sizes where it is reliable. */
+export function placementForIncrementalLayout(sub: Subgraph): NodePlacement {
+  return placementForLayout(sub) === 'BRANDES_KOEPF'
+    ? 'BRANDES_KOEPF'
+    : 'INTERACTIVE'
+}
+
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
+  previous?: LaidOutGraph,
 ): Promise<LaidOutGraph> {
+  if (previous) {
+    const placement = placementForIncrementalLayout(sub)
+    const result = await runLayout(toElkGraph(sub, placement, previous), signal)
+    return interpretResult(sub, result)
+  }
   const placement = placementForLayout(sub)
   let result: ElkNode
   if (placement === 'BRANDES_KOEPF') {
@@ -512,7 +580,9 @@ export async function layoutSubgraph(
       result = await runLayout(toElkGraph(sub, 'NETWORK_SIMPLEX'), signal)
     } catch (error) {
       // Never retry an aborted (superseded) request.
-      if (signal?.aborted) throw error
+      if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
+        throw error
+      }
       result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
     }
   }

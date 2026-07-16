@@ -14,6 +14,7 @@ const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
 pub const MAX_SUBGRAPH_NODES: usize = 2_000;
 pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
+const FULL_NETLIST_CONTEXT_NODE_BUDGET: usize = MAX_SUBGRAPH_NODES * 16;
 pub(crate) const SOURCE_ROOT_COLLECTION_CAP: usize = MAX_SUBGRAPH_NODES + 1;
 const SOURCE_LINE_RESPONSE_CAP: usize = 10_000;
 const SOURCE_LINE_RESPONSE_NODE_BUDGET: usize = 20_000;
@@ -1461,22 +1462,22 @@ impl Analysis {
     pub fn full_netlist(
         &self,
         graph: &Graph,
-        max_nodes: usize,
-        show_infrastructure: bool,
-        hide_control: bool,
-        hide_const: bool,
+        options: FullNetlistOptions<'_>,
         grouping: Option<&GroupPartition>,
     ) -> Subgraph {
+        if !options.priority_roots.is_empty() {
+            return self.context_netlist(graph, options, grouping);
+        }
         let base = graph.nodes.len() as u32;
-        let cap = max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
-        // Take the first `cap` group-or-singleton units in node order. A group's
-        // members can be non-contiguous, so keep scanning to admit every member
-        // of an already-counted unit rather than breaking at the cap.
-        let mut seen = HashSet::new();
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
         let mut seen_units: HashSet<u32> = HashSet::new();
+
+        // A group's members can be non-contiguous, so a full projection scans
+        // all nodes. Selection context takes the bounded adjacency path above.
+        let mut seen = HashSet::new();
         let mut truncated = false;
         for node in &graph.nodes {
-            if hide_const && node.kind == NodeKind::Const {
+            if options.hide_const && node.kind == NodeKind::Const {
                 continue;
             }
             let unit = unit_id(grouping, base, node.id);
@@ -1496,7 +1497,7 @@ impl Analysis {
             .filter(|(_, edge)| {
                 seen.contains(&edge.from)
                     && seen.contains(&edge.to)
-                    && (!hide_control || !is_labeled_control_edge(graph, edge))
+                    && (!options.hide_control || !is_labeled_control_edge(graph, edge))
             })
             .map(|(idx, _)| idx)
             .collect();
@@ -1509,7 +1510,119 @@ impl Analysis {
                 roots: &empty,
                 boundary_nodes: &empty,
                 truncated,
-                show_infrastructure,
+                show_infrastructure: options.show_infrastructure,
+            },
+        );
+        match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph,
+        }
+    }
+
+    /// Bounded undirected context around relevant roots. Unlike a full-netlist
+    /// projection this walks only admitted adjacency, so changing selections
+    /// does not rescan every graph node and edge or fill spare capacity with an
+    /// arbitrary disconnected prefix.
+    fn context_netlist(
+        &self,
+        graph: &Graph,
+        options: FullNetlistOptions<'_>,
+        grouping: Option<&GroupPartition>,
+    ) -> Subgraph {
+        let base = graph.nodes.len() as u32;
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
+        let mut seen_units = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut queued = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut edge_set = HashSet::new();
+        let mut truncated = false;
+
+        let admit = |id: NodeId,
+                     seen_units: &mut HashSet<u32>,
+                     seen: &mut HashSet<NodeId>,
+                     queued: &mut HashSet<NodeId>,
+                     queue: &mut VecDeque<NodeId>| {
+            let unit = unit_id(grouping, base, id);
+            if seen_units.contains(&unit) {
+                return true;
+            }
+            if seen_units.len() >= cap {
+                return false;
+            }
+            seen_units.insert(unit);
+            if let Some(group) = grouping.and_then(|partition| {
+                partition
+                    .group_of
+                    .get(&id)
+                    .and_then(|group_id| partition.groups.get(*group_id as usize))
+            }) {
+                for member in &group.members {
+                    seen.insert(*member);
+                    if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(*member) {
+                        queue.push_back(*member);
+                    }
+                }
+            } else {
+                seen.insert(id);
+                if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(id) {
+                    queue.push_back(id);
+                }
+            }
+            true
+        };
+
+        for root in options.priority_roots {
+            if graph.nodes.get(*root as usize).is_none()
+                || (options.hide_const && graph.nodes[*root as usize].kind == NodeKind::Const)
+            {
+                continue;
+            }
+            if !admit(*root, &mut seen_units, &mut seen, &mut queued, &mut queue) {
+                truncated = true;
+                break;
+            }
+        }
+
+        while let Some(id) = queue.pop_front() {
+            for edge_idx in graph.incoming[id as usize]
+                .iter()
+                .chain(&graph.outgoing[id as usize])
+            {
+                let edge = &graph.edges[*edge_idx];
+                if options.hide_control && is_labeled_control_edge(graph, edge) {
+                    continue;
+                }
+                let neighbor = if edge.from == id { edge.to } else { edge.from };
+                if options.hide_const && graph.nodes[neighbor as usize].kind == NodeKind::Const {
+                    continue;
+                }
+                if !admit(
+                    neighbor,
+                    &mut seen_units,
+                    &mut seen,
+                    &mut queued,
+                    &mut queue,
+                ) {
+                    truncated = true;
+                    continue;
+                }
+                if seen.contains(&edge.from) && seen.contains(&edge.to) {
+                    edge_set.insert(*edge_idx);
+                }
+            }
+        }
+
+        let empty = HashSet::new();
+        let subgraph = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &empty,
+                boundary_nodes: &empty,
+                truncated,
+                show_infrastructure: options.show_infrastructure,
             },
         );
         match grouping {
@@ -1885,6 +1998,15 @@ pub struct ConeOptions {
     pub hide_control: bool,
     pub hide_const: bool,
     pub show_infrastructure: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FullNetlistOptions<'a> {
+    pub max_nodes: usize,
+    pub show_infrastructure: bool,
+    pub hide_control: bool,
+    pub hide_const: bool,
+    pub priority_roots: &'a [NodeId],
 }
 
 impl ConeDir {
@@ -3554,6 +3676,22 @@ mod tests {
         Option<bool>,
     );
 
+    fn full_options(
+        max_nodes: usize,
+        show_infrastructure: bool,
+        hide_control: bool,
+        hide_const: bool,
+        priority_roots: &[NodeId],
+    ) -> FullNetlistOptions<'_> {
+        FullNetlistOptions {
+            max_nodes,
+            show_infrastructure,
+            hide_control,
+            hide_const,
+            priority_roots,
+        }
+    }
+
     fn fixture(name: &str) -> (Graph, Analysis) {
         let json = std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap();
         let netlist = parse_str(&json).unwrap();
@@ -3793,8 +3931,16 @@ mod tests {
         let graph = dense_dag_graph(150);
         let analysis = Analysis::new(&graph, vec!["dense.sv".to_owned()]);
 
-        let first = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
-        let second = analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
+        let first = analysis.full_netlist(
+            &graph,
+            full_options(MAX_SUBGRAPH_NODES, true, true, false, &[]),
+            None,
+        );
+        let second = analysis.full_netlist(
+            &graph,
+            full_options(MAX_SUBGRAPH_NODES, true, true, false, &[]),
+            None,
+        );
 
         assert_eq!(first.edges.len(), MAX_SUBGRAPH_EDGES);
         assert!(first.truncated);
@@ -3811,13 +3957,19 @@ mod tests {
         let visible_data_edges = graph.edges.len() - (MAX_SUBGRAPH_EDGES + 1);
         let analysis = Analysis::new(&graph, vec!["dense_controls.sv".to_owned()]);
 
-        let controls_visible =
-            analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, false, false, None);
+        let controls_visible = analysis.full_netlist(
+            &graph,
+            full_options(MAX_SUBGRAPH_NODES, true, false, false, &[]),
+            None,
+        );
         assert_eq!(controls_visible.edges.len(), MAX_SUBGRAPH_EDGES);
         assert!(controls_visible.truncated);
 
-        let controls_hidden =
-            analysis.full_netlist(&graph, MAX_SUBGRAPH_NODES, true, true, false, None);
+        let controls_hidden = analysis.full_netlist(
+            &graph,
+            full_options(MAX_SUBGRAPH_NODES, true, true, false, &[]),
+            None,
+        );
         assert_eq!(controls_hidden.edges.len(), visible_data_edges);
         assert!(!controls_hidden.truncated);
         assert!(
@@ -3826,6 +3978,32 @@ mod tests {
                 .iter()
                 .all(|edge| edge.control.is_none())
         );
+    }
+
+    #[test]
+    fn full_netlist_prioritizes_context_nearest_to_relevant_roots() {
+        let graph = deep_chain_graph(10);
+        let analysis = Analysis::new(&graph, vec!["nearby.sv".to_owned()]);
+
+        let nearby = analysis.full_netlist(&graph, full_options(3, true, true, false, &[8]), None);
+
+        assert_eq!(
+            nearby
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![7, 8, 9]
+        );
+        assert_eq!(
+            nearby
+                .edges
+                .iter()
+                .map(|edge| (edge.from, edge.to))
+                .collect::<Vec<_>>(),
+            vec![(7, 8), (8, 9)]
+        );
+        assert!(nearby.truncated);
     }
 
     #[test]
