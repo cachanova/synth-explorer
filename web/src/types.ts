@@ -158,8 +158,14 @@ export interface DelayModel {
   cell_ps: number
   ff_clk_to_q_ps: number
   ff_setup_ps: number
+  // Net delay is keyed on the driver->sink pair, not fanout alone: Vivado's
+  // estimate depends on "the nature of the driver and loads as well as the
+  // fanout" (UG906 p.132). These are the per-route-class terms.
   net_base_ps: number
   net_per_fanout_ps: number
+  net_carry_entry_ps: number
+  net_to_reg_ps: number
+  net_port_ps: number
 }
 
 export type DelayProfile =

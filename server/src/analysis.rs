@@ -1,4 +1,4 @@
-use crate::delay_model::DelayModel;
+use crate::delay_model::{CellClass, DelayModel};
 use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
     is_infrastructure_cell, is_register_type, is_transparent_data_buffer, strip_bit_suffix,
@@ -1793,6 +1793,12 @@ impl Analysis {
         node_delay: &[f64],
         model: &DelayModel,
     ) -> Option<f64> {
+        // The closing hop is priced on the real driver→sink pair, matching the
+        // DP: the endpoint itself is the sink.
+        let sink_class = match target.kind {
+            EndpointKind::Register => CellClass::Reg,
+            _ => CellClass::Port,
+        };
         let arrival_ps = match target.edge {
             Some(edge_idx) => {
                 let from = graph.edges[edge_idx].from;
@@ -1803,11 +1809,25 @@ impl Analysis {
                 } else {
                     model.launch_ps(graph.nodes.get(from as usize)?.seq)
                 };
-                base + model.net_delay_ps(fanout_of(graph, from))
+                let driver =
+                    CellClass::of_opt(graph.nodes.get(from as usize)?.cell_type.as_deref());
+                base + model.net_delay_ps(
+                    driver,
+                    sink_class,
+                    Some(graph.edges[edge_idx].to_port.as_str()),
+                    fanout_of(graph, from),
+                )
             }
             None => {
                 let start = graph.nodes.get(target.startpoint as usize)?;
-                model.launch_ps(start.seq) + model.net_delay_ps(fanout_of(graph, target.startpoint))
+                let driver = CellClass::of_opt(start.cell_type.as_deref());
+                model.launch_ps(start.seq)
+                    + model.net_delay_ps(
+                        driver,
+                        sink_class,
+                        None,
+                        fanout_of(graph, target.startpoint),
+                    )
             }
         };
         let setup = if target.kind == EndpointKind::Register {
@@ -2482,9 +2502,13 @@ fn compute_depths(
                     },
                 )
             };
-            // The sink is `id`; a connection into a carry chain is dedicated.
-            let net = model.net_delay_to_ps(
-                graph.nodes[id as usize].cell_type.as_deref(),
+            // Vivado's estimate keys on the driver→sink pair, not the sink
+            // alone (UG906 p.132) — a LUT→CARRY hop and a CARRY→CARRY hop are
+            // 650 ps apart on Series-7.
+            let net = model.net_delay_ps(
+                CellClass::of_opt(graph.nodes[edge.from as usize].cell_type.as_deref()),
+                CellClass::of_opt(graph.nodes[id as usize].cell_type.as_deref()),
+                Some(edge.to_port.as_str()),
                 fanout_of(graph, edge.from),
             );
             if base_delay + net > best_delay {
@@ -2530,7 +2554,7 @@ fn compute_depths(
         if depth[node.id as usize].is_none() {
             continue;
         }
-        let net = model.net_delay_ps(fanout_of(graph, node.id));
+        let net = worst_output_net_ps(graph, model, node.id);
         let arrival = node_delay[node.id as usize] + net;
         if best_arrival.is_none_or(|current| arrival > current) {
             best_arrival = Some(arrival);
@@ -2559,6 +2583,27 @@ fn compute_depths(
 /// estimate.
 fn fanout_of(graph: &Graph, id: NodeId) -> u32 {
     graph.outgoing[id as usize].len() as u32
+}
+
+/// Interconnect delay on `id`'s output net to its **worst** actual sink.
+///
+/// The net delay depends on what the net drives (UG906 p.132), so the closing
+/// hop of a path cannot be priced without looking at the real sinks: the same
+/// LUT output costs 0 ps into a carry chain and ~490 ps into another LUT on
+/// Series-7. A node with no sinks is a dangling output and is priced as a
+/// boundary net.
+fn worst_output_net_ps(graph: &Graph, model: &DelayModel, id: NodeId) -> f64 {
+    let driver = CellClass::of_opt(graph.nodes[id as usize].cell_type.as_deref());
+    let fanout = fanout_of(graph, id);
+    graph.outgoing[id as usize]
+        .iter()
+        .map(|&edge_idx| {
+            let edge = &graph.edges[edge_idx];
+            let sink = CellClass::of_opt(graph.nodes[edge.to as usize].cell_type.as_deref());
+            model.net_delay_ps(driver, sink, Some(edge.to_port.as_str()), fanout)
+        })
+        .reduce(f64::max)
+        .unwrap_or_else(|| model.net_delay_ps(driver, CellClass::Port, None, fanout))
 }
 
 /// The estimated worst-case delay and its breakdown for a design under `model`.

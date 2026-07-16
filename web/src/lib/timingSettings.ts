@@ -41,7 +41,10 @@ export const SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
   { value: '-3', label: '-3 (fastest)' },
 ]
 
-// The eight editable coefficients, in display order, with short labels.
+// The editable coefficients, in display order, with short labels. The net terms
+// are per route class because Vivado's own estimate is (UG906 p.132): a hop into
+// a carry chain, into a register, or across the out-of-context boundary are
+// priced differently from general LUT->LUT routing.
 export const DELAY_FIELDS: { key: keyof DelayModel; label: string }[] = [
   { key: 'lut_ps', label: 'LUT / gate' },
   { key: 'carry_ps', label: 'Carry stage' },
@@ -51,6 +54,9 @@ export const DELAY_FIELDS: { key: keyof DelayModel; label: string }[] = [
   { key: 'ff_setup_ps', label: 'FF setup' },
   { key: 'net_base_ps', label: 'Net base' },
   { key: 'net_per_fanout_ps', label: 'Net /fanout' },
+  { key: 'net_carry_entry_ps', label: 'Net →carry DI' },
+  { key: 'net_to_reg_ps', label: 'Net →FF' },
+  { key: 'net_port_ps', label: 'Net →port' },
 ]
 
 const STORAGE_KEY = 'synthexplorer.timing.v1'

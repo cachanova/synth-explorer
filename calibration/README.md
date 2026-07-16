@@ -114,28 +114,127 @@ ssh deploy@<prod> "docker exec -i synth-explorer-app-1 bash -lc \
 
 Base64-pipe the payload rather than quoting scripts through two shells.
 
+## What Vivado's estimate actually is
+
+Not a guess on our part — AMD documents the shape. **UG906 p.132,
+"Interconnect Setting"**: for post-synthesis designs the estimated net delay
+"corresponds to the delay of the best possible placement, based on the **nature
+of the driver and loads** as well as the **fanout**".
+
+So the net model is keyed on the **driver→sink pair (+ pin, + fanout, +
+family)**, because that is what the tool being modelled is keyed on. Two
+consequences:
+
+* It is a **best-case / ideal-placement** estimate, not an ASIC wire-load model
+  (UG949 p.223, p.233). No statistics over past designs, no distance, and
+  congestion is explicitly not modelled. It is **optimistic by construction** —
+  the opposite of the usual "synthesis is pessimistic" folklore.
+* AMD publishes **no** fanout table, curve, or coefficients, and no open-source
+  project reproduces the pre-placement estimator (RapidWright and Project X-Ray
+  both work on placed/routed designs). **Shape from the docs, numbers from
+  measurement.**
+
+`calibrate cells` prints the measured numbers and a suggested coefficient row
+per family; that output is the fit. Nothing in `delay_model.rs` should be a
+number typed in by hand.
+
+## The measured net table (Vivado 2026.1, -1, out-of-context)
+
+Route class matters far more than fanout:
+
+| hop | series7 | ultrascale | why |
+|---|---|---|---|
+| carry→carry (`CI`) | **0** | **0** | dedicated silicon, UG474 p.47 |
+| LUT→carry `S` | **0** | **0** | same-slice LUT `O6`→`S`, UG474 p.44 |
+| LUT→carry `DI` | **650** | **362** | general routing — *undocumented*, see below |
+| LUT→LUT (general) | **723** | **276** | |
+| LUT→FF | **69** | **77** | registers pack into the driving slice |
+| any↔port | **973** | **0** | `unset` boundary nets — flat, no fanout term |
+
+### The pin is the thing, not the pair
+
+"LUT→CARRY costs 650 ps on Series-7" is **wrong as stated** — it conflates two
+pins. Measured with pin resolution, zero variance within each pin:
+
+* `LUT → CARRY4.S` (select/propagate) is **0 ps on every family**, exactly as
+  UG474 p.44's same-slice `O6`→`S` connection predicts.
+* `LUT → CARRY4.DI` (data/generate) pays roughly full general routing (650 on
+  series7 where general is 723; 362 on ultrascale where general is 276).
+
+Only `DI`'s non-freeness is unexplained: physically it can be sourced from the
+LUT's `O5` output, but Vivado's estimate does not price it that way. Treat that
+as an empirical property of the tool. Do not re-derive it from first
+principles — you will conclude it should be free, and be wrong.
+
+### `unset` is its own category
+
+Vivado labels nets touching an out-of-context boundary `unset`, not `unplaced`.
+The word appears nowhere in UG906/UG949/UG835. It is flat — 973 ps on Series-7
+at fanout 0, 2 and 31 alike — and on a small design those two boundary nets are
+*most* of Vivado's reported route number (`adder_chain_w16n4` series7: route
+3.272 = 0.973 + 0.676 + 0.650 + 0 + 0 + 0.973). It is calibrated separately as
+`net_port_ps` rather than folded into general routing. On UltraScale it measures
+**0**, which is why `reg_mux`'s worst path there is an internal FF→LUT→FF hop
+while on Series-7 it is the FF→port hop.
+
 ## Fitting the net terms: always use per-design intercepts
 
-`net_delay = net_base_ps + net_per_fanout_ps * log2(fanout)`.
+`net_delay = <class base> + net_per_fanout_ps * log2(fanout)`.
 
-**Never fit this by pooling nets across designs.** Each design sits at its own
-baseline net delay, so a pooled regression measures the design mix, not the
-silicon. On Series-7 the pooled fit reports r = **-0.09** and a *negative* slope
+**Never fit this by pooling nets across designs.** This is now
+documentation-confirmed rather than only an empirical scar: since the estimate
+keys on driver/load *types* (UG906 p.132), each design sits at its own baseline
+set by its type mix, and a pooled regression measures that confound instead of
+fanout. On Series-7 the pooled fit reports r = **-0.09** and a *negative* slope
 — "post-synthesis routing has no fanout dependence". That is Simpson's paradox:
 within `barrel_w32` alone the correlation is r = **+0.95**. `adder_chain_w32n4`'s
 nets are all fanout-2 (no variance) and drag the pooled slope to nothing.
 
 Acting on the pooled number would have shipped `net_per_fanout_ps = 0` on the
 default profile, quietly making the fanout knob inert. The `calibrate` harness
-therefore centres within design and regresses on the residuals, skipping designs
-with no fanout spread. `delay_model.rs` has a test asserting
-`net_delay_ps(10) > net_delay_ps(1)`; it is what caught this. If a refit ever
-forces you to weaken that test, the fit is wrong.
+therefore fits per (family, driver class, sink class), centres within design and
+regresses on the residuals, skipping designs with no fanout spread.
+`delay_model.rs` has a test asserting general routing grows with fanout; it is
+what caught this. If a refit ever forces you to weaken that test, the fit is
+wrong.
 
 Even fitted correctly this is the model's weakest term: the within-design
 correlation ranges from +1.00 to -0.86 depending on the design, so fanout is not
-the only thing driving Vivado's estimate. `net_base_ps` is well determined and is
-what actually moves paths.
+the only thing driving Vivado's estimate. The per-class base is well determined
+and is what actually moves paths.
+
+## The irreducible floor: the two tools do not build the same netlist
+
+Before tuning anything, know what cannot be tuned away. Over the corpus, **our
+depth / Vivado's logic levels is median 2.0** (mean 2.13; 33 of 57 pairs are 2x
+or worse; only 7 match exactly). Yosys emits LUT chains where Vivado packs LUT6;
+Yosys infers FF chains where Vivado infers `SRL16E`; **Yosys emits `MUXF7` where
+Vivado builds LUT trees** — Vivado never puts a MUXF on a critical path in this
+whole corpus, which is why `wide_mux_ps` has no vendor measurement at all.
+
+Timing a ~2x deeper netlist overestimates however good the per-hop model is.
+`calibrate report` therefore prints the error on the `depth == levels` subset
+separately: that subset is model error, the rest is mapping quality.
+
+The current split, and why the headline number is the wrong thing to read:
+
+| subset | n | model before the pair fix | after |
+|---|---|---|---|
+| our depth ≈ Vivado's levels (≤1.35x) | 11 | 50.0% | **11.6%** |
+| our depth ≫ Vivado's levels (>1.35x) | 50 | 77.7% | 90.3% |
+| whole corpus | 61 | 73.3% | 76.1% |
+
+**The corpus-wide number got slightly worse, and that is the honest sign of a
+better model.** Signed error correlates with the depth ratio at r = +0.55. The
+old coefficients scored better on the mismatched 50 by cancelling two large
+errors — `net_base_ps` was ~3.8x too small, which roughly undid the 2x depth.
+That is the same accident that made #51's adders-only corpus report ~6%.
+
+**Do not close the gap by shrinking coefficients** — that turns them into fudge
+factors that no longer mean "a LUT costs this much", which is the whole point of
+measuring per-arc, and it would restore the cancellation this fix removed. When
+the user needs Vivado's netlist timed, the answer is the Vivado backend or a
+better Yosys mapping, not a smaller `lut_ps`.
 
 ## Parts
 

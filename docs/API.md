@@ -292,12 +292,32 @@ synthesis panel (the preset `for_target` chose from the design's mode/family).
 Unknown `profile` or `speed_grade` values fall back leniently (to the design
 model and `-1` respectively) rather than erroring.
 
-`DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
-`wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
-`net_per_fanout_ps`. The Xilinx presets are calibrated against Vivado 2026.1 at
-the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p);
-`speed_grade` applies a global multiplier on top (`-2`≈0.87, `-3`≈0.78). Lattice
-(iCE40/ECP5) and `generic` presets are not vendor-calibrated.
+`DelayModel` is the flat set of picosecond coefficients. Cell terms: `lut_ps`,
+`carry_ps`, `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`.
+
+Net terms are **per route class**, not one flat number, because Vivado's own
+post-synthesis estimate is: for unplaced cells the net delay "corresponds to the
+delay of the best possible placement, based on the nature of the driver and
+loads as well as the fanout" (UG906 p.132). So a hop is priced by its
+driver→sink pair:
+
+| coefficient | applies to |
+|---|---|
+| `net_base_ps` | general routing (LUT→LUT and anything without a rule below) |
+| `net_per_fanout_ps` | added per `log2(fanout)` on the classes that vary with fanout |
+| `net_carry_entry_ps` | into a carry chain's `DI` input from a non-carry driver |
+| `net_to_reg_ps` | into a register (slice-local packing) |
+| `net_port_ps` | a net touching a top-level port boundary; flat, no fanout term |
+
+Two hops are free and have no coefficient: **carry→carry** (dedicated silicon,
+UG474 p.47) and **LUT→carry `S`** (the same-slice select input). All eleven
+fields are required when sending a full `model` override; a partial object is
+rejected and falls back to the profile rather than being silently completed.
+
+The Xilinx presets are calibrated against Vivado 2026.1 at the `-1` grade
+(Series-7 = xc7a35t, UltraScale = xcku035, UltraScale+ = xcku5p); `speed_grade`
+applies a global multiplier on top, measured per family. Lattice (iCE40/ECP5)
+and `generic` presets are not vendor-calibrated.
 
 Response:
 

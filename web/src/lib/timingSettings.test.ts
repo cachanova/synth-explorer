@@ -9,6 +9,9 @@ import {
 } from './timingSettings'
 import type { DelayModel } from '../types'
 
+// Must list every coefficient: a partial model is deliberately rejected (see
+// the 'rejects a partial override' case), so an out-of-date fixture here shows
+// up as an override silently becoming null rather than as a type error.
 const MODEL: DelayModel = {
   lut_ps: 10,
   carry_ps: 10,
@@ -18,6 +21,9 @@ const MODEL: DelayModel = {
   ff_setup_ps: 10,
   net_base_ps: 20,
   net_per_fanout_ps: 5,
+  net_carry_entry_ps: 15,
+  net_to_reg_ps: 2,
+  net_port_ps: 30,
 }
 
 describe('timingRequest', () => {
