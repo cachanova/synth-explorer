@@ -293,12 +293,13 @@ memories survive as abstract `$mem_v2` cells (rendered as MEM nodes, treated as
 sequential boundaries). The response then carries `memories_abstracted: true`.
 RTL and vendor modes never retry.
 
-At most three distinct uncached `design_id` leaders are admitted: one complete
-Yosys/parse/analysis/cache pipeline runs while two wait. Concurrent requests for
-an existing in-flight id always subscribe to its server-owned task without
-consuming another slot, and an initiating client disconnect does not cancel the
-task. When all three distinct slots are occupied, a new distinct request gets
-one final TTL-aware cache lookup and then returns `503` with `Retry-After: 5`.
+At most sixteen distinct uncached `design_id` leaders are admitted: one
+complete synthesis/parse/analysis/cache pipeline runs while fifteen wait.
+Concurrent requests for an existing in-flight id always subscribe to its
+server-owned task without consuming another slot, and an initiating client
+disconnect does not cancel the task. When all sixteen distinct slots are
+occupied, a new distinct request gets one final TTL-aware cache lookup and then
+returns `503` with `Retry-After: 5`.
 
 Parsed designs are retained for 30 minutes from insertion in a 512 MiB
 byte-weighted FIFO memory cache. Each entry is charged at least 64 KiB;
@@ -324,7 +325,7 @@ still succeeds from the bounded hot cache; the server logs the degraded
 retention, and that design is not guaranteed to survive eviction or restart.
 
 `400` on Yosys failure (body includes the Yosys `log`), `422` on validation
-failure, `503` when three distinct leaders are active or waiting, `504` on
+failure, `503` when sixteen distinct leaders are active or waiting, `504` on
 timeout, and `507` when one design cannot fit in the memory cache.
 
 Sandbox resource kills return `400` with a kind-specific `error` instead of

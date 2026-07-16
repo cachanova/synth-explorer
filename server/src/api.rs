@@ -40,7 +40,7 @@ const DESIGN_CACHE_MIN_ENTRY_BYTES: usize = 64 * 1024;
 const DESIGN_STORE_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const DESIGN_STORE_TTL: Duration = Duration::from_secs(4 * 60 * 60);
 const DESIGN_STORE_FORMAT_VERSION: u32 = 1;
-const MAX_IN_FLIGHT_DESIGNS: usize = 3;
+const MAX_IN_FLIGHT_DESIGNS: usize = 16;
 const MAX_RUNNING_SYNTHESES: usize = 1;
 const SYNTHESIS_RETRY_AFTER_SECONDS: u64 = 5;
 
@@ -1030,7 +1030,7 @@ async fn synthesize_uncached(
     design_id: &str,
 ) -> FlightResult {
     // Keep the sole running permit until the parsed graph is safely cached.
-    // The flight registry separately bounds this task plus two queued leaders.
+    // The flight registry separately bounds this task plus fifteen queued leaders.
     let _running = Arc::clone(&state.running)
         .acquire_owned()
         .await
