@@ -847,7 +847,6 @@ fn case_item_colon(fragment: &str) -> Option<usize> {
     let mut nesting = 0usize;
     let mut colon = None;
     let mut assignment_before_colon = false;
-    let mut assignment_after_colon = false;
     let mut previous = 0u8;
 
     for (offset, byte) in bytes.iter().enumerate() {
@@ -855,29 +854,32 @@ fn case_item_colon(fragment: &str) -> Option<usize> {
             b'(' | b'[' | b'{' => nesting += 1,
             b')' | b']' | b'}' => nesting = nesting.saturating_sub(1),
             b':' if nesting == 0 && colon.is_none() => colon = Some(offset),
-            b'<' if nesting == 0 && previous != b'<' && bytes.get(offset + 1) == Some(&b'=') => {
-                if colon.is_some() {
-                    assignment_after_colon = true;
-                } else {
-                    assignment_before_colon = true;
-                }
+            // Only assignments *before* the first top-level colon matter: a real
+            // case-item label is a constant expression and cannot contain one, so
+            // a leading `=`/`<=` means this is an ordinary statement whose colon
+            // belongs to a ternary RHS (`x = c ? a : b`), not a case separator.
+            // An operator after the colon is irrelevant (and a relational `<=` in
+            // a ternary else-branch must not be mistaken for a nonblocking one).
+            b'<' if nesting == 0
+                && colon.is_none()
+                && previous != b'<'
+                && bytes.get(offset + 1) == Some(&b'=') =>
+            {
+                assignment_before_colon = true;
             }
             b'=' if nesting == 0
+                && colon.is_none()
                 && !matches!(previous, b'=' | b'!' | b'<' | b'>')
                 && bytes.get(offset + 1) != Some(&b'=') =>
             {
-                if colon.is_some() {
-                    assignment_after_colon = true;
-                } else {
-                    assignment_before_colon = true;
-                }
+                assignment_before_colon = true;
             }
             _ => {}
         }
         previous = *byte;
     }
 
-    colon.filter(|_| !assignment_before_colon || assignment_after_colon)
+    colon.filter(|_| !assignment_before_colon)
 }
 
 /// Keywords that can open a procedural statement without being an assignment
@@ -1451,6 +1453,30 @@ endmodule
                 module: "top".to_owned(),
                 line: 6,
                 lhs_identifiers: vec!["busy".to_owned()],
+            }]
+        );
+    }
+
+    #[test]
+    fn ternary_rhs_with_relational_in_a_case_arm_records_the_real_target() {
+        // The `: b <= d` false-branch must not be mistaken for a case-item
+        // label separator: the statement assigns `x`, not `b`.
+        let source = r#"
+module top;
+always_comb begin
+  case (sel)
+    2'd0: x = c ? a : b <= d;
+  endcase
+end
+endmodule
+"#;
+
+        assert_eq!(
+            scan_assignments(source).procedural,
+            vec![ProceduralAssignment {
+                module: "top".to_owned(),
+                line: 5,
+                lhs_identifiers: vec!["x".to_owned()],
             }]
         );
     }
