@@ -8,7 +8,7 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
-import { useStore } from '../../store'
+import { useStore } from '../../useStore'
 import type {
   EndpointBit,
   OutputAlias,

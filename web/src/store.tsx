@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -9,6 +7,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from './api'
+import { StoreContext } from './storeContext'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
   createSourceProbeDebouncer,
@@ -228,14 +227,6 @@ export interface Store {
   snapshotA: Snapshot | null
   snapshotB: Snapshot | null
   takeSnapshot: (slot: 'A' | 'B') => Promise<void>
-}
-
-const StoreContext = createContext<Store | null>(null)
-
-export function useStore(): Store {
-  const ctx = useContext(StoreContext)
-  if (!ctx) throw new Error('useStore must be used within StoreProvider')
-  return ctx
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {

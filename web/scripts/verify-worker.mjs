@@ -60,8 +60,6 @@ if (typeof sandbox.onmessage !== 'function' && typeof sandbox.self.onmessage !==
   )
   process.exit(1)
 }
-const onmessage = sandbox.self.onmessage ?? sandbox.onmessage
-
 // --- drive the worker protocol with a real layered-layout request ---
 const graph = {
   id: 'root',
@@ -81,7 +79,7 @@ const graph = {
 // (host-realm objects/arrays fail its internal type checks), and in a real
 // browser worker structuredClone delivers same-realm objects anyway.
 vm.runInContext(
-  `self.onmessage({ data: JSON.parse(${JSON.stringify(
+  `(self.onmessage ?? globalThis.onmessage)({ data: JSON.parse(${JSON.stringify(
     JSON.stringify({ id: 42, graph }),
   )}) })`,
   sandbox,

@@ -1,7 +1,7 @@
 import { diffCellsByType, totalCellDelta } from '../../lib/diff'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType, shortNetName } from '../../lib/prettyType'
-import { useStore } from '../../store'
+import { useStore } from '../../useStore'
 import type { Snapshot } from '../../store'
 import type { TimingPath } from '../../types'
 import { ModeName } from './Overview'
