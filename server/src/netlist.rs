@@ -1,3 +1,4 @@
+use deepsize::DeepSizeOf;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -39,7 +40,7 @@ pub struct YosysPort {
     pub bits: Vec<YosysBit>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, DeepSizeOf)]
 #[serde(rename_all = "lowercase")]
 pub enum PortDirection {
     Input,
@@ -73,7 +74,7 @@ pub struct YosysNetname {
     pub attributes: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, DeepSizeOf)]
 #[serde(untagged)]
 pub enum YosysBit {
     Net(u32),

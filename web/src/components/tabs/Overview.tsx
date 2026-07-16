@@ -3,6 +3,7 @@ import { displayCellType } from '../../lib/prettyType'
 import { useStore } from '../../store'
 import type { CellCategoryCounts } from '../../types'
 import { TimingModel } from '../TimingModel'
+import { Card } from '../Card'
 
 function displayMode(mode: string): string {
   switch (mode) {
@@ -30,8 +31,7 @@ export function ModeName({ mode }: { mode: string }) {
 }
 
 export function Overview() {
-  const store = useStore()
-  const design = store.design
+  const design = useStore((store) => store.design)
   if (!design) {
     return (
       <div className="empty-state">
@@ -200,28 +200,4 @@ function cellCategoryRows(categories: CellCategoryCounts): CellCategoryRow[] {
       description: 'IO, clock, and other zero-depth infrastructure buffers',
     },
   ]
-}
-
-function Card({
-  k,
-  v,
-  accent,
-  small,
-}: {
-  k: string
-  v: string | number
-  accent?: boolean
-  small?: boolean
-}) {
-  return (
-    <div className="card">
-      <div className="k">{k}</div>
-      <div
-        className={`v${accent ? ' accent' : ''}`}
-        style={small ? { fontSize: 15, fontFamily: 'var(--mono)' } : undefined}
-      >
-        {v}
-      </div>
-    </div>
-  )
 }

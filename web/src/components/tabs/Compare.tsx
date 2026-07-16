@@ -1,7 +1,7 @@
 import { diffCellsByType, totalCellDelta } from '../../lib/diff'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType, shortNetName } from '../../lib/prettyType'
-import { useStore } from '../../store'
+import { shallowEqual, useStore } from '../../store'
 import type { Snapshot } from '../../store'
 import type { TimingPath } from '../../types'
 import { ModeName } from './Overview'
@@ -13,7 +13,15 @@ import {
 } from './Paths'
 
 export function Compare() {
-  const store = useStore()
+  const store = useStore(
+    ({ snapshotA, snapshotB, takeSnapshot, design }) => ({
+      snapshotA,
+      snapshotB,
+      takeSnapshot,
+      design,
+    }),
+    shallowEqual,
+  )
   const { snapshotA, snapshotB } = store
 
   return (
@@ -62,7 +70,10 @@ function SlotCard({
   snap: Snapshot | null
   onTake: () => void
 }) {
-  const store = useStore()
+  const store = useStore(
+    ({ design, analysisState }) => ({ design, analysisState }),
+    shallowEqual,
+  )
   const canSnapshot = Boolean(store.design) && store.analysisState === 'current'
   const snapshotTitle = !store.design
     ? 'Synthesize first'

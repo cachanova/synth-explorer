@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
 import { presentGraphForFocus } from '../../lib/graphFocus'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
+import { createLatestGuard } from '../../lib/latest'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
-import { designSrcSpans } from '../../lib/src'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
-import { useStore } from '../../store'
+import { shallowEqual, useStore } from '../../store'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
@@ -35,8 +35,35 @@ interface FullGraphCacheEntry {
 }
 
 export function Graph({ active }: { active: boolean }) {
-  const store = useStore()
-  const { analysisState, design, coneReq, graphOptions } = store
+  const store = useStore(
+    ({
+      analysisState,
+      design,
+      coneReq,
+      graphOptions,
+      clearGraphSelection,
+      highlightNodeSources,
+      openControlCone,
+    }) => ({
+      analysisState,
+      design,
+      coneReq,
+      graphOptions,
+      clearGraphSelection,
+      highlightNodeSources,
+      openControlCone,
+    }),
+    shallowEqual,
+  )
+  const {
+    analysisState,
+    design,
+    coneReq,
+    graphOptions,
+    clearGraphSelection,
+    highlightNodeSources,
+    openControlCone,
+  } = store
 
   const [fetchedSubgraph, setFetchedSubgraph] = useState<FetchedSubgraph | null>(null)
   // Neighborhoods accumulated from double-click expansions, merged on top of the
@@ -49,7 +76,9 @@ export function Graph({ active }: { active: boolean }) {
   const [sourceStatus, setSourceStatus] = useState<LineConeStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
-  const reqSeq = useRef(0)
+  const requestGuardRef = useRef<ReturnType<typeof createLatestGuard> | null>(null)
+  if (!requestGuardRef.current) requestGuardRef.current = createLatestGuard()
+  const requestGuard = requestGuardRef.current
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   // One full projection, whether in flight or resolved, is enough for repeated
@@ -114,7 +143,7 @@ export function Graph({ active }: { active: boolean }) {
     if (requestKey == null) return
     if (loadedRequestKey.current === requestKey) return
 
-    const myReq = ++reqSeq.current
+    const myReq = requestGuard.begin()
     const controller = new AbortController()
     setLoading(true)
     setError(null)
@@ -210,7 +239,7 @@ export function Graph({ active }: { active: boolean }) {
           )
     fetchP
       .then(({ graph, status, control, highlight }) => {
-        if (controller.signal.aborted || myReq !== reqSeq.current) return
+        if (controller.signal.aborted || !requestGuard.isCurrent(myReq)) return
         loadedRequestKey.current = requestKey
         setSourceControl(control)
         const presentation = sourceProbePresentation(status)
@@ -227,11 +256,11 @@ export function Graph({ active }: { active: boolean }) {
         else {
           setSourceStatus(null)
           setLoading(false)
-          store.clearGraphSelection()
+          clearGraphSelection()
         }
       })
       .catch((e) => {
-        if (controller.signal.aborted || myReq !== reqSeq.current) return
+        if (controller.signal.aborted || !requestGuard.isCurrent(myReq)) return
         setError(e instanceof ApiRequestError ? e.message : String(e))
         setLoading(false)
       })
@@ -339,7 +368,7 @@ export function Graph({ active }: { active: boolean }) {
       // fetch begins), not the last-completed key — otherwise an expansion that
       // resolves while a new base cone is still in-flight would leak stale nodes
       // into it, and setExpansionGraph(null) at fetch start would not clear them.
-      const owner = reqSeq.current
+      const owner = requestGuard.current()
       const shared = {
         node: ids[0],
         nodes: ids.length > 1 ? ids : undefined,
@@ -356,7 +385,7 @@ export function Graph({ active }: { active: boolean }) {
       ])
         .then(([fanin, fanout]) => {
           // Drop stale results if a new base fetch started while fetching.
-          if (reqSeq.current !== owner) return
+          if (!requestGuard.isCurrent(owner)) return
           // A depth-1 neighborhood is deliberately shallow, so its truncated
           // flag (hit the depth limit) is expected and must not mark the whole
           // view truncated — only the base cone and render cap do that.
@@ -375,7 +404,28 @@ export function Graph({ active }: { active: boolean }) {
           // current graph intact rather than surfacing an error.
         })
     },
-    [designId, graphOptions],
+    [designId, graphOptions, requestGuard],
+  )
+
+  const onSelect = useCallback(
+    (node: GraphNode | null) => {
+      if (!graphInteractive) return
+      setSelected(node)
+      highlightNodeSources(node?.src)
+    },
+    [graphInteractive, highlightNodeSources],
+  )
+
+  const onControlSelect = useCallback(
+    (control: NonNullable<GraphNode['controls']>[number]) => {
+      if (!graphInteractive) return
+      openControlCone({
+        node: control.driver_id,
+        label: controlLabel(control),
+        generated: control.generated,
+      })
+    },
+    [graphInteractive, openControlCone],
   )
 
   if (!design) return <div className="empty-state">No design yet.</div>
@@ -391,21 +441,8 @@ export function Graph({ active }: { active: boolean }) {
             highlight={highlight}
             selectedId={graphInteractive ? (selected?.id ?? null) : null}
             interactive={graphInteractive}
-            onSelect={(node) => {
-              if (!graphInteractive) return
-              setSelected(node)
-              store.highlightSources(designSrcSpans(node?.src, store.files))
-            }}
-            onControlSelect={
-              graphInteractive
-                ? (control) =>
-                    store.openControlCone({
-                      node: control.driver_id,
-                      label: controlLabel(control),
-                      generated: control.generated,
-                    })
-                : undefined
-            }
+            onSelect={onSelect}
+            onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
             active={active}
             fitNonce={fitNonce}
@@ -484,7 +521,16 @@ export function Graph({ active }: { active: boolean }) {
 }
 
 function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
-  const store = useStore()
+  const store = useStore(
+    ({ coneReq, design, graphOptions, setGraphOptions, openCone }) => ({
+      coneReq,
+      design,
+      graphOptions,
+      setGraphOptions,
+      openCone,
+    }),
+    shallowEqual,
+  )
   const { coneReq, design, graphOptions } = store
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,

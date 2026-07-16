@@ -19,7 +19,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { StreamLanguage } from '@codemirror/language'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { useStore } from '../store'
+import { shallowEqual, useStore } from '../store'
 import type { EditorHighlight } from '../store'
 
 // --- src highlight state ---
@@ -109,7 +109,28 @@ function selectedLines(state: EditorState): { startLine: number; endLine: number
 }
 
 export function Editor() {
-  const store = useStore()
+  const store = useStore(
+    ({
+      files,
+      activeFileName,
+      docRevision,
+      editorHighlight,
+      updateFileContent,
+      setSourceSelection,
+      clearGraphSelection,
+      synthesize,
+    }) => ({
+      files,
+      activeFileName,
+      docRevision,
+      editorHighlight,
+      updateFileContent,
+      setSourceSelection,
+      clearGraphSelection,
+      synthesize,
+    }),
+    shallowEqual,
+  )
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
 

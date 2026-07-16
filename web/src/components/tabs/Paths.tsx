@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { getPaths } from '../../api'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
+import { formatBitRanges } from '../../lib/bitRanges'
 import { useDesignData } from '../../lib/useDesignData'
 import {
   displayCellType,
@@ -10,7 +11,7 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import { loadTimingSettings, timingRequest } from '../../lib/timingSettings'
-import { useStore } from '../../store'
+import { shallowEqual, useStore } from '../../store'
 import type {
   EndpointKind,
   NodeRef,
@@ -26,7 +27,10 @@ interface RouteVariant {
 }
 
 export function Paths() {
-  const store = useStore()
+  const store = useStore(
+    ({ design, showPathInGraph }) => ({ design, showPathInGraph }),
+    shallowEqual,
+  )
   const id = store.design?.design_id ?? null
   // Cost per-path delays with the same retune settings as the timing panel,
   // read from localStorage on mount (the tab remounts on switch).
@@ -176,25 +180,7 @@ function readableLoopName(name: string): string {
 }
 
 function formatBitCohort(bits: number[]): string {
-  const sorted = [...new Set(bits)].sort((a, b) => a - b)
-  if (sorted.length === 0) return '—'
-  const ranges: Array<[number, number]> = []
-  let start = sorted[0]
-  let end = start
-  for (const bit of sorted.slice(1)) {
-    if (bit === end + 1) {
-      end = bit
-      continue
-    }
-    ranges.push([start, end])
-    start = bit
-    end = bit
-  }
-  ranges.push([start, end])
-  return ranges
-    .reverse()
-    .map(([lo, hi]) => (lo === hi ? `[${lo}]` : `[${hi}:${lo}]`))
-    .join(', ')
+  return formatBitRanges(bits) || '—'
 }
 
 export function BitCohort({ bits }: { bits: number[] }) {

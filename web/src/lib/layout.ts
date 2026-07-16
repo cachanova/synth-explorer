@@ -403,6 +403,7 @@ const pending = new Map<
   number,
   { resolve: (g: ElkNode) => void; reject: (e: Error) => void }
 >()
+const LAYOUT_TIMEOUT_MS = 30_000
 
 function abortError(): Error {
   const error = new Error('layout aborted')
@@ -451,8 +452,17 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
       reject(abortError())
       return
     }
-    const onAbort = () => terminateWorker(w, abortError())
-    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const onAbort = () => {
+      const entry = pending.get(id)
+      if (!entry) return
+      pending.delete(id)
+      entry.reject(abortError())
+    }
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (timeout) clearTimeout(timeout)
+    }
     pending.set(id, {
       resolve: (value) => {
         cleanup()
@@ -464,6 +474,10 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
       },
     })
     signal?.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(
+      () => terminateWorker(w, new Error('elk layout timed out')),
+      LAYOUT_TIMEOUT_MS,
+    )
     const req: ElkRequest = { id, graph }
     w.postMessage(req)
   })

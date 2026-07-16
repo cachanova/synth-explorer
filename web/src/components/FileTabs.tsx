@@ -1,7 +1,17 @@
-import { useStore } from '../store'
+import { shallowEqual, useStore } from '../store'
 
 export function FileTabs() {
-  const store = useStore()
+  const store = useStore(
+    ({ files, activeFileName, setActiveFileName, addFile, renameFile, deleteFile }) => ({
+      files,
+      activeFileName,
+      setActiveFileName,
+      addFile,
+      renameFile,
+      deleteFile,
+    }),
+    shallowEqual,
+  )
 
   const onRename = (name: string) => {
     const next = window.prompt('Rename file', name)

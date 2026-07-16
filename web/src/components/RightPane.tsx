@@ -1,4 +1,4 @@
-import { useStore, type TabId } from '../store'
+import { shallowEqual, useStore, type TabId } from '../store'
 import { Compare } from './tabs/Compare'
 import { Endpoints } from './tabs/Endpoints'
 import { Fanout } from './tabs/Fanout'
@@ -16,7 +16,15 @@ const TABS: { id: TabId; label: string }[] = [
 ]
 
 export function RightPane() {
-  const store = useStore()
+  const store = useStore(
+    ({ activeTab, setActiveTab, snapshotA, snapshotB }) => ({
+      activeTab,
+      setActiveTab,
+      snapshotA,
+      snapshotB,
+    }),
+    shallowEqual,
+  )
   const active = store.activeTab
   const snaps = (store.snapshotA ? 1 : 0) + (store.snapshotB ? 1 : 0)
 

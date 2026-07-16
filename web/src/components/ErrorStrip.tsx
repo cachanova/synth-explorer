@@ -1,8 +1,7 @@
 import { useStore } from '../store'
 
 export function ErrorStrip() {
-  const store = useStore()
-  const err = store.error
+  const err = useStore((store) => store.error)
   if (!err) return null
 
   const kind =

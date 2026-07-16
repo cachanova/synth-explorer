@@ -6,18 +6,19 @@
 
 use crate::analysis::RegisterGroup;
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
+use deepsize::DeepSizeOf;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub type GroupId = u32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, DeepSizeOf)]
 pub enum GroupKind {
     Register,
     Comb,
     Port,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, DeepSizeOf)]
 pub struct Group {
     pub kind: GroupKind,
     /// Sorted, always at least two distinct nodes.
@@ -27,7 +28,7 @@ pub struct Group {
     pub cell_type: String,
 }
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, DeepSizeOf)]
 pub struct GroupPartition {
     pub groups: Vec<Group>,
     pub group_of: HashMap<NodeId, GroupId>,
@@ -38,29 +39,6 @@ pub struct GroupPartition {
 const MAX_REFINEMENT_ROUNDS: usize = 8;
 
 impl GroupPartition {
-    /// Deterministic estimate of retained allocation for cache weighting.
-    pub fn estimated_heap_bytes(&self) -> usize {
-        let mut bytes =
-            self.groups
-                .capacity()
-                .saturating_mul(std::mem::size_of::<Group>())
-                .saturating_add(self.group_of.capacity().saturating_mul(
-                    std::mem::size_of::<NodeId>() + std::mem::size_of::<GroupId>(),
-                ));
-        for group in &self.groups {
-            bytes = bytes
-                .saturating_add(group.label.capacity())
-                .saturating_add(group.cell_type.capacity())
-                .saturating_add(
-                    group
-                        .members
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<NodeId>()),
-                );
-        }
-        bytes
-    }
-
     /// Near-linear: bounded partition refinement (max 8 rounds) + 1:1 check.
     /// Register groups seed from the endpoint analysis; each refinement round
     /// costs O(edges) and hashes full signatures to class ids, so no all-pairs

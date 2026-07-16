@@ -3,9 +3,11 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from 'react'
 import * as api from './api'
@@ -20,7 +22,8 @@ import {
   type SynthesisInput,
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
-import type { SrcSpan } from './lib/src'
+import { createLatestGuard } from './lib/latest'
+import { designSrcSpans, type SrcSpan } from './lib/src'
 import { flagsForModeChange } from './lib/flagRegistry'
 import type {
   DesignFile,
@@ -219,6 +222,7 @@ export interface Store {
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
   highlightSources: (spans: SrcSpan[]) => void
+  highlightNodeSources: (src?: string | null) => void
 
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
@@ -229,12 +233,79 @@ export interface Store {
   takeSnapshot: (slot: 'A' | 'B') => Promise<void>
 }
 
-const StoreContext = createContext<Store | null>(null)
+interface StoreApi {
+  getSnapshot(): Store
+  publish(next: Store): void
+  subscribe(listener: () => void): () => void
+}
 
-export function useStore(): Store {
-  const ctx = useContext(StoreContext)
-  if (!ctx) throw new Error('useStore must be used within StoreProvider')
-  return ctx
+function createStoreApi(initial: Store): StoreApi {
+  let snapshot = initial
+  const listeners = new Set<() => void>()
+  return {
+    getSnapshot: () => snapshot,
+    publish(next) {
+      if (Object.is(snapshot, next)) return
+      snapshot = next
+      for (const listener of listeners) listener()
+    },
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
+}
+
+const StoreContext = createContext<StoreApi | null>(null)
+
+export function shallowEqual<T extends object>(left: T, right: T): boolean {
+  if (Object.is(left, right)) return true
+  const leftKeys = Object.keys(left) as Array<keyof T>
+  const rightKeys = Object.keys(right)
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => Object.hasOwn(right, key) && Object.is(left[key], right[key]))
+  )
+}
+
+export function useStore<Selection>(
+  selector: (store: Store) => Selection,
+  isEqual: (left: Selection, right: Selection) => boolean = Object.is,
+): Selection {
+  const api = useContext(StoreContext)
+  if (!api) throw new Error('useStore must be used within StoreProvider')
+  const committed = useRef<{ hasValue: boolean; value: Selection }>({
+    hasValue: false,
+    value: undefined as Selection,
+  })
+  const getSelection = useMemo(() => {
+    let hasMemo = false
+    let memoizedStore: Store
+    let memoizedSelection: Selection
+    return () => {
+      const nextStore = api.getSnapshot()
+      if (hasMemo && Object.is(memoizedStore, nextStore)) return memoizedSelection
+      const nextSelection = selector(nextStore)
+      if (
+        (hasMemo && isEqual(memoizedSelection, nextSelection)) ||
+        (!hasMemo && committed.current.hasValue && isEqual(committed.current.value, nextSelection))
+      ) {
+        memoizedStore = nextStore
+        memoizedSelection = hasMemo ? memoizedSelection : committed.current.value
+        hasMemo = true
+        return memoizedSelection
+      }
+      hasMemo = true
+      memoizedStore = nextStore
+      memoizedSelection = nextSelection
+      return memoizedSelection
+    }
+  }, [api, isEqual, selector])
+  const selection = useSyncExternalStore(api.subscribe, getSelection, getSelection)
+  useEffect(() => {
+    committed.current = { hasValue: true, value: selection }
+  }, [selection])
+  return selection
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -278,8 +349,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [snapshotA, setSnapshotA] = useState<Snapshot | null>(null)
   const [snapshotB, setSnapshotB] = useState<Snapshot | null>(null)
 
-  const nonceRef = useRef(0)
-  const nextNonce = () => ++nonceRef.current
+  const nonceGuardRef = useRef<ReturnType<typeof createLatestGuard> | null>(null)
+  if (!nonceGuardRef.current) nonceGuardRef.current = createLatestGuard()
+  const nextNonce = useCallback(() => nonceGuardRef.current!.begin(), [])
   const activeTabRef = useRef(activeTab)
   activeTabRef.current = activeTab
   const sourceSelectionRef = useRef(sourceSelection)
@@ -671,7 +743,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [markInputChanged, materializeCurrentInput])
+  }, [markInputChanged, materializeCurrentInput, nextNonce])
 
   const synthesize = useCallback(
     () => requestSynthesis(),
@@ -710,7 +782,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       setActiveTab('graph')
     },
-    [],
+    [nextNonce],
   )
 
   const showPathInGraph = useCallback((path: TimingPath) => {
@@ -726,7 +798,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       nonce: nextNonce(),
     })
     setActiveTab('graph')
-  }, [])
+  }, [nextNonce])
 
   const openControlCone = useCallback(
     ({
@@ -753,7 +825,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       setActiveTab('graph')
     },
-    [],
+    [nextNonce],
   )
 
   const clearGraphSelection = useCallback(() => {
@@ -773,7 +845,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const primarySpan = spans[primaryIndex]
     setActiveFileNameState((cur) => (primarySpan.file ? primarySpan.file : cur))
     setEditorHighlight({ spans, primary: primaryIndex, nonce: nextNonce() })
-  }, [])
+  }, [nextNonce])
+
+  const highlightNodeSources = useCallback(
+    (src?: string | null) => highlightSources(designSrcSpans(src, filesRef.current)),
+    [highlightSources],
+  )
 
   const setSourceSelection = useCallback(
     (file: string, startLine: number, endLine: number) => {
@@ -785,7 +862,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setConeReq(sourceGraphRequest(selection, nextNonce()))
       }
     },
-    [],
+    [nextNonce],
   )
 
   const setActiveFileName = useCallback(
@@ -814,7 +891,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             : null,
       )
     }
-  }, [])
+  }, [nextNonce])
 
   const takeSnapshot = useCallback(
     async (slot: 'A' | 'B') => {
@@ -894,6 +971,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       clearGraphSelection,
       editorHighlight,
       highlightSources,
+      highlightNodeSources,
       sourceSelection,
       setSourceSelection,
       snapshotA,
@@ -943,6 +1021,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       clearGraphSelection,
       editorHighlight,
       highlightSources,
+      highlightNodeSources,
       sourceSelection,
       setSourceSelection,
       snapshotA,
@@ -951,5 +1030,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ],
   )
 
-  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
+  const apiRef = useRef<StoreApi | null>(null)
+  if (!apiRef.current) apiRef.current = createStoreApi(value)
+  const storeApi = apiRef.current
+  useLayoutEffect(() => storeApi.publish(value), [storeApi, value])
+
+  return <StoreContext.Provider value={storeApi}>{children}</StoreContext.Provider>
 }

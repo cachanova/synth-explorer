@@ -3,6 +3,7 @@ import {
   fitViewportToContent,
   panViewport,
   REG_BODY_HEIGHT,
+  REG_CLOCK_Y_FRAC,
   REG_DATA_IN_Y_FRAC,
   REG_DATA_OUT_Y_FRAC,
   viewportTransformAttribute,
@@ -19,16 +20,16 @@ import {
   bubbleAt,
   controlLabel,
   controlsFor,
+  inferPortDirections,
   inputArcPath,
   inputBubbleAt,
   registerClockPath,
   shapePath,
   symbolKind,
-  type ControlNetRef,
   type PortDirection,
   type SymbolKind,
 } from '../lib/symbols'
-import type { GraphNode } from '../types'
+import type { ControlRef, GraphNode } from '../types'
 
 interface Props {
   graph: LaidOutGraph
@@ -38,7 +39,7 @@ interface Props {
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
-  onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  onControlSelect?: (control: ControlRef, node: GraphNode) => void
   /** Double-click a node to additively render its fanin/fanout connections. */
   onExpand?: (node: GraphNode) => void
   active: boolean
@@ -219,7 +220,7 @@ function SchematicOutline({
       {kind === 'reg' && (
         <path
           className="g-symbol-detail"
-          d={registerClockPath(Math.min(height, 58))}
+          d={registerClockPath(Math.min(height, 58), REG_CLOCK_Y_FRAC)}
           fill="none"
           stroke={visual.stroke}
           strokeWidth={strokeWidth}
@@ -363,7 +364,7 @@ function PinLabels({ pins, width, height }: { pins: NodePins; width: number; hei
 }
 
 /** Short pin letter for a flip-flop control, per primitive: R/S/E/EN. */
-function controlPinLetter(role: ControlNetRef['role']): string | null {
+function controlPinLetter(role: ControlRef['role']): string | null {
   switch (role) {
     case 'reset':
       return 'R'
@@ -433,7 +434,7 @@ function ControlLabels({
   node: GraphNode
   width: number
   startY: number
-  onSelect?: (control: ControlNetRef, node: GraphNode) => void
+  onSelect?: (control: ControlRef, node: GraphNode) => void
 }) {
   const controls = controlsFor(node)
   if (controls.length === 0) return null
@@ -499,9 +500,10 @@ interface SchematicNodeProps {
   portDirection: PortDirection
   pins: NodePins
   interactive: boolean
+  tabIndex: 0 | -1
   suppressClick: { current: boolean }
   onSelect: (node: GraphNode | null) => void
-  onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
+  onControlSelect?: (control: ControlRef, node: GraphNode) => void
   onExpand?: (node: GraphNode) => void
 }
 
@@ -515,6 +517,7 @@ const SchematicNode = memo(function SchematicNode({
   portDirection,
   pins,
   interactive,
+  tabIndex,
   suppressClick,
   onSelect,
   onControlSelect,
@@ -539,7 +542,7 @@ const SchematicNode = memo(function SchematicNode({
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
       role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
+      tabIndex={interactive ? tabIndex : undefined}
       aria-label={interactive ? title : undefined}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
@@ -605,7 +608,7 @@ const SchematicNode = memo(function SchematicNode({
   )
 })
 
-export function GraphView({
+export const GraphView = memo(function GraphView({
   graph,
   rootId,
   highlight,
@@ -628,32 +631,24 @@ export function GraphView({
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
     const pinSetsById = new Map<number, MutableNodePins>()
-    const hasIncoming = new Set<number>()
-    const hasOutgoing = new Set<number>()
 
     for (const laidOutNode of graph.nodes) {
       nodeById.set(laidOutNode.id, laidOutNode)
       pinSetsById.set(laidOutNode.id, { incoming: new Set(), outgoing: new Set() })
     }
     for (const edge of graph.edges) {
-      hasOutgoing.add(edge.from)
-      hasIncoming.add(edge.to)
       const fromPins = pinSetsById.get(edge.from)
       const toPins = pinSetsById.get(edge.to)
       if (fromPins && edge.edge.from_port) fromPins.outgoing.add(edge.edge.from_port)
       if (toPins && edge.edge.to_port) toPins.incoming.add(edge.edge.to_port)
     }
 
-    const portDirection = new Map<number, PortDirection>()
-    for (const laidOutNode of graph.nodes) {
-      if (laidOutNode.node.kind !== 'port') continue
-      portDirection.set(
-        laidOutNode.id,
-        hasOutgoing.has(laidOutNode.id) && !hasIncoming.has(laidOutNode.id)
-          ? 'input'
-          : 'output',
-      )
-    }
+    const portDirection = inferPortDirections(
+      graph.nodes
+        .filter((laidOutNode) => laidOutNode.node.kind === 'port')
+        .map((laidOutNode) => laidOutNode.id),
+      graph.edges,
+    )
     const pinsById = new Map<number, NodePins>()
     for (const [nodeId, pins] of pinSetsById) {
       pinsById.set(nodeId, {
@@ -663,6 +658,10 @@ export function GraphView({
     }
     return { nodeById, pinsById, portDirection }
   }, [graph])
+  const rovingNodeId =
+    selectedId != null && metadata.nodeById.has(selectedId)
+      ? selectedId
+      : graph.nodes[0]?.id
 
   // The graph can contain thousands of SVG elements. Keep pointer-frequency
   // pan/zoom updates outside React so moving the viewport only mutates this
@@ -919,6 +918,7 @@ export function GraphView({
               portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
               pins={metadata.pinsById.get(laidOutNode.id) ?? { incoming: [], outgoing: [] }}
               interactive={interactive}
+              tabIndex={laidOutNode.id === rovingNodeId ? 0 : -1}
               suppressClick={suppressClick}
               onSelect={onSelect}
               onControlSelect={onControlSelect}
@@ -947,7 +947,7 @@ export function GraphView({
       </div>
     </div>
   )
-}
+})
 
 function truncate(value: string, maxLength: number): string {
   if (maxLength < 3 || value.length <= maxLength) return value
