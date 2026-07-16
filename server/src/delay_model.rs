@@ -84,6 +84,13 @@ pub enum DelayProfile {
     UltraScalePlus,
     Ice40,
     Ecp5,
+    /// SkyWater 130nm HD standard cells — an ASIC library for gates mode.
+    Sky130Hd,
+    /// GlobalFoundries 180nm MCU (5V) standard cells — ASIC, gates mode.
+    Gf180Mcu,
+    /// ASAP7 predictive 7nm standard cells — ASIC, gates mode. Predictive
+    /// research PDK: no silicon behind the numbers.
+    Asap7,
     Generic,
 }
 
@@ -96,6 +103,9 @@ impl DelayProfile {
             Self::UltraScalePlus => DelayModel::ultrascale_plus(),
             Self::Ice40 => DelayModel::ice40(),
             Self::Ecp5 => DelayModel::ecp5(),
+            Self::Sky130Hd => DelayModel::sky130hd(),
+            Self::Gf180Mcu => DelayModel::gf180mcu(),
+            Self::Asap7 => DelayModel::asap7(),
             Self::Generic => DelayModel::generic(),
         }
     }
@@ -108,6 +118,9 @@ impl DelayProfile {
             Some("ultrascale_plus") => Self::UltraScalePlus,
             Some("ice40") => Self::Ice40,
             Some("ecp5") => Self::Ecp5,
+            Some("sky130hd") => Self::Sky130Hd,
+            Some("gf180mcu") => Self::Gf180Mcu,
+            Some("asap7") => Self::Asap7,
             Some("generic") => Self::Generic,
             _ => Self::Series7,
         }
@@ -128,7 +141,10 @@ impl DelayProfile {
             },
             "ice40" => Self::Ice40,
             "ecp5" => Self::Ecp5,
-            // gates / lut4 / lut6 / rtl and anything unrecognized.
+            // gates / lut4 / lut6 / rtl and anything unrecognized. The ASIC
+            // PDK profiles are never a target default — gates mode is not a
+            // specific process; they are opt-in via the `profile` request
+            // field.
             _ => Self::Generic,
         }
     }
@@ -153,6 +169,11 @@ impl DelayProfile {
     /// slowest — the grade the preset is characterized at — so the generic
     /// "-2" knob maps to grade 7 and "-3" to grade 8.
     ///
+    /// The ASIC PDK profiles (sky130hd / gf180mcu / asap7) describe a
+    /// standard-cell library at one characterized corner (TT) — there is no
+    /// speed-grade binning to model — so they return 1.0 regardless of the
+    /// selection.
+    ///
     /// iCE40 and generic have no grade measurement and keep the old
     /// hand-picked factors.
     pub fn speed_grade_factor(self, grade: Option<&str>) -> f64 {
@@ -166,6 +187,9 @@ impl DelayProfile {
             // prjtrellis-measured; "-2" = ECP5 grade 7, "-3" = ECP5 grade 8.
             (Self::Ecp5, Some("-2")) => 0.875,
             (Self::Ecp5, Some("-3")) => 0.755,
+            // A standard-cell library has no speed grades: one corner, no
+            // binning. The selection is deliberately ignored.
+            (Self::Sky130Hd | Self::Gf180Mcu | Self::Asap7, _) => 1.0,
             // Not vendor-measured.
             (_, Some("-2")) => 0.87,
             (_, Some("-3")) => 0.78,
@@ -349,6 +373,103 @@ impl DelayModel {
             ff_setup_ps: 0.0,
             net_base_ps: 695.0,
             net_per_fanout_ps: 53.7,
+        }
+    }
+
+    /// SkyWater 130nm HD standard cells (`sky130_fd_sc_hd`) — an ASIC
+    /// profile for gates mode. Derived from the `tt_025C_1v80` Liberty tables
+    /// (upstream github.com/google/skywater-pdk-libs-sky130_fd_sc_hd,
+    /// Apache-2.0), read at an FO4-style operating point: a self-consistent
+    /// inverter FO4 slew (91.7 ps) and a load of 4x the gate's own input
+    /// capacitance, worst rise/fall arc.
+    ///
+    /// Provenance / stated assumptions:
+    /// - `lut_ps` / `cell_ps`: blend = mean of nand2_1, nor2_1, and2_1, or2_1,
+    ///   xor2_1, xnor2_1, mux2_1 worst arcs at FO4 — the model maps every
+    ///   `$_*_` gates-mode cell to a single number.
+    /// - `carry_ps`: ASSUMPTION — gates mode has no carry chains; the value is
+    ///   an and2_1 + xor2_1 stand-in (a full-adder carry+sum stage) = 519.6.
+    /// - `wide_mux_ps`: mux2_1 worst arc = 376.5.
+    /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dfxtp_1 Q<-CLK rising edge = 369.7;
+    ///   D setup_rising worst constraint at FO4 slews = 103.3.
+    /// - net terms: `net_base_ps` from the lib's "Small" wire_load model
+    ///   (fanout_length(1) x pF/len x nand2 load slope = 2.1 — sky130 wire
+    ///   loads are tiny); `net_per_fanout_ps` = nand2 delay-vs-load slope x
+    ///   one nand2 input cap = 15.0. Pre-place ASIC timing is gate-dominated,
+    ///   so the small net terms degrade gracefully.
+    pub fn sky130hd() -> Self {
+        Self {
+            lut_ps: 256.1,
+            carry_ps: 519.6,
+            wide_mux_ps: 376.5,
+            cell_ps: 256.1,
+            ff_clk_to_q_ps: 369.7,
+            ff_setup_ps: 103.3,
+            net_base_ps: 2.1,
+            net_per_fanout_ps: 15.0,
+        }
+    }
+
+    /// GlobalFoundries 180nm MCU standard cells (`gf180mcu_fd_sc_mcu7t5v0`,
+    /// 5V) — an ASIC profile for gates mode. Derived from the `tt_025C_5v00`
+    /// Liberty tables (Apache-2.0, "GlobalFoundries PDK Authors" header),
+    /// using the same FO4-style rule as [`Self::sky130hd`] (self-consistent
+    /// inverter FO4 slew 365 ps).
+    ///
+    /// Provenance / stated assumptions:
+    /// - `lut_ps` / `cell_ps`: blend of the same seven gates, worst arcs at
+    ///   FO4 = 556.2.
+    /// - `carry_ps`: ASSUMPTION — and2_1 + xor2_1 stand-in = 1213.
+    /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dffq_1 Q<-CLK rising edge = 912.6;
+    ///   D setup_rising = 250.
+    /// - net terms: ASSUMPTION — the lib ships no wire_load model, so both
+    ///   terms are nand2 slope x one nand2 input cap (0.0048 pF) = 48.3, i.e.
+    ///   wire capacitance assumed comparable to one gate input load.
+    ///
+    /// A 180nm 5V standard-cell gate really is slower than a 40nm FPGA LUT
+    /// (556 vs 449 ps bare) — three process generations outweigh FPGA
+    /// overhead; with the FPGA's local-route cost included per level, path
+    /// totals still order sensibly.
+    pub fn gf180mcu() -> Self {
+        Self {
+            lut_ps: 556.2,
+            carry_ps: 1213.0,
+            wide_mux_ps: 664.7,
+            cell_ps: 556.2,
+            ff_clk_to_q_ps: 912.6,
+            ff_setup_ps: 250.0,
+            net_base_ps: 48.3,
+            net_per_fanout_ps: 48.3,
+        }
+    }
+
+    /// ASAP7 predictive 7nm standard cells (7.5-track RVT, TT NLDM) — an ASIC
+    /// profile for gates mode. Derived from the
+    /// `asap7sc7p5t_{SIMPLE,SEQ,INVBUF}_RVT_TT_nldm` Liberty tables
+    /// (BSD-3-Clause, Arizona State University), same FO4-style rule as
+    /// [`Self::sky130hd`] (self-consistent inverter FO4 slew 29.1 ps). ASAP7
+    /// is a *predictive* research PDK: there is no silicon behind these
+    /// numbers.
+    ///
+    /// Provenance / stated assumptions:
+    /// - `lut_ps` / `cell_ps`: blend of NAND2x1, NOR2x1, AND2x2, OR2x2,
+    ///   XOR2x1, XNOR2x1 worst arcs at FO4 = 30.0. No MUX2 cell exists in this
+    ///   NLDM set, so `wide_mux_ps` = the blend.
+    /// - `carry_ps`: ASSUMPTION — AND2x2 + XOR2x1 stand-in = 67.9.
+    /// - `ff_clk_to_q_ps` / `ff_setup_ps`: DFFHQNx1 QN<-CLK rising edge =
+    ///   64.7; D setup_rising = 10.0.
+    /// - net terms: ASSUMPTION — no wire_load model; both terms = NAND2x1
+    ///   slope x one NAND2x1 input cap (0.99 fF) = 4.0.
+    pub fn asap7() -> Self {
+        Self {
+            lut_ps: 30.0,
+            carry_ps: 67.9,
+            wide_mux_ps: 30.0,
+            cell_ps: 30.0,
+            ff_clk_to_q_ps: 64.7,
+            ff_setup_ps: 10.0,
+            net_base_ps: 4.0,
+            net_per_fanout_ps: 4.0,
         }
     }
 
@@ -564,6 +685,45 @@ mod tests {
             let g3 = profile.speed_grade_factor(Some("-3"));
             assert!(g3 < g2 && g2 < 1.0, "{profile:?}: {g3} < {g2} < 1");
         }
+
+        // The ASIC PDK profiles describe one characterized library corner —
+        // there is no grade binning — so every selection is the identity.
+        for profile in [
+            DelayProfile::Sky130Hd,
+            DelayProfile::Gf180Mcu,
+            DelayProfile::Asap7,
+        ] {
+            for grade in [None, Some("-1"), Some("-2"), Some("-3")] {
+                assert_eq!(
+                    profile.speed_grade_factor(grade),
+                    1.0,
+                    "{profile:?} must ignore speed grade {grade:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_profile_net_delay_grows_with_fanout() {
+        // Guards net_per_fanout_ps > 0 on every preset: a zero slope would
+        // make fanout invisible to the estimate.
+        for profile in [
+            DelayProfile::Series7,
+            DelayProfile::UltraScale,
+            DelayProfile::UltraScalePlus,
+            DelayProfile::Ice40,
+            DelayProfile::Ecp5,
+            DelayProfile::Sky130Hd,
+            DelayProfile::Gf180Mcu,
+            DelayProfile::Asap7,
+            DelayProfile::Generic,
+        ] {
+            let model = profile.model();
+            assert!(
+                model.net_delay_ps(10) > model.net_delay_ps(1),
+                "{profile:?}: net delay must grow with fanout"
+            );
+        }
     }
 
     #[test]
@@ -577,6 +737,9 @@ mod tests {
             ("ultrascale_plus", DelayProfile::UltraScalePlus),
             ("ice40", DelayProfile::Ice40),
             ("ecp5", DelayProfile::Ecp5),
+            ("sky130hd", DelayProfile::Sky130Hd),
+            ("gf180mcu", DelayProfile::Gf180Mcu),
+            ("asap7", DelayProfile::Asap7),
             ("generic", DelayProfile::Generic),
         ] {
             assert_eq!(DelayProfile::from_name(Some(name)), profile);

@@ -715,6 +715,9 @@ fn stored_delay_profile(profile: DelayProfile) -> &'static str {
         DelayProfile::UltraScalePlus => "ultrascale_plus",
         DelayProfile::Ice40 => "ice40",
         DelayProfile::Ecp5 => "ecp5",
+        DelayProfile::Sky130Hd => "sky130hd",
+        DelayProfile::Gf180Mcu => "gf180mcu",
+        DelayProfile::Asap7 => "asap7",
         DelayProfile::Generic => "generic",
     }
 }
@@ -726,6 +729,9 @@ fn parse_stored_delay_profile(profile: &str) -> Option<DelayProfile> {
         "ultrascale_plus" => Some(DelayProfile::UltraScalePlus),
         "ice40" => Some(DelayProfile::Ice40),
         "ecp5" => Some(DelayProfile::Ecp5),
+        "sky130hd" => Some(DelayProfile::Sky130Hd),
+        "gf180mcu" => Some(DelayProfile::Gf180Mcu),
+        "asap7" => Some(DelayProfile::Asap7),
         "generic" => Some(DelayProfile::Generic),
         _ => None,
     }
@@ -1949,6 +1955,28 @@ mod tests {
         );
         assert!(!access.authorizes(&digest_as_key));
         assert!(!access.authorizes(&HeaderMap::new()));
+    }
+
+    #[test]
+    fn stored_delay_profile_round_trips_every_variant() {
+        // A stored design that fails to parse its profile fails to load, so
+        // every variant the store can write must read back as itself.
+        for profile in [
+            DelayProfile::Series7,
+            DelayProfile::UltraScale,
+            DelayProfile::UltraScalePlus,
+            DelayProfile::Ice40,
+            DelayProfile::Ecp5,
+            DelayProfile::Sky130Hd,
+            DelayProfile::Gf180Mcu,
+            DelayProfile::Asap7,
+            DelayProfile::Generic,
+        ] {
+            assert_eq!(
+                parse_stored_delay_profile(stored_delay_profile(profile)),
+                Some(profile)
+            );
+        }
     }
 
     #[test]

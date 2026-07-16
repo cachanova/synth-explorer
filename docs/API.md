@@ -388,7 +388,8 @@ Request body (all fields optional):
 
 ```ts
 {
-  profile?: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' | 'ecp5' | 'generic';
+  profile?: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' | 'ecp5' |
+            'sky130hd' | 'gf180mcu' | 'asap7' | 'generic';
   speed_grade?: '-1' | '-2' | '-3';   // -1 slowest (default); scales all delays
   model?: DelayModel;                 // full coefficient override; wins over profile
 }
@@ -403,9 +404,16 @@ model and `-1` respectively) rather than erroring.
 `DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
 `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
 `net_per_fanout_ps`. The Xilinx presets are calibrated against Vivado 2026.1 at
-the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p);
-`speed_grade` applies a global multiplier on top (`-2`≈0.87, `-3`≈0.78). Lattice
-(iCE40/ECP5) and `generic` presets are not vendor-calibrated.
+the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p),
+with per-family Vivado-measured `speed_grade` factors. The Lattice presets are
+derived from measured open timing databases (Project IceStorm for `ice40`, the
+HX grade; prjtrellis-db for `ecp5` at speed grade 6); for `ecp5`, `-2`/`-3` map
+to its real grades 7/8 with prjtrellis-measured factors 0.875/0.755. The ASIC
+profiles (`sky130hd`, `gf180mcu`, `asap7` — for gates-mode netlists) come from
+those PDKs' open Liberty files at the TT corner and **ignore `speed_grade`**: a
+standard-cell library has no grade binning, so the multiplier is always 1.
+`generic` keeps notional values and hand-picked grade factors (`-2`≈0.87,
+`-3`≈0.78), as does `ice40` (iCE40 has no speed-grade binning of its own).
 
 Response:
 
