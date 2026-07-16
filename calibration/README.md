@@ -64,6 +64,7 @@ discrepancy can never be blamed on parameter plumbing.
 | script | emits | for |
 |---|---|---|
 | `vivado.tcl` | `RESULT:` one JSON record per case/part | whole-path ground truth (`report`/`fit`) |
+| `vivado_edif.tcl` | `RESULT:` records, same shape | Vivado's model on **our (Yosys) netlist** |
 | `speed_models.tcl` | `SM: <family> <bel> <arc> <slow_max> <fast_min>` | characterized per-BEL **cell** delays |
 | `cells.tcl` | `CELL:`/`NET:` rows of each path table, in path order | **net** terms by driver→sink pair |
 
@@ -93,6 +94,56 @@ ssh deploy@<prod> "docker exec -i synth-explorer-app-1 bash -lc \
 ```
 
 Base64-pipe the payload rather than quoting scripts through two shells.
+
+### Timing the Yosys netlist with Vivado (`vivado_edif.tcl`)
+
+Comparing our estimate against `vivado.tcl`'s ground truth is ill-posed: it
+varies the delay model *and* the netlist at once (under the pre-`-nowidelut`
+default the Yosys netlist ran roughly 2x deeper than Vivado's — about 1.1–1.2x
+since — so per-stage coefficients fitted against Vivado's netlist have to
+absorb the depth ratio). `vivado_edif.tcl` closes that hole by feeding
+the Yosys netlist itself into Vivado over EDIF and running the same
+`report_timing` recipe on it. With the netlist held constant:
+
+- estimate vs `vivado_edif.tcl` = pure **delay-model** error, the well-posed
+  target for fitting our coefficients;
+- `vivado_edif.tcl` vs `vivado.tcl` = pure **mapping** (netlist-shape) error,
+  Vivado's model on both sides.
+
+Export one EDIF per case/family with the app's exact baseline synthesis line —
+the flags must match what `calibrate estimate` runs (`estimate_case` in
+`server/examples/calibrate.rs` is the source of truth), or the two sides are
+different netlists again and the comparison is back to being ill-posed:
+
+```bash
+yosys -q -p "read_verilog -sv <case>/<file>; \
+  synth_xilinx -top <top> -flatten -family <xc7|xcu|xcup> <baseline flags>; \
+  write_edif -pvector bra edif/<case>.<family>.edif"
+```
+
+and place them under `<cases-dir>/edif/`. Then, on the Vivado host (chunked —
+the host redeploys often, and a redeploy SIGKILLs Vivado and wipes `/tmp`;
+trailing case names restrict a run, and reruns are idempotent):
+
+```bash
+vivado -nolog -nojournal -mode batch -source vivado_edif.tcl \
+  -tclargs <cases-dir> [case ...]
+```
+
+Two Vivado traps this flow found, both encoded in the script:
+
+- **Do not pass `-top` to `link_design`** when linking an EDIF. The top comes
+  from the EDIF's own `(design ...)` statement; with `-top` Vivado looks for
+  RTL sources to elaborate and fails with `[Project 1-68] No files found to
+  match top module`. The script verifies the linked `TOP` afterwards instead.
+- **Never define a Tcl proc named `try`** in anything sourced into Vivado: it
+  shadows the Tcl 8.6 builtin that Vivado's tclapp loader uses, and every
+  subsequent `create_project` fails with the unrelated-looking
+  `[Common 17-685] Unable to load Tcl app xilinx::xsim`.
+
+The `RESULT:` records have the same shape as `vivado.tcl`'s, so
+`calibrate report est.json <edif-results>.json` compares directly. Like the
+other vendor-derived datasets, the results stay out of the repo.
 
 ## Exclude `unset` rows
 

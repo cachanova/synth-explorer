@@ -540,7 +540,12 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
-  // The live source probe ran while Focus was off, so it should fetch exactly
-  // one new nearby-context projection for the new relevant roots.
-  expect(netlistRequests).toBe(2)
+  // Two distinct context projections were fetched while Focus was off: the
+  // live source probe on `request_valid` (which maps to its register) fetched a
+  // nearby-context projection around those roots, then Escape cleared the
+  // selection and fetched the full diagram (around=[]). Both are needed because
+  // the two projections differ. (Before the source-provenance case-scan fix,
+  // `request_valid` was unmapped, so the probe fell straight back to the full
+  // diagram and Escape hit the cache — collapsing these into one fetch.)
+  expect(netlistRequests).toBe(3)
 })
