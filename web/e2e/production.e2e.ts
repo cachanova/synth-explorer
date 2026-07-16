@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page, type Request } from '@playwright/test'
 
 async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
   const box = await divider.boundingBox()
@@ -103,6 +103,26 @@ test('unlocks Vivado family and speed presets through a password-manager form', 
   )
 })
 
+test('file tabs expose roving keyboard navigation', async ({ page }) => {
+  await page.goto('/')
+  await page.getByTitle('Add file').click()
+  await page.getByTitle('Add file').click()
+
+  const designTab = page.getByRole('tab', { name: /design\.sv/ })
+  const file1Tab = page.getByRole('tab', { name: /file1\.sv/ })
+  const file2Tab = page.getByRole('tab', { name: /file2\.sv/ })
+  await expect(file2Tab).toHaveAttribute('aria-selected', 'true')
+  await file2Tab.focus()
+  await file2Tab.press('Home')
+  await expect(designTab).toBeFocused()
+  await expect(designTab).toHaveAttribute('aria-selected', 'true')
+  await designTab.press('End')
+  await expect(file2Tab).toBeFocused()
+  await file2Tab.press('ArrowLeft')
+  await expect(file1Tab).toBeFocused()
+  await expect(file1Tab).toHaveAttribute('aria-selected', 'true')
+})
+
 test('synthesizes from the webpage with the default Yosys flags', async ({
   page,
 }) => {
@@ -181,6 +201,35 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await expect(page.locator('.g-node-body').first()).toBeVisible()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+
+  const rovingNode = page.locator('.g-node-body[tabindex="0"]')
+  await expect(rovingNode).toHaveCount(1)
+  const initialFocusedNode = await rovingNode.getAttribute('data-graph-node-id')
+  await rovingNode.focus()
+  await rovingNode.press('ArrowRight')
+  await expect(page.locator('.g-node-body[tabindex="0"]')).toHaveCount(1)
+  await expect
+    .poll(async () =>
+      page.locator('.g-node-body[tabindex="0"]').getAttribute('data-graph-node-id'),
+    )
+    .not.toBe(initialFocusedNode)
+  await expect
+    .poll(async () =>
+      page.locator('.g-node-body:focus').getAttribute('data-graph-node-id'),
+    )
+    .not.toBe(initialFocusedNode)
+
+  const beforeKeyboardPan = await viewport.getAttribute('transform')
+  await svg.focus()
+  await svg.press('ArrowRight')
+  await expect
+    .poll(async () => viewport.getAttribute('transform'))
+    .not.toBe(beforeKeyboardPan)
+  const beforeKeyboardZoom = await viewport.getAttribute('transform')
+  await svg.press('=')
+  await expect
+    .poll(async () => viewport.getAttribute('transform'))
+    .not.toBe(beforeKeyboardZoom)
 
   const initialStage = await stage.boundingBox()
   expect(initialStage).not.toBeNull()
@@ -302,6 +351,16 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await expect
     .poll(async () => await viewport.getAttribute('transform'))
     .not.toBe(beforeTabSwitch)
+
+  const schematicTab = page.getByRole('tab', { name: 'Schematic', exact: true })
+  await schematicTab.focus()
+  await schematicTab.press('ArrowLeft')
+  const fanoutTab = page.getByRole('tab', { name: 'Fanout', exact: true })
+  await expect(fanoutTab).toBeFocused()
+  await expect(fanoutTab).toHaveAttribute('aria-selected', 'true')
+  await fanoutTab.press('ArrowRight')
+  await expect(schematicTab).toBeFocused()
+  await expect(schematicTab).toHaveAttribute('aria-selected', 'true')
 })
 
 test('Focus switches between the relevant cone and a highlighted full diagram', async ({
@@ -384,7 +443,9 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
     .toBeGreaterThan(focusedNodeCount)
   const fullNodeCount = await page.locator('.g-node-body').count()
   await expect(focus).not.toBeChecked()
-  expect(await page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
+  await expect
+    .poll(async () => page.locator('.g-edge.hl').count())
+    .toBeGreaterThan(0)
   expect(
     await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
   ).toBeGreaterThan(0)
@@ -412,9 +473,32 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
     .toBeGreaterThan(refocusedNodeCount)
   expect(fullNetlistRequests).toBe(1)
 
-  // Escape clears the relevant source selection. The full diagram remains,
-  // but no relevance highlight is retained when nothing is selected.
-  await page.locator('.cm-content').press('Escape')
+  // Rapid cursor movement schedules one latest-only live source probe.
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await page.keyboard.press('Control+Home')
+  await page.waitForTimeout(350)
+  const burstProbeUrls: string[] = []
+  const countBurstProbe = (request: Request) => {
+    if (request.url().includes('/line-cone?')) burstProbeUrls.push(request.url())
+  }
+  page.on('request', countBurstProbe)
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('ArrowDown')
+  const finalCursorLine = (
+    await page.locator('.cm-activeLineGutter').textContent()
+  )?.trim()
+  await page.waitForTimeout(600)
+  page.off('request', countBurstProbe)
+  expect(burstProbeUrls).toHaveLength(1)
+  expect(new URL(burstProbeUrls[0]).searchParams.get('start_line')).toBe(
+    finalCursorLine,
+  )
+
+  // Escape clears the relevant source selection from outside CodeMirror. The
+  // full diagram remains without retaining a relevance highlight.
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).press('Escape')
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)

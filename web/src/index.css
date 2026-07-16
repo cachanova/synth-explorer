@@ -418,12 +418,17 @@ a:hover {
   border-color: var(--border);
   color: var(--text);
 }
+.file-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
 .file-tab .x {
   color: var(--text-faint);
   border: none;
   background: none;
   padding: 0 2px;
   font-size: 12px;
+  cursor: pointer;
 }
 .file-tab .x:hover {
   color: var(--red);
@@ -976,9 +981,9 @@ th.sortable:hover {
   padding: 4px 7px;
   border: 1px solid var(--border);
   border-radius: 5px;
-  color: var(--text-faint);
+  color: var(--text-dim);
   background: color-mix(in srgb, var(--bg) 92%, transparent);
-  font-size: 10px;
+  font-size: 11px;
   pointer-events: none;
 }
 .graph-banner {
@@ -1068,6 +1073,10 @@ th.sortable:hover {
   gap: 6px;
   margin-top: 8px;
   flex-wrap: wrap;
+}
+.node-card .chain .hop .n {
+  color: var(--text-dim);
+  font-size: 11px;
 }
 .node-card .close {
   position: absolute;

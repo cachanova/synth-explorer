@@ -223,5 +223,17 @@ export function Editor() {
     applyHighlight(view, store.editorHighlight, store.activeFileName)
   }, [store.editorHighlight, store.activeFileName])
 
-  return <div className="editor-wrap" ref={hostRef} />
+  const activeFileIndex = Math.max(
+    0,
+    store.files.findIndex((file) => file.name === store.activeFileName),
+  )
+  return (
+    <div
+      className="editor-wrap"
+      id="source-editor-panel"
+      role="tabpanel"
+      aria-labelledby={`source-file-tab-${activeFileIndex}`}
+      ref={hostRef}
+    />
+  )
 }

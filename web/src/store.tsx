@@ -716,6 +716,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }) => {
       if (analysisStateRef.current !== 'current') return
       cancelSourceProbe()
+      sourceSelectionActiveRef.current = false
       const nodes =
         opts.nodes && opts.nodes.length > 0
           ? opts.nodes
@@ -741,6 +742,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const showPathInGraph = useCallback((path: TimingPath) => {
     if (analysisStateRef.current !== 'current') return
     cancelSourceProbe()
+    sourceSelectionActiveRef.current = false
     setConeReq({
       kind: 'cone',
       designId: designRef.current?.design_id ?? '',
@@ -766,6 +768,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }) => {
       if (analysisStateRef.current !== 'current') return
       cancelSourceProbe()
+      sourceSelectionActiveRef.current = false
       const dir = generated ? 'fanin' : 'fanout'
       setGraphOptionsState((options) => ({ ...options, hideControl: false }))
       setConeReq({

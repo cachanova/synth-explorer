@@ -439,7 +439,7 @@ function ControlLabels({
   if (controls.length === 0) return null
 
   return (
-    <g className="g-control-labels">
+    <g className="g-control-labels" aria-hidden="true">
       {controls.map((control, index) => {
         const y = startY + 1 + index * 13
         const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
@@ -463,16 +463,8 @@ function ControlLabels({
           <g
             key={`${control.role}-${control.driver_id}-${index}`}
             className={`g-control-label${control.generated ? ' generated' : ''}${onSelect ? ' clickable' : ''}`}
-            role={onSelect ? 'button' : undefined}
-            tabIndex={onSelect ? 0 : undefined}
             onPointerDown={onSelect ? (event) => event.stopPropagation() : undefined}
             onClick={onSelect ? (event) => {
-              event.stopPropagation()
-              onSelect(control, node)
-            } : undefined}
-            onKeyDown={onSelect ? (event) => {
-              if (event.key !== 'Enter' && event.key !== ' ') return
-              event.preventDefault()
               event.stopPropagation()
               onSelect(control, node)
             } : undefined}
@@ -501,6 +493,7 @@ interface SchematicNodeProps {
   interactive: boolean
   tabIndex: number
   suppressClick: { current: boolean }
+  onNodeElement: (nodeId: number, element: SVGGElement | null) => void
   onSelect: (node: GraphNode | null) => void
   onFocusNode: (nodeId: number) => void
   onNavigateNode: (nodeId: number, key: GraphNavigationKey) => void
@@ -537,6 +530,7 @@ const SchematicNode = memo(function SchematicNode({
   interactive,
   tabIndex,
   suppressClick,
+  onNodeElement,
   onSelect,
   onFocusNode,
   onNavigateNode,
@@ -559,6 +553,7 @@ const SchematicNode = memo(function SchematicNode({
 
   return (
     <g
+      ref={(element) => onNodeElement(node.id, element)}
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       data-graph-node-id={node.id}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
@@ -566,7 +561,7 @@ const SchematicNode = memo(function SchematicNode({
       tabIndex={interactive ? tabIndex : undefined}
       aria-label={
         interactive
-          ? `${title}. Enter to inspect; Shift+Enter to expand.`
+          ? `${title}. Enter to inspect details and controls; Shift+Enter to expand.`
           : undefined
       }
       onPointerEnter={() => setHovered(true)}
@@ -582,7 +577,7 @@ const SchematicNode = memo(function SchematicNode({
           suppressClick.current = false
           return
         }
-        onFocusNode(node.id)
+        if (document.activeElement !== event.currentTarget) onFocusNode(node.id)
         onSelect(node)
       } : undefined}
       onDoubleClick={interactive && onExpand ? (event) => {
@@ -668,6 +663,8 @@ export function GraphView({
   const suppressClick = useRef(false)
   const userAdjusted = useRef(false)
   const rovingNodeId = useRef<number | null>(null)
+  const nodeElements = useRef(new Map<number, SVGGElement>())
+  const programmaticFocusNodeId = useRef<number | null>(null)
 
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
@@ -708,6 +705,14 @@ export function GraphView({
     return { nodeById, pinsById, portDirection }
   }, [graph])
 
+  // The graph can contain thousands of SVG elements. Keep pointer-frequency
+  // pan/zoom updates outside React so moving the viewport only mutates this
+  // outer group instead of reconciling every edge and node.
+  const applyTransform = useCallback((next: ViewportTransform) => {
+    transformRef.current = next
+    viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
+  }, [])
+
   const rovingTabStopId = interactive
     ? metadata.nodeById.has(rovingNodeId.current ?? Number.NaN)
       ? rovingNodeId.current
@@ -719,24 +724,93 @@ export function GraphView({
     : null
   rovingNodeId.current = rovingTabStopId
 
+  const setNodeElement = useCallback(
+    (nodeId: number, element: SVGGElement | null) => {
+      if (element) nodeElements.current.set(nodeId, element)
+      else nodeElements.current.delete(nodeId)
+    },
+    [],
+  )
+
   const focusGraphNode = useCallback((nodeId: number) => {
-    const svg = svgRef.current
-    if (!svg) return
-    if (rovingNodeId.current !== nodeId) {
-      svg
-        .querySelector<SVGGElement>(
-          `[data-graph-node-id="${rovingNodeId.current}"]`,
-        )
-        ?.setAttribute('tabindex', '-1')
-    }
-    const next = svg.querySelector<SVGGElement>(
-      `[data-graph-node-id="${nodeId}"]`,
-    )
+    const previous = rovingNodeId.current == null
+      ? null
+      : (nodeElements.current.get(rovingNodeId.current) ?? null)
+    previous?.setAttribute('tabindex', '-1')
+    const next = nodeElements.current.get(nodeId)
     if (!next) return
     rovingNodeId.current = nodeId
     next.setAttribute('tabindex', '0')
+
+    const laidOutNode = metadata.nodeById.get(nodeId)
+    const stage = stageRef.current
+    if (laidOutNode && stage) {
+      const rect = stage.getBoundingClientRect()
+      const wrapper = stage.parentElement
+      const cardRect = wrapper
+        ?.querySelector<HTMLElement>('.node-card')
+        ?.getBoundingClientRect()
+      const bannerRect = wrapper
+        ?.querySelector<HTMLElement>('.graph-banner')
+        ?.getBoundingClientRect()
+      const shortcutRect = stage
+        .querySelector<HTMLElement>('.graph-shortcuts')
+        ?.getBoundingClientRect()
+      const zoomControlsRect = stage
+        .querySelector<HTMLElement>('.zoom-controls')
+        ?.getBoundingClientRect()
+      const transform = transformRef.current
+      const margin = 24
+      const leftBound = margin
+      const rightBound = cardRect
+        ? cardRect.left - rect.left - margin
+        : rect.width - margin
+      const topBound = bannerRect && bannerRect.height > 0
+        ? bannerRect.bottom - rect.top + margin
+        : margin
+      const bottomOverlayTop = Math.min(
+        shortcutRect?.top ?? Number.POSITIVE_INFINITY,
+        zoomControlsRect?.top ?? Number.POSITIVE_INFINITY,
+      )
+      const bottomBound = Number.isFinite(bottomOverlayTop)
+        ? bottomOverlayTop - rect.top - margin
+        : rect.height - margin
+      const left = laidOutNode.x * transform.k + transform.x
+      const right = (laidOutNode.x + laidOutNode.width) * transform.k + transform.x
+      const top = laidOutNode.y * transform.k + transform.y
+      const bottom = (laidOutNode.y + laidOutNode.height) * transform.k + transform.y
+      const dx = left < leftBound
+        ? leftBound - left
+        : right > rightBound
+          ? rightBound - right
+          : 0
+      const dy = top < topBound
+        ? topBound - top
+        : bottom > bottomBound
+          ? bottomBound - bottom
+          : 0
+      if (dx !== 0 || dy !== 0) {
+        userAdjusted.current = true
+        applyTransform({ ...transform, x: transform.x + dx, y: transform.y + dy })
+      }
+    }
+    programmaticFocusNodeId.current = nodeId
     next.focus()
-  }, [])
+    programmaticFocusNodeId.current = null
+  }, [applyTransform, metadata.nodeById])
+
+  const acceptGraphNodeFocus = useCallback(
+    (nodeId: number) => {
+      if (programmaticFocusNodeId.current === nodeId) return
+      focusGraphNode(nodeId)
+    },
+    [focusGraphNode],
+  )
+
+  useLayoutEffect(() => {
+    if (selectedId == null || rovingNodeId.current == null) return
+    focusGraphNode(rovingNodeId.current)
+  }, [focusGraphNode, selectedId])
 
   const navigateGraphNode = useCallback(
     (nodeId: number, key: GraphNavigationKey) => {
@@ -778,14 +852,6 @@ export function GraphView({
     },
     [focusGraphNode, graph.nodes, metadata.nodeById],
   )
-
-  // The graph can contain thousands of SVG elements. Keep pointer-frequency
-  // pan/zoom updates outside React so moving the viewport only mutates this
-  // outer group instead of reconciling every edge and node.
-  const applyTransform = useCallback((next: ViewportTransform) => {
-    transformRef.current = next
-    viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
-  }, [])
 
   const fit = useCallback(() => {
     const stage = stageRef.current
@@ -1081,8 +1147,9 @@ export function GraphView({
               interactive={interactive}
               tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
               suppressClick={suppressClick}
+              onNodeElement={setNodeElement}
               onSelect={onSelect}
-              onFocusNode={focusGraphNode}
+              onFocusNode={acceptGraphNodeFocus}
               onNavigateNode={navigateGraphNode}
               onControlSelect={onControlSelect}
               onExpand={onExpand}
