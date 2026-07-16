@@ -45,7 +45,9 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   the single host. Writes use an atomic rename, and incompatible, corrupt,
   expired, or evicted entries are discarded. The file store survives
   application restarts and deployments but is local to one host; horizontal
-  replicas would require shared storage or request affinity.
+  replicas would require shared storage or request affinity. It is a
+  single-writer store for the deployment's one application process. Disk-write
+  failures degrade to hot-cache-only retention instead of failing synthesis.
 - Hot-cache hits share a read lock; only expired-entry cleanup and insertion
   take the write lock. Retained size is derived structurally so new owned fields
   cannot bypass cache accounting silently.

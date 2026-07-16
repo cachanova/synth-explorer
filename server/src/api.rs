@@ -458,7 +458,7 @@ async fn lookup_design(state: &AppState, id: &str) -> Result<Option<Arc<Design>>
     Ok(Some(design))
 }
 
-async fn persist_design(state: &AppState, stored: StoredDesign) -> Result<u64, ApiError> {
+async fn persist_design(state: &AppState, stored: StoredDesign) -> Result<u64, String> {
     let Some(store) = state.store.as_ref().map(Arc::clone) else {
         return Ok(0);
     };
@@ -471,18 +471,10 @@ async fn persist_design(state: &AppState, stored: StoredDesign) -> Result<u64, A
             .write(&write_id, &stored)
     })
     .await
-    .map_err(|err| {
-        ApiError::new(
-            StatusCode::INSUFFICIENT_STORAGE,
-            format!("design persistence task failed: {err}"),
-        )
-    })?;
+    .map_err(|err| format!("design persistence task failed: {err}"))?;
     persisted.map_err(|err| {
         tracing::error!(design_id, error = %err, "stored_design_write_failed");
-        ApiError::new(
-            StatusCode::INSUFFICIENT_STORAGE,
-            "synthesized design could not be retained on disk",
-        )
+        err.to_string()
     })
 }
 
@@ -1155,10 +1147,6 @@ async fn synthesize_uncached(
             "synthesized design exceeds the server cache budget",
         ));
     }
-    let stored_bytes = match stored {
-        Some(stored) => persist_design(state, stored).await?,
-        None => 0,
-    };
     let cached = state.cache.write().await.insert(
         design_id.to_owned(),
         Arc::clone(&design),
@@ -1179,6 +1167,16 @@ async fn synthesize_uncached(
             "synthesized design exceeds the server cache budget",
         ));
     }
+    let stored_bytes = match stored {
+        Some(stored) => match persist_design(state, stored).await {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                tracing::warn!(design_id, error = %err, "synthesis_persistence_degraded");
+                None
+            }
+        },
+        None => None,
+    };
     tracing::info!(
         design_id,
         tool,
@@ -1187,7 +1185,8 @@ async fn synthesize_uncached(
         latency_ms = started.elapsed().as_millis() as u64,
         cache_estimated_bytes,
         cache_charge_bytes,
-        stored_bytes,
+        stored_bytes = stored_bytes.unwrap_or(0),
+        persisted = stored_bytes.is_some(),
         "synthesis_complete"
     );
     Ok(design)
@@ -2774,6 +2773,47 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
         assert!(state.cache.write().await.designs.is_empty());
         assert!(state.flights.entries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_degrades_to_the_hot_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DesignStore::open(directory.path(), 1, Duration::from_secs(60)).unwrap();
+        let state = AppState::with_cache_config(
+            "Yosys test-version",
+            None,
+            None,
+            16 * 1024 * 1024,
+            Duration::from_secs(60),
+            Some(store),
+        );
+        let request = serde_json::json!({
+            "files": [{
+                "name": "top.sv",
+                "content": "module top(input logic a, output logic y); assign y = a; endmodule"
+            }],
+            "top": "top",
+            "mode": "rtl"
+        });
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let design_id = body["design_id"].as_str().unwrap();
+        assert!(state.cache.read().await.designs.contains_key(design_id));
+        assert!(directory.path().read_dir().unwrap().next().is_none());
+        assert_eq!(get_design_body(&state, design_id).await, body);
     }
 
     #[test]

@@ -28,7 +28,11 @@ The production stack has no database. The server keeps active designs in a
 bounded memory cache and retains reconstruction data in the local
 `design_data` Docker volume. Stored designs have a 24-hour sliding TTL and a
 2 GiB byte budget, survive application deployments, and are not replicated off
-the host.
+the host. The volume is single-writer and mounted only by the one application
+container. A `synthesis_persistence_degraded` log means new designs are being
+served from memory but will not survive cache eviction or restart; check volume
+ownership and free space. Atomic writes can temporarily require one additional
+256 MiB entry beyond the 2 GiB retention budget.
 
 ## One-time account setup
 

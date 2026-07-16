@@ -1,6 +1,6 @@
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, FileTimes};
 use std::io::{BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -31,6 +31,7 @@ struct EntryMetadata {
 pub struct DesignStore {
     directory: PathBuf,
     entries: HashMap<String, EntryMetadata>,
+    order: BTreeSet<(SystemTime, String)>,
     total_bytes: u64,
     budget_bytes: u64,
     ttl: Duration,
@@ -49,6 +50,7 @@ impl DesignStore {
         let mut store = Self {
             directory,
             entries: HashMap::new(),
+            order: BTreeSet::new(),
             total_bytes: 0,
             budget_bytes,
             ttl,
@@ -81,12 +83,18 @@ impl DesignStore {
             Err(err) => return Err(err.into()),
         };
         let value = serde_json::from_reader(BufReader::new(file))?;
-        File::options()
+        let touch_result = File::options()
             .write(true)
-            .open(&path)?
-            .set_times(FileTimes::new().set_accessed(now).set_modified(now))?;
+            .open(&path)
+            .and_then(|file| file.set_times(FileTimes::new().set_accessed(now).set_modified(now)));
+        if let Err(err) = touch_result {
+            tracing::warn!(design_id, error = %err, "stored_design_touch_failed");
+        }
         if let Some(entry) = self.entries.get_mut(design_id) {
+            self.order
+                .remove(&(entry.last_accessed, design_id.to_owned()));
             entry.last_accessed = now;
+            self.order.insert((now, design_id.to_owned()));
         }
         Ok(Some(value))
     }
@@ -128,16 +136,15 @@ impl DesignStore {
             let Some(oldest) = self.oldest_except(design_id) else {
                 break;
             };
+            tracing::info!(design_id = oldest, "stored_design_evicted");
             self.remove(&oldest)?;
         }
 
         let destination = self.path_for(design_id);
         temporary.persist(&destination).map_err(|err| err.error)?;
-        sync_directory(&self.directory)?;
-        self.total_bytes = self
-            .total_bytes
-            .saturating_sub(replaced_bytes)
-            .saturating_add(entry_bytes);
+        let sync_result = sync_directory(&self.directory);
+        self.forget(design_id);
+        self.total_bytes = self.total_bytes.saturating_add(entry_bytes);
         self.entries.insert(
             design_id.to_owned(),
             EntryMetadata {
@@ -145,6 +152,8 @@ impl DesignStore {
                 last_accessed: now,
             },
         );
+        self.order.insert((now, design_id.to_owned()));
+        sync_result?;
         Ok(entry_bytes)
     }
 
@@ -153,7 +162,7 @@ impl DesignStore {
             return Ok(());
         }
         match fs::remove_file(self.path_for(design_id)) {
-            Ok(()) => sync_directory(&self.directory)?,
+            Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err.into()),
         }
@@ -169,60 +178,66 @@ impl DesignStore {
                 continue;
             }
             let Some(design_id) = design_id_from_path(&path) else {
+                tracing::warn!(path = %path.display(), "stored_design_stray_file_removed");
                 let _ = fs::remove_file(path);
                 continue;
             };
             let metadata = entry.metadata()?;
             if metadata.len() > MAX_ENTRY_BYTES {
+                tracing::warn!(path = %path.display(), bytes = metadata.len(), "stored_design_oversized_file_removed");
                 let _ = fs::remove_file(path);
                 continue;
             }
-            let last_accessed = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let last_accessed = metadata
+                .modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .min(SystemTime::now());
             let bytes = metadata.len();
             self.total_bytes = self.total_bytes.saturating_add(bytes);
             self.entries.insert(
-                design_id,
+                design_id.clone(),
                 EntryMetadata {
                     bytes,
                     last_accessed,
                 },
             );
+            self.order.insert((last_accessed, design_id));
         }
         Ok(())
     }
 
     fn prune(&mut self, now: SystemTime) -> Result<(), DesignStoreError> {
-        let expired = self
-            .entries
-            .iter()
-            .filter(|(_, entry)| {
-                now.duration_since(entry.last_accessed)
-                    .is_ok_and(|age| age >= self.ttl)
-            })
-            .map(|(id, _)| id.clone())
-            .collect::<Vec<_>>();
-        for id in expired {
+        while let Some((last_accessed, id)) = self.order.first().cloned() {
+            let expired = now
+                .duration_since(last_accessed)
+                .is_ok_and(|age| age >= self.ttl);
+            if !expired {
+                break;
+            }
+            tracing::info!(design_id = id, "stored_design_expired");
             self.remove(&id)?;
         }
         while self.total_bytes > self.budget_bytes {
             let Some(oldest) = self.oldest_except("") else {
                 break;
             };
+            tracing::info!(design_id = oldest, "stored_design_evicted");
             self.remove(&oldest)?;
         }
         Ok(())
     }
 
     fn oldest_except(&self, excluded: &str) -> Option<String> {
-        self.entries
+        self.order
             .iter()
-            .filter(|(id, _)| id.as_str() != excluded)
-            .min_by_key(|(_, entry)| entry.last_accessed)
-            .map(|(id, _)| id.clone())
+            .find(|(_, id)| id != excluded)
+            .map(|(_, id)| id.clone())
     }
 
     fn forget(&mut self, design_id: &str) {
         if let Some(entry) = self.entries.remove(design_id) {
+            self.order
+                .remove(&(entry.last_accessed, design_id.to_owned()));
             self.total_bytes = self.total_bytes.saturating_sub(entry.bytes);
         }
     }

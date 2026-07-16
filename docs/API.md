@@ -314,15 +314,18 @@ Yosys or Vivado; cold rebuilds are serialized to cap transient memory. Writes
 are atomic. Corrupt entries, entries from different synthesis-tool versions,
 expired entries, and entries evicted by the byte budget are deleted. The store
 survives process and container restarts on the same deployment host, but it is
-not shared between multiple backend hosts.
+not shared between multiple backend hosts and must have only one server process
+writing to it.
 
-A synthesized design whose in-memory charge exceeds the hot-cache budget, whose
-stored form exceeds the disk budget, or which cannot be written durably returns
-`507` rather than an id that subsequent analysis routes could not resolve.
+A synthesized design whose in-memory charge exceeds the hot-cache budget
+returns `507` rather than an id that subsequent analysis routes could not
+resolve. If disk persistence fails or its entry cap is exceeded, synthesis
+still succeeds from the bounded hot cache; the server logs the degraded
+retention, and that design is not guaranteed to survive eviction or restart.
 
 `400` on Yosys failure (body includes the Yosys `log`), `422` on validation
 failure, `503` when three distinct leaders are active or waiting, `504` on
-timeout, and `507` when one design cannot be retained in memory and on disk.
+timeout, and `507` when one design cannot fit in the memory cache.
 
 Sandbox resource kills return `400` with a kind-specific `error` instead of
 the generic "yosys failed":
