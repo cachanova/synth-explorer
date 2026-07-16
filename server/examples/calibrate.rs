@@ -313,9 +313,9 @@ async fn estimate_case(
 fn cmd_estimate(args: &[String]) -> anyhow::Result<()> {
     let (dir, out, extra_flags) = match args {
         [a, b, rest @ ..] => (PathBuf::from(a), PathBuf::from(b), rest.to_vec()),
-        _ => anyhow::bail!(
-            "usage: calibrate estimate <cases-dir> <out.json> [extra-synth-flags...]"
-        ),
+        _ => {
+            anyhow::bail!("usage: calibrate estimate <cases-dir> <out.json> [extra-synth-flags...]")
+        }
     };
     if !extra_flags.is_empty() {
         println!("extra synth flags: {}", extra_flags.join(" "));
