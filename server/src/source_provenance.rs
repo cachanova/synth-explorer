@@ -5,6 +5,8 @@ use crate::analysis::{
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::{PortDirection, YosysNetlist};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use sv_parser::{RefNode, SyntaxTree, parse_sv_str};
 
 #[derive(Debug, Default)]
 pub(crate) struct SourceProvenance {
@@ -66,10 +68,13 @@ pub(crate) fn recover_source_provenance(
     let ports_by_module = ports_by_source_module(source_netlist);
 
     for (file, source) in files {
-        if has_conditional_preprocessor(&source) {
+        let Some(ScannedSource {
+            assignments: scanned,
+            ports: declarations,
+        }) = scan_source(&source, &ports_by_module)
+        else {
             continue;
-        }
-        let scanned = scan_assignments(&source);
+        };
         for assignment in scanned.continuous {
             let Some(scopes) = scopes_by_module.get(&assignment.module) else {
                 continue;
@@ -105,7 +110,7 @@ pub(crate) fn recover_source_provenance(
                 .or_default();
             merge_range_roots(range, roots, mapping_incomplete, &mut association_count);
         }
-        for declaration in scan_port_declarations(&source, &ports_by_module) {
+        for declaration in declarations {
             let Some(scopes) = scopes_by_module.get(&declaration.module) else {
                 continue;
             };
@@ -468,83 +473,6 @@ struct PortDeclaration {
     direction: PortDirection,
 }
 
-/// Locate port names on their declaration lines while taking direction from
-/// the elaborated source netlist. Intersecting source tokens with real module
-/// ports avoids mistaking widths, types, and parameters for signal names.
-fn scan_port_declarations(
-    source: &str,
-    ports_by_module: &HashMap<String, HashMap<String, PortDirection>>,
-) -> Vec<PortDeclaration> {
-    let sanitized = sanitize_verilog(source);
-    let mut declarations = Vec::new();
-    let mut current_module: Option<String> = None;
-    let mut in_header = false;
-    let mut body_direction: Option<PortDirection> = None;
-
-    for (line_index, line) in sanitized.lines().enumerate() {
-        let tokens = identifiers(line);
-        if let Some(module_index) = tokens.iter().position(|token| token == "module") {
-            current_module = tokens[module_index + 1..]
-                .iter()
-                .find(|token| !matches!(token.as_str(), "automatic" | "static"))
-                .cloned();
-            in_header = current_module.is_some();
-            body_direction = None;
-        }
-        if let Some(module) = current_module.as_ref()
-            && let Some(ports) = ports_by_module.get(module)
-        {
-            if !in_header {
-                body_direction = tokens
-                    .iter()
-                    .find_map(|token| match token.as_str() {
-                        "input" => Some(PortDirection::Input),
-                        "output" => Some(PortDirection::Output),
-                        "inout" => Some(PortDirection::Inout),
-                        _ => None,
-                    })
-                    .or(body_direction);
-            }
-            for token in &tokens {
-                let Some(direction) = ports.get(token) else {
-                    continue;
-                };
-                if in_header || body_direction == Some(*direction) {
-                    declarations.push(PortDeclaration {
-                        module: module.clone(),
-                        line: line_index + 1,
-                        identifier: token.clone(),
-                        direction: *direction,
-                    });
-                }
-            }
-        }
-        if line.contains(';') {
-            if in_header {
-                in_header = false;
-            } else {
-                body_direction = None;
-            }
-        }
-        if tokens.iter().any(|token| token == "endmodule") {
-            current_module = None;
-            in_header = false;
-            body_direction = None;
-        }
-    }
-    declarations.sort_by(|left, right| {
-        left.module
-            .cmp(&right.module)
-            .then_with(|| left.line.cmp(&right.line))
-            .then_with(|| left.identifier.cmp(&right.identifier))
-            .then_with(|| {
-                port_direction_order(left.direction).cmp(&port_direction_order(right.direction))
-            })
-    });
-    declarations.dedup();
-    declarations
-}
-
 fn port_direction_order(direction: PortDirection) -> u8 {
     match direction {
         PortDirection::Input => 0,
@@ -577,395 +505,11 @@ struct ProceduralBlock {
     end_line: usize,
 }
 
-#[derive(Debug)]
-struct PendingProceduralBlock {
-    start_line: usize,
-}
-
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ScannedAssignments {
     continuous: Vec<ContinuousAssignment>,
     procedural: Vec<ProceduralAssignment>,
     blocks: Vec<ProceduralBlock>,
-}
-
-fn scan_assignments(source: &str) -> ScannedAssignments {
-    let sanitized = sanitize_verilog(source);
-    let bytes = sanitized.as_bytes();
-    let newlines: Vec<usize> = bytes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, byte)| (*byte == b'\n').then_some(index))
-        .collect();
-    let mut scanned = ScannedAssignments::default();
-    let mut index = 0;
-    let mut current_module: Option<String> = None;
-    let mut nesting = 0usize;
-    let mut in_always = false;
-    let mut always_begin_depth = 0usize;
-    let mut always_has_begin = false;
-    let mut always_case_depth = 0usize;
-    let mut always_if_depth = 0usize;
-    let mut always_nested_begin_depth = 0usize;
-    let mut current_block: Option<PendingProceduralBlock> = None;
-
-    while index < bytes.len() {
-        if !is_identifier_start(bytes[index]) {
-            update_nesting(bytes[index], &mut nesting);
-            index += 1;
-            continue;
-        }
-        let token_start = index;
-        index += 1;
-        while index < bytes.len() && is_identifier_continue(bytes[index]) {
-            index += 1;
-        }
-        let token = &sanitized[token_start..index];
-        if token == "module" {
-            let mut cursor = index;
-            let mut module_name = None;
-            while cursor < bytes.len() {
-                if is_identifier_start(bytes[cursor]) {
-                    let start = cursor;
-                    cursor += 1;
-                    while cursor < bytes.len() && is_identifier_continue(bytes[cursor]) {
-                        cursor += 1;
-                    }
-                    let candidate = &sanitized[start..cursor];
-                    if !matches!(candidate, "automatic" | "static") {
-                        module_name = Some(candidate.to_owned());
-                        break;
-                    }
-                } else {
-                    update_nesting(bytes[cursor], &mut nesting);
-                    cursor += 1;
-                }
-            }
-            current_module = module_name;
-            in_always = false;
-            current_block = None;
-            always_case_depth = 0;
-            always_if_depth = 0;
-            always_nested_begin_depth = 0;
-            index = cursor;
-            continue;
-        }
-        if token == "endmodule" {
-            current_module = None;
-            in_always = false;
-            current_block = None;
-            always_case_depth = 0;
-            always_if_depth = 0;
-            always_nested_begin_depth = 0;
-            continue;
-        }
-        if matches!(
-            token,
-            "always" | "always_ff" | "always_comb" | "always_latch"
-        ) {
-            in_always = current_module.is_some();
-            always_begin_depth = 0;
-            always_has_begin = false;
-            always_case_depth = 0;
-            always_if_depth = 0;
-            always_nested_begin_depth = 0;
-            current_block = in_always.then(|| PendingProceduralBlock {
-                start_line: line_at(token_start, &newlines),
-            });
-            continue;
-        }
-        if in_always && matches!(token, "case" | "casex" | "casez") {
-            always_case_depth += 1;
-            continue;
-        }
-        if in_always && token == "endcase" {
-            always_case_depth = always_case_depth.saturating_sub(1);
-            if !always_has_begin
-                && always_case_depth == 0
-                && always_if_depth == 0
-                && always_nested_begin_depth == 0
-            {
-                in_always = false;
-                always_if_depth = 0;
-                if let Some(block) = current_block.take() {
-                    scanned.blocks.push(ProceduralBlock {
-                        start_line: block.start_line,
-                        end_line: line_at(token_start, &newlines),
-                    });
-                }
-            }
-            continue;
-        }
-        if in_always && token == "if" && !always_has_begin && always_case_depth == 0 {
-            always_if_depth += 1;
-            continue;
-        }
-        if token == "begin" {
-            if in_always {
-                if always_has_begin {
-                    always_begin_depth += 1;
-                } else if always_case_depth == 0 && always_if_depth == 0 {
-                    always_has_begin = true;
-                    always_begin_depth = 1;
-                } else {
-                    always_nested_begin_depth += 1;
-                }
-            }
-            continue;
-        }
-        if token == "end" {
-            if in_always && always_has_begin {
-                always_begin_depth = always_begin_depth.saturating_sub(1);
-                if always_has_begin && always_begin_depth == 0 {
-                    in_always = false;
-                    if let Some(block) = current_block.take() {
-                        scanned.blocks.push(ProceduralBlock {
-                            start_line: block.start_line,
-                            end_line: line_at(token_start, &newlines),
-                        });
-                    }
-                }
-            } else if in_always && always_nested_begin_depth > 0 {
-                always_nested_begin_depth = always_nested_begin_depth.saturating_sub(1);
-                if always_nested_begin_depth == 0 && always_case_depth == 0 {
-                    let next = next_identifier(&sanitized, index);
-                    if next.as_deref() != Some("else") {
-                        always_if_depth = always_if_depth.saturating_sub(1);
-                    }
-                    if always_if_depth == 0 {
-                        in_always = false;
-                        if let Some(block) = current_block.take() {
-                            scanned.blocks.push(ProceduralBlock {
-                                start_line: block.start_line,
-                                end_line: line_at(token_start, &newlines),
-                            });
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-        let explicit_assign = token == "assign";
-        let wire_alias = matches!(token, "wire" | "tri" | "wand" | "wor");
-        if !explicit_assign && !wire_alias {
-            if in_always && nesting == 0 && !is_statement_keyword(token) {
-                let statement_end = bytes[index..]
-                    .iter()
-                    .position(|byte| *byte == b';')
-                    .map_or(bytes.len(), |offset| index + offset);
-                if let Some(lhs_identifiers) =
-                    procedural_assignment_lhs(&sanitized[token_start..statement_end])
-                {
-                    scanned.procedural.push(ProceduralAssignment {
-                        module: current_module
-                            .clone()
-                            .expect("always tracking requires a module"),
-                        line: line_at(token_start, &newlines),
-                        lhs_identifiers,
-                    });
-                    advance_nesting(&bytes[index..statement_end], &mut nesting);
-                    index = statement_end.saturating_add(1);
-                    if !always_has_begin {
-                        if always_case_depth == 0
-                            && always_nested_begin_depth == 0
-                            && always_if_depth > 0
-                        {
-                            let next = next_identifier(&sanitized, statement_end + 1);
-                            if next.as_deref() != Some("else") {
-                                always_if_depth = always_if_depth.saturating_sub(1);
-                            }
-                        }
-                        if always_case_depth == 0
-                            && always_nested_begin_depth == 0
-                            && always_if_depth == 0
-                        {
-                            in_always = false;
-                            if let Some(block) = current_block.take() {
-                                scanned.blocks.push(ProceduralBlock {
-                                    start_line: block.start_line,
-                                    end_line: line_at(statement_end, &newlines),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            continue;
-        }
-        let Some(module) = current_module.clone() else {
-            continue;
-        };
-
-        let statement_end = bytes[index..]
-            .iter()
-            .position(|byte| *byte == b';')
-            .map_or(bytes.len(), |offset| index + offset);
-        let statement = &sanitized[index..statement_end];
-        let mut lhs_identifiers = if wire_alias {
-            initialized_declaration_lhs(statement)
-        } else if let Some(equals) = statement.find('=') {
-            identifiers(&statement[..equals])
-        } else {
-            Vec::new()
-        };
-        if explicit_assign {
-            lhs_identifiers.sort();
-            lhs_identifiers.dedup();
-        }
-        advance_nesting(&bytes[index..statement_end], &mut nesting);
-        if lhs_identifiers.is_empty() {
-            index = statement_end.saturating_add(1);
-            continue;
-        }
-        let start_line = line_at(token_start, &newlines);
-        let end_line = line_at(statement_end, &newlines);
-        scanned.continuous.push(ContinuousAssignment {
-            module,
-            start_line,
-            end_line,
-            lhs_identifiers,
-        });
-        index = statement_end.saturating_add(1);
-    }
-    scanned
-}
-
-/// Keywords that can open a procedural statement without being an assignment
-/// LHS. Scanning past them prevents `if (rst) idx <= 0;` from attributing
-/// condition identifiers to the assignment target set.
-fn is_statement_keyword(token: &str) -> bool {
-    matches!(
-        token,
-        "if" | "else"
-            | "case"
-            | "casex"
-            | "casez"
-            | "endcase"
-            | "default"
-            | "for"
-            | "foreach"
-            | "while"
-            | "repeat"
-            | "forever"
-            | "do"
-            | "unique"
-            | "unique0"
-            | "priority"
-            | "posedge"
-            | "negedge"
-            | "edge"
-            | "or"
-            | "iff"
-            | "fork"
-            | "join"
-            | "join_any"
-            | "join_none"
-            | "disable"
-            | "wait"
-            | "return"
-            | "break"
-            | "continue"
-            | "assert"
-            | "assume"
-            | "cover"
-            | "initial"
-            | "final"
-            | "function"
-            | "endfunction"
-            | "task"
-            | "endtask"
-            | "generate"
-            | "endgenerate"
-            | "localparam"
-            | "parameter"
-            | "genvar"
-            | "typedef"
-            | "reg"
-            | "logic"
-            | "integer"
-            | "int"
-            | "bit"
-            | "byte"
-            | "shortint"
-            | "longint"
-            | "real"
-            | "realtime"
-            | "time"
-            | "signed"
-            | "unsigned"
-            | "var"
-            | "automatic"
-            | "static"
-            | "const"
-    )
-}
-
-/// LHS identifiers of an assignment statement, or `None` when the statement is
-/// not an assignment. A top-level `=` (not a comparison) is a blocking
-/// assignment and supports indexed or concatenated LHS forms; a top-level `<=`
-/// marks a nonblocking assignment.
-fn procedural_assignment_lhs(statement: &str) -> Option<Vec<String>> {
-    let bytes = statement.as_bytes();
-    let mut nesting = 0usize;
-    let mut previous = 0u8;
-    for (offset, byte) in bytes.iter().enumerate() {
-        match byte {
-            b'(' | b'[' | b'{' => nesting += 1,
-            b')' | b']' | b'}' => nesting = nesting.saturating_sub(1),
-            b'<' if nesting == 0 && previous != b'<' && bytes.get(offset + 1) == Some(&b'=') => {
-                let lhs = assignment_lhs_identifiers(&statement[..offset]);
-                return (!lhs.is_empty()).then_some(lhs);
-            }
-            b'=' if nesting == 0
-                && !matches!(previous, b'=' | b'!' | b'<' | b'>')
-                && bytes.get(offset + 1) != Some(&b'=') =>
-            {
-                let lhs = assignment_lhs_identifiers(&statement[..offset]);
-                return (!lhs.is_empty()).then_some(lhs);
-            }
-            _ => {}
-        }
-        previous = *byte;
-    }
-    None
-}
-
-fn assignment_lhs_identifiers(lhs: &str) -> Vec<String> {
-    let mut sanitized = lhs.as_bytes().to_vec();
-    let mut bracket_depth = 0usize;
-    for byte in &mut sanitized {
-        match *byte {
-            b'[' => {
-                bracket_depth += 1;
-                *byte = b' ';
-            }
-            b']' => {
-                bracket_depth = bracket_depth.saturating_sub(1);
-                *byte = b' ';
-            }
-            _ if bracket_depth > 0 => *byte = b' ',
-            _ => {}
-        }
-    }
-    let sanitized = std::str::from_utf8(&sanitized).expect("sanitized LHS remains UTF-8");
-    let assignment_lhs = sanitized
-        .rsplit_once(':')
-        .map_or(sanitized, |(_, assignment_lhs)| assignment_lhs);
-    identifiers(assignment_lhs)
-}
-
-fn update_nesting(byte: u8, nesting: &mut usize) {
-    match byte {
-        b'(' | b'[' | b'{' => *nesting += 1,
-        b')' | b']' | b'}' => *nesting = nesting.saturating_sub(1),
-        _ => {}
-    }
-}
-
-fn advance_nesting(skipped: &[u8], nesting: &mut usize) {
-    for byte in skipped {
-        update_nesting(*byte, nesting);
-    }
 }
 
 fn has_conditional_preprocessor(source: &str) -> bool {
@@ -977,170 +521,673 @@ fn has_conditional_preprocessor(source: &str) -> bool {
     })
 }
 
-fn line_at(offset: usize, newlines: &[usize]) -> usize {
-    newlines.partition_point(|newline| *newline < offset) + 1
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ScannedSource {
+    assignments: ScannedAssignments,
+    ports: Vec<PortDeclaration>,
 }
 
-fn next_identifier(source: &str, mut offset: usize) -> Option<String> {
+struct SourceLineMap {
+    newline_offsets: Vec<usize>,
+}
+
+type IdentifierRepairs = HashMap<String, String>;
+
+/// Yosys accepts `alias` as an identifier even though IEEE SystemVerilog
+/// reserves it as a keyword. sv-parser correctly rejects the bare spelling, so
+/// after an ordinary parse failure, retry with bare `alias` tokens replaced by
+/// same-width identifiers. Equal byte widths keep every origin offset valid;
+/// extracted names are restored before the scan result leaves this module.
+fn parse_source(source: &str) -> Option<(SyntaxTree, IdentifierRepairs)> {
+    let defines = HashMap::new();
+    let include_paths: Vec<PathBuf> = Vec::new();
+    let parse = |input| {
+        parse_sv_str(
+            input,
+            Path::new("source.sv"),
+            &defines,
+            &include_paths,
+            false,
+            false,
+        )
+    };
+
+    if let Ok((syntax_tree, _)) = parse(source) {
+        return Some((syntax_tree, IdentifierRepairs::new()));
+    }
+
+    let (parser_source, repairs) = repair_yosys_alias_identifiers(source)?;
+    let (syntax_tree, _) = parse(&parser_source).ok()?;
+    Some((syntax_tree, repairs))
+}
+
+fn repair_yosys_alias_identifiers(source: &str) -> Option<(String, IdentifierRepairs)> {
+    let mut parser_source = source.to_owned();
+    let mut repairs = IdentifierRepairs::new();
     let bytes = source.as_bytes();
-    while offset < bytes.len() && !is_identifier_start(bytes[offset]) {
-        offset += 1;
-    }
-    let start = offset;
-    while offset < bytes.len() && is_identifier_continue(bytes[offset]) {
-        offset += 1;
-    }
-    (offset > start).then(|| source[start..offset].to_owned())
-}
 
-fn identifiers(fragment: &str) -> Vec<String> {
-    let bytes = fragment.as_bytes();
-    let mut out = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            let start = index + 1;
-            index = start;
-            while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
-                index += 1;
-            }
-            if index > start {
-                out.push(fragment[start..index].to_owned());
-            }
+    for (offset, _) in source.match_indices("alias") {
+        let before_is_identifier = offset > 0
+            && (bytes[offset - 1].is_ascii_alphanumeric()
+                || matches!(bytes[offset - 1], b'_' | b'$'));
+        let end = offset + "alias".len();
+        let after_is_identifier = bytes
+            .get(end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'));
+        if before_is_identifier || after_is_identifier {
             continue;
         }
-        if !is_identifier_start(bytes[index]) {
-            index += 1;
-            continue;
-        }
-        let start = index;
-        index += 1;
-        while index < bytes.len() && is_identifier_continue(bytes[index]) {
-            index += 1;
-        }
-        out.push(fragment[start..index].to_owned());
+
+        let replacement = (b'a'..=b'z')
+            .map(|initial| format!("{}____", char::from(initial)))
+            .find(|candidate| !source.contains(candidate) && !repairs.contains_key(candidate))?;
+        parser_source.replace_range(offset..end, &replacement);
+        repairs.insert(replacement, "alias".to_owned());
     }
-    out
+
+    if repairs.is_empty() {
+        None
+    } else {
+        Some((parser_source, repairs))
+    }
 }
 
-fn initialized_declaration_lhs(statement: &str) -> Vec<String> {
-    let bytes = statement.as_bytes();
-    let mut starts = vec![0usize];
-    let mut nesting = 0usize;
-    for (index, byte) in bytes.iter().enumerate() {
-        match byte {
-            b'(' | b'[' | b'{' => nesting += 1,
-            b')' | b']' | b'}' => nesting = nesting.saturating_sub(1),
-            b',' if nesting == 0 => starts.push(index + 1),
+fn restore_identifiers(scanned: &mut ScannedSource, repairs: &IdentifierRepairs) {
+    let restore = |identifier: &mut String| {
+        if let Some(original) = repairs.get(identifier) {
+            identifier.clone_from(original);
+        }
+    };
+
+    for assignment in &mut scanned.assignments.continuous {
+        restore(&mut assignment.module);
+        for identifier in &mut assignment.lhs_identifiers {
+            restore(identifier);
+        }
+    }
+    for assignment in &mut scanned.assignments.procedural {
+        restore(&mut assignment.module);
+        for identifier in &mut assignment.lhs_identifiers {
+            restore(identifier);
+        }
+    }
+    for declaration in &mut scanned.ports {
+        restore(&mut declaration.module);
+        restore(&mut declaration.identifier);
+    }
+}
+
+impl SourceLineMap {
+    fn new(source: &str) -> Self {
+        Self {
+            newline_offsets: source
+                .as_bytes()
+                .iter()
+                .enumerate()
+                .filter_map(|(offset, byte)| (*byte == b'\n').then_some(offset))
+                .collect(),
+        }
+    }
+
+    fn line_number(&self, byte_offset: usize) -> usize {
+        self.newline_offsets
+            .partition_point(|newline| *newline < byte_offset)
+            + 1
+    }
+}
+
+/// Parse one in-memory SystemVerilog source and recover all provenance facts in
+/// one CST walk. Parse failures intentionally return `None`: provenance is a
+/// best-effort supplement and must never create a mapping from malformed input.
+fn scan_source(
+    source: &str,
+    ports_by_module: &HashMap<String, HashMap<String, PortDirection>>,
+) -> Option<ScannedSource> {
+    if has_conditional_preprocessor(source) {
+        return None;
+    }
+
+    let (syntax_tree, repairs) = parse_source(source)?;
+    let line_map = SourceLineMap::new(source);
+    let mut scanned = ScannedSource::default();
+
+    for node in &syntax_tree {
+        match node {
+            RefNode::ModuleDeclarationAnsi(module) => scan_module(
+                &syntax_tree,
+                &line_map,
+                module,
+                ports_by_module,
+                &repairs,
+                &mut scanned,
+            ),
+            RefNode::ModuleDeclarationNonansi(module) => scan_module(
+                &syntax_tree,
+                &line_map,
+                module,
+                ports_by_module,
+                &repairs,
+                &mut scanned,
+            ),
             _ => {}
         }
     }
-    starts
-        .iter()
-        .enumerate()
-        .filter_map(|(index, start)| {
-            let end = starts
-                .get(index + 1)
-                .map_or(statement.len(), |next| next.saturating_sub(1));
-            let declarator = &statement[*start..end];
-            let equals = declarator.find('=')?;
-            identifiers(&declarator[..equals]).into_iter().next_back()
-        })
-        .collect()
+
+    restore_identifiers(&mut scanned, &repairs);
+    scanned.ports.sort_by(|left, right| {
+        left.module
+            .cmp(&right.module)
+            .then_with(|| left.line.cmp(&right.line))
+            .then_with(|| left.identifier.cmp(&right.identifier))
+            .then_with(|| {
+                port_direction_order(left.direction).cmp(&port_direction_order(right.direction))
+            })
+    });
+    scanned.ports.dedup();
+    Some(scanned)
 }
 
-fn is_identifier_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$')
+fn scan_module<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    module_node: &T,
+    ports_by_module: &HashMap<String, HashMap<String, PortDirection>>,
+    repairs: &IdentifierRepairs,
+    scanned: &mut ScannedSource,
+) where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let Some(module) = module_name(syntax_tree, module_node, repairs) else {
+        return;
+    };
+    let module_ports = ports_by_module.get(&module);
+
+    for node in module_node {
+        match node {
+            RefNode::ContinuousAssign(assignment) => {
+                if let Some(assignment) = continuous_assignment::<sv_parser::ContinuousAssign>(
+                    syntax_tree,
+                    line_map,
+                    assignment,
+                    &module,
+                ) {
+                    scanned.assignments.continuous.push(assignment);
+                }
+            }
+            RefNode::NetDeclaration(declaration) => {
+                if let Some(assignment) = initialized_net_declaration::<sv_parser::NetDeclaration>(
+                    syntax_tree,
+                    line_map,
+                    declaration,
+                    &module,
+                ) {
+                    scanned.assignments.continuous.push(assignment);
+                }
+            }
+            RefNode::AlwaysConstruct(always) => {
+                scan_always_construct::<sv_parser::AlwaysConstruct>(
+                    syntax_tree,
+                    line_map,
+                    always,
+                    &module,
+                    &mut scanned.assignments,
+                );
+            }
+            RefNode::AnsiPortDeclaration(declaration) => {
+                if let Some(ports) = module_ports {
+                    scan_port_node::<sv_parser::AnsiPortDeclaration>(
+                        syntax_tree,
+                        line_map,
+                        declaration,
+                        &module,
+                        ports,
+                        repairs,
+                        &mut scanned.ports,
+                    );
+                }
+            }
+            RefNode::PortDeclaration(declaration) => {
+                if let Some(ports) = module_ports {
+                    scan_port_node::<sv_parser::PortDeclaration>(
+                        syntax_tree,
+                        line_map,
+                        declaration,
+                        &module,
+                        ports,
+                        repairs,
+                        &mut scanned.ports,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
-fn is_identifier_continue(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
+fn module_name<T>(
+    syntax_tree: &SyntaxTree,
+    module_node: &T,
+    repairs: &IdentifierRepairs,
+) -> Option<String>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let identifier = module_node.into_iter().find_map(|node| match node {
+        RefNode::ModuleIdentifier(identifier) => {
+            first_identifier::<sv_parser::ModuleIdentifier>(syntax_tree, identifier)
+        }
+        _ => None,
+    })?;
+    Some(repairs.get(&identifier).cloned().unwrap_or(identifier))
 }
 
-fn sanitize_verilog(source: &str) -> String {
-    #[derive(Clone, Copy)]
-    enum State {
-        Code,
-        LineComment,
-        BlockComment,
-        String,
+fn continuous_assignment<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    assignment: &T,
+    module: &str,
+) -> Option<ContinuousAssignment>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let (start_line, end_line) = node_lines(syntax_tree, line_map, assignment)?;
+    let mut lhs_identifiers = Vec::new();
+    for node in assignment {
+        match node {
+            RefNode::NetAssignment(net_assignment) => {
+                lhs_identifiers.extend(net_lhs_identifiers::<sv_parser::NetAssignment>(
+                    syntax_tree,
+                    net_assignment,
+                ));
+            }
+            RefNode::VariableAssignment(variable_assignment) => {
+                lhs_identifiers.extend(variable_lhs_identifiers::<sv_parser::VariableAssignment>(
+                    syntax_tree,
+                    variable_assignment,
+                ));
+            }
+            _ => {}
+        }
+    }
+    lhs_identifiers.sort();
+    lhs_identifiers.dedup();
+    (!lhs_identifiers.is_empty()).then(|| ContinuousAssignment {
+        module: module.to_owned(),
+        start_line,
+        end_line,
+        lhs_identifiers,
+    })
+}
+
+/// Net declaration assignments (`wire alias = rhs`) are continuous drivers in
+/// the same way as an explicit `assign`. Only initialized declarators count.
+fn initialized_net_declaration<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    declaration: &T,
+    module: &str,
+) -> Option<ContinuousAssignment>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let (start_line, end_line) = node_lines(syntax_tree, line_map, declaration)?;
+    let mut lhs_identifiers = Vec::new();
+    for node in declaration {
+        let RefNode::NetDeclAssignment(net_assignment) = node else {
+            continue;
+        };
+        if !contains_symbol::<sv_parser::NetDeclAssignment>(syntax_tree, net_assignment, "=") {
+            continue;
+        }
+        if let Some(identifier) = net_assignment.into_iter().find_map(|node| match node {
+            RefNode::NetIdentifier(identifier) => {
+                first_identifier::<sv_parser::NetIdentifier>(syntax_tree, identifier)
+            }
+            _ => None,
+        }) {
+            lhs_identifiers.push(identifier);
+        }
+    }
+    (!lhs_identifiers.is_empty()).then(|| ContinuousAssignment {
+        module: module.to_owned(),
+        start_line,
+        end_line,
+        lhs_identifiers,
+    })
+}
+
+fn scan_always_construct<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    always: &T,
+    module: &str,
+    scanned: &mut ScannedAssignments,
+) where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    if let Some((start_line, end_line)) = node_lines(syntax_tree, line_map, always) {
+        scanned.blocks.push(ProceduralBlock {
+            start_line,
+            end_line,
+        });
     }
 
-    let bytes = source.as_bytes();
-    let mut out = bytes.to_vec();
-    let mut state = State::Code;
-    let mut index = 0;
-    while index < bytes.len() {
-        match state {
-            State::Code if bytes[index..].starts_with(b"//") => {
-                out[index] = b' ';
-                if index + 1 < out.len() {
-                    out[index + 1] = b' ';
+    for node in always {
+        let (line, lhs_identifiers) = match node {
+            RefNode::BlockingAssignment(assignment) => (
+                node_lines::<sv_parser::BlockingAssignment>(syntax_tree, line_map, assignment)
+                    .map(|lines| lines.0),
+                variable_lhs_identifiers::<sv_parser::BlockingAssignment>(syntax_tree, assignment),
+            ),
+            RefNode::NonblockingAssignment(assignment) => (
+                node_lines::<sv_parser::NonblockingAssignment>(syntax_tree, line_map, assignment)
+                    .map(|lines| lines.0),
+                variable_lhs_identifiers::<sv_parser::NonblockingAssignment>(
+                    syntax_tree,
+                    assignment,
+                ),
+            ),
+            RefNode::BlockItemDeclarationData(declaration) => {
+                if let Some(assignment) = implicit_block_assignment::<
+                    sv_parser::BlockItemDeclarationData,
+                >(
+                    syntax_tree, line_map, declaration, module
+                ) {
+                    scanned.procedural.push(assignment);
                 }
-                state = State::LineComment;
-                index += 2;
+                continue;
             }
-            State::Code if bytes[index..].starts_with(b"/*") => {
-                out[index] = b' ';
-                if index + 1 < out.len() {
-                    out[index + 1] = b' ';
-                }
-                state = State::BlockComment;
-                index += 2;
+            _ => continue,
+        };
+        if let Some(line) = line
+            && !lhs_identifiers.is_empty()
+        {
+            scanned.procedural.push(ProceduralAssignment {
+                module: module.to_owned(),
+                line,
+                lhs_identifiers,
+            });
+        }
+    }
+}
+
+/// At the start of a sequential block, sv-parser's grammar resolves an
+/// untyped `name = expression;` as an implicit data declaration. Yosys resolves
+/// the same text against the surrounding signal table as a blocking
+/// assignment. Recover only declarations whose implicit type is completely
+/// empty, leaving explicit and dimensioned block declarations untouched.
+fn implicit_block_assignment<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    declaration: &T,
+    module: &str,
+) -> Option<ProceduralAssignment>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let has_empty_implicit_type = declaration.into_iter().any(|node| match node {
+        RefNode::ImplicitDataType(implicit_type) => {
+            node_lines::<sv_parser::ImplicitDataType>(syntax_tree, line_map, implicit_type)
+                .is_none()
+        }
+        _ => false,
+    });
+    if !has_empty_implicit_type {
+        return None;
+    }
+
+    let mut line = None;
+    let mut lhs_identifiers = Vec::new();
+    for node in declaration {
+        let RefNode::VariableDeclAssignmentVariable(assignment) = node else {
+            continue;
+        };
+        if !contains_symbol::<sv_parser::VariableDeclAssignmentVariable>(
+            syntax_tree,
+            assignment,
+            "=",
+        ) {
+            continue;
+        }
+        let Some(identifier) = assignment.into_iter().find_map(|node| match node {
+            RefNode::VariableIdentifier(identifier) => {
+                first_identifier::<sv_parser::VariableIdentifier>(syntax_tree, identifier)
             }
-            State::Code if bytes[index] == b'"' => {
-                out[index] = b' ';
-                state = State::String;
-                index += 1;
+            _ => None,
+        }) else {
+            continue;
+        };
+        line = line.or_else(|| {
+            node_lines::<sv_parser::VariableDeclAssignmentVariable>(
+                syntax_tree,
+                line_map,
+                assignment,
+            )
+            .map(|lines| lines.0)
+        });
+        lhs_identifiers.push(identifier);
+    }
+
+    Some(ProceduralAssignment {
+        module: module.to_owned(),
+        line: line?,
+        lhs_identifiers,
+    })
+}
+
+/// Locate port identifiers from ANSI and non-ANSI declaration CST nodes while
+/// taking direction from the elaborated netlist. This avoids treating widths,
+/// types, parameters, or default-value expressions as ports.
+fn scan_port_node<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    declaration: &T,
+    module: &str,
+    ports: &HashMap<String, PortDirection>,
+    repairs: &IdentifierRepairs,
+    declarations: &mut Vec<PortDeclaration>,
+) where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    for node in declaration {
+        match node {
+            RefNode::PortIdentifier(identifier) => {
+                push_port_declaration::<sv_parser::PortIdentifier>(
+                    syntax_tree,
+                    line_map,
+                    identifier,
+                    module,
+                    ports,
+                    repairs,
+                    declarations,
+                )
             }
-            State::Code => index += 1,
-            State::LineComment if bytes[index] == b'\n' => {
-                state = State::Code;
-                index += 1;
+            RefNode::VariableIdentifier(identifier) => {
+                push_port_declaration::<sv_parser::VariableIdentifier>(
+                    syntax_tree,
+                    line_map,
+                    identifier,
+                    module,
+                    ports,
+                    repairs,
+                    declarations,
+                )
             }
-            State::LineComment => {
-                out[index] = b' ';
-                index += 1;
+            RefNode::InputPortIdentifier(identifier) => {
+                push_port_declaration::<sv_parser::InputPortIdentifier>(
+                    syntax_tree,
+                    line_map,
+                    identifier,
+                    module,
+                    ports,
+                    repairs,
+                    declarations,
+                )
             }
-            State::BlockComment if bytes[index..].starts_with(b"*/") => {
-                out[index] = b' ';
-                if index + 1 < out.len() {
-                    out[index + 1] = b' ';
-                }
-                state = State::Code;
-                index += 2;
+            RefNode::OutputPortIdentifier(identifier) => {
+                push_port_declaration::<sv_parser::OutputPortIdentifier>(
+                    syntax_tree,
+                    line_map,
+                    identifier,
+                    module,
+                    ports,
+                    repairs,
+                    declarations,
+                )
             }
-            State::BlockComment => {
-                if bytes[index] != b'\n' {
-                    out[index] = b' ';
-                }
-                index += 1;
+            RefNode::InoutPortIdentifier(identifier) => {
+                push_port_declaration::<sv_parser::InoutPortIdentifier>(
+                    syntax_tree,
+                    line_map,
+                    identifier,
+                    module,
+                    ports,
+                    repairs,
+                    declarations,
+                )
             }
-            State::String if bytes[index] == b'\\' => {
-                out[index] = b' ';
-                if index + 1 < out.len() {
-                    if bytes[index + 1] != b'\n' {
-                        out[index + 1] = b' ';
-                    }
-                    index += 2;
-                } else {
-                    index += 1;
-                }
-            }
-            State::String if bytes[index] == b'"' => {
-                out[index] = b' ';
-                state = State::Code;
-                index += 1;
-            }
-            State::String => {
-                if bytes[index] != b'\n' {
-                    out[index] = b' ';
-                }
-                index += 1;
+            _ => {}
+        }
+    }
+}
+
+fn push_port_declaration<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    identifier_node: &T,
+    module: &str,
+    ports: &HashMap<String, PortDirection>,
+    repairs: &IdentifierRepairs,
+    declarations: &mut Vec<PortDeclaration>,
+) where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let Some(mut identifier) = first_identifier(syntax_tree, identifier_node) else {
+        return;
+    };
+    if let Some(original) = repairs.get(&identifier) {
+        identifier.clone_from(original);
+    }
+    let Some(direction) = ports.get(&identifier).copied() else {
+        return;
+    };
+    let Some((line, _)) = node_lines(syntax_tree, line_map, identifier_node) else {
+        return;
+    };
+    declarations.push(PortDeclaration {
+        module: module.to_owned(),
+        line,
+        identifier,
+        direction,
+    });
+}
+
+fn net_lhs_identifiers<T>(syntax_tree: &SyntaxTree, assignment: &T) -> Vec<String>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let mut identifiers = Vec::new();
+    for node in assignment {
+        let RefNode::NetLvalueIdentifier(lvalue) = node else {
+            continue;
+        };
+        for node in lvalue {
+            if let RefNode::PsOrHierarchicalNetIdentifier(identifier) = node {
+                identifiers.extend(all_identifiers::<sv_parser::PsOrHierarchicalNetIdentifier>(
+                    syntax_tree,
+                    identifier,
+                ));
+                break;
             }
         }
     }
-    String::from_utf8(out).expect("sanitized Verilog remains UTF-8")
+    identifiers
+}
+
+fn variable_lhs_identifiers<T>(syntax_tree: &SyntaxTree, assignment: &T) -> Vec<String>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    let mut identifiers = Vec::new();
+    for node in assignment {
+        let RefNode::VariableLvalueIdentifier(lvalue) = node else {
+            continue;
+        };
+        for node in lvalue {
+            if let RefNode::HierarchicalVariableIdentifier(identifier) = node {
+                identifiers.extend(
+                    all_identifiers::<sv_parser::HierarchicalVariableIdentifier>(
+                        syntax_tree,
+                        identifier,
+                    ),
+                );
+                break;
+            }
+        }
+    }
+    identifiers
+}
+
+fn contains_symbol<T>(syntax_tree: &SyntaxTree, node: &T, expected: &str) -> bool
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    node.into_iter().any(|node| match node {
+        RefNode::Symbol(symbol) => syntax_tree.get_str_trim(symbol) == Some(expected),
+        _ => false,
+    })
+}
+
+fn first_identifier<T>(syntax_tree: &SyntaxTree, node: &T) -> Option<String>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    node.into_iter()
+        .find_map(|node| first_identifier_ref(syntax_tree, node))
+}
+
+fn all_identifiers<T>(syntax_tree: &SyntaxTree, node: &T) -> Vec<String>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    node.into_iter()
+        .filter_map(|node| first_identifier_ref(syntax_tree, node))
+        .collect()
+}
+
+fn first_identifier_ref(syntax_tree: &SyntaxTree, node: RefNode<'_>) -> Option<String> {
+    let raw = match node {
+        RefNode::SimpleIdentifier(identifier) => syntax_tree.get_str_trim(identifier)?,
+        RefNode::EscapedIdentifier(identifier) => syntax_tree.get_str_trim(identifier)?,
+        _ => return None,
+    };
+    Some(raw.trim_start_matches('\\').to_owned())
+}
+
+fn node_lines<T>(
+    syntax_tree: &SyntaxTree,
+    line_map: &SourceLineMap,
+    node: &T,
+) -> Option<(usize, usize)>
+where
+    for<'a> &'a T: IntoIterator<Item = RefNode<'a>>,
+{
+    node.into_iter()
+        .filter_map(|node| match node {
+            RefNode::Locate(locate)
+                if syntax_tree
+                    .get_str(locate)
+                    .is_some_and(|text| !text.trim().is_empty()) =>
+            {
+                syntax_tree
+                    .get_origin(locate)
+                    .map(|(_, byte_offset)| line_map.line_number(byte_offset))
+            }
+            _ => None,
+        })
+        .fold(None, |lines, line| {
+            Some(lines.map_or((line, line), |(start, _)| (start, line)))
+        })
 }
 
 #[cfg(test)]
@@ -1148,6 +1195,10 @@ mod tests {
     use super::*;
     use crate::netlist::{parse_str, parse_value, select_top};
     use serde_json::json;
+
+    fn scan_assignments(source: &str) -> ScannedAssignments {
+        scan_source(source, &HashMap::new()).unwrap().assignments
+    }
 
     #[test]
     fn finds_multiline_and_concatenated_continuous_assignments_only() {
@@ -1351,6 +1402,145 @@ endmodule
         assert!(has_conditional_preprocessor(
             "`ifdef FEATURE\nassign y = a;\n`endif"
         ));
+        assert!(
+            scan_source(
+                "`ifdef FEATURE\nmodule top; assign y = a; endmodule\n`endif",
+                &HashMap::new(),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn parse_failures_are_skipped_without_partial_results() {
+        assert!(scan_source("module top( ;", &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn ansi_and_nonansi_ports_keep_original_declaration_lines() {
+        let source = "module ansi(\n\
+  input logic a,\n\
+  output logic b\n\
+);\n\
+endmodule\n\
+module legacy(a, b, c);\n\
+  input a;\n\
+  output b;\n\
+  inout c;\n\
+endmodule\n";
+        let ports = HashMap::from([
+            (
+                "ansi".to_owned(),
+                HashMap::from([
+                    ("a".to_owned(), PortDirection::Input),
+                    ("b".to_owned(), PortDirection::Output),
+                ]),
+            ),
+            (
+                "legacy".to_owned(),
+                HashMap::from([
+                    ("a".to_owned(), PortDirection::Input),
+                    ("b".to_owned(), PortDirection::Output),
+                    ("c".to_owned(), PortDirection::Inout),
+                ]),
+            ),
+        ]);
+
+        assert_eq!(
+            scan_source(source, &ports).unwrap().ports,
+            vec![
+                PortDeclaration {
+                    module: "ansi".to_owned(),
+                    line: 2,
+                    identifier: "a".to_owned(),
+                    direction: PortDirection::Input,
+                },
+                PortDeclaration {
+                    module: "ansi".to_owned(),
+                    line: 3,
+                    identifier: "b".to_owned(),
+                    direction: PortDirection::Output,
+                },
+                PortDeclaration {
+                    module: "legacy".to_owned(),
+                    line: 7,
+                    identifier: "a".to_owned(),
+                    direction: PortDirection::Input,
+                },
+                PortDeclaration {
+                    module: "legacy".to_owned(),
+                    line: 8,
+                    identifier: "b".to_owned(),
+                    direction: PortDirection::Output,
+                },
+                PortDeclaration {
+                    module: "legacy".to_owned(),
+                    line: 9,
+                    identifier: "c".to_owned(),
+                    direction: PortDirection::Inout,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn yosys_alias_identifier_repair_preserves_other_ansi_ports() {
+        let source = "module registered_output (\n\
+  input logic clk,\n\
+  input logic a,\n\
+  input logic b,\n\
+  output logic y,\n\
+  output wire alias,\n\
+  output logic z\n\
+);\n\
+  assign alias = y;\n\
+endmodule\n";
+        let ports = HashMap::from([(
+            "registered_output".to_owned(),
+            HashMap::from([
+                ("clk".to_owned(), PortDirection::Input),
+                ("a".to_owned(), PortDirection::Input),
+                ("b".to_owned(), PortDirection::Input),
+                ("y".to_owned(), PortDirection::Output),
+                ("alias".to_owned(), PortDirection::Output),
+                ("z".to_owned(), PortDirection::Output),
+            ]),
+        )]);
+
+        let scanned = scan_source(source, &ports).unwrap();
+        assert!(
+            scanned
+                .ports
+                .iter()
+                .any(|declaration| declaration.identifier == "y" && declaration.line == 5)
+        );
+        assert!(
+            scanned
+                .ports
+                .iter()
+                .any(|declaration| declaration.identifier == "alias" && declaration.line == 6)
+        );
+    }
+
+    #[test]
+    fn every_example_parses_with_sv_parser() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../examples");
+        let mut paths: Vec<_> = std::fs::read_dir(examples)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "sv"))
+            .collect();
+        paths.sort();
+        assert!(!paths.is_empty());
+
+        for path in paths {
+            let source = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                scan_source(&source, &HashMap::new()).is_some(),
+                "{} failed to parse",
+                path.display()
+            );
+        }
     }
 
     #[test]
