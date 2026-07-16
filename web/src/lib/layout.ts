@@ -507,14 +507,16 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
       reject(abortError())
       return
     }
-    const onAbort = () => terminateWorker(w, abortError())
-    const timeout = globalThis.setTimeout(
-      () => terminateWorker(w, layoutTimeoutError()),
-      LAYOUT_DEADLINE_MS,
-    )
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const onAbort = () => {
+      const entry = pending.get(id)
+      if (!entry) return
+      pending.delete(id)
+      entry.reject(abortError())
+    }
     const cleanup = () => {
-      globalThis.clearTimeout(timeout)
       signal?.removeEventListener('abort', onAbort)
+      if (timeout) clearTimeout(timeout)
     }
     pending.set(id, {
       resolve: (value) => {
@@ -527,6 +529,10 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
       },
     })
     signal?.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(
+      () => terminateWorker(w, layoutTimeoutError()),
+      LAYOUT_DEADLINE_MS,
+    )
     const req: ElkRequest = { id, graph }
     w.postMessage(req)
   })

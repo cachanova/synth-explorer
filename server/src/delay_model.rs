@@ -15,10 +15,11 @@
 //! Every coefficient is a flat, tunable number so a request can override any of
 //! them. This is still a pre-place-and-route estimate, NOT timing closure.
 
+use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
 
 /// Tunable delay coefficients (picoseconds). See module docs.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DeepSizeOf)]
 pub struct DelayModel {
     /// LUT / generic logic-gate propagation.
     pub lut_ps: f64,

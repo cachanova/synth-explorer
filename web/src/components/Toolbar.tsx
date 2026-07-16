@@ -1,13 +1,58 @@
 import { useMemo, useState } from 'react'
 import { MODE_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
-import { useStore } from '../useStore'
 import type { Mode, SynthTool, XilinxFamily } from '../types'
+import { shallowEqual, useStore } from '../useStore'
 import { FlagsMenu } from './FlagsMenu'
 import { VivadoUnlockDialog } from './VivadoUnlockDialog'
 
 export function Toolbar() {
-  const store = useStore()
+  const store = useStore(
+    ({
+      examples,
+      loadExample,
+      top,
+      setTop,
+      synthTool,
+      setSynthTool,
+      vivadoUnlocked,
+      vivadoAvailable,
+      mode,
+      setMode,
+      extraArgs,
+      setExtraArgs,
+      vivadoTargets,
+      vivadoTarget,
+      setVivadoTarget,
+      vivadoExtraArgs,
+      setVivadoExtraArgs,
+      synthesizing,
+      synthesize,
+      unlockVivado,
+    }) => ({
+      examples,
+      loadExample,
+      top,
+      setTop,
+      synthTool,
+      setSynthTool,
+      vivadoUnlocked,
+      vivadoAvailable,
+      mode,
+      setMode,
+      extraArgs,
+      setExtraArgs,
+      vivadoTargets,
+      vivadoTarget,
+      setVivadoTarget,
+      vivadoExtraArgs,
+      setVivadoExtraArgs,
+      synthesizing,
+      synthesize,
+      unlockVivado,
+    }),
+    shallowEqual,
+  )
   const [unlockOpen, setUnlockOpen] = useState(false)
   const targetGroups = useMemo(() => {
     const groups = new Map<string, typeof store.vivadoTargets>()

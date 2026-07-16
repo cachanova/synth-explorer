@@ -1,6 +1,6 @@
 import { useRef, type KeyboardEvent } from 'react'
 import type { TabId } from '../store'
-import { useStore } from '../useStore'
+import { shallowEqual, useStore } from '../useStore'
 import { Compare } from './tabs/Compare'
 import { Endpoints } from './tabs/Endpoints'
 import { Fanout } from './tabs/Fanout'
@@ -18,7 +18,15 @@ const TABS: { id: TabId; label: string }[] = [
 ]
 
 export function RightPane() {
-  const store = useStore()
+  const store = useStore(
+    ({ activeTab, setActiveTab, snapshotA, snapshotB }) => ({
+      activeTab,
+      setActiveTab,
+      snapshotA,
+      snapshotB,
+    }),
+    shallowEqual,
+  )
   const active = store.activeTab
   const snaps = (store.snapshotA ? 1 : 0) + (store.snapshotB ? 1 : 0)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])

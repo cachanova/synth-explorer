@@ -12,6 +12,7 @@ import {
   type TimingSettings,
 } from '../lib/timingSettings'
 import type { DelayBreakdown, DelayModel, SpeedGrade } from '../types'
+import { Card } from './Card'
 
 /**
  * Interactive timing panel: shows the estimated critical-path delay / Fmax and
@@ -280,28 +281,6 @@ function BreakdownBar({
           </span>
         ))}
       </div>
-    </div>
-  )
-}
-
-function Card({
-  k,
-  v,
-  accent,
-  tone,
-}: {
-  k: string
-  v: string | number
-  accent?: boolean
-  tone?: 'ok' | 'bad'
-}) {
-  const cls = ['v', accent ? 'accent' : '', tone ? `slack-${tone}` : '']
-    .filter(Boolean)
-    .join(' ')
-  return (
-    <div className="card">
-      <div className="k">{k}</div>
-      <div className={cls}>{v}</div>
     </div>
   )
 }

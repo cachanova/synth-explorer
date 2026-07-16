@@ -38,7 +38,10 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   passes startup preflight and returns a non-empty installed part catalog.
 - No database. Designs live in an in-memory store keyed by a content hash of
   (sources, tool, mode, target, args); re-synthesizing identical input is a
-  cache hit.
+  cache hit. The cache is TTL- and byte-budgeted with FIFO eviction. Cache hits
+  share a read lock; only expired-entry cleanup and insertion take the write
+  lock. Retained size is derived structurally so new owned fields cannot bypass
+  cache accounting silently.
 
 ## Synthesis Modes
 
@@ -99,9 +102,15 @@ Parsed from yosys JSON (`modules.<top>` after flatten):
 - **Startpoints:** top-level input bits, FF `Q` outputs, blackbox/memory outputs.
 - **Endpoints:** FF `D` inputs (data pin; control pins reported separately),
   top-level output bits, blackbox/memory inputs.
-- **Depth metric:** longest number of combinational cells on any path into the
-  endpoint (unit delay per cell; per-type weights are a straightforward future
-  extension — the DP already carries a weight function).
+- **Depth metric:** longest weighted structural depth into the endpoint. Data-
+  path logic and carry primitives count as one level; recognized infrastructure
+  buffers count as zero. This metric is intentionally separate from delay.
+- **Estimated timing:** a second fanout-aware DP combines per-category cell
+  coefficients (LUT, carry, wide mux, generic cell), launch/setup terms, and
+  estimated net delay. Xilinx presets are calibrated against Vivado post-synth
+  timing; other presets and manual overrides remain estimates, not timing
+  closure. Retuning reuses the model-independent combinational-loop set found
+  during initial analysis.
 - **Algorithm:** restrict to combinational subgraph; Tarjan SCC to detect
   combinational loops (nodes in loops are excluded and reported as warnings);
   DP over topological order computes depth + argmax predecessor per node —
@@ -117,7 +126,10 @@ Parsed from yosys JSON (`modules.<top>` after flatten):
 - `POST /api/synthesize` → `{design_id, top, tool, mode, target?, stats, warnings, log}`
 - `GET  /api/design/:id/endpoints` — registers (grouped, with width/clock/src/
   depth), outputs, inputs
-- `GET  /api/design/:id/paths?limit&to` — ranked longest paths w/ full node list
+- `GET  /api/design/:id/paths?limit&to&profile&speed_grade&model` — ranked
+  longest paths w/ full node list and optional retuned per-path delay
+- `POST /api/design/:id/timing` — retune the cached design's estimated critical
+  delay and category breakdown without re-synthesizing
 - `GET  /api/design/:id/cone?node&dir&max_depth&max_nodes` — renderable subgraph
 - `GET  /api/design/:id/fanout?limit` — fanout ranking
 - `GET  /api/design/:id/netlist?max_nodes` — full graph (capped) for the
@@ -132,7 +144,9 @@ Compiler-Explorer-style split view, dark theme:
 - **Left pane:** CodeMirror 6 editor (Verilog mode), examples dropdown, top
   module + mode + extra-args controls, Synthesize (Ctrl+Enter). Error/log strip.
 - **Right pane tabs:**
-  - **Overview** — cell-type histogram, reg/port counts, warnings, yosys log.
+  - **Overview** — cell-type histogram, reg/port counts, warnings, yosys log,
+    and an estimated-timing panel with profiles, speed grades, and coefficient
+    overrides.
   - **Endpoints** — fuzzy-searchable registers/outputs; click → Graph tab cone.
   - **Paths** — ranked longest paths; click → path highlighted in Graph tab;
     per-node src hop back to editor.
@@ -150,6 +164,10 @@ Compiler-Explorer-style split view, dark theme:
     cell counts, fanout deltas between snapshots (different code or modes).
 - **Source cross-probe:** node src (`file.sv:12.16-12.21`) → editor highlight;
   editor cursor line → matching nodes listed/highlighted.
+- Store consumers subscribe through field selectors, so editor keystrokes do
+  not invalidate analysis tabs or the schematic. Superseded ELK results are
+  discarded by sequence id while the worker stays warm; the worker is replaced
+  only after an error or real layout timeout.
 
 ## Example RTL (`examples/`)
 
@@ -178,7 +196,6 @@ realistic blackbox boundary around vendor-generated clock-domain-crossing IP.
 
 ## Future (explicitly out of scope now)
 
-Vivado/nextpnr/OpenSTA timing-report import + overlay; per-cell-type delay
-weights; hierarchy-preserving view; CDC structural detection; giant-mux/wide-
-comparator detectors; permalinks; export cone as SVG/PNG; WASM yosys for a
-serverless mode.
+Vivado/nextpnr/OpenSTA timing-report import + overlay; hierarchy-preserving
+view; CDC structural detection; giant-mux/wide-comparator detectors; permalinks;
+export cone as SVG/PNG; WASM yosys for a serverless mode.

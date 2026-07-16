@@ -2,7 +2,7 @@
 // rendering; keeping these helpers DOM-free makes the visual vocabulary easy
 // to verify without snapshots of generated SVG path strings.
 
-import type { GraphEdge, GraphNode, NodeRef } from '../types'
+import type { ControlRef, GraphEdge, GraphNode, NodeRef } from '../types'
 import { shortNetName } from './prettyType'
 
 export type PortDirection = 'input' | 'output'
@@ -28,53 +28,12 @@ export type SymbolKind =
   | 'const'
   | 'box'
 
-/**
- * Forward-compatible shape for compact clock/reset/enable net labels.
- * GraphNode will eventually carry this field in the API contract; the runtime
- * reader below lets the renderer consume it without forcing this isolated
- * frontend slice to change that shared contract first.
- */
-export interface ControlNetRef {
-  role: string
-  pin?: string
-  net_name: string
-  driver_id: number
-  fanout?: number
-  active_low?: boolean
-  synchronous?: boolean
-  src?: string
-  generated?: boolean
-}
-
-type NodeWithControls = GraphNode & { controls?: unknown }
-
-function isControlNetRef(value: unknown): value is ControlNetRef {
-  if (typeof value !== 'object' || value === null) return false
-  const item = value as Record<string, unknown>
-  return (
-    typeof item.role === 'string' &&
-    item.role.length > 0 &&
-    typeof item.net_name === 'string' &&
-    item.net_name.length > 0 &&
-    typeof item.driver_id === 'number' &&
-    Number.isInteger(item.driver_id) &&
-    (item.fanout === undefined ||
-      (typeof item.fanout === 'number' && Number.isInteger(item.fanout))) &&
-    (item.active_low === undefined || typeof item.active_low === 'boolean') &&
-    (item.synchronous === undefined || typeof item.synchronous === 'boolean') &&
-    (item.src === undefined || typeof item.src === 'string') &&
-    (item.generated === undefined || typeof item.generated === 'boolean')
-  )
-}
-
-export function controlsFor(node: GraphNode): ControlNetRef[] {
-  const raw = (node as NodeWithControls).controls
-  if (!Array.isArray(raw)) return []
-  return raw.filter(isControlNetRef)
+export function controlsFor(node: GraphNode): ControlRef[] {
+  return node.controls ?? []
 }
 
 /** A compact conventional net-label caption, never a raw ABC/Yosys path. */
-export function controlLabel(control: ControlNetRef): string {
+export function controlLabel(control: ControlRef): string {
   const role = control.role.toLowerCase()
   const prefix = role === 'clock' || role === 'clk'
     ? 'CLK'
@@ -101,6 +60,26 @@ export function inferPortDirection(
   // A pure source is an input. Terminal and unusual bidirectional nodes are
   // rendered as outputs, which is the safer endpoint-oriented default.
   return drives && !isDriven ? 'input' : 'output'
+}
+
+/** Infer many top-level port directions in one O(nodes + edges) pass. */
+export function inferPortDirections(
+  nodeIds: Iterable<number>,
+  edges: readonly Pick<GraphEdge, 'from' | 'to'>[],
+): Map<number, PortDirection> {
+  const ports = new Set(nodeIds)
+  const drives = new Set<number>()
+  const driven = new Set<number>()
+  for (const edge of edges) {
+    if (ports.has(edge.from)) drives.add(edge.from)
+    if (ports.has(edge.to)) driven.add(edge.to)
+  }
+  return new Map(
+    [...ports].map((id) => [
+      id,
+      drives.has(id) && !driven.has(id) ? 'input' : 'output',
+    ]),
+  )
 }
 
 function canonicalCellType(cellType: string): string {
@@ -299,8 +278,8 @@ export function inputBubbleAt(
   return { cx: BUBBLE_R, cy: (height * 2) / 3, r: BUBBLE_R }
 }
 
-export function registerClockPath(height: number): string {
-  const cy = height * 0.72
+export function registerClockPath(height: number, yFraction = 0.72): string {
+  const cy = height * yFraction
   return `M 0 ${cy - 6} L 7 ${cy} L 0 ${cy + 6}`
 }
 

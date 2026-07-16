@@ -1,8 +1,8 @@
 import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { controlLabel, controlsFor } from '../lib/symbols'
-import { useStore } from '../useStore'
 import type { GraphNode } from '../types'
+import { shallowEqual, useStore } from '../useStore'
 
 export function NodeCard({
   node,
@@ -16,7 +16,15 @@ export function NodeCard({
   /** Additively render this node's connections in place (also on double-click). */
   onExpand?: () => void
 }) {
-  const store = useStore()
+  const store = useStore(
+    ({ files, highlightSources, openCone, openControlCone }) => ({
+      files,
+      highlightSources,
+      openCone,
+      openControlCone,
+    }),
+    shallowEqual,
+  )
   const params = node.params ? Object.entries(node.params) : []
   const spans = designSrcSpans(node.src, store.files)
   const name = displayNodeName(node, drivingNet)

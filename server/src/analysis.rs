@@ -5,10 +5,10 @@ use crate::graph::{
 };
 use crate::grouping::{GroupId, GroupKind, GroupPartition};
 use crate::netlist::{PortDirection, YosysModule, YosysNetlist};
+use deepsize::DeepSizeOf;
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::mem::size_of;
 
 const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
@@ -21,7 +21,7 @@ const SOURCE_LINE_RESPONSE_NODE_BUDGET: usize = 20_000;
 const SOURCE_RANGE_RESPONSE_CAP: usize = 10_000;
 pub(crate) const SOURCE_RANGE_ASSOCIATION_CAP: usize = 20_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiNodeKind {
     Cell,
@@ -29,7 +29,7 @@ pub enum ApiNodeKind {
     Const,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct NodeRef {
     pub id: u32,
     pub kind: ApiNodeKind,
@@ -114,20 +114,20 @@ pub struct Subgraph {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct EndpointBit {
     pub bit: usize,
     pub node_id: u32,
     pub depth: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct InputBit {
     pub bit: usize,
     pub node_id: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct RegisterGroup {
     pub name: String,
     pub width: usize,
@@ -140,20 +140,20 @@ pub struct RegisterGroup {
     pub output_aliases: Vec<OutputAlias>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct OutputAliasBit {
     pub output_bit: usize,
     pub register_bit: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct OutputAlias {
     pub name: String,
     pub width: usize,
     pub bits: Vec<OutputAliasBit>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct OutputGroup {
     pub name: String,
     pub width: usize,
@@ -161,14 +161,14 @@ pub struct OutputGroup {
     pub bits: Vec<EndpointBit>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct InputGroup {
     pub name: String,
     pub width: usize,
     pub bits: Vec<InputBit>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct EndpointsResponse {
     pub registers: Vec<RegisterGroup>,
     pub outputs: Vec<OutputGroup>,
@@ -193,7 +193,7 @@ pub struct PathEntry {
     pub estimated_delay_ns: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointKind {
     Register,
@@ -201,7 +201,7 @@ pub enum EndpointKind {
     Blackbox,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
 #[serde(rename_all = "snake_case")]
 pub enum PathClass {
     InputToRegister,
@@ -233,7 +233,7 @@ pub struct FanoutResponse {
     pub drivers: Vec<FanoutDriver>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct SourceMapResponse {
     pub files: Vec<String>,
     pub by_line: BTreeMap<String, Vec<u32>>,
@@ -241,7 +241,7 @@ pub struct SourceMapResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, DeepSizeOf)]
 pub struct SourceRangeMapping {
     pub file: String,
     pub start_line: usize,
@@ -250,13 +250,13 @@ pub struct SourceRangeMapping {
     pub mapping_incomplete: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, DeepSizeOf)]
 pub(crate) enum SourceProbeDirection {
     Fanin,
     Fanout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, DeepSizeOf)]
 pub(crate) enum SourceProbeHintKind {
     Block,
     OutputPort,
@@ -264,7 +264,7 @@ pub(crate) enum SourceProbeHintKind {
     Signal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, DeepSizeOf)]
 pub(crate) struct SourceProbeHint {
     pub file: String,
     pub start_line: usize,
@@ -282,7 +282,7 @@ pub(crate) struct SourceProbeSelection {
     pub expand_output_register_inputs: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, DeepSizeOf)]
 struct IntervalIndex {
     intervals: Vec<(usize, usize)>,
     prefix_max_end: Vec<usize>,
@@ -312,7 +312,7 @@ impl IntervalIndex {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, DeepSizeOf)]
 pub struct SourceLineIndex {
     files: HashSet<String>,
     lines: HashSet<String>,
@@ -320,40 +320,6 @@ pub struct SourceLineIndex {
 }
 
 impl SourceLineIndex {
-    /// Deterministic retained-allocation estimate, not allocator-exact RSS.
-    pub fn estimated_heap_bytes(&self) -> usize {
-        let mut bytes = self.files.capacity().saturating_mul(size_of::<String>());
-        for file in &self.files {
-            bytes = bytes.saturating_add(file.capacity());
-        }
-        bytes = bytes.saturating_add(self.lines.capacity().saturating_mul(size_of::<String>()));
-        for line in &self.lines {
-            bytes = bytes.saturating_add(line.capacity());
-        }
-        bytes = bytes.saturating_add(
-            self.recovered_ranges
-                .len()
-                .saturating_mul(size_of::<(String, IntervalIndex)>() + 3 * size_of::<usize>()),
-        );
-        for (file, index) in &self.recovered_ranges {
-            bytes = bytes
-                .saturating_add(file.capacity())
-                .saturating_add(
-                    index
-                        .intervals
-                        .capacity()
-                        .saturating_mul(size_of::<(usize, usize)>()),
-                )
-                .saturating_add(
-                    index
-                        .prefix_max_end
-                        .capacity()
-                        .saturating_mul(size_of::<usize>()),
-                );
-        }
-        bytes
-    }
-
     pub fn from_module(module: &YosysModule, files: Vec<String>) -> Self {
         Self::from_modules([module], files)
     }
@@ -429,7 +395,7 @@ impl SourceLineIndex {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct Stats {
     pub num_cells: usize,
     pub cells_by_type: BTreeMap<String, usize>,
@@ -453,7 +419,7 @@ pub struct Stats {
 
 /// The estimated critical-path delay split into contributions (nanoseconds).
 /// `launch_ns + logic_ns + net_ns + setup_ns == estimated_delay_ns`.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, DeepSizeOf)]
 pub struct DelayBreakdown {
     pub launch_ns: f64,
     pub logic_ns: f64,
@@ -481,7 +447,7 @@ impl DelayBreakdown {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, DeepSizeOf)]
 pub struct DepthSummary {
     pub input_to_register: Option<u32>,
     pub register_to_register: Option<u32>,
@@ -489,7 +455,7 @@ pub struct DepthSummary {
     pub input_to_output: Option<u32>,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, DeepSizeOf)]
 pub struct CellCategoryCounts {
     pub logic: usize,
     pub registers: usize,
@@ -511,12 +477,13 @@ struct DepthComputation {
     node_delay: Vec<f64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, DeepSizeOf)]
 pub struct Analysis {
     pub node_depth: Vec<Option<u32>>,
     node_delay: Vec<f64>,
     pub best_pred: Vec<Option<usize>>,
     pub comb_loops: Vec<NodeId>,
+    comb_loop_set: HashSet<NodeId>,
     pub endpoints: EndpointsResponse,
     endpoint_targets: Vec<EndpointTarget>,
     source_map: SourceMapResponse,
@@ -530,7 +497,7 @@ pub struct Analysis {
     delay_model: DelayModel,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, DeepSizeOf)]
 struct EndpointTarget {
     endpoint: NodeId,
     endpoint_port: String,
@@ -542,13 +509,13 @@ struct EndpointTarget {
     bit: usize,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, DeepSizeOf)]
 struct SourceRangeIndex {
     ranges: Vec<SourceRangeMapping>,
     prefix_max_end: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, DeepSizeOf)]
 struct SourceProbeHintIndex {
     hints: Vec<SourceProbeHint>,
     prefix_max_end: Vec<usize>,
@@ -601,118 +568,6 @@ impl SourceRangeIndex {
 type PathGroupKey = (String, EndpointKind, PathClass, u32, String, Vec<String>);
 
 impl Analysis {
-    /// Deterministic estimate of heap allocation retained by analysis indexes.
-    /// Collection capacities and owned buffers are counted without cloning.
-    pub fn estimated_heap_bytes(&self) -> usize {
-        let mut bytes = self
-            .node_depth
-            .capacity()
-            .saturating_mul(size_of::<Option<u32>>())
-            .saturating_add(
-                self.best_pred
-                    .capacity()
-                    .saturating_mul(size_of::<Option<usize>>()),
-            )
-            .saturating_add(
-                self.comb_loops
-                    .capacity()
-                    .saturating_mul(size_of::<NodeId>()),
-            )
-            .saturating_add(endpoints_heap_bytes(&self.endpoints))
-            .saturating_add(
-                self.endpoint_targets
-                    .capacity()
-                    .saturating_mul(size_of::<EndpointTarget>()),
-            );
-        for target in &self.endpoint_targets {
-            bytes = bytes
-                .saturating_add(target.endpoint_port.capacity())
-                .saturating_add(target.group.capacity());
-        }
-        bytes = bytes.saturating_add(source_map_heap_bytes(&self.source_map));
-        bytes = bytes.saturating_add(
-            self.source_ranges
-                .len()
-                .saturating_mul(size_of::<(String, SourceRangeIndex)>() + 3 * size_of::<usize>()),
-        );
-        for (file, index) in &self.source_ranges {
-            bytes = bytes
-                .saturating_add(file.capacity())
-                .saturating_add(
-                    index
-                        .ranges
-                        .capacity()
-                        .saturating_mul(size_of::<SourceRangeMapping>()),
-                )
-                .saturating_add(
-                    index
-                        .prefix_max_end
-                        .capacity()
-                        .saturating_mul(size_of::<usize>()),
-                );
-            for range in &index.ranges {
-                bytes = bytes.saturating_add(source_range_heap_bytes(range));
-            }
-        }
-        bytes =
-            bytes.saturating_add(self.source_probe_hints.len().saturating_mul(
-                size_of::<(String, SourceProbeHintIndex)>() + 3 * size_of::<usize>(),
-            ));
-        for (file, index) in &self.source_probe_hints {
-            bytes = bytes
-                .saturating_add(file.capacity())
-                .saturating_add(
-                    index
-                        .hints
-                        .capacity()
-                        .saturating_mul(size_of::<SourceProbeHint>()),
-                )
-                .saturating_add(
-                    index
-                        .prefix_max_end
-                        .capacity()
-                        .saturating_mul(size_of::<usize>()),
-                );
-            for hint in &index.hints {
-                bytes = bytes.saturating_add(hint.file.capacity());
-            }
-        }
-        bytes = bytes.saturating_add(
-            self.synthetic_src
-                .capacity()
-                .saturating_mul(size_of::<(NodeId, BTreeSet<String>)>()),
-        );
-        for sources in self.synthetic_src.values() {
-            bytes = bytes.saturating_add(
-                sources
-                    .len()
-                    .saturating_mul(size_of::<String>() + 3 * size_of::<usize>()),
-            );
-            for source in sources {
-                bytes = bytes.saturating_add(source.capacity());
-            }
-        }
-        bytes = bytes.saturating_add(self.procedural_targets.len().saturating_mul(
-            size_of::<(String, BTreeMap<usize, Vec<NodeId>>)>() + 3 * size_of::<usize>(),
-        ));
-        for (file, targets) in &self.procedural_targets {
-            bytes = bytes.saturating_add(file.capacity()).saturating_add(
-                targets
-                    .len()
-                    .saturating_mul(size_of::<(usize, Vec<NodeId>)>() + 3 * size_of::<usize>()),
-            );
-            for ids in targets.values() {
-                bytes = bytes.saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
-            }
-        }
-        bytes = bytes.saturating_add(stats_heap_bytes(&self.stats));
-        bytes = bytes.saturating_add(self.warnings.capacity().saturating_mul(size_of::<String>()));
-        for warning in &self.warnings {
-            bytes = bytes.saturating_add(warning.capacity());
-        }
-        bytes
-    }
-
     pub fn new(graph: &Graph, source_files: Vec<String>) -> Self {
         Self::with_delay_model(graph, source_files, &DelayModel::default())
     }
@@ -746,6 +601,7 @@ impl Analysis {
             node_delay,
             best_pred,
             comb_loops,
+            comb_loop_set: loop_set,
             endpoints,
             endpoint_targets,
             source_map,
@@ -1180,8 +1036,7 @@ impl Analysis {
         let node_delay: &[f64] = if *model == self.delay_model {
             &self.node_delay
         } else {
-            let loop_set: HashSet<NodeId> = find_comb_loops(graph).into_iter().collect();
-            recomputed = compute_depths(graph, &loop_set, model).node_delay;
+            recomputed = compute_depths(graph, &self.comb_loop_set, model).node_delay;
             &recomputed
         };
         const TARGETS_PER_GROUP_CAP: usize = 64;
@@ -1322,6 +1177,18 @@ impl Analysis {
                 || reconstructed_candidates < candidates.len()
                 || candidates.len() < total_targets
                 || grouped_count > limit,
+        }
+    }
+
+    /// Retune the worst-case delay using the model-independent loop set found
+    /// when this analysis was built.
+    pub fn estimate_timing(&self, graph: &Graph, model: &DelayModel) -> TimingEstimate {
+        let dc = compute_depths(graph, &self.comb_loop_set, model);
+        TimingEstimate {
+            delay_ns: dc.estimated_max_delay_ps.map(|ps| ps / 1000.0),
+            breakdown: dc
+                .estimated_max_delay_breakdown
+                .map(DelayBreakdown::from_ps),
         }
     }
 
@@ -1982,117 +1849,6 @@ impl Analysis {
     }
 }
 
-fn endpoints_heap_bytes(endpoints: &EndpointsResponse) -> usize {
-    let mut bytes = endpoints
-        .registers
-        .capacity()
-        .saturating_mul(size_of::<RegisterGroup>())
-        .saturating_add(
-            endpoints
-                .outputs
-                .capacity()
-                .saturating_mul(size_of::<OutputGroup>()),
-        )
-        .saturating_add(
-            endpoints
-                .inputs
-                .capacity()
-                .saturating_mul(size_of::<InputGroup>()),
-        );
-    for group in &endpoints.registers {
-        bytes = bytes
-            .saturating_add(group.name.capacity())
-            .saturating_add(group.cell_type.capacity())
-            .saturating_add(group.clock.as_ref().map_or(0, String::capacity))
-            .saturating_add(group.src.as_ref().map_or(0, String::capacity))
-            .saturating_add(
-                group
-                    .bits
-                    .capacity()
-                    .saturating_mul(size_of::<EndpointBit>()),
-            )
-            .saturating_add(
-                group
-                    .output_aliases
-                    .capacity()
-                    .saturating_mul(size_of::<OutputAlias>()),
-            );
-        for alias in &group.output_aliases {
-            bytes = bytes.saturating_add(alias.name.capacity()).saturating_add(
-                alias
-                    .bits
-                    .capacity()
-                    .saturating_mul(size_of::<OutputAliasBit>()),
-            );
-        }
-    }
-    for group in &endpoints.outputs {
-        bytes = bytes.saturating_add(group.name.capacity()).saturating_add(
-            group
-                .bits
-                .capacity()
-                .saturating_mul(size_of::<EndpointBit>()),
-        );
-    }
-    for group in &endpoints.inputs {
-        bytes = bytes
-            .saturating_add(group.name.capacity())
-            .saturating_add(group.bits.capacity().saturating_mul(size_of::<InputBit>()));
-    }
-    bytes
-}
-
-fn source_range_heap_bytes(range: &SourceRangeMapping) -> usize {
-    range.file.capacity().saturating_add(
-        range
-            .node_ids
-            .capacity()
-            .saturating_mul(size_of::<NodeId>()),
-    )
-}
-
-fn source_map_heap_bytes(source_map: &SourceMapResponse) -> usize {
-    let mut bytes = source_map
-        .files
-        .capacity()
-        .saturating_mul(size_of::<String>())
-        .saturating_add(
-            source_map
-                .by_line
-                .len()
-                .saturating_mul(size_of::<(String, Vec<NodeId>)>() + 3 * size_of::<usize>()),
-        )
-        .saturating_add(
-            source_map
-                .ranges
-                .capacity()
-                .saturating_mul(size_of::<SourceRangeMapping>()),
-        );
-    for file in &source_map.files {
-        bytes = bytes.saturating_add(file.capacity());
-    }
-    for (location, ids) in &source_map.by_line {
-        bytes = bytes
-            .saturating_add(location.capacity())
-            .saturating_add(ids.capacity().saturating_mul(size_of::<NodeId>()));
-    }
-    for range in &source_map.ranges {
-        bytes = bytes.saturating_add(source_range_heap_bytes(range));
-    }
-    bytes
-}
-
-fn stats_heap_bytes(stats: &Stats) -> usize {
-    let mut bytes = stats
-        .cells_by_type
-        .len()
-        .saturating_mul(size_of::<(String, usize)>() + 3 * size_of::<usize>());
-    for cell_type in stats.cells_by_type.keys() {
-        bytes = bytes.saturating_add(cell_type.capacity());
-    }
-    bytes
-}
-
 struct SubgraphProjection<'a> {
     roots: &'a HashSet<NodeId>,
     boundary_nodes: &'a HashSet<NodeId>,
@@ -2687,26 +2443,6 @@ fn fanout_of(graph: &Graph, id: NodeId) -> u32 {
 pub struct TimingEstimate {
     pub delay_ns: Option<f64>,
     pub breakdown: Option<DelayBreakdown>,
-}
-
-/// Recompute the estimated worst-case combinational delay and its per-category
-/// breakdown for a graph under a given delay model. Used to *retune* timing on a
-/// cached design without re-running synthesis. Mirrors the estimate produced
-/// during [`Analysis::with_delay_model`].
-pub fn estimate_timing(graph: &Graph, model: &DelayModel) -> TimingEstimate {
-    let loop_set: HashSet<NodeId> = find_comb_loops(graph).into_iter().collect();
-    let dc = compute_depths(graph, &loop_set, model);
-    TimingEstimate {
-        delay_ns: dc.estimated_max_delay_ps.map(|ps| ps / 1000.0),
-        breakdown: dc
-            .estimated_max_delay_breakdown
-            .map(DelayBreakdown::from_ps),
-    }
-}
-
-/// Just the worst-case delay (nanoseconds); `None` with no combinational paths.
-pub fn estimate_delay_ns(graph: &Graph, model: &DelayModel) -> Option<f64> {
-    estimate_timing(graph, model).delay_ns
 }
 
 fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
@@ -4048,10 +3784,19 @@ mod tests {
 
     #[test]
     fn estimate_delay_ns_shrinks_with_a_faster_preset() {
-        let (graph, _analysis) = fixture("and_chain_rtl.json");
-        let s7 = estimate_delay_ns(&graph, &DelayModel::series7()).unwrap();
-        let usp = estimate_delay_ns(&graph, &DelayModel::ultrascale_plus()).unwrap();
-        let s7_fast = estimate_delay_ns(&graph, &DelayModel::series7().scaled(0.78)).unwrap();
+        let (graph, analysis) = fixture("and_chain_rtl.json");
+        let s7 = analysis
+            .estimate_timing(&graph, &DelayModel::series7())
+            .delay_ns
+            .unwrap();
+        let usp = analysis
+            .estimate_timing(&graph, &DelayModel::ultrascale_plus())
+            .delay_ns
+            .unwrap();
+        let s7_fast = analysis
+            .estimate_timing(&graph, &DelayModel::series7().scaled(0.78))
+            .delay_ns
+            .unwrap();
         // A faster process, and a faster speed grade, both reduce the estimate.
         assert!(usp < s7, "ultrascale+ {usp} should beat series7 {s7}");
         assert!(s7_fast < s7, "-3 grade {s7_fast} should beat -1 {s7}");

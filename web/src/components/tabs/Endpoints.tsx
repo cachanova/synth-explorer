@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
+import { formatBitRanges } from '../../lib/bitRanges'
 import { fuzzyFilter } from '../../lib/fuzzy'
 import {
   displayCellType,
@@ -8,13 +9,14 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
-import { useStore } from '../../useStore'
+import type { Store } from '../../store'
 import type {
   EndpointBit,
   OutputAlias,
   OutputEndpoint,
   RegisterEndpoint,
 } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { StaleResultsChip } from '../StaleResultsChip'
 
@@ -28,7 +30,10 @@ const ENDPOINT_PAGE_SIZE = 100
 const BIT_PAGE_SIZE = 64
 
 export function Endpoints() {
-  const store = useStore()
+  const store = useStore(
+    ({ design, analysisState, openCone }) => ({ design, analysisState, openCone }),
+    shallowEqual,
+  )
   const id = store.design?.design_id ?? null
   const { data, loading, error } = useDesignData(id, getEndpoints)
   const [filter, setFilter] = useState('')
@@ -168,7 +173,7 @@ export function Endpoints() {
   )
 }
 
-type Opener = ReturnType<typeof useStore>['openCone']
+type Opener = Store['openCone']
 
 function endpointSearchText(row: LogicalEndpoint): string {
   if (row.kind === 'output') return `${row.endpoint.name} combinational output`
@@ -191,28 +196,6 @@ function registerDisplayName(endpoint: RegisterEndpoint): string {
   return isHiddenName(endpoint.name)
     ? displayCellType(endpoint.cell_type)
     : endpoint.name
-}
-
-function formatBitRanges(bits: number[]): string {
-  const sorted = [...new Set(bits)].sort((a, b) => a - b)
-  if (sorted.length === 0) return ''
-  const ranges: Array<[number, number]> = []
-  let start = sorted[0]
-  let end = start
-  for (const bit of sorted.slice(1)) {
-    if (bit === end + 1) {
-      end = bit
-      continue
-    }
-    ranges.push([start, end])
-    start = bit
-    end = bit
-  }
-  ranges.push([start, end])
-  return ranges
-    .reverse()
-    .map(([lo, hi]) => (lo === hi ? `[${lo}]` : `[${hi}:${lo}]`))
-    .join(', ')
 }
 
 function aliasLabel(alias: OutputAlias): string {

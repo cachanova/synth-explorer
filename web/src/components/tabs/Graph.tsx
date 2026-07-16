@@ -5,11 +5,10 @@ import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent, isDisplayedRequestCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
-import { designSrcSpans } from '../../lib/src'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
-import { controlLabel, type ControlNetRef } from '../../lib/symbols'
-import { useStore } from '../../useStore'
+import { controlLabel } from '../../lib/symbols'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
@@ -51,15 +50,33 @@ interface FullGraphCacheEntry {
 }
 
 export function Graph({ active }: { active: boolean }) {
-  const store = useStore()
+  const store = useStore(
+    ({
+      analysisState,
+      design,
+      coneReq,
+      graphOptions,
+      clearGraphSelection,
+      highlightNodeSources,
+      openControlCone,
+    }) => ({
+      analysisState,
+      design,
+      coneReq,
+      graphOptions,
+      clearGraphSelection,
+      highlightNodeSources,
+      openControlCone,
+    }),
+    shallowEqual,
+  )
   const {
     analysisState,
-    clearGraphSelection,
-    coneReq,
     design,
-    files,
+    coneReq,
     graphOptions,
-    highlightSources,
+    clearGraphSelection,
+    highlightNodeSources,
     openControlCone,
   } = store
 
@@ -556,19 +573,20 @@ export function Graph({ active }: { active: boolean }) {
     (node: GraphNode | null) => {
       if (!graphInteractive) return
       setSelected(node)
-      highlightSources(designSrcSpans(node?.src, files))
+      highlightNodeSources(node?.src)
     },
-    [files, graphInteractive, highlightSources],
+    [graphInteractive, highlightNodeSources],
   )
   const onControlSelect = useCallback(
-    (control: ControlNetRef) => {
+    (control: NonNullable<GraphNode['controls']>[number]) => {
+      if (!graphInteractive) return
       openControlCone({
         node: control.driver_id,
         label: controlLabel(control),
         generated: control.generated,
       })
     },
-    [openControlCone],
+    [graphInteractive, openControlCone],
   )
   const focusMode =
     displayedRequestCurrent && relevantIds.size > 0
@@ -682,7 +700,16 @@ export function Graph({ active }: { active: boolean }) {
 }
 
 function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
-  const store = useStore()
+  const store = useStore(
+    ({ coneReq, design, graphOptions, setGraphOptions, openCone }) => ({
+      coneReq,
+      design,
+      graphOptions,
+      setGraphOptions,
+      openCone,
+    }),
+    shallowEqual,
+  )
   const { coneReq, design, graphOptions } = store
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
