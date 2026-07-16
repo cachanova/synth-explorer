@@ -17,6 +17,102 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Which device family's characterization a set of coefficients came from.
+///
+/// Kept separate from [`DelayModel`] on purpose. `DelayModel` is a bag of
+/// numbers the user may freely edit; the profile is the *identity* of the
+/// silicon those numbers describe. Speed-grade scaling is a property of the
+/// silicon — Series-7 gains far more from a -3 grade than UltraScale+ does — so
+/// it has to key on this rather than on the coefficient values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DelayProfile {
+    Series7,
+    UltraScale,
+    UltraScalePlus,
+    Ice40,
+    Ecp5,
+    Generic,
+}
+
+impl DelayProfile {
+    /// The baseline (-1 speed grade) coefficients for this family.
+    pub fn model(self) -> DelayModel {
+        match self {
+            Self::Series7 => DelayModel::series7(),
+            Self::UltraScale => DelayModel::ultrascale(),
+            Self::UltraScalePlus => DelayModel::ultrascale_plus(),
+            Self::Ice40 => DelayModel::ice40(),
+            Self::Ecp5 => DelayModel::ecp5(),
+            Self::Generic => DelayModel::generic(),
+        }
+    }
+
+    /// Parse a profile name from a request. Unknown names fall back to Series-7,
+    /// matching the historical default.
+    pub fn from_name(name: Option<&str>) -> Self {
+        match name {
+            Some("ultrascale") => Self::UltraScale,
+            Some("ultrascale_plus") => Self::UltraScalePlus,
+            Some("ice40") => Self::Ice40,
+            Some("ecp5") => Self::Ecp5,
+            Some("generic") => Self::Generic,
+            _ => Self::Series7,
+        }
+    }
+
+    /// Pick the default profile for a synthesis target. `mode` is the
+    /// [`crate::yosys::SynthMode`] string; `family` is the Xilinx `-family`
+    /// value when one was supplied, else `None`.
+    pub fn for_target(mode: &str, family: Option<&str>) -> Self {
+        match mode {
+            "xilinx" => match family.map(str::to_ascii_lowercase).as_deref() {
+                // Yosys spells these `xcup` / `xcu`; the rest are defensive
+                // aliases for family strings arriving from other backends.
+                Some("xcup" | "xcvup" | "xcau" | "xczu") => Self::UltraScalePlus,
+                Some("xcu" | "xcvu" | "xcku") => Self::UltraScale,
+                // xc7, xc6s/xc6v (Spartan/Virtex-6), or unspecified → 7-series.
+                _ => Self::Series7,
+            },
+            "ice40" => Self::Ice40,
+            "ecp5" => Self::Ecp5,
+            // gates / lut4 / lut6 / rtl and anything unrecognized.
+            _ => Self::Generic,
+        }
+    }
+
+    /// Multiplier applied to every coefficient for a speed grade, relative to
+    /// the "-1" the presets are characterized at.
+    ///
+    /// Measured, per family, from Vivado 2026.1's own -1-vs-N `report_timing` on
+    /// identical designs (`calibration/vivado-2026.1.json`). The spread is real:
+    /// Series-7 gains ~28% from a -3 grade while UltraScale+ gains ~20%, because
+    /// the newer fabric is already fast and has less headroom to sell.
+    ///
+    /// One factor covers logic and routing together. Vivado does scale them
+    /// differently, but *which* one gains more flips between families
+    /// (Series-7 routing gains more; UltraScale logic does), so splitting the
+    /// term would encode that inconsistency as though it were signal.
+    ///
+    /// The Lattice and generic profiles have no vendor measurement; they keep
+    /// the old hand-picked factors.
+    pub fn speed_grade_factor(self, grade: Option<&str>) -> f64 {
+        match (self, grade) {
+            (Self::Series7, Some("-2")) => 0.799,
+            (Self::Series7, Some("-3")) => 0.715,
+            (Self::UltraScale, Some("-2")) => 0.838,
+            (Self::UltraScale, Some("-3")) => 0.738,
+            (Self::UltraScalePlus, Some("-2")) => 0.860,
+            (Self::UltraScalePlus, Some("-3")) => 0.795,
+            // Not vendor-measured.
+            (_, Some("-2")) => 0.87,
+            (_, Some("-3")) => 0.78,
+            // "-1" or unspecified: the baseline the presets are characterized at.
+            _ => 1.0,
+        }
+    }
+}
+
 /// Tunable delay coefficients (picoseconds). See module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DelayModel {
@@ -140,18 +236,7 @@ impl DelayModel {
     /// [`crate::yosys::SynthMode`] string; `family` is the Xilinx `-family`
     /// value (e.g. `xcup`) when one was supplied, else `None`.
     pub fn for_target(mode: &str, family: Option<&str>) -> Self {
-        match mode {
-            "xilinx" => match family.map(str::to_ascii_lowercase).as_deref() {
-                Some("xcup" | "xcvup" | "xcau" | "xczu") => Self::ultrascale_plus(),
-                Some("xcu" | "xcvu" | "xcku") => Self::ultrascale(),
-                // xc7, xc6s/xc6v (Spartan/Virtex-6), or unspecified → 7-series.
-                _ => Self::series7(),
-            },
-            "ice40" => Self::ice40(),
-            "ecp5" => Self::ecp5(),
-            // gates / lut4 / lut6 / rtl and anything unrecognized.
-            _ => Self::generic(),
-        }
+        DelayProfile::for_target(mode, family).model()
     }
 
     /// Scale every coefficient by `factor` — used to model speed grade. A faster
@@ -296,6 +381,63 @@ mod tests {
         assert_eq!(DelayModel::for_target("ice40", None), DelayModel::ice40());
         assert_eq!(DelayModel::for_target("gates", None), DelayModel::generic());
         assert_eq!(DelayModel::for_target("rtl", None), DelayModel::generic());
+    }
+
+    #[test]
+    fn speed_grade_scaling_is_per_family_and_measured() {
+        // The whole point of keying on the profile: a -3 grade buys far more on
+        // Series-7 than on UltraScale+, so a single global factor cannot be
+        // right for both. Values come from Vivado's own -1-vs-N measurements.
+        let s7 = DelayProfile::Series7.speed_grade_factor(Some("-3"));
+        let usp = DelayProfile::UltraScalePlus.speed_grade_factor(Some("-3"));
+        assert!(
+            s7 < usp,
+            "series7 should gain more from -3 than ultrascale+ ({s7} vs {usp})"
+        );
+
+        // -1 is the baseline every preset is characterized at, so it must not
+        // scale at all — for any family, however it is spelled.
+        for profile in [
+            DelayProfile::Series7,
+            DelayProfile::UltraScale,
+            DelayProfile::UltraScalePlus,
+            DelayProfile::Ice40,
+            DelayProfile::Generic,
+        ] {
+            assert_eq!(profile.speed_grade_factor(Some("-1")), 1.0);
+            assert_eq!(profile.speed_grade_factor(None), 1.0);
+            // A faster grade is always faster, and -3 beats -2.
+            let g2 = profile.speed_grade_factor(Some("-2"));
+            let g3 = profile.speed_grade_factor(Some("-3"));
+            assert!(g3 < g2 && g2 < 1.0, "{profile:?}: {g3} < {g2} < 1");
+        }
+    }
+
+    #[test]
+    fn profile_names_match_the_wire_format_the_client_sends() {
+        // These strings are the `profile` field of a /timing request and the
+        // values in the frontend's PROFILE_OPTIONS; a typo here silently
+        // downgrades a caller to Series-7 rather than failing.
+        for (name, profile) in [
+            ("series7", DelayProfile::Series7),
+            ("ultrascale", DelayProfile::UltraScale),
+            ("ultrascale_plus", DelayProfile::UltraScalePlus),
+            ("ice40", DelayProfile::Ice40),
+            ("ecp5", DelayProfile::Ecp5),
+            ("generic", DelayProfile::Generic),
+        ] {
+            assert_eq!(DelayProfile::from_name(Some(name)), profile);
+            assert_eq!(
+                DelayModel::for_target("xilinx", None),
+                DelayModel::series7()
+            );
+        }
+        // Unknown / absent names fall back to the historical default.
+        assert_eq!(DelayProfile::from_name(None), DelayProfile::Series7);
+        assert_eq!(
+            DelayProfile::from_name(Some("bogus")),
+            DelayProfile::Series7
+        );
     }
 
     #[test]

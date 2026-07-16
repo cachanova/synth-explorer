@@ -29,6 +29,36 @@ So the harness pairs `-noiopad -noclkbuf` (Yosys) with `-mode out_of_context`
 for these coefficients: pad and clock-tree delay are real but package-dependent,
 and the model is about fabric logic.
 
+## What a post-synthesis path actually looks like
+
+Worth internalising before touching a coefficient — a real `-1` path from
+`adder_chain_w16n4`:
+
+```
+values[36]  (input port)
+net (fo=2, unset)                    0.973   <- input-port route: no placement at all
+LUT3 (Prop_lut3_I2_O)                0.124   <- LUT logic is SMALL
+net (fo=2, unplaced)                 0.676   <- general route is LARGE
+LUT5 (Prop_lut5_I1_O)                0.124
+net (fo=2, unplaced)                 0.650
+CARRY4 (Prop_carry4_DI[1]_CO[3])     0.520   <- carry-chain entry costs more than
+net (fo=1, unplaced)                 0.000      a propagate stage, and the net is FREE
+CARRY4 (Prop_carry4_CI_CO[3])        0.117   <- carry propagate
+net (fo=1, unplaced)                 0.000
+```
+
+Three things this pins down:
+
+* **Carry nets are dedicated.** Carry→carry routes are literally `0.000`, and a
+  propagate stage is `0.117 ns`. This is what `net_delay_to_ps` models.
+* **Routing dominates, logic doesn't.** A LUT is ~0.124 ns; the net after it is
+  ~0.65 ns. At this stage Vivado has no placement, so interconnect is a
+  fanout-driven guess and it is *large* — the path above is 73% route. Any fit
+  that comes out logic-dominated is fitting something else.
+* **The carry-chain entry (`DI->CO`, 0.520 ns) is not a propagate stage
+  (`CI->CO`, 0.117 ns).** A single flat `carry_ps` cannot represent both; this is
+  the known residual on short carry chains.
+
 ## Corpus
 
 `cases.json` pins each `examples/` module to concrete parameters. The corpus is

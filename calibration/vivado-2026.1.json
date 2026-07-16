@@ -1,0 +1,1082 @@
+[
+ {
+  "case": "adder_chain_w16n2",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 3.244,
+  "logic_ns": 1.289,
+  "route_ns": 1.955,
+  "logic_levels": 6
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 4.506,
+  "logic_ns": 1.234,
+  "route_ns": 3.272,
+  "logic_levels": 6
+ },
+ {
+  "case": "adder_chain_w32n4",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 4.974,
+  "logic_ns": 1.702,
+  "route_ns": 3.272,
+  "logic_levels": 10
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 4.648,
+  "logic_ns": 2.693,
+  "route_ns": 1.955,
+  "logic_levels": 18
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 8.951,
+  "logic_ns": 1.495,
+  "route_ns": 7.456,
+  "logic_levels": 7
+ },
+ {
+  "case": "arbiter_n4",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 2.73,
+  "logic_ns": 0.751,
+  "route_ns": 1.979,
+  "logic_levels": 1
+ },
+ {
+  "case": "barrel_w32",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 4.965,
+  "logic_ns": 0.522,
+  "route_ns": 4.443,
+  "logic_levels": 4
+ },
+ {
+  "case": "barrel_w64",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 5.416,
+  "logic_ns": 0.496,
+  "route_ns": 4.92,
+  "logic_levels": 4
+ },
+ {
+  "case": "barrel_w8",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 3.902,
+  "logic_ns": 0.372,
+  "route_ns": 3.53,
+  "logic_levels": 3
+ },
+ {
+  "case": "fifo_pipe_w16_s3",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 2.425,
+  "logic_ns": 0.751,
+  "route_ns": 1.674,
+  "logic_levels": 1
+ },
+ {
+  "case": "handshake_t16",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 2.724,
+  "logic_ns": 0.751,
+  "route_ns": 1.973,
+  "logic_levels": 1
+ },
+ {
+  "case": "inferred_fifo_d16",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 2.775,
+  "logic_ns": 0.78,
+  "route_ns": 1.995,
+  "logic_levels": 1
+ },
+ {
+  "case": "pipe_w32_s2",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 1.429,
+  "logic_ns": 0.456,
+  "route_ns": 0.973,
+  "logic_levels": 0
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 1.429,
+  "logic_ns": 0.456,
+  "route_ns": 0.973,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 6.988,
+  "logic_ns": 1.906,
+  "route_ns": 5.082,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_carry_w64",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 8.561,
+  "logic_ns": 2.603,
+  "route_ns": 5.958,
+  "logic_levels": 15
+ },
+ {
+  "case": "prio_carry_w8",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 3.323,
+  "logic_ns": 0.248,
+  "route_ns": 3.075,
+  "logic_levels": 2
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 4.4,
+  "logic_ns": 0.398,
+  "route_ns": 4.002,
+  "logic_levels": 3
+ },
+ {
+  "case": "prio_case_w8",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 3.096,
+  "logic_ns": 0.248,
+  "route_ns": 2.848,
+  "logic_levels": 2
+ },
+ {
+  "case": "prio_for_w32",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 5.151,
+  "logic_ns": 0.744,
+  "route_ns": 4.407,
+  "logic_levels": 6
+ },
+ {
+  "case": "prio_for_w8",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 3.305,
+  "logic_ns": 0.248,
+  "route_ns": 3.057,
+  "logic_levels": 2
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 1.429,
+  "logic_ns": 0.456,
+  "route_ns": 0.973,
+  "logic_levels": 0
+ },
+ {
+  "case": "reg_mux_w8",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 1.429,
+  "logic_ns": 0.456,
+  "route_ns": 0.973,
+  "logic_levels": 0
+ },
+ {
+  "case": "srl_pipe_w8_s16",
+  "family": "series7",
+  "speed_grade": "-1",
+  "data_path_ns": 1.451,
+  "logic_ns": 0.478,
+  "route_ns": 0.973,
+  "logic_levels": 0
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 3.69,
+  "logic_ns": 1.029,
+  "route_ns": 2.661,
+  "logic_levels": 6
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 3.869,
+  "logic_ns": 2.287,
+  "route_ns": 1.582,
+  "logic_levels": 18
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 7.092,
+  "logic_ns": 1.241,
+  "route_ns": 5.851,
+  "logic_levels": 7
+ },
+ {
+  "case": "barrel_w32",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 3.916,
+  "logic_ns": 0.44,
+  "route_ns": 3.476,
+  "logic_levels": 4
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 1.166,
+  "logic_ns": 0.379,
+  "route_ns": 0.787,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 5.553,
+  "logic_ns": 1.578,
+  "route_ns": 3.975,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 3.465,
+  "logic_ns": 0.328,
+  "route_ns": 3.137,
+  "logic_levels": 3
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "series7",
+  "speed_grade": "-2",
+  "data_path_ns": 1.166,
+  "logic_ns": 0.379,
+  "route_ns": 0.787,
+  "logic_levels": 0
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 3.295,
+  "logic_ns": 0.931,
+  "route_ns": 2.364,
+  "logic_levels": 6
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 3.512,
+  "logic_ns": 2.097,
+  "route_ns": 1.415,
+  "logic_levels": 18
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 6.347,
+  "logic_ns": 1.122,
+  "route_ns": 5.225,
+  "logic_levels": 7
+ },
+ {
+  "case": "barrel_w32",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 3.499,
+  "logic_ns": 0.404,
+  "route_ns": 3.095,
+  "logic_levels": 4
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 1.045,
+  "logic_ns": 0.341,
+  "route_ns": 0.704,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 4.949,
+  "logic_ns": 1.424,
+  "route_ns": 3.525,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 3.096,
+  "logic_ns": 0.294,
+  "route_ns": 2.802,
+  "logic_levels": 3
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "series7",
+  "speed_grade": "-3",
+  "data_path_ns": 1.045,
+  "logic_ns": 0.341,
+  "route_ns": 0.704,
+  "logic_levels": 0
+ },
+ {
+  "case": "adder_chain_w16n2",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.765,
+  "logic_ns": 0.765,
+  "route_ns": 0.0,
+  "logic_levels": 3
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.623,
+  "logic_ns": 0.967,
+  "route_ns": 0.656,
+  "logic_levels": 4
+ },
+ {
+  "case": "adder_chain_w32n4",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.712,
+  "logic_ns": 1.139,
+  "route_ns": 0.573,
+  "logic_levels": 6
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.005,
+  "logic_ns": 1.005,
+  "route_ns": 0.0,
+  "logic_levels": 8
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 3.644,
+  "logic_ns": 1.446,
+  "route_ns": 2.198,
+  "logic_levels": 7
+ },
+ {
+  "case": "arbiter_n4",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.787,
+  "logic_ns": 0.383,
+  "route_ns": 0.404,
+  "logic_levels": 1
+ },
+ {
+  "case": "barrel_w32",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.585,
+  "logic_ns": 0.73,
+  "route_ns": 0.855,
+  "logic_levels": 4
+ },
+ {
+  "case": "barrel_w64",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.603,
+  "logic_ns": 0.769,
+  "route_ns": 0.834,
+  "logic_levels": 4
+ },
+ {
+  "case": "barrel_w8",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.06,
+  "logic_ns": 0.487,
+  "route_ns": 0.573,
+  "logic_levels": 3
+ },
+ {
+  "case": "fifo_pipe_w16_s3",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.016,
+  "logic_ns": 0.307,
+  "route_ns": 0.709,
+  "logic_levels": 1
+ },
+ {
+  "case": "handshake_t16",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.306,
+  "logic_ns": 0.357,
+  "route_ns": 0.949,
+  "logic_levels": 2
+ },
+ {
+  "case": "inferred_fifo_d16",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.518,
+  "logic_ns": 0.433,
+  "route_ns": 1.085,
+  "logic_levels": 2
+ },
+ {
+  "case": "pipe_w32_s2",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.386,
+  "logic_ns": 0.14,
+  "route_ns": 0.246,
+  "logic_levels": 0
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.907,
+  "logic_ns": 0.666,
+  "route_ns": 0.241,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 2.367,
+  "logic_ns": 1.14,
+  "route_ns": 1.227,
+  "logic_levels": 7
+ },
+ {
+  "case": "prio_carry_w64",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 2.723,
+  "logic_ns": 1.607,
+  "route_ns": 1.116,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_carry_w8",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.679,
+  "logic_ns": 0.391,
+  "route_ns": 0.288,
+  "logic_levels": 2
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 1.121,
+  "logic_ns": 0.536,
+  "route_ns": 0.585,
+  "logic_levels": 3
+ },
+ {
+  "case": "prio_case_w8",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.598,
+  "logic_ns": 0.3,
+  "route_ns": 0.298,
+  "logic_levels": 2
+ },
+ {
+  "case": "prio_for_w32",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 2.288,
+  "logic_ns": 0.776,
+  "route_ns": 1.512,
+  "logic_levels": 6
+ },
+ {
+  "case": "prio_for_w8",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.715,
+  "logic_ns": 0.448,
+  "route_ns": 0.267,
+  "logic_levels": 2
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.224,
+  "logic_ns": 0.194,
+  "route_ns": 0.03,
+  "logic_levels": 1
+ },
+ {
+  "case": "reg_mux_w8",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.224,
+  "logic_ns": 0.194,
+  "route_ns": 0.03,
+  "logic_levels": 1
+ },
+ {
+  "case": "srl_pipe_w8_s16",
+  "family": "ultrascale",
+  "speed_grade": "-1",
+  "data_path_ns": 0.907,
+  "logic_ns": 0.666,
+  "route_ns": 0.241,
+  "logic_levels": 0
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 1.349,
+  "logic_ns": 0.779,
+  "route_ns": 0.57,
+  "logic_levels": 4
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 0.81,
+  "logic_ns": 0.81,
+  "route_ns": 0.0,
+  "logic_levels": 8
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 3.076,
+  "logic_ns": 1.145,
+  "route_ns": 1.931,
+  "logic_levels": 7
+ },
+ {
+  "case": "barrel_w32",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 1.32,
+  "logic_ns": 0.575,
+  "route_ns": 0.745,
+  "logic_levels": 4
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 0.754,
+  "logic_ns": 0.548,
+  "route_ns": 0.206,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 1.979,
+  "logic_ns": 0.912,
+  "route_ns": 1.067,
+  "logic_levels": 7
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 0.937,
+  "logic_ns": 0.425,
+  "route_ns": 0.512,
+  "logic_levels": 3
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "ultrascale",
+  "speed_grade": "-2",
+  "data_path_ns": 0.178,
+  "logic_ns": 0.155,
+  "route_ns": 0.023,
+  "logic_levels": 1
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 1.168,
+  "logic_ns": 0.681,
+  "route_ns": 0.487,
+  "logic_levels": 4
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 0.739,
+  "logic_ns": 0.739,
+  "route_ns": 0.0,
+  "logic_levels": 8
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 2.725,
+  "logic_ns": 1.002,
+  "route_ns": 1.723,
+  "logic_levels": 7
+ },
+ {
+  "case": "barrel_w32",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 1.157,
+  "logic_ns": 0.505,
+  "route_ns": 0.652,
+  "logic_levels": 4
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 0.657,
+  "logic_ns": 0.479,
+  "route_ns": 0.178,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 1.731,
+  "logic_ns": 0.892,
+  "route_ns": 0.839,
+  "logic_levels": 7
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 0.818,
+  "logic_ns": 0.376,
+  "route_ns": 0.442,
+  "logic_levels": 3
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "ultrascale",
+  "speed_grade": "-3",
+  "data_path_ns": 0.16,
+  "logic_ns": 0.138,
+  "route_ns": 0.022,
+  "logic_levels": 1
+ },
+ {
+  "case": "adder_chain_w16n2",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.486,
+  "logic_ns": 0.454,
+  "route_ns": 0.032,
+  "logic_levels": 3
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.034,
+  "logic_ns": 0.613,
+  "route_ns": 0.421,
+  "logic_levels": 5
+ },
+ {
+  "case": "adder_chain_w32n4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.108,
+  "logic_ns": 0.673,
+  "route_ns": 0.435,
+  "logic_levels": 7
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.708,
+  "logic_ns": 0.634,
+  "route_ns": 0.074,
+  "logic_levels": 9
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 2.274,
+  "logic_ns": 0.871,
+  "route_ns": 1.403,
+  "logic_levels": 7
+ },
+ {
+  "case": "arbiter_n4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.535,
+  "logic_ns": 0.272,
+  "route_ns": 0.263,
+  "logic_levels": 1
+ },
+ {
+  "case": "barrel_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.043,
+  "logic_ns": 0.535,
+  "route_ns": 0.508,
+  "logic_levels": 4
+ },
+ {
+  "case": "barrel_w64",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.065,
+  "logic_ns": 0.504,
+  "route_ns": 0.561,
+  "logic_levels": 4
+ },
+ {
+  "case": "barrel_w8",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.731,
+  "logic_ns": 0.356,
+  "route_ns": 0.375,
+  "logic_levels": 3
+ },
+ {
+  "case": "fifo_pipe_w16_s3",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.586,
+  "logic_ns": 0.243,
+  "route_ns": 0.343,
+  "logic_levels": 1
+ },
+ {
+  "case": "handshake_t16",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.839,
+  "logic_ns": 0.218,
+  "route_ns": 0.621,
+  "logic_levels": 2
+ },
+ {
+  "case": "inferred_fifo_d16",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.945,
+  "logic_ns": 0.312,
+  "route_ns": 0.633,
+  "logic_levels": 2
+ },
+ {
+  "case": "pipe_w32_s2",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.297,
+  "logic_ns": 0.093,
+  "route_ns": 0.204,
+  "logic_levels": 0
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.748,
+  "logic_ns": 0.486,
+  "route_ns": 0.262,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.569,
+  "logic_ns": 0.706,
+  "route_ns": 0.863,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_carry_w64",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.723,
+  "logic_ns": 0.817,
+  "route_ns": 0.906,
+  "logic_levels": 13
+ },
+ {
+  "case": "prio_carry_w8",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.438,
+  "logic_ns": 0.279,
+  "route_ns": 0.159,
+  "logic_levels": 2
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.759,
+  "logic_ns": 0.372,
+  "route_ns": 0.387,
+  "logic_levels": 3
+ },
+ {
+  "case": "prio_case_w8",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.437,
+  "logic_ns": 0.211,
+  "route_ns": 0.226,
+  "logic_levels": 2
+ },
+ {
+  "case": "prio_for_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 1.707,
+  "logic_ns": 0.551,
+  "route_ns": 1.156,
+  "logic_levels": 6
+ },
+ {
+  "case": "prio_for_w8",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.462,
+  "logic_ns": 0.295,
+  "route_ns": 0.167,
+  "logic_levels": 2
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.197,
+  "logic_ns": 0.139,
+  "route_ns": 0.058,
+  "logic_levels": 1
+ },
+ {
+  "case": "reg_mux_w8",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.197,
+  "logic_ns": 0.139,
+  "route_ns": 0.058,
+  "logic_levels": 1
+ },
+ {
+  "case": "srl_pipe_w8_s16",
+  "family": "ultrascale_plus",
+  "speed_grade": "-1",
+  "data_path_ns": 0.748,
+  "logic_ns": 0.486,
+  "route_ns": 0.262,
+  "logic_levels": 0
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 0.883,
+  "logic_ns": 0.513,
+  "route_ns": 0.37,
+  "logic_levels": 5
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 0.555,
+  "logic_ns": 0.497,
+  "route_ns": 0.058,
+  "logic_levels": 9
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 1.987,
+  "logic_ns": 0.742,
+  "route_ns": 1.245,
+  "logic_levels": 7
+ },
+ {
+  "case": "barrel_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 0.895,
+  "logic_ns": 0.451,
+  "route_ns": 0.444,
+  "logic_levels": 4
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 0.627,
+  "logic_ns": 0.392,
+  "route_ns": 0.235,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 1.342,
+  "logic_ns": 0.59,
+  "route_ns": 0.752,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 0.648,
+  "logic_ns": 0.309,
+  "route_ns": 0.339,
+  "logic_levels": 3
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-2",
+  "data_path_ns": 0.16,
+  "logic_ns": 0.112,
+  "route_ns": 0.048,
+  "logic_levels": 1
+ },
+ {
+  "case": "adder_chain_w16n4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 0.815,
+  "logic_ns": 0.458,
+  "route_ns": 0.357,
+  "logic_levels": 5
+ },
+ {
+  "case": "adder_chain_w64n2",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 0.495,
+  "logic_ns": 0.434,
+  "route_ns": 0.061,
+  "logic_levels": 9
+ },
+ {
+  "case": "arbiter_n16",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 1.862,
+  "logic_ns": 0.613,
+  "route_ns": 1.249,
+  "logic_levels": 7
+ },
+ {
+  "case": "barrel_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 0.828,
+  "logic_ns": 0.387,
+  "route_ns": 0.441,
+  "logic_levels": 4
+ },
+ {
+  "case": "pipe_w8_s4",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 0.537,
+  "logic_ns": 0.348,
+  "route_ns": 0.189,
+  "logic_levels": 0
+ },
+ {
+  "case": "prio_carry_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 1.238,
+  "logic_ns": 0.521,
+  "route_ns": 0.717,
+  "logic_levels": 9
+ },
+ {
+  "case": "prio_case_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 0.6,
+  "logic_ns": 0.277,
+  "route_ns": 0.323,
+  "logic_levels": 3
+ },
+ {
+  "case": "reg_mux_w32",
+  "family": "ultrascale_plus",
+  "speed_grade": "-3",
+  "data_path_ns": 0.149,
+  "logic_ns": 0.1,
+  "route_ns": 0.049,
+  "logic_levels": 1
+ }
+]

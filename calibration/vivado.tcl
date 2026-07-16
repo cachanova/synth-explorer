@@ -25,10 +25,11 @@ close $spec_fh
 
 # Minimal field extraction — Vivado's tcl has no JSON parser, and the spec is
 # machine-generated so the shapes are stable.
-proc json_field {obj key} {
-    if {[regexp "\"$key\"\\s*:\\s*\"(\[^\"\]*)\"" $obj -> value]} { return $value }
-    return ""
-}
+#
+# Every `regexp -all -inline` below MUST have capture groups matching the
+# `foreach` variable list. With no capture group it returns a flat list of whole
+# matches, and a `foreach {_ x}` then silently consumes them in pairs — running
+# half the corpus while looking perfectly healthy. That bug cost a full sweep.
 
 # Pull the parts table: "family": { "-1": "part", ... }
 set parts_blob ""
@@ -48,14 +49,19 @@ if {[regexp {"speed_grade_cases"\s*:\s*\[([^\]]*)\]} $spec -> sg_blob]} {
     foreach {_ n} [regexp -all -inline {"([^"]+)"} $sg_blob] { lappend sg_cases $n }
 }
 
-# Pull the case list.
+# Pull the case list. Relies on the spec's fixed name/file/top field order.
 set cases {}
-foreach {_ obj} [regexp -all -inline {\{\s*"name"[^\}]*\}[^\}]*\}} $spec] {
-    set name [json_field $obj name]
-    set file [json_field $obj file]
-    set top  [json_field $obj top]
-    if {$name ne "" && $top ne ""} { lappend cases [list $name $file $top] }
+foreach {_ name file top} [regexp -all -inline \
+        {"name"\s*:\s*"([^"]+)"\s*,\s*"file"\s*:\s*"([^"]+)"\s*,\s*"top"\s*:\s*"([^"]+)"} $spec] {
+    lappend cases [list $name $file $top]
 }
+# The spec declares how many cases it holds; a silent parse miss would quietly
+# calibrate against a subset, so refuse to run instead.
+set declared [regexp -all {"name"\s*:\s*"} $spec]
+if {[llength $cases] != $declared} {
+    error "parsed [llength $cases] cases but the spec declares $declared"
+}
+puts "PARSED: [llength $cases] cases, [expr {[llength $families] / 2}] families, [llength $sg_cases] speed-grade cases"
 
 proc run_case {name file top part} {
     set dir [file join $::cases_dir $name]

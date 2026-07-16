@@ -3,7 +3,7 @@ use crate::analysis::{
     NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats,
     Subgraph, estimate_timing,
 };
-use crate::delay_model::DelayModel;
+use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
 use crate::netlist::{parse_value, select_top};
@@ -410,6 +410,9 @@ struct Design {
     /// produced `response.stats.estimated_delay_ns`. Used as the default base
     /// for `/timing` retunes so a no-argument retune reproduces that number.
     delay_model: DelayModel,
+    /// The family `delay_model` came from. Speed-grade scaling is a property of
+    /// the silicon rather than of the coefficients, so it is keyed on this.
+    delay_profile: DelayProfile,
 }
 
 impl Design {
@@ -819,7 +822,8 @@ async fn synthesize_uncached(
         .as_deref()
         .and_then(|target| state.vivado_families.get(target))
         .map(String::as_str);
-    let delay_model = default_delay_model(validated, &mode, vivado_family);
+    let delay_profile = default_delay_profile(validated, &mode, vivado_family);
+    let delay_model = delay_profile.model();
     let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
     let mut source_index =
         SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
@@ -846,6 +850,7 @@ async fn synthesize_uncached(
         source_index,
         grouping,
         delay_model,
+        delay_profile,
     });
     let cache_estimated_bytes = design_cache_weight(design_id, &design);
     let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
@@ -985,40 +990,33 @@ struct TimingResponse {
     model: DelayModel,
 }
 
-fn profile_preset(name: Option<&str>) -> DelayModel {
-    match name {
-        Some("ultrascale") => DelayModel::ultrascale(),
-        Some("ultrascale_plus") => DelayModel::ultrascale_plus(),
-        Some("ice40") => DelayModel::ice40(),
-        Some("ecp5") => DelayModel::ecp5(),
-        Some("generic") => DelayModel::generic(),
-        _ => DelayModel::series7(),
-    }
-}
-
-fn speed_grade_factor(grade: Option<&str>) -> f64 {
-    match grade {
-        Some("-2") => 0.87,
-        Some("-3") => 0.78,
-        // "-1" or unspecified: the baseline the presets are characterized at.
-        _ => 1.0,
-    }
-}
-
-/// Resolve the base delay coefficients (before the speed-grade multiplier) from
-/// a request. Precedence: an explicit coefficient override wins, then a named
-/// profile, then the design's own synth-time model — so with none supplied the
-/// figures reproduce the synthesis panel.
+/// Resolve the base delay coefficients (before the speed-grade multiplier) and
+/// the family whose speed-grade scaling applies.
+///
+/// Coefficient precedence: an explicit override wins, then a named profile, then
+/// the design's own synth-time model — so with none supplied the figures
+/// reproduce the synthesis panel.
+///
+/// The profile is resolved separately, because speed grade scales by *silicon*,
+/// not by coefficients. A caller that hand-edits the coefficients but leaves the
+/// profile alone still gets its design's family scaling, which is the only
+/// sensible reading of "these numbers, one grade faster".
 fn resolve_base_model(
     design_default: DelayModel,
+    design_profile: DelayProfile,
     model: Option<DelayModel>,
     profile: Option<&str>,
-) -> DelayModel {
-    match (model, profile) {
+) -> (DelayModel, DelayProfile) {
+    let resolved_profile = match profile {
+        Some(name) => DelayProfile::from_name(Some(name)),
+        None => design_profile,
+    };
+    let base = match (model, profile) {
         (Some(model), _) => model,
-        (None, Some(profile)) => profile_preset(Some(profile)),
+        (None, Some(_)) => resolved_profile.model(),
         (None, None) => design_default,
-    }
+    };
+    (base, resolved_profile)
 }
 
 async fn design_timing(
@@ -1027,12 +1025,13 @@ async fn design_timing(
     Json(request): Json<TimingRequest>,
 ) -> Result<Json<TimingResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
-    let base = resolve_base_model(
+    let (base, profile) = resolve_base_model(
         design.delay_model,
+        design.delay_profile,
         request.model,
         request.profile.as_deref(),
     );
-    let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
+    let effective = base.scaled(profile.speed_grade_factor(request.speed_grade.as_deref()));
     let estimate = estimate_timing(&design.graph, &effective);
     Ok(Json(TimingResponse {
         estimated_delay_ns: estimate.delay_ns,
@@ -1064,8 +1063,13 @@ async fn paths(
         .model
         .as_deref()
         .and_then(|s| serde_json::from_str::<DelayModel>(s).ok());
-    let base = resolve_base_model(design.delay_model, model_override, query.profile.as_deref());
-    let effective = base.scaled(speed_grade_factor(query.speed_grade.as_deref()));
+    let (base, profile) = resolve_base_model(
+        design.delay_model,
+        design.delay_profile,
+        model_override,
+        query.profile.as_deref(),
+    );
+    let effective = base.scaled(profile.speed_grade_factor(query.speed_grade.as_deref()));
     Ok(Json(design.analysis.paths_with_model(
         &design.graph,
         &effective,
@@ -1532,24 +1536,26 @@ fn mode_string(mode: SynthMode) -> String {
     mode.to_string()
 }
 
-fn default_delay_model(
+fn default_delay_profile(
     validated: &crate::yosys::ValidatedSynth,
     mode: &str,
     vivado_family: Option<&str>,
-) -> DelayModel {
+) -> DelayProfile {
     if validated.tool == SynthTool::Vivado {
+        // Vivado reports its own FAMILY property (`artix7`, `kintexuplus`, …),
+        // which is spelled differently from Yosys's `-family` values.
         return match vivado_family.map(str::to_ascii_lowercase).as_deref() {
-            Some(family) if family.contains("uplus") => DelayModel::ultrascale_plus(),
-            Some(family) if family.ends_with('u') => DelayModel::ultrascale(),
+            Some(family) if family.contains("uplus") => DelayProfile::UltraScalePlus,
+            Some(family) if family.ends_with('u') => DelayProfile::UltraScale,
             Some(family)
                 if family.ends_with('7') || family.ends_with("7l") || family.ends_with("zynq") =>
             {
-                DelayModel::series7()
+                DelayProfile::Series7
             }
-            _ => DelayModel::generic(),
+            _ => DelayProfile::Generic,
         };
     }
-    DelayModel::for_target(mode, validated.family())
+    DelayProfile::for_target(mode, validated.family())
 }
 
 fn parse_node_ids(ids: &str) -> Result<Vec<u32>, ApiError> {
@@ -1642,8 +1648,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            default_delay_model(&validated, "gates", Some("artix7")),
-            DelayModel::series7()
+            default_delay_profile(&validated, "gates", Some("artix7")),
+            DelayProfile::Series7
         );
     }
 
@@ -1663,13 +1669,13 @@ mod tests {
         .validate()
         .unwrap();
         assert_eq!(
-            default_delay_model(&validated, "gates", Some("kintexu")),
-            DelayModel::ultrascale()
+            default_delay_profile(&validated, "gates", Some("kintexu")),
+            DelayProfile::UltraScale
         );
         validated.target = Some("xczu3eg-sbva484-1-e".to_owned());
         assert_eq!(
-            default_delay_model(&validated, "gates", Some("zynquplus")),
-            DelayModel::ultrascale_plus()
+            default_delay_profile(&validated, "gates", Some("zynquplus")),
+            DelayProfile::UltraScalePlus
         );
     }
 
@@ -1702,6 +1708,7 @@ mod tests {
             source_index,
             grouping,
             delay_model: DelayModel::default(),
+            delay_profile: DelayProfile::Series7,
         })
     }
 
