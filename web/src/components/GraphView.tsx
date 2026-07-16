@@ -86,21 +86,21 @@ function nodeVisual(
   let stroke = 'var(--border-strong)'
 
   if (kind === 'port-in' || kind === 'port-out') {
-    fill = 'rgba(63,185,80,0.14)'
+    fill = 'color-mix(in srgb, var(--green) 14%, transparent)'
     stroke = 'var(--green)'
   } else if (kind === 'const') {
     fill = 'var(--bg-1)'
     stroke = 'var(--border)'
   } else if (kind === 'reg' || kind === 'latch') {
-    fill = 'rgba(210,168,255,0.08)'
+    fill = 'color-mix(in srgb, var(--seq) 8%, transparent)'
     stroke = 'var(--seq)'
   } else if (kind === 'memory') {
-    fill = 'rgba(210,153,34,0.08)'
+    fill = 'color-mix(in srgb, var(--amber) 8%, transparent)'
     stroke = 'var(--amber)'
   }
 
   if (isRoot) {
-    fill = 'rgba(88,166,255,0.16)'
+    fill = 'color-mix(in srgb, var(--accent) 16%, transparent)'
     stroke = 'var(--accent)'
   }
   if (highlighted) stroke = 'var(--accent)'
