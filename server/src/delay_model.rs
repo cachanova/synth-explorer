@@ -6,10 +6,33 @@
 //! routing, so the interconnect term is estimated purely from net fanout — the
 //! same reason a vendor's post-synth numbers are labelled "estimated".
 //!
-//! The Xilinx presets (Series-7, UltraScale, UltraScale+) are **calibrated
-//! against Vivado 2026.1** post-synthesis `report_timing` at the "-1" speed grade
-//! (xc7a35t / xcku025 / xcku5p), using adder/mux sweeps — mean abs error ~6% on
-//! that set. Carry-chain nets are dedicated (see [`DelayModel::net_delay_to_ps`]).
+//! # Accuracy: currently poor, and the coefficients are known to be wrong
+//!
+//! These presets were fitted in #51 against adder/mux sweeps and scored ~6% mean
+//! error **on that set**. That number does not generalize and should not be
+//! quoted: measured against a representative corpus (`calibration/`, 24 designs
+//! x 3 families of real Vivado 2026.1 ground truth), the mean absolute error is
+//! **~74%**. The adders-only corpus hid this, because adder paths are carry-
+//! dominated and two large errors cancel there — `lut_ps` is ~3x Vivado's real
+//! LUT delay (~124 ps) while `net_base_ps` is ~2-3x too small.
+//!
+//! Known-wrong specifics, all measured (see `calibration/README.md`):
+//! * [`DelayModel::net_delay_to_ps`] treats *any* net into a carry chain as free.
+//!   True on UltraScale+ (LUT->CARRY ~33 ps), **false on Series-7**, where
+//!   LUT->CARRY is ~650 ps — slower than LUT->LUT. Only CARRY->CARRY is free
+//!   everywhere.
+//! * Route delay depends on the driver->sink cell pair, which this model has no
+//!   term for. Vivado's estimate spans 0.03-0.97 ns on slice locality, so one
+//!   flat `net_base_ps` cannot represent it.
+//! * A Yosys netlist is structurally deeper than Vivado's for the same RTL
+//!   (Yosys emits small LUT chains where Vivado packs LUT6; it infers FF chains
+//!   where Vivado infers `SRL16E`). Timing a Yosys netlist and comparing to
+//!   Vivado's number measures mapping quality as much as model error. Use the
+//!   Vivado backend when you want Vivado's netlist timed.
+//!
+//! Treat the estimate as a **relative** guide — depth and delay ordering are far
+//! more trustworthy than the absolute picoseconds.
+//!
 //! The Lattice (iCE40/ECP5) and `generic` presets are NOT vendor-calibrated
 //! (no Lattice tool available); they are scaled to the same picosecond scale.
 //! Every coefficient is a flat, tunable number so a request can override any of

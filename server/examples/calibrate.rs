@@ -320,6 +320,8 @@ fn cmd_report(args: &[String]) -> anyhow::Result<()> {
     let vivado: Vec<VivadoTiming> = load(&viv_path)?;
 
     let mut errors = Vec::new();
+    let mut zero_level = Vec::new();
+    let mut unpaired = Vec::new();
     println!(
         "{:<18} {:<16} {:>8} {:>8} {:>7}  {:>6} {:>6}",
         "case", "family", "est", "vivado", "err", "depth", "levels"
@@ -332,8 +334,18 @@ fn cmd_report(args: &[String]) -> anyhow::Result<()> {
                 .iter()
                 .find(|v| v.case == est.case && v.family == family && v.speed_grade == "-1")
             else {
+                unpaired.push(format!("{} [{}]", est.case, family));
                 continue;
             };
+            // Vivado's worst path here has no logic in it (a bare FF->FF or
+            // FF->port hop). Our model only walks combinational nodes, so it is
+            // not estimating that path at all — the two numbers describe
+            // different things and averaging them in would flatter or punish the
+            // fit for no reason. Held out and reported, not dropped.
+            if viv.logic_levels == 0 {
+                zero_level.push(format!("{} [{}]", est.case, family));
+                continue;
+            }
             let ours = comparable_ns(est);
             let err = (ours - viv.data_path_ns) / viv.data_path_ns * 100.0;
             errors.push(err.abs());
@@ -349,6 +361,21 @@ fn cmd_report(args: &[String]) -> anyhow::Result<()> {
         println!(
             "\n{} pairs — mean abs err {mean:.1}%, worst {worst:.0}%",
             errors.len()
+        );
+    }
+    if !zero_level.is_empty() {
+        println!(
+            "\nheld out — Vivado's worst path has 0 logic levels, which our model \
+             has no path for ({}): {}",
+            zero_level.len(),
+            zero_level.join(", ")
+        );
+    }
+    if !unpaired.is_empty() {
+        println!(
+            "\nno Vivado measurement ({}): {}",
+            unpaired.len(),
+            unpaired.join(", ")
         );
     }
     Ok(())

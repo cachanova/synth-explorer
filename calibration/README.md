@@ -114,6 +114,29 @@ ssh deploy@<prod> "docker exec -i synth-explorer-app-1 bash -lc \
 
 Base64-pipe the payload rather than quoting scripts through two shells.
 
+## Fitting the net terms: always use per-design intercepts
+
+`net_delay = net_base_ps + net_per_fanout_ps * log2(fanout)`.
+
+**Never fit this by pooling nets across designs.** Each design sits at its own
+baseline net delay, so a pooled regression measures the design mix, not the
+silicon. On Series-7 the pooled fit reports r = **-0.09** and a *negative* slope
+— "post-synthesis routing has no fanout dependence". That is Simpson's paradox:
+within `barrel_w32` alone the correlation is r = **+0.95**. `adder_chain_w32n4`'s
+nets are all fanout-2 (no variance) and drag the pooled slope to nothing.
+
+Acting on the pooled number would have shipped `net_per_fanout_ps = 0` on the
+default profile, quietly making the fanout knob inert. The `calibrate` harness
+therefore centres within design and regresses on the residuals, skipping designs
+with no fanout spread. `delay_model.rs` has a test asserting
+`net_delay_ps(10) > net_delay_ps(1)`; it is what caught this. If a refit ever
+forces you to weaken that test, the fit is wrong.
+
+Even fitted correctly this is the model's weakest term: the within-design
+correlation ranges from +1.00 to -0.86 depending on the design, so fanout is not
+the only thing driving Vivado's estimate. `net_base_ps` is well determined and is
+what actually moves paths.
+
 ## Parts
 
 Speed grade is measured on one device per family, picked so all three grades

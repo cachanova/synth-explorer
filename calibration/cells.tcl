@@ -66,7 +66,7 @@ foreach {fam part} $parts {
             # carry propagate (carry4_CI_CO) from a chain entry (carry4_DI_CO).
             # The arc contains brackets, so match up to the closing paren.
             if {[regexp {\(Prop_([^)]+)\)\s+([0-9.]+)} $line -> arc incr]} {
-                puts "CELL: $fam $arc $incr"
+                puts "CELL: $fam $name $arc $incr"
                 set pending ""
                 continue
             }
@@ -75,13 +75,13 @@ foreach {fam part} $parts {
                 continue
             }
             if {$pending ne "" && [regexp {^\s+([0-9.]+)\s+[0-9.]+} $line -> incr]} {
-                puts "CELL: $fam $pending $incr"
+                puts "CELL: $fam $name $pending $incr"
                 set pending ""
                 continue
             }
             # Net rows:   "  net (fo=2, unplaced)    0.676   1.773  name"
             if {[regexp {^\s+net \(fo=(\d+),\s*(\w+)\)\s+([0-9.]+)} $line -> fo state incr]} {
-                puts "NET: $fam $fo $state $incr"
+                puts "NET: $fam $name $fo $state $incr"
             }
         }
     }
