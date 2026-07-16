@@ -87,12 +87,18 @@ export function Overview() {
         <Card k="Input → output" v={depthValue(stats.depths.input_to_output)} />
       </div>
 
-      {stats.estimated_delay_ns != null && stats.estimated_delay_ns > 0 && (
+      {/* Either tier alone is worth a panel: Vivado can measure a path the
+          estimate has no figure for (a design with no combinational logic
+          still has a real clk-to-Q + route delay), and the estimate stands on
+          its own everywhere Vivado never ran. */}
+      {((stats.estimated_delay_ns != null && stats.estimated_delay_ns > 0) ||
+        design.vivado_timing != null) && (
         <TimingModel
           key={design.design_id}
           designId={design.design_id}
-          fallbackDelayNs={stats.estimated_delay_ns}
+          fallbackDelayNs={stats.estimated_delay_ns ?? null}
           fallbackBreakdown={stats.estimated_delay_breakdown}
+          vivadoTiming={design.vivado_timing}
         />
       )}
 

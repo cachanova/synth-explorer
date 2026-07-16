@@ -1,4 +1,5 @@
 use crate::netlist::{NetlistError, parse_value, select_top};
+use crate::vivado::VivadoTiming;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -146,6 +147,9 @@ pub struct SynthesisOutput {
     pub source_json: Value,
     pub log: String,
     pub resolved_top: String,
+    /// Vivado's own `report_timing` figures. Always `None` on the Yosys path,
+    /// which has no such tool; only `run_vivado` can populate it.
+    pub vivado_timing: Option<VivadoTiming>,
 }
 
 #[derive(Debug, Error)]
@@ -392,6 +396,7 @@ pub async fn run_yosys(
         source_json,
         log,
         resolved_top: top.to_owned(),
+        vivado_timing: None,
     })
 }
 

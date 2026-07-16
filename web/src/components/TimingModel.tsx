@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { retuneTiming } from '../api'
-import { ESTIMATED_TIMING_CAVEAT, fmaxMhz, slackNs } from '../lib/timing'
+import {
+  ESTIMATED_TIMING_CAVEAT,
+  VIVADO_TIMING_CAVEAT,
+  fmaxMhz,
+  slackNs,
+} from '../lib/timing'
 import {
   DELAY_FIELDS,
   PROFILE_OPTIONS,
@@ -11,7 +16,12 @@ import {
   type ProfileChoice,
   type TimingSettings,
 } from '../lib/timingSettings'
-import type { DelayBreakdown, DelayModel, SpeedGrade } from '../types'
+import type {
+  DelayBreakdown,
+  DelayModel,
+  SpeedGrade,
+  VivadoTiming,
+} from '../types'
 import { Card } from './Card'
 
 /**
@@ -19,15 +29,22 @@ import { Card } from './Card'
  * lets the user retune it (delay profile, speed grade, or hand-edited
  * coefficients) via `POST /api/design/:id/timing` — no re-synthesis. Settings
  * persist in localStorage. Keyed by design id so it remounts per design.
+ *
+ * When the design came from the Vivado backend, `vivadoTiming` carries Vivado's
+ * own report_timing for the same design and is shown beside the estimate. It is
+ * a per-design constant, so it is a prop rather than part of the retune
+ * response — a retune changes only the estimate.
  */
 export function TimingModel({
   designId,
   fallbackDelayNs,
   fallbackBreakdown,
+  vivadoTiming,
 }: {
   designId: string
   fallbackDelayNs: number | null
   fallbackBreakdown?: DelayBreakdown
+  vivadoTiming?: VivadoTiming
 }) {
   const [settings, setSettings] = useState<TimingSettings>(loadTimingSettings)
   const [result, setResult] = useState<{
@@ -95,7 +112,15 @@ export function TimingModel({
 
   return (
     <>
-      <div className="section-title">Estimated timing</div>
+      {/* The tag appears only when Vivado's measured tier is alongside it:
+          with nothing to contrast against, "estimated" is what the section
+          already says, and the Yosys view must stay exactly as it was. */}
+      <div className="section-title">
+        Estimated timing{' '}
+        {vivadoTiming && (
+          <span className="tier-tag tier-estimated">estimated</span>
+        )}
+      </div>
       <div className="cards">
         <Card
           k="Critical-path delay"
@@ -115,6 +140,8 @@ export function TimingModel({
       {breakdown && delayNs != null && delayNs > 0 && (
         <BreakdownBar breakdown={breakdown} total={delayNs} />
       )}
+
+      {vivadoTiming && <VivadoTimingPanel timing={vivadoTiming} />}
 
       <div className="timing-controls">
         <label className="field">
@@ -191,6 +218,44 @@ export function TimingModel({
 
       <div className="caveat" style={{ marginTop: 8 }}>
         {ESTIMATED_TIMING_CAVEAT}
+      </div>
+    </>
+  )
+}
+
+/**
+ * Vivado's measured report_timing beside our estimate.
+ *
+ * The two figures are shown as neighbours, not as a comparison: they do not
+ * describe the same path (see VIVADO_TIMING_CAVEAT). Everything here is tagged
+ * `measured` so no figure can be read as coming from the delay model.
+ */
+function VivadoTimingPanel({ timing }: { timing: VivadoTiming }) {
+  return (
+    <>
+      <div className="section-title">
+        Vivado timing <span className="tier-tag tier-measured">measured</span>
+      </div>
+      <div className="cards">
+        <Card
+          k="Vivado data-path delay"
+          v={`${timing.data_path_delay_ns.toFixed(2)} ns`}
+          accent
+        />
+        <Card k="Logic" v={`${timing.logic_ns.toFixed(2)} ns`} />
+        <Card k="Route" v={`${timing.route_ns.toFixed(2)} ns`} />
+        <Card k="Logic levels" v={timing.logic_levels} />
+      </div>
+
+      <div className="faint vivado-path" title="Vivado's worst-path endpoints">
+        Worst register-to-register path: {timing.source} → {timing.destination} ·
+        slack {timing.slack_ns >= 0 ? '+' : ''}
+        {timing.slack_ns.toFixed(2)} ns vs the {timing.reference_period_ns} ns
+        reference clock ({timing.slack_met ? 'met' : 'violated'})
+      </div>
+
+      <div className="caveat" style={{ marginTop: 8 }}>
+        {VIVADO_TIMING_CAVEAT}
       </div>
     </>
   )

@@ -15,3 +15,17 @@ export function fmaxMhz(delayNs: number): number {
 export function slackNs(delayNs: number, targetMhz: number): number {
   return 1000 / targetMhz - delayNs
 }
+
+// Deliberately no estimate-vs-measured delta anywhere in the UI. The two
+// figures do not describe the same path, and nothing in the response says
+// whether they happen to: Vivado reports the worst REGISTER-TO-REGISTER path
+// and excludes FF setup (folding it into slack), whereas the estimate takes the
+// worst arrival over every combinational node — of any path class — and always
+// adds a setup term, even when the path ends at an output port rather than a
+// register. Subtracting setup would make the units agree while leaving the two
+// numbers describing different circuits, which is a worse error than showing no
+// delta: it would look precise. Present both, label each, and let the reader
+// compare. A true like-for-like delta needs a register-to-register-restricted
+// estimate from the server, which does not exist today.
+export const VIVADO_TIMING_CAVEAT =
+  "Measured by Vivado's own report_timing on the netlist it synthesized: the worst register-to-register path, under a synthetic 10 ns reference clock applied after synthesis. Read it alongside the estimate rather than subtracting one from the other — this figure covers register-to-register paths only and excludes FF setup (Vivado folds setup into slack), while the estimate takes the worst path of any class and includes setup. Like the estimate, it is a post-synthesis figure with estimated routing — Vivado's own estimate, not timing closure."

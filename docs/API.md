@@ -190,8 +190,95 @@ Response `200`:
                            // bound and succeeded on a retry that keeps inferred
                            // memories as $mem_v2 cells instead of flattening
                            // them to gates
+  vivado_timing?: {        // Vivado's own report_timing; see below. Absent on
+                           // the Yosys path and whenever Vivado reported no
+                           // constrained register-to-register path.
+    data_path_delay_ns: number; // clk-to-Q + logic + route; EXCLUDES FF setup
+    logic_ns: number;      // logic (cell) share of data_path_delay_ns
+    route_ns: number;      // route (net) share of data_path_delay_ns
+    logic_levels: number;  // cells along the path, as Vivado counts them
+    slack_ns: number;      // against reference_period_ns only (see below)
+    slack_met: boolean;    // false when Vivado reported VIOLATED
+    reference_period_ns: number; // the synthetic reference clock's period
+    source: string;        // launching pin, e.g. "ra_reg[1]/C"
+    destination: string;   // capturing pin, e.g. "q_reg[13]/D"
+  };
 }
 ```
+
+### `vivado_timing` — Vivado's own measurement
+
+`stats.estimated_delay_ns` is *our* delay model's estimate. When the Vivado
+backend produced the netlist, `vivado_timing` reports what **Vivado's own timing
+engine** measured on that same netlist, so the two can be shown side by side.
+It is only ever present on the owner-key-gated Vivado path; the gating is
+unchanged and Tier-2 widens no access.
+
+Both are post-synthesis figures with estimated routing. `vivado_timing` is
+Vivado's own estimate — the reference the Xilinx presets are calibrated against
+— not timing closure.
+
+The server appends to the Vivado Tcl, **after** `write_verilog`:
+
+```tcl
+create_clock -name se_ref_clk_<i> -period 10.000 <clock port>   # per clock port
+report_timing -delay_type max -from [all_registers] -to [all_registers]
+```
+
+Four decisions are worth stating, because each is load-bearing:
+
+- **The reference clock is synthetic and applied after synthesis.** It is an
+  analysis-only constraint on an already-emitted netlist, so it cannot change
+  the design the rest of Synth Explorer analyses, and `data_path_delay_ns` is
+  independent of its period. Only `slack_ns` depends on it. The clock is *not*
+  derived from the client's target-clock setting: that setting is a display-only
+  retune of a cached design (`POST /timing`), whereas synthesis is keyed by a
+  content hash of the synthesis input — honouring it here would force a
+  five-minute re-synthesis per keystroke and would re-key the design id.
+  To judge a real target, compare `data_path_delay_ns` against it directly, or
+  rebase: `slack_at(P) ≈ slack_ns - (reference_period_ns - P)`.
+- **`slack_ns` is meaningful only against `reference_period_ns`.** It is not
+  slack against any user target and must not be presented as one.
+- **Only register-to-register paths are reported.** Vivado sorts by slack, and
+  I/O paths are left unconstrained (no `set_input_delay`/`set_output_delay`), so
+  an unrestricted report can return an unconstrained I/O path dominated by
+  IBUF/OBUF pad delay — which the Tier-0 model deliberately treats as zero-depth
+  infrastructure and never counts. Register-to-register is the path class both
+  tiers define the same way. (Measured: an unrestricted report on a 16-bit
+  registered adder returned a `q_reg → q` output path whose 4.038 ns was 2.760 ns
+  of OBUF, ahead of the 2.616 ns register-to-register path that actually sets
+  Fmax.) Both tiers read the *same* netlist: `synth_design` runs without
+  `-mode out_of_context`, so Vivado inserts IBUF/OBUF/BUFG and the normalized
+  netlist the Tier-0 estimate analyses contains them too. Restricting to
+  register-to-register keeps IOB delay out of both numbers regardless.
+- **`data_path_delay_ns` excludes FF setup**, which Vivado folds into slack
+  (`logic_ns + route_ns == data_path_delay_ns`). It is therefore **not**
+  subtractable from `estimated_delay_ns`, and clients should not derive a delta
+  between the two. Removing the estimate's `estimated_delay_breakdown.setup_ns`
+  makes the units agree but still leaves two different circuits: this field is
+  the worst *register-to-register* path, whereas `estimated_delay_ns` is the
+  worst arrival over every combinational node — of any path class — and adds a
+  setup term unconditionally, even where the path ends at an output port with no
+  capturing register. The response carries nothing saying whether the estimate's
+  critical path happened to be register-to-register, so the two are presented
+  side by side and left uncompared. A true like-for-like delta needs a
+  register-to-register-restricted estimate, which does not exist today.
+
+`vivado_timing` is absent, rather than approximated, when Vivado reports no
+constrained register-to-register path: a design with no registers, none with a
+register-to-register path, or one whose registers all run on an internally
+generated clock (only primary clock **ports** are constrained, so a divided
+clock leaves its paths unconstrained and Vivado reports `Slack: inf`). The
+report is also best-effort: a Tcl failure, a missing report, or an unparseable
+one leaves the field absent and never fails an otherwise-successful synthesis.
+
+The timing step costs wall clock inside the existing Vivado timeout — measured
+at ~7s on a 2001-register design (most of it Vivado building its timing graph)
+against ~36s of synthesis for the same design. Because that budget was sized
+when a run ended at `write_verilog`, the Tcl drops a marker file once the
+netlist is written: if the run is then killed on the timeout, the completed
+netlist is still used and only `vivado_timing` is dropped. A synthesis that
+would have succeeded before cannot fail because Tier 2 was added.
 
 Generic modes (`gates`, `lut4`, `lut6`) first synthesize exactly as before.
 When that attempt exhausts a sandbox bound — memory, CPU, output size, or the
@@ -311,6 +398,11 @@ Response:
 ```
 
 Returns 404 if the design id is not in the cache (e.g. expired — re-synthesize).
+
+This endpoint retunes the estimate only. It deliberately does not echo
+`vivado_timing`: that is a measurement of one synthesis run, constant for the
+design id, so it is carried once by `/api/synthesize` and `/api/design/:id`
+rather than resent on every retune. No retune can change it.
 
 ## GET `/api/design/:id/paths?limit=25&to=<node_id>&profile=<p>&speed_grade=<g>&model=<json>`
 

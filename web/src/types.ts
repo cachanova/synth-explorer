@@ -192,6 +192,24 @@ export interface TimingResponse {
   model: DelayModel // base coefficients used (pre speed-grade)
 }
 
+// Vivado's own post-synthesis report_timing for the worst register-to-register
+// path — the measured counterpart to the estimated_delay_ns model. Only ever
+// present on the (owner-key gated) Vivado synthesis path.
+export interface VivadoTiming {
+  // clk-to-Q + logic + route. Excludes FF setup, which Vivado folds into slack;
+  // compare against an estimate with its setup_ns term removed, not against
+  // estimated_delay_ns directly.
+  data_path_delay_ns: number
+  logic_ns: number // logic (cell) share of data_path_delay_ns
+  route_ns: number // route (net) share of data_path_delay_ns
+  logic_levels: number
+  slack_ns: number // against reference_period_ns, not any user target
+  slack_met: boolean
+  reference_period_ns: number // synthetic analysis-only clock; see docs/API.md
+  source: string // launching pin, e.g. "ra_reg[1]/C"
+  destination: string // capturing pin, e.g. "q_reg[13]/D"
+}
+
 export interface SynthesizeResponse {
   design_id: string // content hash; identical input returns the same id
   top: string // resolved top module
@@ -204,6 +222,9 @@ export interface SynthesizeResponse {
   // true when a generic mode hit the sandbox memory limit and succeeded on a
   // retry that keeps inferred memories abstract ($mem_v2) instead of gates
   memories_abstracted?: boolean
+  // Vivado's own report_timing; absent on the Yosys path and whenever Vivado
+  // found no constrained register-to-register path.
+  vivado_timing?: VivadoTiming
 }
 
 // --- GET /api/design/:id/endpoints ---
