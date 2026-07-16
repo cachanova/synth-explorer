@@ -77,7 +77,7 @@ Vite serves <http://localhost:5173> and proxies `/api` to port 8787.
 The server keeps synthesized designs in a bounded, content-addressed memory
 cache backed by a bounded local disk store, so active designs survive restarts
 without requiring a database or external credentials. Stored designs include
-submitted RTL and expire after 24 hours without a cold access.
+submitted RTL and expire after 4 hours without a cold access.
 
 ## Documentation
 

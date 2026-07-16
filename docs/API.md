@@ -306,8 +306,8 @@ otherwise its weight is a deterministic estimate of retained allocation from
 owned collection/string capacities plus cache key/entry overhead, not exact
 RSS.
 
-The memory cache is backed by a 2 GiB local file store with a 24-hour sliding
-TTL, a 256 MiB per-entry cap, and least-recently-used eviction. It stores the
+The memory cache is backed by an 8 GiB local file store with a 4-hour sliding
+TTL, a 512 MiB per-entry cap, and least-recently-used eviction. It stores the
 submitted sources and both normalized netlists needed to reconstruct every
 exploration endpoint. A cold hit rebuilds the parsed graph without rerunning
 Yosys or Vivado; cold rebuilds are serialized to cap transient memory. Writes
@@ -657,6 +657,6 @@ At most 200 ids per request (`422` above that).
 
 Returns the same body as the original `/api/synthesize` response (for reloads).
 `404` if the id is unknown. Designs normally survive process and container
-restarts on the same host, but expire after 24 hours without a cold access, may
-be evicted by the 2 GiB disk budget, and are invalidated when the producing
+restarts on the same host, but expire after 4 hours without a cold access, may
+be evicted by the 8 GiB disk budget, and are invalidated when the producing
 synthesis-tool version changes.

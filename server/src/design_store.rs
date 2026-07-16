@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const FILE_EXTENSION: &str = "json";
-const MAX_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DesignStoreError {

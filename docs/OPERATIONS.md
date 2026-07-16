@@ -26,13 +26,13 @@ Cloudflare proxy, obtains and renews the TLS certificate.
 
 The production stack has no database. The server keeps active designs in a
 bounded memory cache and retains reconstruction data in the local
-`design_data` Docker volume. Stored designs have a 24-hour sliding TTL and a
-2 GiB byte budget, survive application deployments, and are not replicated off
+`design_data` Docker volume. Stored designs have a 4-hour sliding TTL and an
+8 GiB byte budget, survive application deployments, and are not replicated off
 the host. The volume is single-writer and mounted only by the one application
 container. A `synthesis_persistence_degraded` log means new designs are being
 served from memory but will not survive cache eviction or restart; check volume
 ownership and free space. Atomic writes can temporarily require one additional
-256 MiB entry beyond the 2 GiB retention budget.
+512 MiB entry beyond the 8 GiB retention budget.
 
 ## One-time account setup
 
@@ -431,7 +431,7 @@ digest on disk.
 The project does not pay for VM backups at launch. GitHub stores the source and
 workflow history. GHCR stores release images. Cloudflare stores DNS. Do not back
 up the `design_data` volume: a backup would retain submitted RTL beyond the
-documented 24-hour service window.
+documented 4-hour service window.
 
 Use a temporary Hetzner snapshot before an OS or Docker change that has a high
 recovery cost. Delete the snapshot after the service passes its smoke test.

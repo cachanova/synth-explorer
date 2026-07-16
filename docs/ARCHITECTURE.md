@@ -38,8 +38,8 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   passes startup preflight and returns a non-empty installed part catalog.
 - No database. Designs are keyed by a content hash of (sources, tool, mode,
   target, args). A 128 MiB, 30-minute in-memory FIFO cache serves active
-  exploration, backed by a 2 GiB local file store with a 24-hour sliding TTL
-  and least-recently-used eviction; one entry is capped at 256 MiB. Cold hits
+  exploration, backed by an 8 GiB local file store with a 4-hour sliding TTL
+  and least-recently-used eviction; one entry is capped at 512 MiB. Cold hits
   rebuild the graph and analysis state from the stored netlists without running
   synthesis again. Cold rebuilds are serialized to bound transient memory on
   the single host. Writes use an atomic rename, and incompatible, corrupt,
