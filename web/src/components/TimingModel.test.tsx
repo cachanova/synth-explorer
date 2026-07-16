@@ -52,7 +52,6 @@ describe('TimingModel Vivado tier', () => {
     // presets are calibrated against.)
     expect(markup).not.toContain('Vivado timing')
     expect(markup).not.toContain('Vivado data-path delay')
-    expect(markup).not.toContain('vivado-compare')
     expect(markup).not.toContain('vivado-path')
     expect(markup).not.toContain('tier-tag')
     expect(markup).not.toContain(VIVADO_TIMING_CAVEAT)
@@ -81,7 +80,6 @@ describe('TimingModel Vivado tier', () => {
   it('shows no estimate-vs-measured delta', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69, breakdown })
     expect(markup).not.toContain('%<')
-    expect(markup).not.toContain('vivado-compare')
     // 2.69 - 0.08 setup: the "comparable" figure that used to be derived here.
     expect(markup).not.toContain('2.61 ns')
   })
@@ -110,7 +108,7 @@ describe('TimingModel Vivado tier', () => {
 
   // A design with no combinational logic has no Tier-0 estimate but still has
   // a real Vivado measurement. Show the measurement rather than nothing, and
-  // drop the comparison instead of inventing a denominator.
+  // drop any delta instead of inventing a denominator.
   it('still shows the measured delay when there is no estimate at all', () => {
     const markup = render({ timing: vivadoTiming, estimate: null })
     expect(markup).toContain('Vivado data-path delay')

@@ -6,6 +6,47 @@ import { shallowEqual, useStore } from '../useStore'
 import { FlagsMenu } from './FlagsMenu'
 import { VivadoUnlockDialog } from './VivadoUnlockDialog'
 
+interface VivadoFamilyBucket {
+  key: string
+  label: string
+  rank: number
+}
+
+function fallbackVivadoFamilyLabel(family: string): string {
+  return family
+    .replace(/uplus$/i, ' UltraScale+')
+    .replace(/u$/i, ' UltraScale')
+    .replace(/([A-Za-z])(\d+)/g, '$1 $2')
+    .replace(/[_-]+/g, ' ')
+    .trim()
+    .replace(/\b[a-z]/g, (char) => char.toUpperCase())
+}
+
+function vivadoFamilyBucket(family: string): VivadoFamilyBucket {
+  const normalized = family.toLowerCase()
+  if (normalized.includes('uplus')) {
+    return { key: 'ultrascale_plus', label: 'UltraScale+', rank: 30 }
+  }
+  if (normalized.endsWith('u')) {
+    return { key: 'ultrascale', label: 'UltraScale', rank: 20 }
+  }
+  if (
+    normalized.endsWith('7') ||
+    normalized.endsWith('7l') ||
+    normalized === 'zynq'
+  ) {
+    return { key: 'series7', label: 'Series 7', rank: 10 }
+  }
+  if (normalized.endsWith('6')) {
+    return { key: 'series6', label: 'Series 6', rank: 40 }
+  }
+  return {
+    key: normalized,
+    label: fallbackVivadoFamilyLabel(family),
+    rank: 100,
+  }
+}
+
 export function Toolbar() {
   const store = useStore(
     ({
@@ -55,24 +96,52 @@ export function Toolbar() {
   )
   const [unlockOpen, setUnlockOpen] = useState(false)
   const targetGroups = useMemo(() => {
-    const groups = new Map<string, typeof store.vivadoTargets>()
+    const groups = new Map<
+      string,
+      VivadoFamilyBucket & { targets: typeof store.vivadoTargets }
+    >()
     for (const part of store.vivadoTargets) {
-      const existing = groups.get(part.family)
-      if (existing) existing.push(part)
-      else groups.set(part.family, [part])
+      const bucket = vivadoFamilyBucket(part.family)
+      const existing = groups.get(bucket.key)
+      if (existing) existing.targets.push(part)
+      else groups.set(bucket.key, { ...bucket, targets: [part] })
     }
-    return [...groups]
+    return [...groups.values()].map((group) => ({
+      ...group,
+      targets: [...group.targets].sort((left, right) =>
+        left.name.localeCompare(right.name, undefined, { numeric: true }),
+      ),
+    }))
   }, [store.vivadoTargets])
+  const familyOptions = useMemo(
+    () =>
+      targetGroups
+        .sort((left, right) =>
+          left.rank - right.rank ||
+          left.label.localeCompare(right.label, undefined, { numeric: true }),
+        ),
+    [targetGroups],
+  )
   const selectedTarget = store.vivadoTargets.find(
     (part) => part.name === store.vivadoTarget,
   )
-  const selectedFamily = selectedTarget?.family ?? targetGroups[0]?.[0] ?? ''
+  const selectedFamily = selectedTarget
+    ? vivadoFamilyBucket(selectedTarget.family).key
+    : (familyOptions[0]?.key ?? '')
   const familyTargets =
-    targetGroups.find(([family]) => family === selectedFamily)?.[1] ?? []
+    familyOptions.find((option) => option.key === selectedFamily)?.targets ?? []
   const selectedSpeed = selectedTarget?.speed ?? familyTargets[0]?.speed ?? ''
   const speedGrades = [...new Set(familyTargets.map((part) => part.speed))].sort(
     (left, right) => left.localeCompare(right, undefined, { numeric: true }),
   )
+
+  const selectVivadoFamily = (family: string) => {
+    const option = familyOptions.find((candidate) => candidate.key === family)
+    const target =
+      option?.targets.find((part) => part.speed === selectedSpeed) ??
+      option?.targets[0]
+    if (target) store.setVivadoTarget(target.name)
+  }
 
   return (
     <div className="toolbar">
@@ -172,19 +241,14 @@ export function Toolbar() {
           <span>Family</span>
           <select
             value={selectedFamily}
-            title="Filter the installed Vivado part catalog by device family."
+            title="Filter the installed Vivado part catalog by architecture family."
             onChange={(event) => {
-              const targets = targetGroups.find(
-                ([family]) => family === event.target.value,
-              )?.[1]
-              const target =
-                targets?.find((part) => part.speed === selectedSpeed) ?? targets?.[0]
-              if (target) store.setVivadoTarget(target.name)
+              selectVivadoFamily(event.target.value)
             }}
           >
-            {targetGroups.map(([family]) => (
-              <option key={family} value={family}>
-                {family}
+            {familyOptions.map((option) => (
+              <option key={option.key} value={option.key}>
+                {option.label}
               </option>
             ))}
           </select>

@@ -905,7 +905,7 @@ export const GraphView = memo(function GraphView({
     }
 
     // ResizeObserver normally delivers an initial entry, but measuring now
-    // avoids one frame with a stale transform when a display:none Graph tab is
+    // avoids one frame with a stale transform when a display:none Schematic tab is
     // shown again. fit() ignores transient zero-sized flex layouts.
     updateSize()
 

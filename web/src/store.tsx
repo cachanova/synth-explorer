@@ -28,7 +28,6 @@ import type {
   DesignFile,
   Example,
   Mode,
-  Stats,
   SynthTool,
   SynthesizeResponse,
   TimingPath,
@@ -41,7 +40,6 @@ export type TabId =
   | 'paths'
   | 'fanout'
   | 'graph'
-  | 'compare'
 
 export interface ConeGraphRequest {
   kind: 'cone'
@@ -95,15 +93,6 @@ export type AnalysisState =
 type ResolvedInputIdentity = Pick<SynthesisInput, 'key' | 'revision'>
 
 const MAX_SOURCE_LINES = 200
-
-export interface Snapshot {
-  design_id: string
-  top: string
-  mode: string
-  stats: Stats
-  paths: TimingPath[]
-  fanout: import('./types').FanoutDriver[]
-}
 
 const DEFAULT_FILE: DesignFile = {
   name: 'design.sv',
@@ -226,10 +215,6 @@ export interface Store {
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
   setSourceSelection: (file: string, startLine: number, endLine: number) => void
-  // compare
-  snapshotA: Snapshot | null
-  snapshotB: Snapshot | null
-  takeSnapshot: (slot: 'A' | 'B') => Promise<void>
 }
 
 export interface StoreApi {
@@ -278,7 +263,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
   const [error, setError] = useState<Store['error']>(null)
 
-  const [activeTab, setActiveTab] = useState<TabId>('overview')
+  const [activeTab, setActiveTab] = useState<TabId>('graph')
 
   const [coneReq, setConeReq] = useState<GraphRequest | null>(null)
   const [graphOptions, setGraphOptionsState] = useState<GraphOptions>(
@@ -293,8 +278,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     startLine: 1,
     endLine: 1,
   })
-  const [snapshotA, setSnapshotA] = useState<Snapshot | null>(null)
-  const [snapshotB, setSnapshotB] = useState<Snapshot | null>(null)
 
   const nonceGuardRef = useRef<ReturnType<typeof createLatestGuard> | null>(null)
   if (!nonceGuardRef.current) nonceGuardRef.current = createLatestGuard()
@@ -881,40 +864,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [cancelSourceProbe, nextNonce])
 
-  const takeSnapshot = useCallback(
-    async (slot: 'A' | 'B') => {
-      if (analysisStateRef.current !== 'current') return
-      const currentDesign = designRef.current
-      if (!currentDesign) return
-      try {
-        const [paths, fanout] = await Promise.all([
-          api.getPaths(currentDesign.design_id, { limit: 10 }),
-          api.getFanout(currentDesign.design_id, 10),
-        ])
-        if (
-          analysisStateRef.current !== 'current' ||
-          designRef.current?.design_id !== currentDesign.design_id
-        ) {
-          return
-        }
-        const snap: Snapshot = {
-          design_id: currentDesign.design_id,
-          top: currentDesign.top,
-          mode: currentDesign.mode,
-          stats: currentDesign.stats,
-          paths: paths.paths,
-          fanout: fanout.drivers,
-        }
-        if (slot === 'A') setSnapshotA(snap)
-        else setSnapshotB(snap)
-      } catch (e) {
-        const err = e as api.ApiRequestError
-        setError({ message: err.message, log: err.log, status: err.status })
-      }
-    },
-    [],
-  )
-
   const value = useMemo<Store>(
     () => ({
       files,
@@ -962,9 +911,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       highlightNodeSources,
       sourceSelection,
       setSourceSelection,
-      snapshotA,
-      snapshotB,
-      takeSnapshot,
     }),
     [
       files,
@@ -1012,9 +958,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       highlightNodeSources,
       sourceSelection,
       setSourceSelection,
-      snapshotA,
-      snapshotB,
-      takeSnapshot,
     ],
   )
 

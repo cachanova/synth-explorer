@@ -17,7 +17,6 @@ path, endpoint, fanin, fanout, or source location.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and identify clock, reset, and enable controls.
 - Jump from synthesized cells to the Verilog source that produced them.
-- Compare cell counts, depth, and fanout across two designs or synthesis modes.
 
 Synth Explorer also offers a size-capped full-schematic view. The main workflow
 focuses on small subgraphs that remain readable as designs grow.

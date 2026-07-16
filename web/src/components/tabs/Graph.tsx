@@ -741,56 +741,6 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
         </>
       )}
 
-      {coneReq?.kind === 'cone' && (
-        <>
-          <div className="stepper" title="Cone direction">
-            <button
-              className={coneReq.dir === 'fanin' ? 'primary' : ''}
-              disabled={requestDesignMismatch || !graphInteractive}
-              onClick={() => reissue('fanin')}
-            >
-              fanin
-            </button>
-            <button
-              className={coneReq.dir === 'fanout' ? 'primary' : ''}
-              disabled={requestDesignMismatch || !graphInteractive}
-              onClick={() => reissue('fanout')}
-            >
-              fanout
-            </button>
-          </div>
-
-          <label className="toggle">
-            depth
-            <div className="stepper">
-              <button onClick={() => setOpt({ maxDepth: Math.max(1, graphOptions.maxDepth - 1) })}>
-                −
-              </button>
-              <span className="val">{graphOptions.maxDepth}</span>
-              <button onClick={() => setOpt({ maxDepth: graphOptions.maxDepth + 1 })}>+</button>
-            </div>
-          </label>
-
-        </>
-      )}
-
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={graphOptions.hideControl}
-          onChange={(e) => setOpt({ hideControl: e.target.checked })}
-        />
-        hide control
-      </label>
-      <label className="toggle">
-        <input
-          type="checkbox"
-          checked={graphOptions.hideConst}
-          onChange={(e) => setOpt({ hideConst: e.target.checked })}
-        />
-        hide const
-      </label>
-
       <label className="toggle" title="Max nodes to request">
         max nodes
         <div className="stepper">
@@ -813,6 +763,22 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
             +
           </button>
         </div>
+      </label>
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={graphOptions.hideControl}
+          onChange={(e) => setOpt({ hideControl: e.target.checked })}
+        />
+        hide control
+      </label>
+      <label className="toggle">
+        <input
+          type="checkbox"
+          checked={graphOptions.hideConst}
+          onChange={(e) => setOpt({ hideConst: e.target.checked })}
+        />
+        hide const
       </label>
 
       <label
@@ -845,6 +811,38 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
         />
         Focus
       </label>
+
+      {coneReq?.kind === 'cone' && (
+        <>
+          <div className="stepper" title="Cone direction">
+            <button
+              className={coneReq.dir === 'fanin' ? 'primary' : ''}
+              disabled={requestDesignMismatch || !graphInteractive}
+              onClick={() => reissue('fanin')}
+            >
+              fanin
+            </button>
+            <button
+              className={coneReq.dir === 'fanout' ? 'primary' : ''}
+              disabled={requestDesignMismatch || !graphInteractive}
+              onClick={() => reissue('fanout')}
+            >
+              fanout
+            </button>
+          </div>
+
+          <label className="toggle">
+            depth
+            <div className="stepper">
+              <button onClick={() => setOpt({ maxDepth: Math.max(1, graphOptions.maxDepth - 1) })}>
+                −
+              </button>
+              <span className="val">{graphOptions.maxDepth}</span>
+              <button onClick={() => setOpt({ maxDepth: graphOptions.maxDepth + 1 })}>+</button>
+            </div>
+          </label>
+        </>
+      )}
     </div>
   )
 }
