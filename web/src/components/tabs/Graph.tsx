@@ -9,6 +9,7 @@ import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
+import { BubbleLoader } from '../BubbleLoader'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
@@ -635,8 +636,17 @@ export function Graph({ active }: { active: boolean }) {
 
         <div className="graph-banner">
           {loading && (
-            <span className="msg" style={{ background: 'var(--bg-2)', borderColor: 'var(--border-strong)', color: 'var(--text-dim)' }}>
-              <span className="spinner" /> loading…
+            <span
+              className="msg"
+              style={{
+                background: 'var(--bg-2)',
+                borderColor: 'var(--border-strong)',
+                color: 'var(--text-dim)',
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            >
+              <BubbleLoader size={18} label="Loading" />
             </span>
           )}
           {error && <span className="msg err">{error}</span>}
@@ -644,7 +654,13 @@ export function Graph({ active }: { active: boolean }) {
             <span className="msg">source changed — synthesize to refresh mapping</span>
           )}
           {analysisState === 'refreshing' && (
-            <span className="msg">refreshing analysis… showing the last valid schematic</span>
+            <span
+              className="msg"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <BubbleLoader size={16} /> refreshing analysis… showing the last valid
+              schematic
+            </span>
           )}
           {analysisState === 'error' && (
             <span className="msg err">analysis is stale; the last synthesis failed</span>

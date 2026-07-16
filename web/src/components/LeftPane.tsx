@@ -23,7 +23,7 @@ export function LeftPane() {
             : ''}
         </span>
         <span className="tag" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-          {store.analysisState === 'refreshing' && <BubbleLoader size={13} />}
+          {store.analysisState === 'refreshing' && <BubbleLoader size={16} />}
           {store.analysisState === 'current'
             ? 'mapping live'
             : store.analysisState === 'refreshing'

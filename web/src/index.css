@@ -789,23 +789,6 @@ a:hover {
   padding-top: 8px;
   margin-top: 10px;
 }
-.spinner {
-  display: inline-block;
-  width: 13px;
-  height: 13px;
-  /* currentColor so it reads on any ground: white on the teal primary button,
-     the banner's text color on the light-mode loading chip. */
-  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
-  border-top-color: currentColor;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-  vertical-align: -2px;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 .src-link {
   font-family: var(--mono);
   font-size: 11px;
