@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use synth_explorer_server::analysis::{Analysis, estimate_timing};
+use synth_explorer_server::analysis::Analysis;
 use synth_explorer_server::delay_model::DelayModel;
 use synth_explorer_server::graph::Graph;
 use synth_explorer_server::netlist::{parse_value, select_top};
@@ -237,14 +237,14 @@ async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<
     // Exactly the model the server would pick for this target, so the harness
     // measures the shipped default rather than a parallel copy of it.
     let model = DelayModel::for_target("xilinx", Some(family_arg(family)));
-    let estimate = estimate_timing(&graph, &model);
+    let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
+    let estimate = analysis.estimate_timing(&graph, &model);
     let delay_ns = estimate
         .delay_ns
         .ok_or_else(|| anyhow::anyhow!("case {} has no combinational path", case.name))?;
     let bd = estimate
         .breakdown
         .ok_or_else(|| anyhow::anyhow!("case {} has no breakdown", case.name))?;
-    let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
     let depth = analysis.stats().max_depth;
     Ok(Estimate {
         case: case.name.clone(),

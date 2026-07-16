@@ -1,5 +1,5 @@
 export const ESTIMATED_TIMING_CAVEAT =
-  'Estimated worst-case combinational delay along the critical path. The Xilinx presets are calibrated against Vivado 2026.1 post-synthesis timing (~6% mean error on an adder/mux sweep); Lattice/generic presets are not vendor-calibrated. It is a pre-place-and-route figure, not timing closure — a relative guide, not a signoff number.'
+  'An estimate, not a measurement. It sums per-cell delays with an estimated routing delay along the critical path of the synthesis netlist, before placement or routing. Use it to compare paths and weigh design choices — the ordering is far more trustworthy than the absolute number. For figures closer to Vivado, use the Vivado backend; for signoff, use Vivado\'s own timing report.'
 
 // Implied maximum clock frequency (MHz) for a worst-case path delay in
 // nanoseconds. Fmax = 1 / delay; ns → MHz is a direct reciprocal (1e3 ps? no:
