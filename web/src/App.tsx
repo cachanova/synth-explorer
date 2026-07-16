@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
+import { BrandMark } from './components/BrandMark'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
+import { SettingsMenu } from './components/SettingsMenu'
 
 const REPOSITORY_URL = 'https://github.com/cachanova/synth-explorer'
 
@@ -43,7 +45,7 @@ function App() {
     <div className="app">
       <header className="app-header">
         <span className="logo">
-          <img className="brand-mark" src="/brand-mark.svg" alt="" aria-hidden="true" />
+          <BrandMark className="brand-mark" />
           <span>
             Synth <span className="accent">Explorer</span>
           </span>
@@ -58,6 +60,7 @@ function App() {
           <GitHubMark />
           <span>GitHub</span>
         </a>
+        <SettingsMenu />
       </header>
       <div className="split">
         <div
