@@ -19,7 +19,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { StreamLanguage } from '@codemirror/language'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { useStore } from '../store'
+import { useStore } from '../useStore'
 import type { EditorHighlight } from '../store'
 
 // --- src highlight state ---
@@ -223,5 +223,17 @@ export function Editor() {
     applyHighlight(view, store.editorHighlight, store.activeFileName)
   }, [store.editorHighlight, store.activeFileName])
 
-  return <div className="editor-wrap" ref={hostRef} />
+  const activeFileIndex = Math.max(
+    0,
+    store.files.findIndex((file) => file.name === store.activeFileName),
+  )
+  return (
+    <div
+      className="editor-wrap"
+      id="source-editor-panel"
+      role="tabpanel"
+      aria-labelledby={`source-file-tab-${activeFileIndex}`}
+      ref={hostRef}
+    />
+  )
 }

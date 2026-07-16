@@ -7,6 +7,32 @@ export interface SourceSelection {
   endLine: number
 }
 
+export interface SourceProbeDebouncer {
+  schedule(selection: SourceSelection): void
+  cancel(): void
+}
+
+export function createSourceProbeDebouncer(
+  onProbe: (selection: SourceSelection) => void,
+  delayMs = 250,
+): SourceProbeDebouncer {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const cancel = () => {
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+  }
+  return {
+    schedule(selection) {
+      cancel()
+      timer = setTimeout(() => {
+        timer = null
+        onProbe(selection)
+      }, delayMs)
+    },
+    cancel,
+  }
+}
+
 export interface SynthesisInput {
   request: SynthesizeRequest
   key: string

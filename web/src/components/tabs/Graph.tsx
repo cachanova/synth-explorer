@@ -8,7 +8,7 @@ import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { designSrcSpans } from '../../lib/src'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel, type ControlNetRef } from '../../lib/symbols'
-import { useStore } from '../../store'
+import { useStore } from '../../useStore'
 import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
@@ -84,6 +84,17 @@ export function Graph({ active }: { active: boolean }) {
   // toggles of the current selection. The single-entry cache bounds memory and
   // is replaced when the relevant roots or server options change.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
+
+  useEffect(() => {
+    if (!active) return
+    const clearSelection = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      setSelected(null)
+      clearGraphSelection()
+    }
+    window.addEventListener('keydown', clearSelection)
+    return () => window.removeEventListener('keydown', clearSelection)
+  }, [active, clearGraphSelection])
 
   // Every option here changes what the server returns, so a change refetches.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}`
