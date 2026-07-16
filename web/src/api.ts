@@ -205,17 +205,29 @@ export function getFanout(id: string, limit = 50): Promise<FanoutResponse> {
   )
 }
 
+export interface NetlistOptions {
+  max_nodes?: number
+  show_infrastructure?: boolean
+  group_vectors?: boolean
+  hide_control?: boolean
+  hide_const?: boolean
+  around?: number[]
+}
+
 export function getNetlist(
   id: string,
-  maxNodes = DEFAULT_GRAPH_MAX_NODES,
-  showInfrastructure = false,
-  groupVectors = false,
-  hideControl = true,
-  hideConst = false,
+  opts: NetlistOptions = {},
   signal?: AbortSignal,
 ): Promise<Subgraph> {
+  const p = new URLSearchParams()
+  p.set('max_nodes', String(opts.max_nodes ?? DEFAULT_GRAPH_MAX_NODES))
+  p.set('show_infrastructure', String(opts.show_infrastructure ?? false))
+  p.set('group_vectors', String(opts.group_vectors ?? false))
+  p.set('hide_control', String(opts.hide_control ?? true))
+  p.set('hide_const', String(opts.hide_const ?? false))
+  if (opts.around && opts.around.length > 0) p.set('around', opts.around.join(','))
   return getJson<Subgraph>(
-    `/api/design/${encodeURIComponent(id)}/netlist?max_nodes=${maxNodes}&show_infrastructure=${showInfrastructure}&group_vectors=${groupVectors}&hide_control=${hideControl}&hide_const=${hideConst}`,
+    `/api/design/${encodeURIComponent(id)}/netlist?${p.toString()}`,
     signal,
   )
 }

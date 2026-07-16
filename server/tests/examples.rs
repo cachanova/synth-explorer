@@ -1,4 +1,6 @@
-use synth_explorer_server::analysis::{Analysis, ConeDir, ConeOptions, FanoutResponse};
+use synth_explorer_server::analysis::{
+    Analysis, ConeDir, ConeOptions, FanoutResponse, FullNetlistOptions,
+};
 use synth_explorer_server::graph::{
     Graph, NodeKind, cell_depth_weight, is_control_pin, is_control_pin_for_cell, is_sequential_type,
 };
@@ -30,6 +32,16 @@ async fn analyze_example(name: &str, top: &str, mode: SynthMode) -> (Graph, Anal
     let graph = Graph::from_netlist(&netlist, resolved_top, module).unwrap();
     let analysis = Analysis::new(&graph, request.file_names());
     (graph, analysis)
+}
+
+fn full_options(max_nodes: usize) -> FullNetlistOptions<'static> {
+    FullNetlistOptions {
+        max_nodes,
+        show_infrastructure: false,
+        hide_control: true,
+        hide_const: false,
+        priority_roots: &[],
+    }
 }
 
 async fn analyze_source(name: &str, source: &str, top: &str, mode: SynthMode) -> (Graph, Analysis) {
@@ -757,7 +769,7 @@ endmodule
             .any(|register| register.bits.iter().any(|bit| bit.node_id == ff.id))
     );
     let clock = analysis
-        .full_netlist(&graph, 100, false, true, false, None)
+        .full_netlist(&graph, full_options(100), None)
         .nodes
         .into_iter()
         .find(|node| node.node.id == ff.id)
@@ -811,7 +823,7 @@ async fn vendor_flip_flops_are_sequential_with_control_edges() {
                 .all(|edge| !edge.control)
         );
 
-        let schematic = analysis.full_netlist(&graph, 2000, false, true, false, None);
+        let schematic = analysis.full_netlist(&graph, full_options(2000), None);
         let rendered_ff = schematic
             .nodes
             .iter()

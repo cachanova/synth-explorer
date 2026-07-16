@@ -10,6 +10,7 @@ import {
   nodeDimensions,
   panViewport,
   placementForLayout,
+  preserveViewportAnchor,
   toElkGraph,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -265,6 +266,54 @@ describe('schematic layout sizing', () => {
     ).toBe('BRANDES_KOEPF')
   })
 
+  it('seeds interactive layout with retained node coordinates', () => {
+    const sub: Subgraph = {
+      nodes: [node(1, '$_AND_'), node(2, '$_OR_'), node(3, '$_XOR_')],
+      edges: [],
+      truncated: false,
+    }
+    const previous = {
+      nodes: [
+        {
+          id: 1,
+          x: 42,
+          y: 84,
+          width: 76,
+          height: 52,
+          node: sub.nodes[0],
+        },
+        {
+          id: 2,
+          x: 180,
+          y: 84,
+          width: 76,
+          height: 52,
+          node: sub.nodes[1],
+        },
+      ],
+      edges: [],
+      width: 256,
+      height: 136,
+    }
+
+    const graph = toElkGraph(sub, 'INTERACTIVE', previous)
+
+    expect(graph.layoutOptions?.['elk.interactive']).toBe('true')
+    expect(graph.layoutOptions?.['elk.interactiveLayout']).toBe('true')
+    expect(graph.layoutOptions?.['elk.layered.nodePlacement.strategy']).toBe(
+      'INTERACTIVE',
+    )
+    expect(graph.children?.find(({ id }) => id === '1')).toMatchObject({
+      x: 42,
+      y: 84,
+    })
+    expect(graph.children?.find(({ id }) => id === '2')).toMatchObject({
+      x: 180,
+      y: 84,
+    })
+    expect(graph.children?.find(({ id }) => id === '3')).not.toHaveProperty('x')
+  })
+
   it('enforces the 2000-node renderer cap before starting ELK', async () => {
     expect(MAX_GRAPH_RENDER_NODES).toBe(2000)
     const oversized: Subgraph = {
@@ -324,6 +373,24 @@ describe('viewport transforms', () => {
     const moved = panViewport({ x: 10, y: 20, k: 2 }, 5, -7)
     expect(moved).toEqual({ x: 15, y: 13, k: 2 })
     expect(viewportTransformAttribute(moved)).toBe('translate(15,13) scale(2)')
+  })
+
+  it('preserves a retained anchor on screen without changing zoom', () => {
+    const graphNode = node(1, '$_AND_')
+    const previous = {
+      nodes: [{ id: 1, x: 20, y: 30, width: 80, height: 50, node: graphNode }],
+      edges: [],
+      width: 100,
+      height: 80,
+    }
+    const next = {
+      ...previous,
+      nodes: [{ ...previous.nodes[0], x: 120, y: 70 }],
+    }
+
+    expect(
+      preserveViewportAnchor({ x: 10, y: 15, k: 2 }, previous, next, [1]),
+    ).toEqual({ x: -190, y: -65, k: 2 })
   })
 
   it('zooms around a fixed screen-space anchor and clamps scale', () => {

@@ -1,7 +1,7 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
-    NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats,
-    Subgraph, estimate_timing,
+    FullNetlistOptions, NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse,
+    SourceRangeMapping, Stats, Subgraph, estimate_timing,
 };
 use crate::delay_model::DelayModel;
 use crate::graph::Graph;
@@ -1298,6 +1298,7 @@ async fn fanout(
 #[derive(Debug, Deserialize)]
 struct NetlistQuery {
     max_nodes: Option<usize>,
+    around: Option<String>,
     show_infrastructure: Option<bool>,
     hide_control: Option<bool>,
     hide_const: Option<bool>,
@@ -1310,12 +1311,33 @@ async fn netlist(
     Query(query): Query<NetlistQuery>,
 ) -> Result<Json<Subgraph>, ApiError> {
     let design = get_design(&state, &id).await?;
+    let priority_roots = query
+        .around
+        .as_deref()
+        .map(parse_node_ids)
+        .transpose()?
+        .unwrap_or_default();
+    if priority_roots.len() > 200 {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "at most 200 context roots may be requested",
+        ));
+    }
+    if priority_roots
+        .iter()
+        .any(|root| design.graph.nodes.get(*root as usize).is_none())
+    {
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown context root"));
+    }
     Ok(Json(design.analysis.full_netlist(
         &design.graph,
-        query.max_nodes.unwrap_or(1500),
-        query.show_infrastructure.unwrap_or(false),
-        query.hide_control.unwrap_or(true),
-        query.hide_const.unwrap_or(false),
+        FullNetlistOptions {
+            max_nodes: query.max_nodes.unwrap_or(1500),
+            show_infrastructure: query.show_infrastructure.unwrap_or(false),
+            hide_control: query.hide_control.unwrap_or(true),
+            hide_const: query.hide_const.unwrap_or(false),
+            priority_roots: &priority_roots,
+        },
         grouping_for(&design, query.group_vectors),
     )))
 }

@@ -412,14 +412,17 @@ and by `node=`/`nodes=` (which address real per-bit ids). Defaults to `false`.
 }
 ```
 
-## GET `/api/design/:id/netlist?max_nodes=1500&show_infrastructure=false&hide_control=true&hide_const=false&group_vectors=false`
+## GET `/api/design/:id/netlist?max_nodes=1500&show_infrastructure=false&hide_control=true&hide_const=false&group_vectors=false&around=12,34`
 
 Full design as a `Subgraph` (same caps and shapes; `truncated` set if the
 design exceeds `max_nodes`). Constants are filtered before the node budget, and
 control edges before the edge budget, so hidden content does not consume its
 corresponding visible capacity. Used by the optional full-schematic view.
 Grouping has the same semantics as `/cone`, and the node budget counts grouped
-units.
+units. When `around` supplies up to 200 real node ids, the bounded projection is
+filled breadth-first in both directions from those roots before disconnected
+capacity is filled in node order. This keeps selection context local instead of
+depending on netlist node order. An unknown context root returns `404`.
 
 ## GET `/api/design/:id/source-map`
 

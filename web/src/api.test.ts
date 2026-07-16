@@ -90,6 +90,22 @@ describe('getNetlist', () => {
     expect(url.searchParams.get('hide_control')).toBe('true')
     expect(url.searchParams.get('hide_const')).toBe('false')
   })
+
+  it('prioritizes context around the relevant graph roots', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ nodes: [], edges: [], truncated: false }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await getNetlist('design', { max_nodes: 800, around: [12, 34] })
+
+    const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
+    expect(url.searchParams.get('max_nodes')).toBe('800')
+    expect(url.searchParams.get('around')).toBe('12,34')
+  })
 })
 
 describe('Vivado owner access', () => {

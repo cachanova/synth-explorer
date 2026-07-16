@@ -304,7 +304,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
     .not.toBe(beforeTabSwitch)
 })
 
-test('Focus switches between the relevant cone and a highlighted full diagram', async ({
+test('Focus toggles a stable relevant overlay without refetching or refitting', async ({
   page,
 }) => {
   await page.goto('/')
@@ -327,8 +327,16 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
   expect((await synthResponse).ok()).toBe(true)
 
-  // Select the timeout counter update, whose focused graph includes the
-  // counter register while the full diagram includes the complete controller.
+  let lineConeRequests = 0
+  let netlistRequests = 0
+  page.on('request', (request) => {
+    if (request.url().includes('/line-cone?')) lineConeRequests += 1
+    if (request.url().includes('/netlist?')) netlistRequests += 1
+  })
+
+  // Select the timeout counter update, whose relevant graph includes the
+  // counter register while the context projection includes nearby controller
+  // logic.
   await page
     .locator('.cm-line', { hasText: 'wait_count <= wait_count + 1\'b1;' })
     .click()
@@ -343,80 +351,64 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   await expect(page.locator('.graph-count')).toBeVisible()
   const focusedNodeCount = await page.locator('.g-node-body').count()
   expect(focusedNodeCount).toBeGreaterThan(0)
+  expect(lineConeRequests).toBe(1)
+  expect(netlistRequests).toBe(0)
   expect(
     await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
   ).toBeGreaterThan(0)
 
-  let fullNetlistRequests = 0
-  let releaseFullProjection: () => void = () => {}
-  const fullProjectionGate = new Promise<void>((resolve) => {
-    releaseFullProjection = resolve
-  })
-  await page.route('**/netlist?**', async (route) => {
-    fullNetlistRequests += 1
-    await fullProjectionGate
-    await route.continue().catch(() => {})
-  })
-  const fullResponse = page.waitForResponse((response) =>
+  const stage = page.locator('.graph-stage')
+  const viewport = stage.locator('svg > g').first()
+  const retainedNode = page.locator('.g-node-body').first()
+  await page.getByTitle('Zoom in').click()
+  const userTransform = await viewport.getAttribute('transform')
+  const retainedBox = await retainedNode.boundingBox()
+  expect(retainedBox).not.toBeNull()
+  const viewportScale = (transform: string | null) =>
+    Number(/scale\(([^)]+)\)/.exec(transform ?? '')?.[1])
+
+  const contextResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
   await focus.uncheck()
-  await expect.poll(() => fullNetlistRequests).toBe(1)
-
-  // Change the relevant source while the full projection is still in flight.
-  // Selection cleanup must not abort that shared projection and start another.
-  const supersedingRelevantResponse = page.waitForResponse((response) =>
-    response.url().includes('/line-cone?'),
-  )
-  await page.locator('.cm-line', { hasText: 'input  logic response_valid' }).click()
-  expect((await supersedingRelevantResponse).ok()).toBe(true)
-  await page.waitForTimeout(50)
-  const inFlightRequestCount = fullNetlistRequests
-  releaseFullProjection()
-  expect(inFlightRequestCount).toBe(1)
-  const resolvedFullResponse = await fullResponse
-  expect(resolvedFullResponse.ok()).toBe(true)
-  const fullParams = new URL(resolvedFullResponse.url()).searchParams
-  expect(fullParams.get('hide_control')).toBe('true')
-  expect(fullParams.get('hide_const')).toBe('true')
+  const resolvedContextResponse = await contextResponse
+  expect(resolvedContextResponse.ok()).toBe(true)
+  const contextParams = new URL(resolvedContextResponse.url()).searchParams
+  expect(contextParams.get('hide_control')).toBe('true')
+  expect(contextParams.get('hide_const')).toBe('true')
+  expect(contextParams.get('around')).toMatch(/^\d+(,\d+)*$/)
   await expect
     .poll(async () => page.locator('.g-node-body').count())
     .toBeGreaterThan(focusedNodeCount)
-  const fullNodeCount = await page.locator('.g-node-body').count()
+  const laidOutNodeCount = await page.locator('.g-node-body').count()
   await expect(focus).not.toBeChecked()
+  expect(lineConeRequests).toBe(1)
+  expect(netlistRequests).toBe(1)
+
+  const contextNodes = page.locator('.g-node-body[data-relevant="0"]')
+  const relevantNodes = page.locator('.g-node-body[data-relevant="1"]')
+  expect(await contextNodes.count()).toBeGreaterThan(0)
+  expect(await relevantNodes.count()).toBe(focusedNodeCount)
+  await expect(contextNodes.first()).toHaveCSS('opacity', '0.25')
+  expect(await page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(await page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
-  expect(
-    await page.locator('.g-edge').filter({ hasText: '→D' }).count(),
-  ).toBeGreaterThan(0)
+  const stabilizedBox = await retainedNode.boundingBox()
+  const stabilizedTransform = await viewport.getAttribute('transform')
+  expect(Math.abs((stabilizedBox?.x ?? 0) - retainedBox!.x)).toBeLessThan(1)
+  expect(Math.abs((stabilizedBox?.y ?? 0) - retainedBox!.y)).toBeLessThan(1)
+  expect(viewportScale(stabilizedTransform)).toBe(viewportScale(userTransform))
 
-  const refocusedResponse = page.waitForResponse((response) =>
-    response.url().includes('/line-cone?'),
-  )
   await focus.check()
-  expect((await refocusedResponse).ok()).toBe(true)
-  await expect
-    .poll(async () => page.locator('.g-node-body').count())
-    .toBeLessThan(fullNodeCount)
-  const refocusedNodeCount = await page.locator('.g-node-body').count()
-  expect(refocusedNodeCount).toBeGreaterThan(0)
+  await expect(contextNodes.first()).toHaveCSS('visibility', 'hidden')
+  expect(await page.locator('.g-node-body').count()).toBe(laidOutNodeCount)
+  expect(lineConeRequests).toBe(1)
+  expect(netlistRequests).toBe(1)
+  await expect(viewport).toHaveAttribute('transform', stabilizedTransform ?? '')
 
-  // The full projection is stable for this design and option set. A second
-  // Focus-off transition reuses it rather than rescanning the whole design.
-  const cachedRelevantResponse = page.waitForResponse((response) =>
-    response.url().includes('/line-cone?'),
-  )
   await focus.uncheck()
-  expect((await cachedRelevantResponse).ok()).toBe(true)
-  await expect
-    .poll(async () => page.locator('.g-node-body').count())
-    .toBeGreaterThan(refocusedNodeCount)
-  expect(fullNetlistRequests).toBe(1)
-
-  // Escape clears the relevant source selection. The full diagram remains,
-  // but no relevance highlight is retained when nothing is selected.
-  await page.locator('.cm-content').press('Escape')
-  await expect(focus).toBeDisabled()
-  await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
-  await expect(page.locator('.g-edge.hl')).toHaveCount(0)
-  expect(fullNetlistRequests).toBe(1)
+  await expect(contextNodes.first()).toHaveCSS('opacity', '0.25')
+  expect(await page.locator('.g-node-body').count()).toBe(laidOutNodeCount)
+  expect(lineConeRequests).toBe(1)
+  expect(netlistRequests).toBe(1)
+  await expect(viewport).toHaveAttribute('transform', stabilizedTransform ?? '')
 })

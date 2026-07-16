@@ -1079,6 +1079,17 @@ th.sortable:hover {
   stroke: var(--accent);
   stroke-width: 2.2;
 }
+.graph-stage-wrap [data-relevant] {
+  transition: opacity 120ms ease;
+}
+.graph-stage-wrap[data-focus='off'] [data-relevant='0'] {
+  opacity: 0.25;
+}
+.graph-stage-wrap[data-focus='on'] [data-relevant='0'] {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+}
 .g-bus-label {
   font-family: var(--mono);
   font-size: 8px;

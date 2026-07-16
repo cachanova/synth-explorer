@@ -141,10 +141,11 @@ Compiler-Explorer-style split view, dark theme:
   - **Graph** — the cone viewer: elkjs layered layout in a worker, SVG nodes
     (cells with type + name, ports, consts), pan/zoom, click node → expand
     cone / show src; toggles for constants and clock/reset/enable; direction
-    switch (fanin/fanout); Focus on renders only selection-relevant logic,
-    while Focus off renders the capped full diagram and highlights that same
-    logic. With no relevant source or endpoint selected, Graph renders the
-    capped full diagram without a highlight. Escape clears a source selection.
+    switch (fanin/fanout); Focus lazily loads one nearby-context projection,
+    keeps a stable shared layout, and toggles that context between hidden and
+    dimmed without refetching or refitting. With no relevant source or endpoint
+    selected, Graph renders the capped full diagram without an overlay. Escape
+    clears a source selection.
   - **Compare** — snapshot current design (A/B); table of depth, worst paths,
     cell counts, fanout deltas between snapshots (different code or modes).
 - **Source cross-probe:** node src (`file.sv:12.16-12.21`) → editor highlight;
