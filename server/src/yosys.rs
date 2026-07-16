@@ -28,6 +28,16 @@ const CHILD_OPEN_FILES_LIMIT: libc::rlim_t = 128;
 #[cfg(target_os = "linux")]
 const CHILD_CPU_SECONDS_LIMIT: libc::rlim_t = 65;
 
+/// Widest arithmetic result (in bits) that the Xilinx flow soft-maps to plain
+/// LUT logic instead of a carry chain. Yosys commits every `$alu`/`$lcu` to
+/// CARRY primitives regardless of width, but a chain only pays off once it is
+/// long enough to amortize its LUT-level entry and exit; below that it just
+/// walls the arithmetic off from ABC. Eight matches where Vivado's own
+/// synthesis stops using carry on the calibration corpus: it maps an 8-bit
+/// isolate (`x & (~x+1)`) to two chain-free LUT levels, while 16-bit adders
+/// keep the chain on both tools.
+const NARROW_ARITH_MAX_WIDTH: u32 = 8;
+
 /// How generic synthesis treats inferred memories. `Map` is today's default
 /// pipeline; `Abstract` stops `synth` before `memory_map` and replays the fine
 /// stage without it, so `$mem_v2` cells survive into the netlist.
@@ -550,10 +560,44 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
             // request always produces the same netlist. Server-side injection
             // briefly lived here (#67) and broke that: identical extra_args
             // yielded different netlists across deploys.
-            script.push_str(&format!(
-                "synth_xilinx {} -flatten{extra}\n",
+            //
+            // The pipeline is split at synth_xilinx's `fine` label so narrow
+            // arithmetic can be soft-mapped before it is committed to carry
+            // primitives. Yosys maps every $alu/$lcu onto CARRY4/CARRY8
+            // regardless of width; for results this narrow, Vivado instead
+            // absorbs the arithmetic into plain LUTs, and the chain's
+            // entry/exit LUTs plus the per-cell hops leave the Yosys netlist
+            // several levels deeper for the same RTL (round_robin_arbiter n=4:
+            // depth 4 vs Vivado's 1). Lowering these cells to generic gates
+            // ahead of `fine` lets ABC collapse them with the surrounding
+            // logic; wide arithmetic keeps the carry chain, which is where it
+            // genuinely wins. The threshold matches where Vivado's own
+            // synthesis stops using carry on the calibration corpus (an
+            // 8-bit isolate maps to 2 LUT levels there, chain-free). Both
+            // synth_xilinx invocations carry identical options; the split
+            // is inert for designs with no narrow arithmetic ($alu/$lcu
+            // selections come up empty and techmap is a no-op).
+            //
+            // A caller-supplied -run means the caller wants a specific slice
+            // of the pipeline; appending our own -run would silently override
+            // it (last flag wins), so their single invocation runs untouched
+            // and the soft-map is skipped.
+            let synth = format!(
+                "synth_xilinx {} -flatten{extra}",
                 top_only(input.top.as_deref())
-            ));
+            );
+            if input.extra_args.iter().any(|arg| arg == "-run") {
+                script.push_str(&format!("{synth}\n"));
+            } else {
+                script.push_str(&format!("{synth} -run begin:fine\n"));
+                script.push_str(&format!(
+                    "select -set narrow_alu t:$alu r:Y_WIDTH<={NARROW_ARITH_MAX_WIDTH} %i\n\
+                     techmap @narrow_alu\n\
+                     select -set narrow_lcu t:$lcu r:WIDTH<={NARROW_ARITH_MAX_WIDTH} %i\n\
+                     techmap @narrow_lcu\n"
+                ));
+                script.push_str(&format!("{synth} -run fine:\n"));
+            }
         }
     }
     script.push_str("write_json netlist.json\n");
@@ -840,7 +884,8 @@ mod tests {
         // changing them re-synthesizes because extra_args is in the cache key.
         let plain = validated(&["design.sv"], Some("top"), SynthMode::Xilinx, "");
         assert!(
-            build_script(&plain, MemoryHandling::Map).contains("synth_xilinx -top top -flatten\n")
+            build_script(&plain, MemoryHandling::Map)
+                .contains("synth_xilinx -top top -flatten -run begin:fine\n")
         );
 
         let tuned = validated(
@@ -851,7 +896,7 @@ mod tests {
         );
         assert!(
             build_script(&tuned, MemoryHandling::Map)
-                .contains("synth_xilinx -top top -flatten -family xcup -retime\n")
+                .contains("synth_xilinx -top top -flatten -family xcup -retime -run begin:fine\n")
         );
         assert_ne!(plain.design_id(), tuned.design_id());
     }
@@ -866,6 +911,54 @@ mod tests {
         let script = build_script(&plain, MemoryHandling::Map);
         assert!(!script.contains("-nowidelut"), "{script}");
         assert!(!script.contains("-noiopad"), "{script}");
+    }
+
+    #[test]
+    fn xilinx_soft_maps_narrow_arithmetic_between_identical_synth_halves() {
+        // The pipeline splits at `fine` so $alu/$lcu with results of at most
+        // NARROW_ARITH_MAX_WIDTH bits lower to generic gates (which ABC then
+        // collapses with the surrounding logic) instead of being committed to
+        // carry chains. Both synth_xilinx invocations must carry identical
+        // options, or the resumed half would synthesize a different flow than
+        // the one it stopped.
+        let tuned = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-family xc7 -nowidelut",
+        );
+        let script = build_script(&tuned, MemoryHandling::Map);
+        let synth = "synth_xilinx -top top -flatten -family xc7 -nowidelut";
+        assert!(
+            script.contains(&format!(
+                "{synth} -run begin:fine\n\
+             select -set narrow_alu t:$alu r:Y_WIDTH<=8 %i\n\
+             techmap @narrow_alu\n\
+             select -set narrow_lcu t:$lcu r:WIDTH<=8 %i\n\
+             techmap @narrow_lcu\n\
+             {synth} -run fine:\n"
+            )),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn a_caller_supplied_run_slice_suppresses_the_soft_map_split() {
+        // Appending our own -run after the caller's would silently win (last
+        // flag counts), turning their requested pipeline slice into ours.
+        let sliced = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-run begin:coarse",
+        );
+        let script = build_script(&sliced, MemoryHandling::Map);
+        assert!(
+            script.contains("synth_xilinx -top top -flatten -run begin:coarse\n"),
+            "{script}"
+        );
+        assert_eq!(script.matches("synth_xilinx").count(), 1, "{script}");
+        assert!(!script.contains("narrow_alu"), "{script}");
     }
 
     #[test]
