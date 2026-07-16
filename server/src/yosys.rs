@@ -544,8 +544,20 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
             if input.top.is_none() {
                 script.push_str("hierarchy -auto-top\n");
             }
+            // -nowidelut by default: without it, ABC stacks MUXF7/8 trees on
+            // top of the LUT tree instead of absorbing levels, leaving the
+            // netlist 1.5-2x deeper than Vivado's for the same RTL — with
+            // slightly MORE cells, not fewer. Measured across the 24-design
+            // calibration corpus: median depth ratio vs Vivado 1.50 -> 1.10
+            // (series7) and 2.00 -> 1.23 (ultrascale+), no case deeper, ~4%
+            // fewer LUTs. Skipped if the caller already passed it.
+            let nowidelut = if input.extra_args.iter().any(|arg| arg == "-nowidelut") {
+                ""
+            } else {
+                " -nowidelut"
+            };
             script.push_str(&format!(
-                "synth_xilinx {} -flatten{extra}\n",
+                "synth_xilinx {} -flatten{nowidelut}{extra}\n",
                 top_only(input.top.as_deref())
             ));
         }
@@ -834,7 +846,8 @@ mod tests {
         // changing them re-synthesizes because extra_args is in the cache key.
         let plain = validated(&["design.sv"], Some("top"), SynthMode::Xilinx, "");
         assert!(
-            build_script(&plain, MemoryHandling::Map).contains("synth_xilinx -top top -flatten\n")
+            build_script(&plain, MemoryHandling::Map)
+                .contains("synth_xilinx -top top -flatten -nowidelut\n")
         );
 
         let tuned = validated(
@@ -845,9 +858,23 @@ mod tests {
         );
         assert!(
             build_script(&tuned, MemoryHandling::Map)
-                .contains("synth_xilinx -top top -flatten -family xcup -retime\n")
+                .contains("synth_xilinx -top top -flatten -nowidelut -family xcup -retime\n")
         );
         assert_ne!(plain.design_id(), tuned.design_id());
+    }
+
+    #[test]
+    fn an_explicit_nowidelut_is_not_duplicated() {
+        // A caller who already passes -nowidelut (e.g. saved flags from before
+        // it became the default) must not end up with the flag twice.
+        let explicit = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-nowidelut -family xc7",
+        );
+        let script = build_script(&explicit, MemoryHandling::Map);
+        assert_eq!(script.matches("-nowidelut").count(), 1, "{script}");
     }
 
     #[test]
