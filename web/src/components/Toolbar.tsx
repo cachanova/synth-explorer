@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { MODE_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
-import { useStore } from '../store'
+import { useStore } from '../useStore'
 import type { Mode, SynthTool, XilinxFamily } from '../types'
 import { FlagsMenu } from './FlagsMenu'
 import { VivadoUnlockDialog } from './VivadoUnlockDialog'

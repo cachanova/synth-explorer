@@ -1,7 +1,7 @@
 import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { controlLabel, controlsFor } from '../lib/symbols'
-import { useStore } from '../store'
+import { useStore } from '../useStore'
 import type { GraphNode } from '../types'
 
 export function NodeCard({

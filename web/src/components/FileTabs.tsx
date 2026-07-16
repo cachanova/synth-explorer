@@ -1,5 +1,5 @@
 import { useRef, type KeyboardEvent } from 'react'
-import { useStore } from '../store'
+import { useStore } from '../useStore'
 
 export function FileTabs() {
   const store = useStore()

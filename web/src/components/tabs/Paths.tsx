@@ -10,7 +10,7 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import { loadTimingSettings, timingRequest } from '../../lib/timingSettings'
-import { useStore } from '../../store'
+import { useStore } from '../../useStore'
 import type {
   EndpointKind,
   NodeRef,

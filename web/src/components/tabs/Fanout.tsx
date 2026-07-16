@@ -4,7 +4,7 @@ import { fuzzyFilter } from '../../lib/fuzzy'
 import { naturalCompare } from '../../lib/naturalCompare'
 import { fanoutDriverLabel, shortNetName } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
-import { useStore } from '../../store'
+import { useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { StaleResultsChip } from '../StaleResultsChip'
 

@@ -1,6 +1,6 @@
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType } from '../../lib/prettyType'
-import { useStore } from '../../store'
+import { useStore } from '../../useStore'
 import type { CellCategoryCounts } from '../../types'
 import { TimingModel } from '../TimingModel'
 
