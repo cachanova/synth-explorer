@@ -1,5 +1,6 @@
 use anyhow::Context;
 use std::env;
+use std::path::PathBuf;
 use synth_explorer_server::{api, vivado, yosys};
 use tracing_subscriber::EnvFilter;
 
@@ -21,11 +22,17 @@ async fn main() -> anyhow::Result<()> {
         .context("Vivado startup preflight failed")?;
     let vivado_access = load_vivado_access(vivado_backend.is_some())?;
     let bind_addr = env::var("BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8787".to_owned());
-    let app = api::app(api::AppState::with_backends_and_vivado_access(
+    let design_store_dir = env::var_os("DESIGN_STORE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("data/designs"));
+    let state = api::AppState::with_persistent_store(
         yosys_version.clone(),
         vivado_backend.clone(),
         vivado_access,
-    ));
+        &design_store_dir,
+    )
+    .context("failed to initialize persistent design store")?;
+    let app = api::app(state);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let vivado_version = vivado_backend.as_ref().map(|backend| &backend.version);
     let vivado_parts = vivado_backend
@@ -36,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
         yosys_version,
         vivado_version,
         vivado_parts,
+        design_store_dir = %design_store_dir.display(),
         "server_started"
     );
     axum::serve(listener, app).await?;

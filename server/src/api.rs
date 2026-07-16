@@ -4,9 +4,10 @@ use crate::analysis::{
     SourceRangeMapping, Stats, Subgraph,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
+use crate::design_store::{DesignStore, DesignStoreError};
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
-use crate::netlist::{parse_value, select_top};
+use crate::netlist::{YosysNetlist, parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use crate::synthesis::{SynthesisError, run_synthesis};
 use crate::vivado::{VivadoBackend, VivadoError, VivadoPart, VivadoTiming};
@@ -33,16 +34,21 @@ use tokio::sync::{RwLock, Semaphore, watch};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-const DESIGN_CACHE_BUDGET_BYTES: usize = 128 * 1024 * 1024;
+const DESIGN_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 const DESIGN_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const DESIGN_CACHE_MIN_ENTRY_BYTES: usize = 64 * 1024;
-const MAX_IN_FLIGHT_DESIGNS: usize = 3;
+const DESIGN_STORE_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const DESIGN_STORE_TTL: Duration = Duration::from_secs(4 * 60 * 60);
+const DESIGN_STORE_FORMAT_VERSION: u32 = 1;
+const MAX_IN_FLIGHT_DESIGNS: usize = 16;
 const MAX_RUNNING_SYNTHESES: usize = 1;
 const SYNTHESIS_RETRY_AFTER_SECONDS: u64 = 5;
 
 #[derive(Clone)]
 pub struct AppState {
     cache: Arc<RwLock<DesignCache>>,
+    store: Option<Arc<StdMutex<DesignStore>>>,
+    cold_load: Arc<tokio::sync::Mutex<()>>,
     flights: Arc<SynthesisFlights>,
     running: Arc<Semaphore>,
     metadata: Arc<BuildMetadata>,
@@ -73,7 +79,26 @@ impl AppState {
             vivado_access,
             DESIGN_CACHE_BUDGET_BYTES,
             DESIGN_CACHE_TTL,
+            None,
         )
+    }
+
+    pub fn with_persistent_store(
+        yosys_version: impl Into<String>,
+        vivado_backend: Option<VivadoBackend>,
+        vivado_access: Option<VivadoAccess>,
+        store_directory: impl Into<PathBuf>,
+    ) -> Result<Self, DesignStoreError> {
+        let store =
+            DesignStore::open(store_directory, DESIGN_STORE_BUDGET_BYTES, DESIGN_STORE_TTL)?;
+        Ok(Self::with_cache_config(
+            yosys_version,
+            vivado_backend,
+            vivado_access,
+            DESIGN_CACHE_BUDGET_BYTES,
+            DESIGN_CACHE_TTL,
+            Some(store),
+        ))
     }
 
     fn with_cache_config(
@@ -82,6 +107,7 @@ impl AppState {
         vivado_access: Option<VivadoAccess>,
         cache_budget_bytes: usize,
         cache_ttl: Duration,
+        store: Option<DesignStore>,
     ) -> Self {
         let (vivado_version, vivado_parts) = vivado_backend
             .map(|backend| (Some(backend.version), backend.parts))
@@ -92,6 +118,8 @@ impl AppState {
             .collect();
         Self {
             cache: Arc::new(RwLock::new(DesignCache::new(cache_budget_bytes, cache_ttl))),
+            store: store.map(|store| Arc::new(StdMutex::new(store))),
+            cold_load: Arc::new(tokio::sync::Mutex::new(())),
             flights: Arc::new(SynthesisFlights::new()),
             running: Arc::new(Semaphore::new(MAX_RUNNING_SYNTHESES)),
             metadata: Arc::new(BuildMetadata {
@@ -334,6 +362,149 @@ async fn cache_lookup(cache: &RwLock<DesignCache>, id: &str) -> Option<Arc<Desig
     }
 }
 
+async fn lookup_design(state: &AppState, id: &str) -> Result<Option<Arc<Design>>, ApiError> {
+    if let Some(design) = cache_lookup(&state.cache, id).await {
+        return Ok(Some(design));
+    }
+    let Some(store) = state.store.as_ref().map(Arc::clone) else {
+        return Ok(None);
+    };
+
+    // Serializing cold hydration keeps large JSON parsing and graph rebuilding
+    // from multiplying memory pressure when many clients miss the hot cache.
+    let _cold_load = state.cold_load.lock().await;
+    if let Some(design) = cache_lookup(&state.cache, id).await {
+        return Ok(Some(design));
+    }
+
+    let design_id = id.to_owned();
+    let read_id = design_id.clone();
+    let read_store = Arc::clone(&store);
+    let loaded = tokio::task::spawn_blocking(move || {
+        read_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .read::<StoredDesign>(&read_id)
+    })
+    .await
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("stored design load task failed: {err}"),
+        )
+    })?;
+    let stored = match loaded {
+        Ok(Some(stored)) => stored,
+        Ok(None) => return Ok(None),
+        Err(DesignStoreError::Json(err)) => {
+            tracing::warn!(design_id, error = %err, "stored_design_invalid");
+            remove_stored_design(store, design_id).await;
+            return Ok(None);
+        }
+        Err(err) => {
+            tracing::error!(design_id, error = %err, "stored_design_load_failed");
+            return Err(ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to load stored design",
+            ));
+        }
+    };
+
+    let expected_version = producer_version(state, stored.tool);
+    let invalid_reason = if stored.format_version != DESIGN_STORE_FORMAT_VERSION {
+        Some("stored design format changed")
+    } else if stored.design_id != design_id {
+        Some("stored design id does not match its filename")
+    } else if expected_version.as_deref() != Some(stored.producer_version.as_str()) {
+        Some("synthesis tool version changed")
+    } else {
+        None
+    };
+    if let Some(reason) = invalid_reason {
+        tracing::info!(design_id, reason, "stored_design_discarded");
+        remove_stored_design(store, design_id).await;
+        return Ok(None);
+    }
+
+    let built = tokio::task::spawn_blocking(move || build_design(&stored))
+        .await
+        .map_err(|err| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("stored design rebuild task failed: {err}"),
+            )
+        })?;
+    let design = match built {
+        Ok(design) => Arc::new(design),
+        Err(err) => {
+            tracing::warn!(design_id, error = %err, "stored_design_invalid");
+            remove_stored_design(store, design_id).await;
+            return Ok(None);
+        }
+    };
+    let cache_charge_bytes =
+        design_cache_weight(&design_id, &design).max(DESIGN_CACHE_MIN_ENTRY_BYTES);
+    if !state
+        .cache
+        .write()
+        .await
+        .insert(design_id.clone(), Arc::clone(&design), cache_charge_bytes)
+    {
+        tracing::warn!(design_id, cache_charge_bytes, "stored_design_exceeds_cache");
+        remove_stored_design(store, design_id).await;
+        return Ok(None);
+    }
+    tracing::info!(design_id, cache_charge_bytes, "stored_design_loaded");
+    Ok(Some(design))
+}
+
+async fn persist_design(state: &AppState, stored: StoredDesign) -> Result<u64, String> {
+    let Some(store) = state.store.as_ref().map(Arc::clone) else {
+        return Ok(0);
+    };
+    let design_id = stored.design_id.clone();
+    let write_id = design_id.clone();
+    let persisted = tokio::task::spawn_blocking(move || {
+        store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write(&write_id, &stored)
+    })
+    .await
+    .map_err(|err| format!("design persistence task failed: {err}"))?;
+    persisted.map_err(|err| {
+        tracing::error!(design_id, error = %err, "stored_design_write_failed");
+        err.to_string()
+    })
+}
+
+fn producer_version(state: &AppState, tool: SynthTool) -> Option<String> {
+    match tool {
+        SynthTool::Yosys => Some(state.metadata.yosys_version.clone()),
+        SynthTool::Vivado => state
+            .metadata
+            .vivado_version
+            .as_ref()
+            .map(|vivado| format!("{vivado}; normalizer {}", state.metadata.yosys_version)),
+    }
+}
+
+async fn remove_stored_design(store: Arc<StdMutex<DesignStore>>, design_id: String) {
+    let remove_id = design_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&remove_id)
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => tracing::warn!(design_id, error = %err, "stored_design_remove_failed"),
+        Err(err) => tracing::warn!(design_id, error = %err, "stored_design_remove_task_failed"),
+    }
+}
+
 type FlightResult = Result<Arc<Design>, ApiError>;
 
 #[derive(Debug)]
@@ -454,6 +625,109 @@ impl Design {
     /// Structural retained-allocation estimate used for cache weighting.
     fn estimated_heap_bytes(&self) -> usize {
         self.deep_size_of()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredDesign {
+    format_version: u32,
+    design_id: String,
+    producer_version: String,
+    resolved_top: String,
+    tool: SynthTool,
+    mode: SynthMode,
+    target: Option<String>,
+    log: String,
+    memories_abstracted: bool,
+    vivado_timing: Option<VivadoTiming>,
+    files: Vec<SourceFile>,
+    netlist: YosysNetlist,
+    source_netlist: YosysNetlist,
+    delay_profile: String,
+}
+
+fn build_design(stored: &StoredDesign) -> Result<Design, String> {
+    let (top, module) = select_top(&stored.netlist, None)
+        .map_err(|err| format!("failed to resolve top module: {err}"))?;
+    let graph = Graph::from_netlist(&stored.netlist, top, module)
+        .map_err(|err| format!("failed to build analysis graph: {err}"))?;
+    let (source_top, _) = select_top(&stored.source_netlist, None)
+        .map_err(|err| format!("failed to resolve source-provenance top module: {err}"))?;
+    let SourceProvenance {
+        mut ranges,
+        truncated: source_ranges_truncated,
+        procedural_targets,
+        probe_hints,
+    } = recover_source_provenance(
+        &graph,
+        &stored.source_netlist,
+        stored
+            .files
+            .iter()
+            .map(|file| (file.name.clone(), file.content.clone())),
+    );
+    if stored.tool == SynthTool::Vivado {
+        ranges.extend(vivado_procedural_ranges(&procedural_targets));
+    }
+    let delay_profile = parse_stored_delay_profile(&stored.delay_profile)
+        .ok_or_else(|| format!("unknown stored delay profile: {}", stored.delay_profile))?;
+    let delay_model = delay_profile.model();
+    let file_names = stored
+        .files
+        .iter()
+        .map(|file| file.name.clone())
+        .collect::<Vec<_>>();
+    let mut analysis = Analysis::with_delay_model(&graph, file_names.clone(), &delay_model);
+    let mut source_index =
+        SourceLineIndex::from_netlist(&stored.source_netlist, source_top, file_names);
+    source_index.extend_ranges(&ranges);
+    analysis.extend_source_ranges(ranges, source_ranges_truncated);
+    analysis.set_procedural_targets(procedural_targets);
+    analysis.set_source_probe_hints(probe_hints);
+    let response = SynthesizeResponse {
+        design_id: stored.design_id.clone(),
+        top: stored.resolved_top.clone(),
+        tool: stored.tool.to_string(),
+        mode: stored.mode.to_string(),
+        target: stored.target.clone(),
+        stats: analysis.stats(),
+        warnings: analysis.warnings(),
+        log: stored.log.clone(),
+        memories_abstracted: stored.memories_abstracted,
+        vivado_timing: stored.vivado_timing.clone(),
+    };
+    let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
+    Ok(Design {
+        response,
+        graph,
+        analysis,
+        source_index,
+        grouping,
+        delay_model,
+        delay_profile,
+    })
+}
+
+fn stored_delay_profile(profile: DelayProfile) -> &'static str {
+    match profile {
+        DelayProfile::Series7 => "series7",
+        DelayProfile::UltraScale => "ultrascale",
+        DelayProfile::UltraScalePlus => "ultrascale_plus",
+        DelayProfile::Ice40 => "ice40",
+        DelayProfile::Ecp5 => "ecp5",
+        DelayProfile::Generic => "generic",
+    }
+}
+
+fn parse_stored_delay_profile(profile: &str) -> Option<DelayProfile> {
+    match profile {
+        "series7" => Some(DelayProfile::Series7),
+        "ultrascale" => Some(DelayProfile::UltraScale),
+        "ultrascale_plus" => Some(DelayProfile::UltraScalePlus),
+        "ice40" => Some(DelayProfile::Ice40),
+        "ecp5" => Some(DelayProfile::Ecp5),
+        "generic" => Some(DelayProfile::Generic),
+        _ => None,
     }
 }
 
@@ -625,7 +899,7 @@ async fn synthesize(
     let design_id = validated.design_id();
     let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
-    if let Some(design) = cache_lookup(&state.cache, &design_id).await {
+    if let Some(design) = lookup_design(&state, &design_id).await? {
         tracing::info!(
             design_id,
             tool,
@@ -651,8 +925,8 @@ async fn synthesize(
                 let task_mode = mode_string(validated.mode);
                 // A previous flight may have filled the cache after the
                 // optimistic lookup but before this key was claimed.
-                let result =
-                    if let Some(design) = cache_lookup(&task_state.cache, &task_design_id).await {
+                let result = match lookup_design(&task_state, &task_design_id).await {
+                    Ok(Some(design)) => {
                         tracing::info!(
                             design_id = task_design_id,
                             tool = task_tool,
@@ -661,9 +935,10 @@ async fn synthesize(
                             "synthesis_complete"
                         );
                         Ok(design)
-                    } else {
-                        synthesize_uncached(&task_state, &validated, &task_design_id).await
-                    };
+                    }
+                    Ok(None) => synthesize_uncached(&task_state, &validated, &task_design_id).await,
+                    Err(err) => Err(err),
+                };
                 task.complete(result);
             });
             receiver
@@ -671,7 +946,7 @@ async fn synthesize(
         Err(FlightClaimError::AtCapacity) => {
             // A task can publish its cache entry immediately before removing
             // its flight. Close that race before rejecting a distinct key.
-            if let Some(design) = cache_lookup(&state.cache, &design_id).await {
+            if let Some(design) = lookup_design(&state, &design_id).await? {
                 tracing::info!(
                     design_id,
                     tool,
@@ -755,14 +1030,14 @@ async fn synthesize_uncached(
     design_id: &str,
 ) -> FlightResult {
     // Keep the sole running permit until the parsed graph is safely cached.
-    // The flight registry separately bounds this task plus two queued leaders.
+    // The flight registry separately bounds this task plus fifteen queued leaders.
     let _running = Arc::clone(&state.running)
         .acquire_owned()
         .await
         .expect("synthesis semaphore is never closed");
     let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
-    if let Some(design) = cache_lookup(&state.cache, design_id).await {
+    if let Some(design) = lookup_design(state, design_id).await? {
         tracing::info!(
             design_id,
             tool,
@@ -819,78 +1094,59 @@ async fn synthesize_uncached(
             format!("failed to parse source-provenance netlist: {err}"),
         )
     })?;
-    let (top, module) = select_top(&parsed, None).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to resolve top module: {err}"),
-        )
-    })?;
-    let graph = Graph::from_netlist(&parsed, top, module).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to build analysis graph: {err}"),
-        )
-    })?;
-    let (source_top, _) = select_top(&source_parsed, None).map_err(|err| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("failed to resolve source-provenance top module: {err}"),
-        )
-    })?;
-    let SourceProvenance {
-        mut ranges,
-        truncated: source_ranges_truncated,
-        procedural_targets,
-        probe_hints,
-    } = recover_source_provenance(
-        &graph,
-        &source_parsed,
-        validated
-            .files
-            .iter()
-            .map(|file| (file.name.clone(), file.content.clone())),
-    );
-    if validated.tool == SynthTool::Vivado {
-        ranges.extend(vivado_procedural_ranges(&procedural_targets));
-    }
     let vivado_family = validated
         .target
         .as_deref()
         .and_then(|target| state.vivado_families.get(target))
         .map(String::as_str);
     let delay_profile = default_delay_profile(validated, &mode, vivado_family);
-    let delay_model = delay_profile.model();
-    let mut analysis = Analysis::with_delay_model(&graph, validated.file_names(), &delay_model);
-    let mut source_index =
-        SourceLineIndex::from_netlist(&source_parsed, source_top, validated.file_names());
-    source_index.extend_ranges(&ranges);
-    analysis.extend_source_ranges(ranges, source_ranges_truncated);
-    analysis.set_procedural_targets(procedural_targets);
-    analysis.set_source_probe_hints(probe_hints);
-    let response = SynthesizeResponse {
+    let producer_version = producer_version(state, validated.tool)
+        .expect("validated synthesis requests require a configured backend");
+    let stored = StoredDesign {
+        format_version: DESIGN_STORE_FORMAT_VERSION,
         design_id: design_id.to_owned(),
-        top: output.resolved_top,
-        tool: tool.clone(),
-        mode: mode.clone(),
+        producer_version,
+        resolved_top: output.resolved_top,
+        tool: validated.tool,
+        mode: validated.mode,
         target: validated.target.clone(),
-        stats: analysis.stats(),
-        warnings: analysis.warnings(),
         log: output.log,
         memories_abstracted,
         vivado_timing: output.vivado_timing,
+        files: validated.files.clone(),
+        netlist: parsed,
+        source_netlist: source_parsed,
+        delay_profile: stored_delay_profile(delay_profile).to_owned(),
     };
-    let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
-    let design = Arc::new(Design {
-        response: response.clone(),
-        graph,
-        analysis,
-        source_index,
-        grouping,
-        delay_model,
-        delay_profile,
-    });
+    let retain_stored = state.store.is_some();
+    let (design, stored) = tokio::task::spawn_blocking(move || {
+        build_design(&stored).map(|design| (Arc::new(design), retain_stored.then_some(stored)))
+    })
+    .await
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("analysis build task failed: {err}"),
+        )
+    })?
+    .map_err(|err| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, err))?;
     let cache_estimated_bytes = design_cache_weight(design_id, &design);
     let cache_charge_bytes = cache_estimated_bytes.max(DESIGN_CACHE_MIN_ENTRY_BYTES);
+    if cache_charge_bytes > state.cache.read().await.budget_bytes {
+        tracing::warn!(
+            design_id,
+            tool,
+            mode,
+            latency_ms = started.elapsed().as_millis() as u64,
+            cache_estimated_bytes,
+            cache_charge_bytes,
+            "synthesis_cache_rejected"
+        );
+        return Err(ApiError::new(
+            StatusCode::INSUFFICIENT_STORAGE,
+            "synthesized design exceeds the server cache budget",
+        ));
+    }
     let cached = state.cache.write().await.insert(
         design_id.to_owned(),
         Arc::clone(&design),
@@ -911,6 +1167,16 @@ async fn synthesize_uncached(
             "synthesized design exceeds the server cache budget",
         ));
     }
+    let stored_bytes = match stored {
+        Some(stored) => match persist_design(state, stored).await {
+            Ok(bytes) => Some(bytes),
+            Err(err) => {
+                tracing::warn!(design_id, error = %err, "synthesis_persistence_degraded");
+                None
+            }
+        },
+        None => None,
+    };
     tracing::info!(
         design_id,
         tool,
@@ -919,6 +1185,8 @@ async fn synthesize_uncached(
         latency_ms = started.elapsed().as_millis() as u64,
         cache_estimated_bytes,
         cache_charge_bytes,
+        stored_bytes = stored_bytes.unwrap_or(0),
+        persisted = stored_bytes.is_some(),
         "synthesis_complete"
     );
     Ok(design)
@@ -1505,8 +1773,8 @@ async fn examples() -> Result<Json<ExamplesResponse>, ApiError> {
 }
 
 async fn get_design(state: &AppState, id: &str) -> Result<Arc<Design>, ApiError> {
-    cache_lookup(&state.cache, id)
-        .await
+    lookup_design(state, id)
+        .await?
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown design"))
 }
 
@@ -2174,6 +2442,111 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    fn persistent_test_state(directory: &std::path::Path, yosys_version: &str) -> AppState {
+        let store =
+            DesignStore::open(directory, 16 * 1024 * 1024, Duration::from_secs(60)).unwrap();
+        AppState::with_cache_config(
+            yosys_version,
+            None,
+            None,
+            16 * 1024 * 1024,
+            Duration::from_secs(60),
+            Some(store),
+        )
+    }
+
+    async fn get_json(state: &AppState, uri: String) -> (StatusCode, serde_json::Value) {
+        let response = app(state.clone())
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn persisted_design_survives_restart_and_rebuilds_exploration_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = persistent_test_state(directory.path(), "Yosys persistence-test");
+        let request = serde_json::json!({
+            "files": [{
+                "name": "top.sv",
+                "content": "module top(input logic a, input logic b, output logic y); assign y = a & b; endmodule"
+            }],
+            "top": "top",
+            "mode": "gates"
+        });
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let synthesized: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let design_id = synthesized["design_id"].as_str().unwrap().to_owned();
+        let (_, endpoints_before) =
+            get_json(&state, format!("/api/design/{design_id}/endpoints")).await;
+        assert!(directory.path().join(format!("{design_id}.json")).is_file());
+        drop(state);
+
+        let restarted = persistent_test_state(directory.path(), "Yosys persistence-test");
+        assert!(restarted.cache.read().await.designs.is_empty());
+        let mut cold_requests = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let request_state = restarted.clone();
+            let request_id = design_id.clone();
+            cold_requests.spawn(async move {
+                get_json(&request_state, format!("/api/design/{request_id}")).await
+            });
+        }
+        while let Some(result) = cold_requests.join_next().await {
+            let (status, restored) = result.unwrap();
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(restored, synthesized);
+        }
+        let (status, endpoints_after) =
+            get_json(&restarted, format!("/api/design/{design_id}/endpoints")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(endpoints_after, endpoints_before);
+        assert!(
+            restarted
+                .cache
+                .read()
+                .await
+                .designs
+                .contains_key(&design_id)
+        );
+        drop(restarted);
+
+        let upgraded = persistent_test_state(directory.path(), "Yosys persistence-test-v2");
+        let (status, body) = get_json(&upgraded, format!("/api/design/{design_id}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "unknown design");
+        assert!(!directory.path().join(format!("{design_id}.json")).exists());
+    }
+
+    #[tokio::test]
+    async fn corrupt_persisted_design_is_removed_and_reported_as_unknown() {
+        let directory = tempfile::tempdir().unwrap();
+        let design_id = "d".repeat(12);
+        let path = directory.path().join(format!("{design_id}.json"));
+        std::fs::write(&path, b"not valid json").unwrap();
+        let state = persistent_test_state(directory.path(), "Yosys persistence-test");
+
+        let (status, body) = get_json(&state, format!("/api/design/{design_id}")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"], "unknown design");
+        assert!(!path.exists());
+    }
+
     /// The Yosys path has no Vivado timing, and the key must be absent rather
     /// than null so an existing client sees a byte-identical design response.
     #[tokio::test]
@@ -2375,6 +2748,7 @@ mod tests {
             None,
             DESIGN_CACHE_MIN_ENTRY_BYTES - 1,
             Duration::from_secs(60),
+            None,
         );
         let request = serde_json::json!({
             "files": [{
@@ -2399,6 +2773,47 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
         assert!(state.cache.write().await.designs.is_empty());
         assert!(state.flights.entries.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn persistence_failure_degrades_to_the_hot_cache() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = DesignStore::open(directory.path(), 1, Duration::from_secs(60)).unwrap();
+        let state = AppState::with_cache_config(
+            "Yosys test-version",
+            None,
+            None,
+            16 * 1024 * 1024,
+            Duration::from_secs(60),
+            Some(store),
+        );
+        let request = serde_json::json!({
+            "files": [{
+                "name": "top.sv",
+                "content": "module top(input logic a, output logic y); assign y = a; endmodule"
+            }],
+            "top": "top",
+            "mode": "rtl"
+        });
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/synthesize")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let design_id = body["design_id"].as_str().unwrap();
+        assert!(state.cache.read().await.designs.contains_key(design_id));
+        assert!(directory.path().read_dir().unwrap().next().is_none());
+        assert_eq!(get_design_body(&state, design_id).await, body);
     }
 
     #[test]

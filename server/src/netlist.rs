@@ -1,5 +1,5 @@
 use deepsize::DeepSizeOf;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use thiserror::Error;
@@ -16,12 +16,12 @@ pub enum NetlistError {
     AmbiguousTop,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YosysNetlist {
     pub modules: BTreeMap<String, YosysModule>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YosysModule {
     #[serde(default)]
     pub attributes: BTreeMap<String, String>,
@@ -33,14 +33,14 @@ pub struct YosysModule {
     pub netnames: BTreeMap<String, YosysNetname>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YosysPort {
     pub direction: PortDirection,
     #[serde(default)]
     pub bits: Vec<YosysBit>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, DeepSizeOf)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, DeepSizeOf)]
 #[serde(rename_all = "lowercase")]
 pub enum PortDirection {
     Input,
@@ -48,7 +48,7 @@ pub enum PortDirection {
     Inout,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YosysCell {
     #[serde(rename = "type")]
     pub cell_type: String,
@@ -64,7 +64,7 @@ pub struct YosysCell {
     pub connections: BTreeMap<String, Vec<YosysBit>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct YosysNetname {
     #[serde(default)]
     pub hide_name: u8,
@@ -74,7 +74,7 @@ pub struct YosysNetname {
     pub attributes: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, DeepSizeOf)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, DeepSizeOf)]
 #[serde(untagged)]
 pub enum YosysBit {
     Net(u32),

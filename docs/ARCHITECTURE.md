@@ -36,12 +36,21 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   Verilog, then uses a read-only Yosys pass to normalize that netlist into the
   same parser contract. Deployments only advertise Vivado when `VIVADO_BIN`
   passes startup preflight and returns a non-empty installed part catalog.
-- No database. Designs live in an in-memory store keyed by a content hash of
-  (sources, tool, mode, target, args); re-synthesizing identical input is a
-  cache hit. The cache is TTL- and byte-budgeted with FIFO eviction. Cache hits
-  share a read lock; only expired-entry cleanup and insertion take the write
-  lock. Retained size is derived structurally so new owned fields cannot bypass
-  cache accounting silently.
+- No database. Designs are keyed by a content hash of (sources, tool, mode,
+  target, args). A 512 MiB, 30-minute in-memory FIFO cache serves active
+  exploration, backed by an 8 GiB local file store with a 4-hour sliding TTL
+  and least-recently-used eviction; one entry is capped at 512 MiB. Cold hits
+  rebuild the graph and analysis state from the stored netlists without running
+  synthesis again. Cold rebuilds are serialized to bound transient memory on
+  the single host. Writes use an atomic rename, and incompatible, corrupt,
+  expired, or evicted entries are discarded. The file store survives
+  application restarts and deployments but is local to one host; horizontal
+  replicas would require shared storage or request affinity. It is a
+  single-writer store for the deployment's one application process. Disk-write
+  failures degrade to hot-cache-only retention instead of failing synthesis.
+- Hot-cache hits share a read lock; only expired-entry cleanup and insertion
+  take the write lock. Retained size is derived structurally so new owned fields
+  cannot bypass cache accounting silently.
 
 ## Synthesis Modes
 
