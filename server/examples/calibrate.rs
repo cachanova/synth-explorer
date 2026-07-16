@@ -64,6 +64,21 @@ struct Estimate {
     /// Structural depth of the critical path, for sanity-checking against
     /// Vivado's "Logic Levels".
     depth: u32,
+    /// LUT cell count (area proxy): every `cells_by_type` entry whose name
+    /// starts with `LUT`. `default` keeps older estimate files loadable.
+    #[serde(default)]
+    luts: usize,
+    /// Per-class structural depths, so a flag sweep can tell when a combo moves
+    /// the critical path to a different class (which breaks comparability with
+    /// a Vivado measurement of the original path).
+    #[serde(default)]
+    depth_input_to_register: Option<u32>,
+    #[serde(default)]
+    depth_register_to_register: Option<u32>,
+    #[serde(default)]
+    depth_register_to_output: Option<u32>,
+    #[serde(default)]
+    depth_input_to_output: Option<u32>,
 }
 
 /// Vivado's `report_timing` for one case (produced by `calibration/vivado.tcl`).
@@ -91,7 +106,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "usage:\n  \
                  calibrate gen <examples-dir> <out-dir>\n  \
-                 calibrate estimate <cases-dir> <out.json>\n  \
+                 calibrate estimate <cases-dir> <out.json> [extra-synth-flags...]\n  \
                  calibrate report <est.json> <vivado.json>\n  \
                  calibrate fit <vivado.json>"
             );
@@ -216,8 +231,29 @@ fn family_arg(family: &str) -> anyhow::Result<&'static str> {
     })
 }
 
-async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<Estimate> {
+async fn estimate_case(
+    dir: &Path,
+    case: &Case,
+    family: &str,
+    extra_flags: &[String],
+) -> anyhow::Result<Estimate> {
     let content = std::fs::read_to_string(dir.join(&case.name).join(&case.file))?;
+    // `-noiopad -noclkbuf` matches Vivado's `-mode out_of_context`, so both
+    // tools produce a bare fabric netlist. Without it Yosys inserts
+    // IBUF/OBUF/BUFG that Vivado's OOC run does not have, and the two sides
+    // would be timing different circuits. It also keeps pad and clock-tree
+    // delay — real, but package-dependent and not what these coefficients
+    // model — out of the fit.
+    //
+    // `extra_flags` (from the CLI) come after the baseline, for sweeping
+    // additional `synth_xilinx` options. They go through the same
+    // `SynthRequest::validate` as the app, so a flag the app would reject is
+    // rejected here too.
+    let mut extra_args = format!("-family {} -noiopad -noclkbuf", family_arg(family)?);
+    for flag in extra_flags {
+        extra_args.push(' ');
+        extra_args.push_str(flag);
+    }
     let request = SynthRequest {
         files: vec![SourceFile {
             name: case.file.clone(),
@@ -227,16 +263,7 @@ async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<
         tool: SynthTool::Yosys,
         mode: SynthMode::Xilinx,
         target: None,
-        // `-noiopad -noclkbuf` matches Vivado's `-mode out_of_context`, so both
-        // tools produce a bare fabric netlist. Without it Yosys inserts
-        // IBUF/OBUF/BUFG that Vivado's OOC run does not have, and the two sides
-        // would be timing different circuits. It also keeps pad and clock-tree
-        // delay — real, but package-dependent and not what these coefficients
-        // model — out of the fit.
-        extra_args: Some(format!(
-            "-family {} -noiopad -noclkbuf",
-            family_arg(family)?
-        )),
+        extra_args: Some(extra_args),
     };
     let validated = request
         .validate()
@@ -259,7 +286,13 @@ async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<
     let bd = estimate
         .breakdown
         .ok_or_else(|| anyhow::anyhow!("case {} has no breakdown", case.name))?;
-    let depth = analysis.stats().max_depth;
+    let stats = analysis.stats();
+    let luts = stats
+        .cells_by_type
+        .iter()
+        .filter(|(name, _)| name.starts_with("LUT"))
+        .map(|(_, count)| count)
+        .sum();
     Ok(Estimate {
         case: case.name.clone(),
         family: family.to_owned(),
@@ -268,21 +301,31 @@ async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<
         logic_ns: bd.logic_ns,
         net_ns: bd.net_ns,
         setup_ns: bd.setup_ns,
-        depth,
+        depth: stats.max_depth,
+        luts,
+        depth_input_to_register: stats.depths.input_to_register,
+        depth_register_to_register: stats.depths.register_to_register,
+        depth_register_to_output: stats.depths.register_to_output,
+        depth_input_to_output: stats.depths.input_to_output,
     })
 }
 
 fn cmd_estimate(args: &[String]) -> anyhow::Result<()> {
-    let (dir, out) = match args {
-        [a, b] => (PathBuf::from(a), PathBuf::from(b)),
-        _ => anyhow::bail!("usage: calibrate estimate <cases-dir> <out.json>"),
+    let (dir, out, extra_flags) = match args {
+        [a, b, rest @ ..] => (PathBuf::from(a), PathBuf::from(b), rest.to_vec()),
+        _ => {
+            anyhow::bail!("usage: calibrate estimate <cases-dir> <out.json> [extra-synth-flags...]")
+        }
     };
+    if !extra_flags.is_empty() {
+        println!("extra synth flags: {}", extra_flags.join(" "));
+    }
     let spec = read_spec(&dir)?;
     let runtime = tokio::runtime::Runtime::new()?;
     let mut estimates = Vec::new();
     for family in spec.parts.keys() {
         for case in &spec.cases {
-            match runtime.block_on(estimate_case(&dir, case, family)) {
+            match runtime.block_on(estimate_case(&dir, case, family, &extra_flags)) {
                 Ok(est) => {
                     println!(
                         "{:<18} {:<16} {:>7.3} ns",
