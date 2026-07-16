@@ -541,13 +541,16 @@ type IdentifierRepairs = HashMap<String, String>;
 fn parse_source(source: &str) -> Option<(SyntaxTree, IdentifierRepairs)> {
     let defines = HashMap::new();
     let include_paths: Vec<PathBuf> = Vec::new();
+    // `ignore_include = true`: submitted source is untrusted and must never
+    // cause a filesystem read, and every origin offset must index the primary
+    // source text (an included file's offsets would map to the wrong lines).
     let parse = |input| {
         parse_sv_str(
             input,
             Path::new("source.sv"),
             &defines,
             &include_paths,
-            false,
+            true,
             false,
         )
     };
@@ -599,17 +602,23 @@ fn restore_identifiers(scanned: &mut ScannedSource, repairs: &IdentifierRepairs)
         }
     };
 
+    // LHS vectors were sorted/deduped on the repaired placeholder names, so
+    // re-normalize after restoring the original spellings.
     for assignment in &mut scanned.assignments.continuous {
         restore(&mut assignment.module);
         for identifier in &mut assignment.lhs_identifiers {
             restore(identifier);
         }
+        assignment.lhs_identifiers.sort();
+        assignment.lhs_identifiers.dedup();
     }
     for assignment in &mut scanned.assignments.procedural {
         restore(&mut assignment.module);
         for identifier in &mut assignment.lhs_identifiers {
             restore(identifier);
         }
+        assignment.lhs_identifiers.sort();
+        assignment.lhs_identifiers.dedup();
     }
     for declaration in &mut scanned.ports {
         restore(&mut declaration.module);
@@ -1414,6 +1423,60 @@ endmodule
     #[test]
     fn parse_failures_are_skipped_without_partial_results() {
         assert!(scan_source("module top( ;", &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn include_directives_are_ignored_and_never_read_the_filesystem() {
+        // Untrusted source names an include that must not be opened; the rest
+        // of the file still yields provenance with correct primary-file lines.
+        let source = "`include \"/nonexistent/evil.svh\"\n\
+module top(input logic a, output logic y);\n\
+  assign y = a;\n\
+endmodule\n";
+        let scanned = scan_source(source, &HashMap::new()).expect("include is inert");
+        assert_eq!(
+            scanned
+                .assignments
+                .continuous
+                .iter()
+                .map(|assignment| (assignment.start_line, assignment.lhs_identifiers.clone()))
+                .collect::<Vec<_>>(),
+            vec![(3, vec!["y".to_owned()])],
+        );
+    }
+
+    #[test]
+    fn alias_inside_strings_and_comments_never_corrupts_extraction() {
+        let source = "module top(input logic a, output logic y);\n\
+  // alias in a comment\n\
+  wire alias = a;\n\
+  initial $display(\"alias = %b\", alias);\n\
+  assign y = alias;\n\
+endmodule\n";
+        let scanned = scan_source(source, &HashMap::new()).expect("repair applies");
+        let mut targets: Vec<_> = scanned
+            .assignments
+            .continuous
+            .iter()
+            .flat_map(|assignment| assignment.lhs_identifiers.clone())
+            .collect();
+        targets.sort();
+        assert_eq!(targets, vec!["alias".to_owned(), "y".to_owned()]);
+    }
+
+    #[test]
+    fn alias_repair_candidate_exhaustion_skips_the_file_cleanly() {
+        // Occupy every placeholder spelling so the repair cannot pick one; the
+        // file must be skipped, never mapped incorrectly.
+        let mut source = String::from("module top(output wire alias);\n");
+        for initial in b'a'..=b'z' {
+            source.push_str(&format!(
+                "  wire {}____ = 1'b0;\n",
+                char::from(initial)
+            ));
+        }
+        source.push_str("endmodule\n");
+        assert!(scan_source(&source, &HashMap::new()).is_none());
     }
 
     #[test]
