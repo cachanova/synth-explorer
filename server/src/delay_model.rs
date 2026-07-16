@@ -48,10 +48,19 @@
 //! estimate is not agreement with routed silicon. Depth and delay ordering
 //! remain more trustworthy than any individual path's picoseconds.
 //!
-//! The Lattice (iCE40/ECP5) and `generic` presets are NOT vendor-calibrated
-//! (no Lattice tool available); they are scaled to the same picosecond scale.
-//! Every coefficient is a flat, tunable number so a request can override any of
-//! them. This is still a pre-place-and-route estimate, NOT timing closure.
+//! The Lattice presets are derived from measured open timing data rather than
+//! a vendor tool run: Project IceStorm's silicon-measured SDF database for
+//! iCE40 (github.com/YosysHQ/icestorm, ISC licence) and the prjtrellis timing
+//! database for ECP5 (github.com/YosysHQ/prjtrellis-db, CC0-1.0). The ASIC
+//! PDK profiles for gates mode (sky130hd / gf180mcu / asap7) are read from
+//! those PDKs' open Liberty files at the TT corner. Per-coefficient
+//! provenance lives on each preset. These are physically true per-stage
+//! values — which, as the Xilinx history above shows, can score *worse* on
+//! end-to-end totals than compensating-error fits; they serve the model's
+//! stated "relative guide" purpose rather than promising absolute accuracy.
+//! The `generic` preset remains notional. Every coefficient is a flat,
+//! tunable number so a request can override any of them. This is still a
+//! pre-place-and-route estimate, NOT timing closure.
 
 use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
@@ -137,8 +146,15 @@ impl DelayProfile {
     /// (Series-7 routing gains more; UltraScale logic does), so splitting the
     /// term would encode that inconsistency as though it were signal.
     ///
-    /// The Lattice and generic profiles have no vendor measurement; they keep
-    /// the old hand-picked factors.
+    /// ECP5 factors are measured from prjtrellis-db (CC0-1.0): per-arc
+    /// grade-7/grade-6 and grade-8/grade-6 ratios over lut / carry / wide-mux
+    /// / clk-to-q / net-base average to 0.875 (spread 0.849–0.887) and 0.755
+    /// (spread 0.716–0.789). ECP5's real grades are named 6/7/8 with 6 the
+    /// slowest — the grade the preset is characterized at — so the generic
+    /// "-2" knob maps to grade 7 and "-3" to grade 8.
+    ///
+    /// iCE40 and generic have no grade measurement and keep the old
+    /// hand-picked factors.
     pub fn speed_grade_factor(self, grade: Option<&str>) -> f64 {
         match (self, grade) {
             (Self::Series7, Some("-2")) => 0.799,
@@ -147,6 +163,9 @@ impl DelayProfile {
             (Self::UltraScale, Some("-3")) => 0.738,
             (Self::UltraScalePlus, Some("-2")) => 0.860,
             (Self::UltraScalePlus, Some("-3")) => 0.795,
+            // prjtrellis-measured; "-2" = ECP5 grade 7, "-3" = ECP5 grade 8.
+            (Self::Ecp5, Some("-2")) => 0.875,
+            (Self::Ecp5, Some("-3")) => 0.755,
             // Not vendor-measured.
             (_, Some("-2")) => 0.87,
             (_, Some("-3")) => 0.78,
@@ -249,32 +268,87 @@ impl DelayModel {
         }
     }
 
-    /// Lattice iCE40 (40nm) — a small, comparatively slow fabric. NOT
-    /// vendor-calibrated (no Lattice tool here); scaled slower than Series-7.
+    /// Lattice iCE40, HX grade (40nm) — a small, comparatively slow fabric.
+    /// Derived from Project IceStorm's silicon-measured timing database
+    /// (github.com/YosysHQ/icestorm `icefuzz/timings_hx8k.txt`, ISC licence;
+    /// the hx1k database is byte-identical). Each value is the max corner of
+    /// the SDF `min:typ:max` triple, worst rise/fall edge — what icetime uses
+    /// for worst-case analysis.
+    ///
+    /// Provenance per coefficient:
+    /// - `lut_ps`: `LogicCell40` IOPATH `in0->lcout` = 448.861, the worst
+    ///   input arc (in1 399.8 / in2 378.7 / in3 315.6 — pin assignment is
+    ///   unknowable pre-place, so the worst arc is the honest pick).
+    /// - `carry_ps`: `LogicCell40` IOPATH `carryin->carryout` = 126.242 per
+    ///   bit; yosys emits one `SB_CARRY` per bit, so per-cell = per-bit.
+    /// - `wide_mux_ps` / `cell_ps` = `lut_ps`: iCE40 has no wide-mux resource
+    ///   (no MUXF equivalent) — everything combinational is a LogicCell40.
+    /// - `ff_clk_to_q_ps`: `LogicCell40` IOPATH `posedge:clk->lcout` = 540.036.
+    /// - `ff_setup_ps`: intrinsic setup = SETUP(posedge:in0) 469.902 minus the
+    ///   in0->lcout arc 448.861 = 21.0. The database measures setup at the LUT
+    ///   inputs (the FF D pin physically sits behind the LUT), so the raw
+    ///   SETUP would double-count the LUT delay this model already charges.
+    /// - `net_base_ps`: one nearest-neighbour local route = Odrv4 371.713 +
+    ///   LocalMux 329.632 + InMux 259.498 = 960.8. Routing dominates this
+    ///   fabric — the previous guessed 320 was ~3x optimistic.
+    /// - `net_per_fanout_ps`: = InMux 259.498 (the worst sink gains roughly
+    ///   one extra input-mux/span hop per fanout doubling, matching the
+    ///   model's log2 damping). The least-measured iCE40 number.
+    ///
+    /// This is the HX grade (the mainstream hx1k/hx8k parts). Every LP arc in
+    /// the database is exactly 1.4739x its HX arc, so an LP preset would be
+    /// `ice40().scaled(1.474)`. Still a pre-place-and-route estimate, NOT
+    /// timing closure.
     pub fn ice40() -> Self {
         Self {
-            lut_ps: 480.0,
-            carry_ps: 90.0,
-            wide_mux_ps: 480.0,
-            cell_ps: 480.0,
-            ff_clk_to_q_ps: 800.0,
-            ff_setup_ps: 60.0,
-            net_base_ps: 320.0,
-            net_per_fanout_ps: 70.0,
+            lut_ps: 448.9,
+            carry_ps: 126.2,
+            wide_mux_ps: 448.9,
+            cell_ps: 448.9,
+            ff_clk_to_q_ps: 540.0,
+            ff_setup_ps: 21.0,
+            net_base_ps: 960.8,
+            net_per_fanout_ps: 259.5,
         }
     }
 
-    /// Lattice ECP5 (40nm). NOT vendor-calibrated; scaled from Series-7.
+    /// Lattice ECP5 (40nm), speed grade 6 — the slowest grade, matching the
+    /// convention that every preset is the baseline grade. Derived from the
+    /// prjtrellis measured timing database (github.com/YosysHQ/prjtrellis-db
+    /// `ECP5/timing/speed_6/{cells,interconnect}.json`, CC0-1.0), taking the
+    /// max of `[min,typ,max]` and the worst rise/fall edge. Faster grades are
+    /// handled by [`DelayProfile::speed_grade_factor`].
+    ///
+    /// Provenance per coefficient:
+    /// - `lut_ps` / `cell_ps`: `SLOGICB` IOPath `A0..D1 -> F0/F1` = 236 (all
+    ///   inputs identical).
+    /// - `carry_ps`: `SCCU2C` IOPath `FCI->FCO` = 71/bit x 2 bits per CCU2C
+    ///   cell = 142 — the netlist graph node is the CCU2C, so per-cell is two
+    ///   bits. Chain entry (`A0->FCO` 447) and exit (`FCI->F1` 474) are larger
+    ///   but the flat model has no such terms; unmodelled.
+    /// - `wide_mux_ps`: `SLOGICB M0->OFX0` (PFUMX) = 256; `FXA/FXB->OFX1`
+    ///   (L6MUX21) = 242; worst = 256.
+    /// - `ff_clk_to_q_ps`: `SLOGICB CLK->Q0` = 525.
+    /// - `ff_setup_ps`: measured 0 for DI0/DI1/M0/M1 — the cost sits in hold
+    ///   (303 ps), which this model has no term for; 0 is the honest value.
+    /// - `net_base_ps`: interconnect.json `f_to_span2he_e1` 196.2 +
+    ///   `span2he_to_a_e1` 498.7 = 695 — one span-2 hop, LUT output to LUT
+    ///   input.
+    /// - `net_per_fanout_ps`: prjtrellis models fanout linearly per pip class
+    ///   (1.65 + 18.5 = 20.1 ps/sink on that route); converted to this log2
+    ///   model by matching the total at fanout 8: 20.1 x 8 / log2(8) = 53.7.
+    ///
+    /// Still a pre-place-and-route estimate, NOT timing closure.
     pub fn ecp5() -> Self {
         Self {
-            lut_ps: 420.0,
-            carry_ps: 90.0,
-            wide_mux_ps: 420.0,
-            cell_ps: 420.0,
-            ff_clk_to_q_ps: 650.0,
-            ff_setup_ps: 55.0,
-            net_base_ps: 280.0,
-            net_per_fanout_ps: 60.0,
+            lut_ps: 236.0,
+            carry_ps: 142.0,
+            wide_mux_ps: 256.0,
+            cell_ps: 236.0,
+            ff_clk_to_q_ps: 525.0,
+            ff_setup_ps: 0.0,
+            net_base_ps: 695.0,
+            net_per_fanout_ps: 53.7,
         }
     }
 
@@ -467,6 +541,11 @@ mod tests {
             s7 < usp,
             "series7 should gain more from -3 than ultrascale+ ({s7} vs {usp})"
         );
+
+        // ECP5's factors are prjtrellis-measured per-arc ratios; the generic
+        // "-2"/"-3" knob maps to its real grades 7/8 (6 is the baseline).
+        assert_eq!(DelayProfile::Ecp5.speed_grade_factor(Some("-2")), 0.875);
+        assert_eq!(DelayProfile::Ecp5.speed_grade_factor(Some("-3")), 0.755);
 
         // -1 is the baseline every preset is characterized at, so it must not
         // scale at all — for any family, however it is spelled.
