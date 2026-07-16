@@ -16,7 +16,10 @@
 # Each EDIF is exported by Yosys with the app's exact baseline synthesis line:
 #
 #   read_verilog -sv <case>.sv
-#   synth_xilinx -top <top> -flatten -family <xc7|xcu|xcup> -noiopad -noclkbuf
+#   synth_xilinx -top <top> -flatten -nowidelut -family <xc7|xcu|xcup> -noiopad -noclkbuf
+#
+# (-nowidelut is the app default since #67; fit coefficients against EDIFs
+# exported with the same flags the app actually uses.)
 #   write_edif -pvector bra <case>.<family>.edif
 #
 # Usage: vivado -mode batch -source vivado_edif.tcl -tclargs <cases_dir> [case ...]
