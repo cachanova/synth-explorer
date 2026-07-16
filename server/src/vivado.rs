@@ -90,7 +90,7 @@ pub struct VivadoPart {
 /// makes it the reference our delay model is calibrated against.
 // DeepSizeOf: this rides `SynthesizeResponse` inside a cached `Design`, whose
 // weight is `deep_size_of()`. The derive accounts for the two owned strings.
-#[derive(Debug, Clone, PartialEq, Serialize, DeepSizeOf)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, DeepSizeOf)]
 pub struct VivadoTiming {
     /// Vivado's `Data Path Delay`: clock-to-Q + logic + route. Setup is *not*
     /// included — it is folded into `slack_ns` — so this must not be compared

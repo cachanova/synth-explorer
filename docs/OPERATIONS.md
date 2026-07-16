@@ -24,8 +24,11 @@ Cloudflare proxy, obtains and renews the TLS certificate.
 | TLS and routing | Caddy container | Certificates, redirects, reverse proxy |
 | Application | Synth Explorer container | Static UI, API, and Yosys |
 
-The production stack has no database. The server keeps synthesized designs in
-memory and discards them on restart.
+The production stack has no database. The server keeps active designs in a
+bounded memory cache and retains reconstruction data in the local
+`design_data` Docker volume. Stored designs have a 24-hour sliding TTL and a
+2 GiB byte budget, survive application deployments, and are not replicated off
+the host.
 
 ## One-time account setup
 
@@ -422,9 +425,9 @@ digest on disk.
 ## Recovery and backups
 
 The project does not pay for VM backups at launch. GitHub stores the source and
-workflow history. GHCR stores release images. Cloudflare stores DNS. The server
-stores designs in memory, and a backup could retain submitted RTL that users
-expect the service to discard.
+workflow history. GHCR stores release images. Cloudflare stores DNS. Do not back
+up the `design_data` volume: a backup would retain submitted RTL beyond the
+documented 24-hour service window.
 
 Use a temporary Hetzner snapshot before an OS or Docker change that has a high
 recovery cost. Delete the snapshot after the service passes its smoke test.

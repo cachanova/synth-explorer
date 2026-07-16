@@ -301,15 +301,28 @@ task. When all three distinct slots are occupied, a new distinct request gets
 one final TTL-aware cache lookup and then returns `503` with `Retry-After: 5`.
 
 Parsed designs are retained for 30 minutes from insertion in a 128 MiB
-byte-weighted FIFO cache. Each entry is charged at least 64 KiB; otherwise its
-weight is a deterministic estimate of retained allocation from owned
-collection/string capacities plus cache key/entry overhead, not exact RSS. A
-synthesized design whose charge exceeds the cache budget returns `507` rather
-than an id that subsequent analysis routes could not resolve.
+byte-weighted FIFO memory cache. Each entry is charged at least 64 KiB;
+otherwise its weight is a deterministic estimate of retained allocation from
+owned collection/string capacities plus cache key/entry overhead, not exact
+RSS.
+
+The memory cache is backed by a 2 GiB local file store with a 24-hour sliding
+TTL, a 256 MiB per-entry cap, and least-recently-used eviction. It stores the
+submitted sources and both normalized netlists needed to reconstruct every
+exploration endpoint. A cold hit rebuilds the parsed graph without rerunning
+Yosys or Vivado; cold rebuilds are serialized to cap transient memory. Writes
+are atomic. Corrupt entries, entries from different synthesis-tool versions,
+expired entries, and entries evicted by the byte budget are deleted. The store
+survives process and container restarts on the same deployment host, but it is
+not shared between multiple backend hosts.
+
+A synthesized design whose in-memory charge exceeds the hot-cache budget, whose
+stored form exceeds the disk budget, or which cannot be written durably returns
+`507` rather than an id that subsequent analysis routes could not resolve.
 
 `400` on Yosys failure (body includes the Yosys `log`), `422` on validation
 failure, `503` when three distinct leaders are active or waiting, `504` on
-timeout, and `507` when one design cannot be retained in the cache.
+timeout, and `507` when one design cannot be retained in memory and on disk.
 
 Sandbox resource kills return `400` with a kind-specific `error` instead of
 the generic "yosys failed":
@@ -401,7 +414,8 @@ Response:
 }
 ```
 
-Returns 404 if the design id is not in the cache (e.g. expired — re-synthesize).
+Returns 404 if the design id is absent from both retention tiers (for example,
+after expiry or disk eviction; re-synthesize to recreate it).
 
 This endpoint retunes the estimate only. It deliberately does not echo
 `vivado_timing`: that is a measurement of one synthesis run, constant for the
@@ -639,4 +653,7 @@ At most 200 ids per request (`422` above that).
 ## GET `/api/design/:id`
 
 Returns the same body as the original `/api/synthesize` response (for reloads).
-`404` if the id is unknown (in-memory store; designs don't survive restarts).
+`404` if the id is unknown. Designs normally survive process and container
+restarts on the same host, but expire after 24 hours without a cold access, may
+be evicted by the 2 GiB disk budget, and are invalidated when the producing
+synthesis-tool version changes.

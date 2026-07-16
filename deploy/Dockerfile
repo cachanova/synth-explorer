@@ -78,7 +78,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 synth-explorer \
     && useradd --uid 10001 --gid synth-explorer --no-create-home \
-        --home-dir /nonexistent --shell /usr/sbin/nologin synth-explorer
+        --home-dir /nonexistent --shell /usr/sbin/nologin synth-explorer \
+    && install -d -o 10001 -g 10001 -m 0700 /var/lib/synth-explorer
 
 WORKDIR /app
 COPY --from=yosys-builder /opt/yosys /opt/yosys
@@ -97,6 +98,7 @@ ENV PATH="/opt/yosys/bin:${PATH}" \
     LC_ALL=en_US.UTF-8 \
     STATIC_DIR=/app/web/dist \
     EXAMPLES_DIR=/app/examples \
+    DESIGN_STORE_DIR=/var/lib/synth-explorer/designs \
     BIND_ADDR=0.0.0.0:8787 \
     BUILD_COMMIT=${BUILD_COMMIT}
 

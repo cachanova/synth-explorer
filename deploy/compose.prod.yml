@@ -47,6 +47,7 @@ services:
       BIND_ADDR: 0.0.0.0:8787
       STATIC_DIR: /app/web/dist
       EXAMPLES_DIR: /app/examples
+      DESIGN_STORE_DIR: /var/lib/synth-explorer/designs
     expose:
       - "8787"
     networks:
@@ -55,6 +56,8 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=268435456,mode=1777,noexec,nosuid,nodev
+    volumes:
+      - design_data:/var/lib/synth-explorer
     cap_drop:
       - ALL
     security_opt:
@@ -83,3 +86,4 @@ networks:
 volumes:
   caddy_data:
   caddy_config:
+  design_data:
