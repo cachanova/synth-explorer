@@ -10,8 +10,8 @@
   --text: #dcdee2;
   --text-dim: #9da1a8;
   --text-faint: #7b7f86;
-  --accent: #8ab4f8;
-  --accent-dim: #4a6da8;
+  --accent: #2dd4bf;
+  --accent-dim: #12857c;
   --green: #57ab5a;
   --blue: #8ab4f8;
   --amber: #c69026;
@@ -70,7 +70,7 @@ button.primary {
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
-  background: #5679b4;
+  background: #16998d;
 }
 
 input,
@@ -138,8 +138,8 @@ a:hover {
 }
 .app-header .brand-mark {
   display: block;
-  width: 36px;
-  height: 18px;
+  width: 27px;
+  height: 24px;
   flex: 0 0 auto;
 }
 .app-header .logo .accent {
@@ -1323,4 +1323,58 @@ th.sortable:hover {
 .g-control-label.clickable:focus-visible rect {
   stroke: var(--accent);
   stroke-width: 1.5;
+}
+
+/* Bubble-trail loader — the mark with bubbles streaming off the snout while
+   work is in flight. Shown in the "refreshing" status tag (see LeftPane). */
+.bubble-loader {
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+}
+.bubble-loader svg {
+  display: block;
+  overflow: visible;
+}
+.bubble-loader .bub {
+  transform-box: view-box;
+  transform-origin: 181px 100px;
+  animation: se-bubble 1.6s cubic-bezier(0.4, 0, 0.5, 1) infinite;
+}
+.bubble-loader .b2 {
+  animation-delay: 0.53s;
+}
+.bubble-loader .b3 {
+  animation-delay: 1.06s;
+}
+@keyframes se-bubble {
+  0% {
+    transform: translate(0, 0) scale(0.3);
+    opacity: 0;
+  }
+  18% {
+    opacity: 0.95;
+  }
+  70% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translate(20px, -54px) scale(1.05);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bubble-loader .bub {
+    animation: none;
+  }
+  /* Rest the bubbles along the mark's static trail instead of animating. */
+  .bubble-loader .b1 {
+    transform: none;
+  }
+  .bubble-loader .b2 {
+    transform: translate(4px, -20px) scale(0.72);
+  }
+  .bubble-loader .b3 {
+    transform: translate(13px, -37px) scale(0.62);
+  }
 }

@@ -1,4 +1,5 @@
 import { shallowEqual, useStore } from '../useStore'
+import { BubbleLoader } from './BubbleLoader'
 import { Editor } from './Editor'
 import { ErrorStrip } from './ErrorStrip'
 import { FileTabs } from './FileTabs'
@@ -21,7 +22,8 @@ export function LeftPane() {
             ? `–${store.sourceSelection.endLine}`
             : ''}
         </span>
-        <span className="tag">
+        <span className="tag" style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          {store.analysisState === 'refreshing' && <BubbleLoader size={13} />}
           {store.analysisState === 'current'
             ? 'mapping live'
             : store.analysisState === 'refreshing'
