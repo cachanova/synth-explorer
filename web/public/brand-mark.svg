@@ -1,21 +1,25 @@
 <svg
   xmlns="http://www.w3.org/2000/svg"
-  viewBox="0 0 48 24"
+  viewBox="20 16 184 162"
   fill="none"
+  stroke-linecap="round"
+  stroke-linejoin="round"
   role="img"
   aria-labelledby="title"
 >
-  <title id="title">XOR gate with output probe</title>
-  <g stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8">
-    <g stroke="#9da1a8">
-      <path d="M1 6h8.5M1 18h8.5" />
-    </g>
-    <g stroke="#8ab4f8">
-      <path d="M8 3c7 0 13 3 17 9-4 6-10 9-17 9 3.5-5.5 3.5-12.5 0-18Z" />
-      <path d="M5 3c3.5 5.5 3.5 12.5 0 18" />
-      <path d="M25 12h15" />
-    </g>
+  <title id="title">Synth Explorer XNOR gate drawn as a fish</title>
+  <g stroke="#2DD4BF">
+    <!-- gate body / fish -->
+    <path stroke-width="6" d="M60 40 Q136 44 170 100 Q136 156 60 160 Q100 100 60 40 Z" />
+    <!-- xor input arc / tail -->
+    <path stroke-width="6" d="M46 40 Q86 100 46 160" />
+    <!-- xnor inversion bubble == mouth bubble -->
+    <circle stroke-width="6" cx="181" cy="100" r="9" />
+    <!-- rising bubble trail -->
+    <circle stroke-width="3.2" cx="185" cy="80" r="5" />
+    <circle stroke-width="2.6" cx="194" cy="63" r="3.4" />
   </g>
-  <circle cx="43" cy="12" r="3" stroke="#bc8cff" stroke-width="1.8" />
-  <circle cx="43" cy="12" r="1.1" fill="#bc8cff" />
+  <!-- eye -->
+  <circle stroke="#dde1e6" stroke-width="4" cx="122" cy="100" r="30" />
+  <circle fill="#dde1e6" cx="122" cy="100" r="13" />
 </svg>
