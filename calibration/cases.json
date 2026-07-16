@@ -1,0 +1,45 @@
+{
+  "comment": "Calibration corpus: each case pins one example module to concrete parameters. Parameter defaults are rewritten textually in the source so Yosys and Vivado read byte-identical RTL. Derived parameters (INDEX_WIDTH, SUM_WIDTH, ...) recompute from the overridden ones.",
+  "parts": {
+    "series7": { "-1": "xc7a35tcpg236-1", "-2": "xc7a35tcpg236-2", "-3": "xc7a35tcpg236-3" },
+    "ultrascale": { "-1": "xcku035-fbva676-1-c", "-2": "xcku035-fbva676-2-e", "-3": "xcku035-fbva676-3-e" },
+    "ultrascale_plus": { "-1": "xcku5p-ffva676-1-e", "-2": "xcku5p-ffva676-2-e", "-3": "xcku5p-ffva676-3-e" }
+  },
+  "speed_grade_cases_comment": "Speed grade is a global property of the silicon, and every extra run is a full synthesis on the host that also serves the app. The -2/-3 grades therefore run on this subset only, chosen to span an FF-only hop, a carry chain, a LUT tree, and a mux tree. All cases still run at the -1 baseline the presets are fitted to.",
+  "speed_grade_cases": [
+    "pipe_w8_s4",
+    "reg_mux_w32",
+    "adder_chain_w16n4",
+    "adder_chain_w64n2",
+    "prio_carry_w32",
+    "prio_case_w32",
+    "barrel_w32",
+    "arbiter_n16"
+  ],
+  "cases": [
+    { "name": "pipe_w8_s4",        "file": "pipe.sv",                  "top": "pipe",                  "params": { "WIDTH": 8, "STAGES": 4 } },
+    { "name": "pipe_w32_s2",       "file": "pipe.sv",                  "top": "pipe",                  "params": { "WIDTH": 32, "STAGES": 2 } },
+    { "name": "reg_mux_w8",        "file": "reg_mux.sv",               "top": "reg_mux",               "params": { "WIDTH": 8 } },
+    { "name": "reg_mux_w32",       "file": "reg_mux.sv",               "top": "reg_mux",               "params": { "WIDTH": 32 } },
+    { "name": "adder_chain_w16n2", "file": "adder_chain.sv",           "top": "adder_chain",           "params": { "WIDTH": 16, "NUM_INPUTS": 2 } },
+    { "name": "adder_chain_w16n4", "file": "adder_chain.sv",           "top": "adder_chain",           "params": { "WIDTH": 16, "NUM_INPUTS": 4 } },
+    { "name": "adder_chain_w32n4", "file": "adder_chain.sv",           "top": "adder_chain",           "params": { "WIDTH": 32, "NUM_INPUTS": 4 } },
+    { "name": "adder_chain_w64n2", "file": "adder_chain.sv",           "top": "adder_chain",           "params": { "WIDTH": 64, "NUM_INPUTS": 2 } },
+    { "name": "prio_case_w8",      "file": "priority_encoder_case.sv",  "top": "priority_encoder_case", "params": { "WIDTH": 8 } },
+    { "name": "prio_case_w32",     "file": "priority_encoder_case.sv",  "top": "priority_encoder_case", "params": { "WIDTH": 32 } },
+    { "name": "prio_for_w8",       "file": "priority_encoder_for.sv",   "top": "priority_encoder_for",  "params": { "WIDTH": 8 } },
+    { "name": "prio_for_w32",      "file": "priority_encoder_for.sv",   "top": "priority_encoder_for",  "params": { "WIDTH": 32 } },
+    { "name": "prio_carry_w8",     "file": "priority_encoder_carry.sv", "top": "priority_encoder_carry","params": { "WIDTH": 8 } },
+    { "name": "prio_carry_w32",    "file": "priority_encoder_carry.sv", "top": "priority_encoder_carry","params": { "WIDTH": 32 } },
+    { "name": "prio_carry_w64",    "file": "priority_encoder_carry.sv", "top": "priority_encoder_carry","params": { "WIDTH": 64 } },
+    { "name": "barrel_w8",         "file": "barrel_shifter.sv",        "top": "barrel_shifter",        "params": { "WIDTH": 8 } },
+    { "name": "barrel_w32",        "file": "barrel_shifter.sv",        "top": "barrel_shifter",        "params": { "WIDTH": 32 } },
+    { "name": "barrel_w64",        "file": "barrel_shifter.sv",        "top": "barrel_shifter",        "params": { "WIDTH": 64 } },
+    { "name": "arbiter_n4",        "file": "round_robin_arbiter.sv",   "top": "round_robin_arbiter",   "params": { "NUM_REQUESTERS": 4 } },
+    { "name": "arbiter_n16",       "file": "round_robin_arbiter.sv",   "top": "round_robin_arbiter",   "params": { "NUM_REQUESTERS": 16 } },
+    { "name": "srl_pipe_w8_s16",   "file": "srl_pipe.sv",              "top": "srl_pipe",              "params": { "WIDTH": 8, "STAGES": 16 } },
+    { "name": "fifo_pipe_w16_s3",  "file": "fifo_pipe.sv",             "top": "fifo_pipe",             "params": { "WIDTH": 16, "STAGES": 3 } },
+    { "name": "inferred_fifo_d16", "file": "inferred_fifo.sv",         "top": "inferred_fifo",         "params": { "DATA_WIDTH": 16, "DEPTH": 16 } },
+    { "name": "handshake_t16",     "file": "handshake_controller.sv",  "top": "handshake_controller",  "params": { "TIMEOUT_CYCLES": 16 } }
+  ]
+}

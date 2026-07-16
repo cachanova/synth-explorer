@@ -5,3 +5,7 @@ dist/
 .env*
 .DS_Store
 abc.history
+
+# Vivado-derived calibration ground truth: a local dev artifact for
+# `cargo run --example calibrate -- report|fit`. Nothing at runtime reads it.
+calibration/vivado-*.json
