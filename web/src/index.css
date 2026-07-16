@@ -963,6 +963,24 @@ th.sortable:hover {
 .graph-stage svg.panning {
   cursor: grabbing;
 }
+.graph-stage svg:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.graph-shortcuts {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  z-index: 5;
+  max-width: calc(100% - 64px);
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  font-size: 10px;
+  pointer-events: none;
+}
 .graph-banner {
   position: absolute;
   top: 8px;

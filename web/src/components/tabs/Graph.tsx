@@ -36,7 +36,7 @@ interface FullGraphCacheEntry {
 
 export function Graph({ active }: { active: boolean }) {
   const store = useStore()
-  const { analysisState, design, coneReq, graphOptions } = store
+  const { analysisState, design, coneReq, graphOptions, clearGraphSelection } = store
 
   const [fetchedSubgraph, setFetchedSubgraph] = useState<FetchedSubgraph | null>(null)
   // Neighborhoods accumulated from double-click expansions, merged on top of the
@@ -57,6 +57,17 @@ export function Graph({ active }: { active: boolean }) {
   // The key includes every server option that changes /netlist output, and the
   // single-entry shape bounds retained memory when designs or options change.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
+
+  useEffect(() => {
+    if (!active) return
+    const clearSelection = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      setSelected(null)
+      clearGraphSelection()
+    }
+    window.addEventListener('keydown', clearSelection)
+    return () => window.removeEventListener('keydown', clearSelection)
+  }, [active, clearGraphSelection])
 
   // Every option here changes what the server returns, so a change refetches.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.focus}|${graphOptions.groupVectors}`

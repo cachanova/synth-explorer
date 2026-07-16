@@ -165,7 +165,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   const netlistResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
-  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   const netlistParams = new URL((await netlistResponse).url()).searchParams
   expect(netlistParams.get('hide_control')).toBe('true')
   expect(netlistParams.get('hide_const')).toBe('true')
@@ -273,12 +273,12 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   const browserViewport = page.viewportSize()
   if (!browserViewport) throw new Error('browser viewport size is unavailable')
   const inactiveResize = { width: 120, height: 60 }
-  await page.getByRole('button', { name: 'Overview', exact: true }).click()
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await page.setViewportSize({
     width: browserViewport.width + inactiveResize.width,
     height: browserViewport.height + inactiveResize.height,
   })
-  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   await expect(svg).toBeVisible()
   await expect
     .poll(async () => {
@@ -335,7 +335,7 @@ test('Focus switches between the relevant cone and a highlighted full diagram', 
   const focusedResponse = page.waitForResponse((response) =>
     response.url().includes('/line-cone?'),
   )
-  await page.getByRole('button', { name: 'Schematic', exact: true }).click()
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   expect((await focusedResponse).ok()).toBe(true)
 
   const focus = page.getByLabel('Focus')

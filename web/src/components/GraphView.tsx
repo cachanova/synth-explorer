@@ -499,11 +499,31 @@ interface SchematicNodeProps {
   portDirection: PortDirection
   pins: NodePins
   interactive: boolean
+  tabIndex: number
   suppressClick: { current: boolean }
   onSelect: (node: GraphNode | null) => void
+  onFocusNode: (nodeId: number) => void
+  onNavigateNode: (nodeId: number, key: GraphNavigationKey) => void
   onControlSelect?: (control: ControlNetRef, node: GraphNode) => void
   onExpand?: (node: GraphNode) => void
 }
+
+type GraphNavigationKey =
+  | 'ArrowLeft'
+  | 'ArrowRight'
+  | 'ArrowUp'
+  | 'ArrowDown'
+  | 'Home'
+  | 'End'
+
+const GRAPH_NAVIGATION_KEYS = new Set<string>([
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowUp',
+  'ArrowDown',
+  'Home',
+  'End',
+])
 
 // Hover state belongs to one node, so revealing pin labels never reconciles
 // the parent GraphView's thousands of nodes and edges.
@@ -515,8 +535,11 @@ const SchematicNode = memo(function SchematicNode({
   portDirection,
   pins,
   interactive,
+  tabIndex,
   suppressClick,
   onSelect,
+  onFocusNode,
+  onNavigateNode,
   onControlSelect,
   onExpand,
 }: SchematicNodeProps) {
@@ -537,13 +560,21 @@ const SchematicNode = memo(function SchematicNode({
   return (
     <g
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
+      data-graph-node-id={node.id}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
       role={interactive ? 'button' : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      aria-label={interactive ? title : undefined}
+      tabIndex={interactive ? tabIndex : undefined}
+      aria-label={
+        interactive
+          ? `${title}. Enter to inspect; Shift+Enter to expand.`
+          : undefined
+      }
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
-      onFocus={interactive ? () => setFocused(true) : undefined}
+      onFocus={interactive ? () => {
+        setFocused(true)
+        onFocusNode(node.id)
+      } : undefined}
       onBlur={interactive ? () => setFocused(false) : undefined}
       onClick={interactive ? (event) => {
         event.stopPropagation()
@@ -551,6 +582,7 @@ const SchematicNode = memo(function SchematicNode({
           suppressClick.current = false
           return
         }
+        onFocusNode(node.id)
         onSelect(node)
       } : undefined}
       onDoubleClick={interactive && onExpand ? (event) => {
@@ -558,8 +590,19 @@ const SchematicNode = memo(function SchematicNode({
         onExpand(node)
       } : undefined}
       onKeyDown={interactive ? (event) => {
+        if (GRAPH_NAVIGATION_KEYS.has(event.key)) {
+          event.preventDefault()
+          event.stopPropagation()
+          onNavigateNode(node.id, event.key as GraphNavigationKey)
+          return
+        }
         if (event.key !== 'Enter' && event.key !== ' ') return
         event.preventDefault()
+        event.stopPropagation()
+        if (event.key === 'Enter' && event.shiftKey && onExpand) {
+          onExpand(node)
+          return
+        }
         onSelect(node)
       } : undefined}
     >
@@ -624,6 +667,7 @@ export function GraphView({
   const panState = useRef<PanState | null>(null)
   const suppressClick = useRef(false)
   const userAdjusted = useRef(false)
+  const rovingNodeId = useRef<number | null>(null)
 
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
@@ -663,6 +707,77 @@ export function GraphView({
     }
     return { nodeById, pinsById, portDirection }
   }, [graph])
+
+  const rovingTabStopId = interactive
+    ? metadata.nodeById.has(rovingNodeId.current ?? Number.NaN)
+      ? rovingNodeId.current
+      : metadata.nodeById.has(selectedId ?? Number.NaN)
+        ? selectedId
+        : metadata.nodeById.has(rootId)
+          ? rootId
+          : (graph.nodes[0]?.id ?? null)
+    : null
+  rovingNodeId.current = rovingTabStopId
+
+  const focusGraphNode = useCallback((nodeId: number) => {
+    const svg = svgRef.current
+    if (!svg) return
+    if (rovingNodeId.current !== nodeId) {
+      svg
+        .querySelector<SVGGElement>(
+          `[data-graph-node-id="${rovingNodeId.current}"]`,
+        )
+        ?.setAttribute('tabindex', '-1')
+    }
+    const next = svg.querySelector<SVGGElement>(
+      `[data-graph-node-id="${nodeId}"]`,
+    )
+    if (!next) return
+    rovingNodeId.current = nodeId
+    next.setAttribute('tabindex', '0')
+    next.focus()
+  }, [])
+
+  const navigateGraphNode = useCallback(
+    (nodeId: number, key: GraphNavigationKey) => {
+      if (graph.nodes.length === 0) return
+      if (key === 'Home') {
+        focusGraphNode(graph.nodes[0].id)
+        return
+      }
+      if (key === 'End') {
+        focusGraphNode(graph.nodes[graph.nodes.length - 1].id)
+        return
+      }
+
+      const current = metadata.nodeById.get(nodeId)
+      if (!current) return
+      const currentX = current.x + current.width / 2
+      const currentY = current.y + current.height / 2
+      let best: { id: number; score: number } | null = null
+      for (const candidate of graph.nodes) {
+        if (candidate.id === nodeId) continue
+        const dx = candidate.x + candidate.width / 2 - currentX
+        const dy = candidate.y + candidate.height / 2 - currentY
+        const inDirection =
+          (key === 'ArrowLeft' && dx < 0) ||
+          (key === 'ArrowRight' && dx > 0) ||
+          (key === 'ArrowUp' && dy < 0) ||
+          (key === 'ArrowDown' && dy > 0)
+        if (!inDirection) continue
+        const primary = key === 'ArrowLeft' || key === 'ArrowRight'
+          ? Math.abs(dx)
+          : Math.abs(dy)
+        const cross = key === 'ArrowLeft' || key === 'ArrowRight'
+          ? Math.abs(dy)
+          : Math.abs(dx)
+        const score = primary + cross * 0.5
+        if (!best || score < best.score) best = { id: candidate.id, score }
+      }
+      if (best) focusGraphNode(best.id)
+    },
+    [focusGraphNode, graph.nodes, metadata.nodeById],
+  )
 
   // The graph can contain thousands of SVG elements. Keep pointer-frequency
   // pan/zoom updates outside React so moving the viewport only mutates this
@@ -801,7 +916,7 @@ export function GraphView({
     svgRef.current?.classList.remove('panning')
   }, [active])
 
-  const zoomBy = (factor: number) => {
+  const zoomBy = useCallback((factor: number) => {
     userAdjusted.current = true
     const rect = stageRef.current?.getBoundingClientRect()
     const centerX = rect ? rect.width / 2 : 0
@@ -809,7 +924,48 @@ export function GraphView({
     applyTransform(
       zoomViewportAt(transformRef.current, centerX, centerY, factor),
     )
-  }
+  }, [applyTransform])
+
+  const onViewportKeyDown = useCallback(
+    (event: React.KeyboardEvent<SVGSVGElement>) => {
+      if (event.target !== event.currentTarget) return
+      const step = event.shiftKey ? 80 : 32
+      let handled = true
+      switch (event.key) {
+        case 'ArrowLeft':
+          applyTransform(panViewport(transformRef.current, step, 0))
+          break
+        case 'ArrowRight':
+          applyTransform(panViewport(transformRef.current, -step, 0))
+          break
+        case 'ArrowUp':
+          applyTransform(panViewport(transformRef.current, 0, step))
+          break
+        case 'ArrowDown':
+          applyTransform(panViewport(transformRef.current, 0, -step))
+          break
+        case '+':
+        case '=':
+          zoomBy(1.25)
+          break
+        case '-':
+        case '_':
+          zoomBy(0.8)
+          break
+        case '0':
+          userAdjusted.current = false
+          fit()
+          break
+        default:
+          handled = false
+      }
+      if (!handled) return
+      userAdjusted.current = event.key !== '0'
+      event.preventDefault()
+      event.stopPropagation()
+    },
+    [applyTransform, fit, zoomBy],
+  )
 
   useEffect(() => {
     const stage = stageRef.current
@@ -825,7 +981,11 @@ export function GraphView({
         ref={svgRef}
         width="100%"
         height="100%"
+        role="region"
+        aria-label="Schematic viewport. Use arrow keys to pan, plus and minus to zoom, and zero to fit."
+        tabIndex={0}
         onWheel={onWheel}
+        onKeyDown={onViewportKeyDown}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={finishPan}
@@ -919,8 +1079,11 @@ export function GraphView({
               portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
               pins={metadata.pinsById.get(laidOutNode.id) ?? { incoming: [], outgoing: [] }}
               interactive={interactive}
+              tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
               suppressClick={suppressClick}
               onSelect={onSelect}
+              onFocusNode={focusGraphNode}
+              onNavigateNode={navigateGraphNode}
               onControlSelect={onControlSelect}
               onExpand={onExpand}
             />
@@ -928,11 +1091,18 @@ export function GraphView({
         </g>
       </svg>
 
+      {interactive && (
+        <div className="graph-shortcuts" role="note">
+          Node arrows move focus · Enter inspects · Shift+Enter or double-click
+          expands · Esc clears · Viewport arrows pan · +/− zoom · 0 fits
+        </div>
+      )}
+
       <div className="zoom-controls">
-        <button onClick={() => zoomBy(1.25)} title="Zoom in">
+        <button onClick={() => zoomBy(1.25)} title="Zoom in" aria-label="Zoom in">
           +
         </button>
-        <button onClick={() => zoomBy(0.8)} title="Zoom out">
+        <button onClick={() => zoomBy(0.8)} title="Zoom out" aria-label="Zoom out">
           −
         </button>
         <button
@@ -941,6 +1111,7 @@ export function GraphView({
             fit()
           }}
           title="Fit to view"
+          aria-label="Fit schematic to view"
         >
           ⤢
         </button>
