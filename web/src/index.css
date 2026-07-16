@@ -9,7 +9,7 @@
   --border-strong: #3d4046;
   --text: #dcdee2;
   --text-dim: #9da1a8;
-  --text-faint: #6a6e76;
+  --text-faint: #7b7f86;
   --accent: #8ab4f8;
   --accent-dim: #4a6da8;
   --green: #57ab5a;
@@ -57,6 +57,7 @@ button {
 }
 button:hover:not(:disabled) {
   background: var(--bg-3);
+  border-color: var(--accent-dim);
 }
 button:disabled {
   opacity: 0.5;
@@ -87,7 +88,7 @@ input:focus,
 select:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--accent-dim);
+  border-color: var(--accent);
 }
 
 a {
@@ -414,13 +415,13 @@ a:hover {
   gap: 6px;
   padding: 6px 10px;
   border-bottom: 2px solid transparent;
-  color: var(--text-faint);
+  color: var(--text-dim);
   cursor: pointer;
   white-space: nowrap;
   font-size: 12px;
 }
 .file-tab:hover {
-  color: var(--text-dim);
+  color: var(--text);
 }
 .file-tab.active {
   border-bottom-color: var(--accent);
@@ -442,12 +443,19 @@ a:hover {
   color: var(--red);
   background: none;
 }
-.file-tab .add {
+/* The add button is a sibling of .file-tab inside the bar, not a child. */
+.file-tabs .add {
+  align-self: center;
   border: none;
   background: none;
   color: var(--text-dim);
   font-size: 15px;
-  padding: 0 6px;
+  padding: 2px 6px;
+}
+.file-tabs .add:hover:not(:disabled) {
+  background: none;
+  border-color: transparent;
+  color: var(--text);
 }
 
 /* ---- editor ---- */
@@ -480,11 +488,11 @@ a:hover {
   background: rgba(255, 255, 255, 0.03);
 }
 .cm-src-hl {
-  background: rgba(138, 180, 248, 0.22);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   transition: background 0.4s ease;
 }
 .cm-src-hl-fade {
-  background: rgba(138, 180, 248, 0);
+  background: color-mix(in srgb, var(--accent) 0%, transparent);
 }
 
 /* ---- error strip ---- */
@@ -532,15 +540,19 @@ a:hover {
   border: none;
   border-bottom: 2px solid transparent;
   border-radius: 0;
-  color: var(--text-faint);
+  color: var(--text-dim);
   cursor: pointer;
   font-size: 12px;
   font-weight: 500;
   background: none;
 }
 .tab:hover:not(:disabled) {
-  color: var(--text-dim);
+  color: var(--text);
   background: none;
+  border-color: transparent;
+}
+.tab.active:hover:not(:disabled) {
+  border-bottom-color: var(--accent);
 }
 .tab.active {
   border-bottom-color: var(--accent);
@@ -906,13 +918,13 @@ th.sortable:hover {
   display: inline-block;
 }
 .bd-launch {
-  background: #a371f7;
+  background: var(--purple);
 }
 .bd-logic {
   background: var(--accent);
 }
 .bd-net {
-  background: #d0a215;
+  background: var(--amber);
 }
 .bd-setup {
   background: var(--text-faint);
