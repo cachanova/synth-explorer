@@ -37,7 +37,7 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   same parser contract. Deployments only advertise Vivado when `VIVADO_BIN`
   passes startup preflight and returns a non-empty installed part catalog.
 - No database. Designs are keyed by a content hash of (sources, tool, mode,
-  target, args). A 128 MiB, 30-minute in-memory FIFO cache serves active
+  target, args). A 512 MiB, 30-minute in-memory FIFO cache serves active
   exploration, backed by an 8 GiB local file store with a 4-hour sliding TTL
   and least-recently-used eviction; one entry is capped at 512 MiB. Cold hits
   rebuild the graph and analysis state from the stored netlists without running

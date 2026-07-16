@@ -34,7 +34,7 @@ use tokio::sync::{RwLock, Semaphore, watch};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-const DESIGN_CACHE_BUDGET_BYTES: usize = 128 * 1024 * 1024;
+const DESIGN_CACHE_BUDGET_BYTES: usize = 512 * 1024 * 1024;
 const DESIGN_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const DESIGN_CACHE_MIN_ENTRY_BYTES: usize = 64 * 1024;
 const DESIGN_STORE_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;

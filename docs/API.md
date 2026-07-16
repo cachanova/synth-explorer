@@ -300,7 +300,7 @@ consuming another slot, and an initiating client disconnect does not cancel the
 task. When all three distinct slots are occupied, a new distinct request gets
 one final TTL-aware cache lookup and then returns `503` with `Retry-After: 5`.
 
-Parsed designs are retained for 30 minutes from insertion in a 128 MiB
+Parsed designs are retained for 30 minutes from insertion in a 512 MiB
 byte-weighted FIFO memory cache. Each entry is charged at least 64 KiB;
 otherwise its weight is a deterministic estimate of retained allocation from
 owned collection/string capacities plus cache key/entry overhead, not exact
