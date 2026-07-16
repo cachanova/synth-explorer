@@ -47,8 +47,12 @@ use serde::{Deserialize, Serialize};
 /// silicon those numbers describe. Speed-grade scaling is a property of the
 /// silicon — Series-7 gains far more from a -3 grade than UltraScale+ does — so
 /// it has to key on this rather than on the coefficient values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, DeepSizeOf)]
-#[serde(rename_all = "snake_case")]
+// Deliberately NOT Serialize/Deserialize. Nothing serializes a profile — the
+// wire format is the `profile` *name* parsed by `from_name` — and serde's
+// snake_case would render `UltraScalePlus` as "ultra_scale_plus", disagreeing
+// with both `from_name` and the client's union type. Add explicit renames if a
+// response ever needs to carry one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, DeepSizeOf)]
 pub enum DelayProfile {
     Series7,
     UltraScale,
@@ -425,6 +429,7 @@ mod tests {
             DelayProfile::UltraScale,
             DelayProfile::UltraScalePlus,
             DelayProfile::Ice40,
+            DelayProfile::Ecp5,
             DelayProfile::Generic,
         ] {
             assert_eq!(profile.speed_grade_factor(Some("-1")), 1.0);

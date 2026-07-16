@@ -33,7 +33,9 @@ close $spec_fh
 
 # Pull the parts table: "family": { "-1": "part", ... }
 set parts_blob ""
-regexp {"parts"\s*:\s*\{(.*?)\n\s*\},} $spec -> parts_blob
+if {![regexp {"parts"\s*:\s*\{(.*?)\n\s*\},} $spec -> parts_blob]} {
+    error "could not parse the parts table from cases.json"
+}
 set families {}
 foreach {_ fam body} [regexp -all -inline {"(\w+)"\s*:\s*\{([^\}]*)\}} $parts_blob] {
     set grades {}
@@ -103,8 +105,13 @@ proc run_case {name file top part} {
         puts "SKIP: $name $part no data path delay (design may have no timing path)"
         return
     }
-    set levels 0
-    regexp {Logic Levels:\s+(\d+)} $rpt -> levels
+    # An unchecked regexp here would make a parse miss indistinguishable from a
+    # genuine 0 -- and `calibrate report` holds 0-level cases out of the error
+    # statistic, so a miss would silently shrink the corpus.
+    if {![regexp {Logic Levels:\s+(\d+)} $rpt -> levels]} {
+        puts "SKIP: $name $part could not parse Logic Levels"
+        return
+    }
 
     puts "RESULT: {\"case\":\"$name\",\"family\":\"$::cur_family\",\"speed_grade\":\"$::cur_grade\",\"data_path_ns\":$total,\"logic_ns\":$logic,\"route_ns\":$route,\"logic_levels\":$levels}"
 }

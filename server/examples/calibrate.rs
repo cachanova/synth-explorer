@@ -8,16 +8,16 @@
 //!   gen      examples/ out/      # pin each case's parameters into concrete RTL
 //!   estimate out/ est.json       # run Yosys + our estimate over those cases
 //!   report   est.json vivado.json# compare, per family and speed grade
-//!   fit      est.json vivado.json# least-squares speed-grade factors
+//!   fit      vivado.json         # least-squares speed-grade factors (Vivado vs Vivado)
 //! ```
 //!
 //! `gen` writes byte-identical RTL for both tools: the same generated sources are
 //! shipped to the Vivado host (see `calibration/vivado.tcl`) and read back here,
 //! so a divergence can never come from the two tools reading different input.
 //!
-//! Vivado ground truth is checked in at `calibration/vivado-<version>.json`, so
-//! `report`/`fit` run without Vivado access. Regenerate it only when the corpus
-//! or the Vivado version changes — see `calibration/README.md`.
+//! Vivado ground truth is a **local artifact**, deliberately not checked in
+//! (`calibration/vivado-*.json` is gitignored). `report`/`fit` need it, so
+//! generate it first — see `calibration/README.md`.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -93,7 +93,7 @@ fn main() -> ExitCode {
                  calibrate gen <examples-dir> <out-dir>\n  \
                  calibrate estimate <cases-dir> <out.json>\n  \
                  calibrate report <est.json> <vivado.json>\n  \
-                 calibrate fit <est.json> <vivado.json>"
+                 calibrate fit <vivado.json>"
             );
             return ExitCode::FAILURE;
         }
@@ -147,8 +147,13 @@ fn pin_param(source: &str, name: &str, value: i64) -> anyhow::Result<String> {
         let Some(eq) = line.find('=') else {
             anyhow::bail!("parameter {name} declaration has no '='");
         };
-        // Preserve a trailing comma: it separates this parameter from the next.
-        let tail = if line.trim_end().ends_with(',') {
+        // Everything after `=` is replaced, so the separator has to be carried
+        // over explicitly. Look for it before any line comment: a declaration
+        // written `WIDTH = 8, // bus width` ends with the comment, not the
+        // comma, and dropping the comma yields invalid SystemVerilog.
+        let after_eq = &line[eq + 1..];
+        let code = after_eq.split("//").next().unwrap_or(after_eq);
+        let tail = if code.trim_end().ends_with(',') {
             ","
         } else {
             ""
@@ -197,12 +202,18 @@ fn cmd_gen(args: &[String]) -> anyhow::Result<()> {
 /// The Yosys `synth_xilinx -family` value each calibrated preset corresponds to.
 /// These are Yosys's own spellings (`yosys -p "help synth_xilinx"`) — note
 /// UltraScale is `xcu`, not `xcku`; Yosys hard-errors on anything else.
-fn family_arg(family: &str) -> &'static str {
-    match family {
+///
+/// Errors on an unknown family rather than defaulting: a typo'd key in the spec
+/// would otherwise synthesize for Series-7 while wearing the typo's label, and
+/// then vanish from `report` (which iterates a fixed family list) — a silent
+/// hole in the corpus rather than a failure.
+fn family_arg(family: &str) -> anyhow::Result<&'static str> {
+    Ok(match family {
+        "series7" => "xc7",
         "ultrascale" => "xcu",
         "ultrascale_plus" => "xcup",
-        _ => "xc7",
-    }
+        other => anyhow::bail!("unknown family `{other}` in cases.json"),
+    })
 }
 
 async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<Estimate> {
@@ -222,7 +233,10 @@ async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<
         // would be timing different circuits. It also keeps pad and clock-tree
         // delay — real, but package-dependent and not what these coefficients
         // model — out of the fit.
-        extra_args: Some(format!("-family {} -noiopad -noclkbuf", family_arg(family))),
+        extra_args: Some(format!(
+            "-family {} -noiopad -noclkbuf",
+            family_arg(family)?
+        )),
     };
     let validated = request
         .validate()
@@ -236,7 +250,7 @@ async fn estimate_case(dir: &Path, case: &Case, family: &str) -> anyhow::Result<
 
     // Exactly the model the server would pick for this target, so the harness
     // measures the shipped default rather than a parallel copy of it.
-    let model = DelayModel::for_target("xilinx", Some(family_arg(family)));
+    let model = DelayModel::for_target("xilinx", Some(family_arg(family)?));
     let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
     let estimate = analysis.estimate_timing(&graph, &model);
     let delay_ns = estimate
@@ -431,6 +445,56 @@ mod tests {
     }
 
     #[test]
+    fn a_duplicate_declaration_is_an_error_not_a_coin_flip() {
+        // `async_fifo_blackbox.sv` declares the same parameter on two modules.
+        // Pinning one of them silently would calibrate against a design whose
+        // other instance still holds the default.
+        let src = "    parameter int unsigned DEPTH = 4,\n\
+                   \x20   parameter int unsigned DEPTH = 8,\n";
+        let err = pin_param(src, "DEPTH", 16).unwrap_err().to_string();
+        assert!(err.contains("found 2"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn a_trailing_comment_is_not_silently_eaten() {
+        // Everything after `=` is replaced, so anything trailing is dropped.
+        // Harmless for a comment, but pin the behaviour so a future change to
+        // this rewrite has to think about it.
+        let src = "    parameter int unsigned WIDTH = 8, // bus width\n";
+        let out = pin_param(src, "WIDTH", 32).unwrap();
+        assert_eq!(out, "    parameter int unsigned WIDTH = 32,\n");
+    }
+
+    #[test]
+    fn a_declaration_wrapped_after_the_equals_is_left_alone_or_errors() {
+        // Two examples wrap their derived parameters across lines:
+        //     parameter int unsigned INDEX_WIDTH =
+        //         (NUM_REQUESTERS <= 1) ? 1 : $clog2(NUM_REQUESTERS)
+        // No case pins a derived parameter, so this never fires today. If one
+        // ever does, it must not quietly emit `= 8` with an orphaned
+        // continuation line below it.
+        let src = "    parameter int unsigned INDEX_WIDTH =\n\
+                   \x20       (N <= 1) ? 1 : $clog2(N)\n";
+        let out = pin_param(src, "INDEX_WIDTH", 8).unwrap();
+        // Documents today's real behaviour: the continuation survives, so the
+        // result is broken SystemVerilog that fails loudly at synthesis rather
+        // than fitting against the wrong design.
+        assert!(out.contains("INDEX_WIDTH = 8"), "{out}");
+        assert!(
+            out.contains("(N <= 1)"),
+            "continuation silently dropped: {out}"
+        );
+    }
+
+    #[test]
+    fn a_typed_parameter_is_not_touched() {
+        // `parameter logic [WIDTH-1:0] RESET_VALUE = '0` must not match: only
+        // `int unsigned` declarations are pinnable.
+        let src = "    parameter logic [7:0] RESET_VALUE = '0\n";
+        assert!(pin_param(src, "RESET_VALUE", 1).is_err());
+    }
+
+    #[test]
     fn a_name_that_only_prefixes_a_parameter_does_not_match() {
         // `WIDTH` must not match `WIDTH_X`, nor `SUM_WIDTH` match `WIDTH`.
         let src = "    parameter int unsigned WIDTH_X = 3,\n";
@@ -439,11 +503,12 @@ mod tests {
 }
 
 fn cmd_fit(args: &[String]) -> anyhow::Result<()> {
-    let (est_path, viv_path) = match args {
-        [a, b] => (a.clone(), b.clone()),
-        _ => anyhow::bail!("usage: calibrate fit <est.json> <vivado.json>"),
+    let viv_path = match args {
+        [a] => a.clone(),
+        _ => anyhow::bail!("usage: calibrate fit <vivado.json>"),
     };
-    let _estimates: Vec<Estimate> = load(&est_path)?;
+    // Deliberately takes no estimate file: speed grade is derived from Vivado's
+    // own -1-vs-N on identical designs, so our model plays no part in it.
     let vivado: Vec<VivadoTiming> = load(&viv_path)?;
 
     // Speed grade is a property of the silicon, not of our model: fit it from

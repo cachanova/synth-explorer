@@ -25,7 +25,8 @@ set parts {
 }
 
 # One BEL per type is enough: the fabric is regular, so every instance of a type
-# carries the same speed model. We assert that below rather than assume it.
+# carries the same speed model. This assumes that rather than checking it — the
+# dedupe below simply takes the first instance of each type.
 set want {*LUT* *CARRY* *FF* *MUX* *SRL*}
 
 foreach {fam part} $parts {

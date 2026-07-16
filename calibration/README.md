@@ -52,12 +52,26 @@ cd server
 cargo run --example calibrate -- gen ../examples /tmp/cal-cases
 cargo run --example calibrate -- estimate /tmp/cal-cases /tmp/est.json
 cargo run --example calibrate -- report /tmp/est.json ../calibration/vivado-2026.1.json
-cargo run --example calibrate -- fit    /tmp/est.json ../calibration/vivado-2026.1.json
+cargo run --example calibrate -- fit    ../calibration/vivado-2026.1.json
 ```
 
 `gen` rewrites parameter *defaults* in the source rather than passing
 `-generic`/`chparam`, so Yosys and Vivado read byte-identical RTL and a
 discrepancy can never be blamed on parameter plumbing.
+
+### The tcl scripts
+
+| script | emits | for |
+|---|---|---|
+| `vivado.tcl` | `RESULT:` one JSON record per case/part | whole-path ground truth (`report`/`fit`) |
+| `speed_models.tcl` | `SM: <family> <bel> <arc> <slow_max> <fast_min>` | characterized per-BEL **cell** delays |
+| `cells.tcl` | `CELL:`/`NET:` rows of each path table, in path order | **net** terms by driver→sink pair |
+
+`speed_models.tcl` and `cells.tcl` are analysis inputs, not part of the
+`gen`/`estimate`/`report`/`fit` pipeline: read their output yourself when
+deriving coefficients. In `cells.tcl` output, path order is preserved, so for
+each `NET:` row the preceding `CELL:` is the driver and the following one is the
+sink.
 
 ### Generating the Vivado ground truth
 
@@ -92,11 +106,15 @@ within `barrel_w32` alone the correlation is r = **+0.95**. `adder_chain_w32n4`'
 nets are all fanout-2 (no variance) and drag the pooled slope to nothing.
 
 Acting on the pooled number would have shipped `net_per_fanout_ps = 0` on the
-default profile, quietly making the fanout knob inert. The `calibrate` harness
-therefore centres within design and regresses on the residuals, skipping designs
-with no fanout spread. `delay_model.rs` has a test asserting
-`net_delay_ps(10) > net_delay_ps(1)`; it is what caught this. If a refit ever
-forces you to weaken that test, the fit is wrong.
+default profile, quietly making the fanout knob inert.
+
+The harness does **not** do this fit for you — `calibrate fit` only derives the
+speed-grade factors (Vivado -1 vs -N). Fit the net terms yourself, from the
+`NET:` rows `cells.tcl` emits: centre `log2(fanout)` and delay within each
+design, regress on the residuals for the shared slope, and skip designs with no
+fanout spread (they carry no slope information). `delay_model.rs` has a test
+asserting `net_delay_ps(10) > net_delay_ps(1)`; it is what caught this. If a
+refit ever forces you to weaken that test, the fit is wrong.
 
 Even fitted correctly this is the model's weakest term: the within-design
 correlation ranges from +1.00 to -0.86 depending on the design, so fanout is not
@@ -121,5 +139,6 @@ Vivado's own -1-vs-N measurements on identical designs.
 
 The Lattice (`ice40`, `ecp5`) and `generic` presets. Vivado cannot target them and
 there is no Lattice tool on the host; they are scaled to the same picosecond scale
-and are marked not-vendor-calibrated in the module docs and the UI caveat. Fitting
-them would need Radiant/Diamond.
+and are marked not-vendor-calibrated in the `delay_model.rs` module docs. Fitting
+them would need Radiant/Diamond. (`icetime` from Project IceStorm has real iCE40
+delay data and would be the obvious source if iCE40 ever matters enough.)

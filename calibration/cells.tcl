@@ -5,8 +5,9 @@
 # coefficients in `delay_model.rs` mean what they say ("a LUT costs this much")
 # rather than being a fudge factor tuned to make totals land.
 #
-# Emits one CELL:/NET: line per row of the path table. `calibrate cells` turns
-# those into per-family coefficients.
+# Emits one CELL:/NET: line per row of the path table, in path order — so for
+# each NET row the preceding CELL is its driver and the following one its sink.
+# Nothing consumes this automatically; read it when deriving the net terms.
 
 set cases_dir [lindex $argv 0]
 
