@@ -6,6 +6,7 @@ import {
   controlLabel,
   controlsFor,
   inferPortDirection,
+  inferPortDirections,
   inputBubbleAt,
   shapePath,
   symbolKind,
@@ -125,6 +126,16 @@ describe('graph topology helpers', () => {
     expect(inferPortDirection(3, [])).toBe('output')
     expect(inferPortDirection(2, [edge(1, 2), edge(2, 3)])).toBe('output')
   })
+
+  it('infers many port directions in one edge pass', () => {
+    expect(inferPortDirections([1, 2, 3], [edge(1, 2), edge(2, 3)])).toEqual(
+      new Map([
+        [1, 'input'],
+        [2, 'output'],
+        [3, 'output'],
+      ]),
+    )
+  })
 })
 
 describe('operator and control labels', () => {
@@ -134,7 +145,7 @@ describe('operator and control labels', () => {
     expect(arithGlyph('CARRY4')).toBeNull()
   })
 
-  it('reads a future controls array without requiring the graph type yet', () => {
+  it('reads controls from the typed graph contract', () => {
     const n = cell('FDRE')
     n.controls = [
       { role: 'clock', pin: 'C', net_name: 'sys_clk', driver_id: 4, fanout: 2 },
@@ -150,13 +161,5 @@ describe('operator and control labels', () => {
     expect(controlsFor(n)).toEqual(n.controls)
     expect(controlLabel(n.controls[0])).toBe('CLK sys_clk')
     expect(controlLabel(n.controls[1])).toBe('RST rst_n')
-  })
-
-  it('ignores malformed future control metadata', () => {
-    const n = {
-      ...cell('FDRE'),
-      controls: [{ role: 'clock', net_name: 3, driver_id: 'bad' }],
-    } as unknown as GraphNode
-    expect(controlsFor(n)).toEqual([])
   })
 })

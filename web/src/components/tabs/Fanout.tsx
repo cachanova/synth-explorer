@@ -4,12 +4,15 @@ import { fuzzyFilter } from '../../lib/fuzzy'
 import { naturalCompare } from '../../lib/naturalCompare'
 import { fanoutDriverLabel, shortNetName } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
-import { useStore } from '../../useStore'
+import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { StaleResultsChip } from '../StaleResultsChip'
 
 export function Fanout() {
-  const store = useStore()
+  const store = useStore(
+    ({ design, analysisState, openCone }) => ({ design, analysisState, openCone }),
+    shallowEqual,
+  )
   const id = store.design?.design_id ?? null
   const { data, loading, error } = useDesignData(id, (i) => getFanout(i, 50))
   const [filter, setFilter] = useState('')

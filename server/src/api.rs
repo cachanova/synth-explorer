@@ -1,7 +1,7 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
     NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats,
-    Subgraph, estimate_timing,
+    Subgraph,
 };
 use crate::delay_model::DelayModel;
 use crate::graph::Graph;
@@ -19,6 +19,7 @@ use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -193,6 +194,12 @@ struct CachedDesign {
     inserted_at: Instant,
 }
 
+enum CacheProbe {
+    Hit(Arc<Design>),
+    CleanupRequired,
+    Miss,
+}
+
 impl DesignCache {
     fn new(budget_bytes: usize, ttl: Duration) -> Self {
         Self {
@@ -204,6 +211,7 @@ impl DesignCache {
         }
     }
 
+    #[cfg(test)]
     fn get(&mut self, id: &str) -> Option<Arc<Design>> {
         self.get_at(id, Instant::now())
     }
@@ -211,6 +219,24 @@ impl DesignCache {
     fn get_at(&mut self, id: &str, now: Instant) -> Option<Arc<Design>> {
         self.evict_expired(now);
         self.designs.get(id).map(|entry| Arc::clone(&entry.design))
+    }
+
+    fn probe_at(&self, id: &str, now: Instant) -> CacheProbe {
+        if let Some((oldest_id, inserted_at)) = self.order.front() {
+            let oldest_is_current = self
+                .designs
+                .get(oldest_id)
+                .is_some_and(|entry| entry.inserted_at == *inserted_at);
+            let oldest_is_expired = now
+                .checked_duration_since(*inserted_at)
+                .is_some_and(|age| age >= self.ttl);
+            if !oldest_is_current || oldest_is_expired {
+                return CacheProbe::CleanupRequired;
+            }
+        }
+        self.designs.get(id).map_or(CacheProbe::Miss, |entry| {
+            CacheProbe::Hit(Arc::clone(&entry.design))
+        })
     }
 
     fn insert(&mut self, id: String, design: Arc<Design>, weight_bytes: usize) -> bool {
@@ -296,7 +322,16 @@ impl DesignCache {
 }
 
 async fn cache_lookup(cache: &RwLock<DesignCache>, id: &str) -> Option<Arc<Design>> {
-    cache.write().await.get(id)
+    let now = Instant::now();
+    let probe = {
+        let cache = cache.read().await;
+        cache.probe_at(id, now)
+    };
+    match probe {
+        CacheProbe::Hit(design) => Some(design),
+        CacheProbe::Miss => None,
+        CacheProbe::CleanupRequired => cache.write().await.get_at(id, now),
+    }
 }
 
 type FlightResult = Result<Arc<Design>, ApiError>;
@@ -399,7 +434,7 @@ impl Drop for FlightTaskGuard {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, DeepSizeOf)]
 struct Design {
     response: SynthesizeResponse,
     graph: Graph,
@@ -413,18 +448,13 @@ struct Design {
 }
 
 impl Design {
-    /// Deterministic estimate of retained allocation, not allocator-exact RSS.
+    /// Structural retained-allocation estimate used for cache weighting.
     fn estimated_heap_bytes(&self) -> usize {
-        size_of::<Self>()
-            .saturating_add(synthesize_response_heap_bytes(&self.response))
-            .saturating_add(self.graph.estimated_heap_bytes())
-            .saturating_add(self.analysis.estimated_heap_bytes())
-            .saturating_add(self.source_index.estimated_heap_bytes())
-            .saturating_add(self.grouping.estimated_heap_bytes())
+        self.deep_size_of()
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct SynthesizeResponse {
     pub design_id: String,
     pub top: String,
@@ -912,37 +942,6 @@ fn design_cache_weight(design_id: &str, design: &Design) -> usize {
         .max(1)
 }
 
-fn synthesize_response_heap_bytes(response: &SynthesizeResponse) -> usize {
-    let mut bytes = response
-        .design_id
-        .capacity()
-        .saturating_add(response.top.capacity())
-        .saturating_add(response.tool.capacity())
-        .saturating_add(response.mode.capacity())
-        .saturating_add(response.target.as_ref().map_or(0, String::capacity))
-        .saturating_add(response.log.capacity())
-        .saturating_add(
-            response
-                .warnings
-                .capacity()
-                .saturating_mul(size_of::<String>()),
-        )
-        .saturating_add(
-            response
-                .stats
-                .cells_by_type
-                .len()
-                .saturating_mul(size_of::<(String, usize)>() + 3 * size_of::<usize>()),
-        );
-    for warning in &response.warnings {
-        bytes = bytes.saturating_add(warning.capacity());
-    }
-    for cell_type in response.stats.cells_by_type.keys() {
-        bytes = bytes.saturating_add(cell_type.capacity());
-    }
-    bytes
-}
-
 async fn design(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -1033,7 +1032,7 @@ async fn design_timing(
         request.profile.as_deref(),
     );
     let effective = base.scaled(speed_grade_factor(request.speed_grade.as_deref()));
-    let estimate = estimate_timing(&design.graph, &effective);
+    let estimate = design.analysis.estimate_timing(&design.graph, &effective);
     Ok(Json(TimingResponse {
         estimated_delay_ns: estimate.delay_ns,
         estimated_delay_breakdown: estimate.breakdown,
@@ -2277,6 +2276,30 @@ mod tests {
         assert_eq!(cache.total_bytes, DESIGN_CACHE_MIN_ENTRY_BYTES);
     }
 
+    #[tokio::test]
+    async fn cache_hit_uses_the_read_lock_fast_path() {
+        let cache = RwLock::new(DesignCache::new(
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+            Duration::from_secs(60),
+        ));
+        let expected = empty_test_design("a");
+        cache.write().await.insert(
+            "a".to_owned(),
+            Arc::clone(&expected),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+
+        // A second reader may proceed while this guard is held. A write-lock
+        // lookup would block here until the timeout.
+        let read_guard = cache.read().await;
+        let cached = tokio::time::timeout(Duration::from_millis(100), cache_lookup(&cache, "a"))
+            .await
+            .expect("cache hit waited for a write lock")
+            .expect("cached design missing");
+        assert!(Arc::ptr_eq(&cached, &expected));
+        drop(read_guard);
+    }
+
     #[test]
     fn cache_evicts_fifo_to_stay_within_byte_budget() {
         let mut cache = DesignCache::new(2 * DESIGN_CACHE_MIN_ENTRY_BYTES, Duration::from_secs(60));
@@ -2314,7 +2337,7 @@ mod tests {
             empty_test_design("large"),
             DESIGN_CACHE_MIN_ENTRY_BYTES + 1,
         ));
-        assert!(cache.get("large").is_none());
+        assert!(cache.get_at("large", Instant::now()).is_none());
         assert_eq!(cache.total_bytes, 0);
     }
 

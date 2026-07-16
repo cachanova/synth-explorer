@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -20,7 +21,8 @@ import {
   type SynthesisInput,
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
-import type { SrcSpan } from './lib/src'
+import { createLatestGuard } from './lib/latest'
+import { designSrcSpans, type SrcSpan } from './lib/src'
 import { flagsForModeChange } from './lib/flagRegistry'
 import type {
   DesignFile,
@@ -219,6 +221,7 @@ export interface Store {
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
   highlightSources: (spans: SrcSpan[]) => void
+  highlightNodeSources: (src?: string | null) => void
 
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
@@ -227,6 +230,29 @@ export interface Store {
   snapshotA: Snapshot | null
   snapshotB: Snapshot | null
   takeSnapshot: (slot: 'A' | 'B') => Promise<void>
+}
+
+export interface StoreApi {
+  getSnapshot(): Store
+  publish(next: Store): void
+  subscribe(listener: () => void): () => void
+}
+
+function createStoreApi(initial: Store): StoreApi {
+  let snapshot = initial
+  const listeners = new Set<() => void>()
+  return {
+    getSnapshot: () => snapshot,
+    publish(next) {
+      if (Object.is(snapshot, next)) return
+      snapshot = next
+      for (const listener of listeners) listener()
+    },
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+  }
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -270,8 +296,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [snapshotA, setSnapshotA] = useState<Snapshot | null>(null)
   const [snapshotB, setSnapshotB] = useState<Snapshot | null>(null)
 
-  const nonceRef = useRef(0)
-  const nextNonce = () => ++nonceRef.current
+  const nonceGuardRef = useRef<ReturnType<typeof createLatestGuard> | null>(null)
+  if (!nonceGuardRef.current) nonceGuardRef.current = createLatestGuard()
+  const nextNonce = useCallback(() => nonceGuardRef.current!.begin(), [])
   const activeTabRef = useRef(activeTab)
   activeTabRef.current = activeTab
   const sourceSelectionRef = useRef(sourceSelection)
@@ -686,7 +713,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [markInputChanged, materializeCurrentInput])
+  }, [markInputChanged, materializeCurrentInput, nextNonce])
 
   const synthesize = useCallback(
     () => requestSynthesis(),
@@ -727,7 +754,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       setActiveTab('graph')
     },
-    [cancelSourceProbe],
+    [cancelSourceProbe, nextNonce],
   )
 
   const showPathInGraph = useCallback((path: TimingPath) => {
@@ -745,7 +772,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       nonce: nextNonce(),
     })
     setActiveTab('graph')
-  }, [cancelSourceProbe])
+  }, [cancelSourceProbe, nextNonce])
 
   const openControlCone = useCallback(
     ({
@@ -774,7 +801,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       })
       setActiveTab('graph')
     },
-    [cancelSourceProbe],
+    [cancelSourceProbe, nextNonce],
   )
 
   const clearGraphSelection = useCallback(() => {
@@ -795,7 +822,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const primarySpan = spans[primaryIndex]
     setActiveFileNameState((cur) => (primarySpan.file ? primarySpan.file : cur))
     setEditorHighlight({ spans, primary: primaryIndex, nonce: nextNonce() })
-  }, [])
+  }, [nextNonce])
+
+  const highlightNodeSources = useCallback(
+    (src?: string | null) => highlightSources(designSrcSpans(src, filesRef.current)),
+    [highlightSources],
+  )
 
   const setSourceSelection = useCallback(
     (file: string, startLine: number, endLine: number) => {
@@ -847,7 +879,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             : null,
       )
     }
-  }, [cancelSourceProbe])
+  }, [cancelSourceProbe, nextNonce])
 
   const takeSnapshot = useCallback(
     async (slot: 'A' | 'B') => {
@@ -927,6 +959,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       clearGraphSelection,
       editorHighlight,
       highlightSources,
+      highlightNodeSources,
       sourceSelection,
       setSourceSelection,
       snapshotA,
@@ -976,6 +1009,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       clearGraphSelection,
       editorHighlight,
       highlightSources,
+      highlightNodeSources,
       sourceSelection,
       setSourceSelection,
       snapshotA,
@@ -984,5 +1018,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     ],
   )
 
-  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>
+  const apiRef = useRef<StoreApi | null>(null)
+  if (!apiRef.current) apiRef.current = createStoreApi(value)
+  const storeApi = apiRef.current
+  useLayoutEffect(() => storeApi.publish(value), [storeApi, value])
+
+  return <StoreContext.Provider value={storeApi}>{children}</StoreContext.Provider>
 }

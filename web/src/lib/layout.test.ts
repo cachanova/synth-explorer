@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
@@ -297,6 +297,43 @@ describe('schematic layout sizing', () => {
     await expect(layoutSubgraph(oversized)).rejects.toThrow(
       '10001 merged edges; limit 10000',
     )
+  })
+
+  it('drops an aborted layout without terminating the warm worker', async () => {
+    const requests: Array<{ id: number; graph: object }> = []
+    class FakeWorker {
+      static instance: FakeWorker | null = null
+      static constructed = 0
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: ((event: ErrorEvent) => void) | null = null
+      terminate = vi.fn()
+
+      constructor() {
+        FakeWorker.instance = this
+        FakeWorker.constructed += 1
+      }
+
+      postMessage(request: { id: number; graph: object }) {
+        requests.push(request)
+      }
+    }
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
+    const controller = new AbortController()
+
+    const superseded = layoutSubgraph(sub, controller.signal)
+    const instance = FakeWorker.instance!
+    controller.abort()
+    await expect(superseded).rejects.toMatchObject({ name: 'AbortError' })
+    expect(instance.terminate).not.toHaveBeenCalled()
+
+    const current = layoutSubgraph(sub)
+    const request = requests.at(-1)!
+    instance.onmessage?.({
+      data: { id: request.id, ok: true, result: request.graph },
+    } as MessageEvent)
+    await expect(current).resolves.toMatchObject({ nodes: expect.any(Array) })
+    expect(FakeWorker.constructed).toBe(1)
   })
 })
 

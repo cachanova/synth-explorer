@@ -154,30 +154,6 @@ export function groupBadgeText(node: GraphNode | NodeRef): string | null {
   return `×${width}`
 }
 
-/** Category used for styling. */
-export type NodeCategory = 'input' | 'output' | 'const' | 'seq' | 'comb'
-
-export function nodeCategory(
-  node: GraphNode | NodeRef,
-  portDir?: 'input' | 'output',
-): NodeCategory {
-  if (node.kind === 'const') return 'const'
-  if (node.kind === 'port') {
-    // direction may be encoded elsewhere; default to output if unknown
-    return portDir ?? 'output'
-  }
-  if (node.seq) return 'seq'
-  return 'comb'
-}
-
-const SEQ_HINT = /dff|latch|ff|mem|sr|reg/i
-
-/** Best-effort seq detection when the seq flag is missing. */
-export function looksSequential(cellType: string | undefined): boolean {
-  if (!cellType) return false
-  return SEQ_HINT.test(cellType)
-}
-
 /** True for yosys auto-generated / hidden names ("$abc$240$auto$blifparse..."). */
 export function isHiddenName(name: string | undefined): boolean {
   return !name || name.startsWith('$')

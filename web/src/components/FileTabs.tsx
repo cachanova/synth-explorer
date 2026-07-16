@@ -1,8 +1,18 @@
 import { useRef, type KeyboardEvent } from 'react'
-import { useStore } from '../useStore'
+import { shallowEqual, useStore } from '../useStore'
 
 export function FileTabs() {
-  const store = useStore()
+  const store = useStore(
+    ({ files, activeFileName, setActiveFileName, addFile, renameFile, deleteFile }) => ({
+      files,
+      activeFileName,
+      setActiveFileName,
+      addFile,
+      renameFile,
+      deleteFile,
+    }),
+    shallowEqual,
+  )
   const tabRefs = useRef<Array<HTMLDivElement | null>>([])
 
   const onRename = (name: string) => {

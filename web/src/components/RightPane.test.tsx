@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('../useStore', () => ({
+  shallowEqual: Object.is,
   useStore: () => ({
     activeTab: 'overview',
     setActiveTab: vi.fn(),

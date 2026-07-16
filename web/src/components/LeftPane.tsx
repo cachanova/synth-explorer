@@ -1,11 +1,14 @@
-import { useStore } from '../useStore'
+import { shallowEqual, useStore } from '../useStore'
 import { Editor } from './Editor'
 import { ErrorStrip } from './ErrorStrip'
 import { FileTabs } from './FileTabs'
 import { Toolbar } from './Toolbar'
 
 export function LeftPane() {
-  const store = useStore()
+  const store = useStore(
+    ({ sourceSelection, analysisState }) => ({ sourceSelection, analysisState }),
+    shallowEqual,
+  )
 
   return (
     <div className="pane-left">

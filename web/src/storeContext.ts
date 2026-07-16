@@ -1,4 +1,4 @@
 import { createContext } from 'react'
-import type { Store } from './store'
+import type { StoreApi } from './store'
 
-export const StoreContext = createContext<Store | null>(null)
+export const StoreContext = createContext<StoreApi | null>(null)
