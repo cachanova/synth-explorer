@@ -4,13 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('../useStore', () => ({
   shallowEqual: Object.is,
   useStore: () => ({
-    activeTab: 'overview',
+    activeTab: 'graph',
     setActiveTab: vi.fn(),
-    snapshotA: null,
-    snapshotB: null,
   }),
 }))
-vi.mock('./tabs/Compare', () => ({ Compare: () => null }))
 vi.mock('./tabs/Endpoints', () => ({ Endpoints: () => null }))
 vi.mock('./tabs/Fanout', () => ({ Fanout: () => null }))
 vi.mock('./tabs/Graph', () => ({ Graph: () => null }))
@@ -24,11 +21,14 @@ describe('RightPane tabs', () => {
     const markup = renderToStaticMarkup(<RightPane />)
     const tabs = markup.match(/<button[^>]*role="tab"[^>]*>/g) ?? []
 
-    expect(tabs).toHaveLength(6)
+    expect(tabs).toHaveLength(5)
+    expect(markup).toMatch(
+      /analysis-tab-overview[\s\S]*analysis-tab-graph[\s\S]*analysis-tab-endpoints[\s\S]*analysis-tab-paths[\s\S]*analysis-tab-fanout/,
+    )
     expect(tabs.filter((tab) => tab.includes('aria-selected="true"'))).toHaveLength(1)
     expect(tabs.filter((tab) => tab.includes('tabindex="0"'))).toHaveLength(1)
-    expect(tabs.filter((tab) => tab.includes('tabindex="-1"'))).toHaveLength(5)
+    expect(tabs.filter((tab) => tab.includes('tabindex="-1"'))).toHaveLength(4)
     expect(markup).toContain('role="tabpanel"')
-    expect(markup).toContain('aria-labelledby="analysis-tab-overview"')
+    expect(markup).toContain('aria-labelledby="analysis-tab-graph"')
   })
 })

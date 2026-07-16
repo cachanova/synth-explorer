@@ -1,7 +1,6 @@
 import { useRef, type KeyboardEvent } from 'react'
 import type { TabId } from '../store'
 import { shallowEqual, useStore } from '../useStore'
-import { Compare } from './tabs/Compare'
 import { Endpoints } from './tabs/Endpoints'
 import { Fanout } from './tabs/Fanout'
 import { Graph } from './tabs/Graph'
@@ -10,25 +9,21 @@ import { Paths } from './tabs/Paths'
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
+  { id: 'graph', label: 'Schematic' },
   { id: 'endpoints', label: 'Endpoints' },
   { id: 'paths', label: 'Paths' },
   { id: 'fanout', label: 'Fanout' },
-  { id: 'graph', label: 'Schematic' },
-  { id: 'compare', label: 'Compare' },
 ]
 
 export function RightPane() {
   const store = useStore(
-    ({ activeTab, setActiveTab, snapshotA, snapshotB }) => ({
+    ({ activeTab, setActiveTab }) => ({
       activeTab,
       setActiveTab,
-      snapshotA,
-      snapshotB,
     }),
     shallowEqual,
   )
   const active = store.activeTab
-  const snaps = (store.snapshotA ? 1 : 0) + (store.snapshotB ? 1 : 0)
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([])
 
   const selectAndFocus = (index: number) => {
@@ -67,7 +62,6 @@ export function RightPane() {
             onKeyDown={(event) => onTabKeyDown(event, index)}
           >
             {t.label}
-            {t.id === 'compare' && snaps > 0 && <span className="badge">{snaps}/2</span>}
           </button>
         ))}
       </div>
@@ -98,7 +92,6 @@ export function RightPane() {
           {active === 'endpoints' && <Endpoints />}
           {active === 'paths' && <Paths />}
           {active === 'fanout' && <Fanout />}
-          {active === 'compare' && <Compare />}
         </div>
       )}
     </div>

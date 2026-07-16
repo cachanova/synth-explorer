@@ -15,7 +15,7 @@ Not a prettier full-schematic renderer. A **graph-first circuit debugger**:
 - Select a register/signal → see only the relevant fanin or fanout cone.
 - Rank paths by logical depth (cell levels / LUT levels).
 - Cross-link graph nodes back to RTL source via yosys `src` attributes.
-- Compare how different code or different synthesis modes change depth/fanout.
+- Inspect how different code or synthesis modes affect depth and fanout.
 
 Full schematic view exists but is an option, capped by size — not the main flow.
 
@@ -147,21 +147,19 @@ Compiler-Explorer-style split view, dark theme:
   - **Overview** — cell-type histogram, reg/port counts, warnings, yosys log,
     and an estimated-timing panel with profiles, speed grades, and coefficient
     overrides.
-  - **Endpoints** — fuzzy-searchable registers/outputs; click → Graph tab cone.
-  - **Paths** — ranked longest paths; click → path highlighted in Graph tab;
-    per-node src hop back to editor.
-  - **Fanout** — ranked high-fanout drivers; control nets badged; click → fanout
-    cone.
-  - **Graph** — the cone viewer: elkjs layered layout in a worker, SVG nodes
+  - **Schematic** — the cone viewer: elkjs layered layout in a worker, SVG nodes
     (cells with type + name, ports, consts), pan/zoom, click node → expand
     cone / show src; toggles for constants and clock/reset/enable; direction
     switch (fanin/fanout); Focus lazily loads one nearby-context projection,
     keeps a stable shared layout, and toggles that context between hidden and
     dimmed without refetching or refitting. With no relevant source or endpoint
-    selected, Graph renders the capped full diagram without an overlay. Escape
+    selected, Schematic renders the capped full diagram without an overlay. Escape
     clears a source selection.
-  - **Compare** — snapshot current design (A/B); table of depth, worst paths,
-    cell counts, fanout deltas between snapshots (different code or modes).
+  - **Endpoints** — fuzzy-searchable registers/outputs; click → Schematic tab cone.
+  - **Paths** — ranked longest paths; click → path highlighted in Schematic tab;
+    per-node src hop back to editor.
+  - **Fanout** — ranked high-fanout drivers; control nets badged; click → fanout
+    cone.
 - **Source cross-probe:** node src (`file.sv:12.16-12.21`) → editor highlight;
   editor cursor line → matching nodes listed/highlighted.
 - Store consumers subscribe through field selectors, so editor keystrokes do
@@ -192,7 +190,7 @@ realistic blackbox boundary around vendor-generated clock-domain-crossing IP.
 - **Frontend:** `tsc --noEmit`, `vite build`, vitest on pure logic (API client,
   graph transforms).
 - **E2E:** drive Chrome against the built stack — synthesize each example, walk
-  endpoints → cone → paths → fanout → source probe → compare.
+  endpoints → cone → paths → fanout → source probe.
 
 ## Future (explicitly out of scope now)
 

@@ -259,7 +259,7 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'lut6', label: 'Generic LUT6 metric' },
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
-  { value: 'xilinx', label: 'Xilinx — Yosys' },
+  { value: 'xilinx', label: 'Xilinx' },
 ]
 
 export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
@@ -271,7 +271,7 @@ export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
 // CARRY8), BRAM, and DSP primitives, so it makes the netlist match the vendor
 // flow for that device. Default xc7 matches yosys's own default.
 export const XILINX_FAMILY_LABELS: { value: XilinxFamily; label: string }[] = [
-  { value: 'xc7', label: 'Series 7 — Artix/Kintex/Virtex-7, Zynq-7000' },
+  { value: 'xc7', label: 'Series 7' },
   { value: 'xcup', label: 'UltraScale+' },
   { value: 'xcu', label: 'UltraScale' },
   { value: 'xc6s', label: 'Spartan-6' },

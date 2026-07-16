@@ -12,6 +12,24 @@ async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
   return box
 }
 
+async function expectActiveFlagValueFieldsSeparated(page: Page) {
+  const activeRows = page.locator('.flags-menu-row.active', {
+    has: page.locator('.flags-menu-value'),
+  })
+  const count = await activeRows.count()
+  expect(count).toBeGreaterThan(0)
+  for (let index = 0; index < count; index += 1) {
+    const row = activeRows.nth(index)
+    const [textBox, valueBox] = await Promise.all([
+      row.locator('.flags-menu-text').boundingBox(),
+      row.locator('.flags-menu-value').boundingBox(),
+    ])
+    expect(textBox).not.toBeNull()
+    expect(valueBox).not.toBeNull()
+    expect(textBox!.x + textBox!.width).toBeLessThanOrEqual(valueBox!.x)
+  }
+}
+
 test('unlocks Vivado family and speed presets through a password-manager form', async ({
   page,
 }) => {
@@ -60,15 +78,18 @@ test('unlocks Vivado family and speed presets through a password-manager form', 
 
   await expect(page.getByLabel('Synth tool')).toHaveValue('vivado')
   await expect(page.getByLabel('Mode')).toHaveCount(0)
-  await expect(page.getByLabel('Family')).toHaveValue('artix7')
+  await expect(page.getByLabel('Family')).toHaveValue('series7')
   await expect(page.getByLabel('Family').locator('option')).toHaveCount(3)
+  await expect(page.getByLabel('Family')).toContainText('Series 7')
+  await expect(page.getByLabel('Family')).toContainText('UltraScale')
+  await expect(page.getByLabel('Family')).toContainText('UltraScale+')
   await expect(page.getByLabel('Speed grade')).toHaveValue('-1')
   await expect(page.getByLabel('Speed grade')).toHaveAttribute(
     'title',
     'Resolved Vivado part: xc7a35tcpg236-1',
   )
 
-  await page.getByLabel('Family').selectOption('kintexu')
+  await page.getByLabel('Family').selectOption('ultrascale')
   await expect(page.getByLabel('Speed grade')).toHaveValue('-1')
   await expect(page.getByLabel('Speed grade').locator('option')).toHaveCount(2)
   await expect(page.getByLabel('Speed grade')).toHaveAttribute(
@@ -89,9 +110,24 @@ test('unlocks Vivado family and speed presets through a password-manager form', 
   await expect(page.getByLabel('Synthesis flags')).toHaveValue(
     '-directive PerformanceOptimized',
   )
+  const fsmExtraction = page.getByRole('checkbox', { name: 'Enable -fsm_extraction' })
+  const resourceSharing = page.getByRole('checkbox', { name: 'Enable -resource_sharing' })
+  const cascadeDsp = page.getByRole('checkbox', { name: 'Enable -cascade_dsp' })
+  await fsmExtraction.check()
+  await resourceSharing.check()
+  await cascadeDsp.check()
+  await expectActiveFlagValueFieldsSeparated(page)
+  await fsmExtraction.uncheck()
+  await resourceSharing.uncheck()
+  await cascadeDsp.uncheck()
 
   const dspLimit = page.getByRole('checkbox', { name: 'Enable -max_dsp' })
   await dspLimit.check()
+  await expect(
+    page.locator('.flags-menu-row.active').filter({ hasText: '-max_dsp' }),
+  ).toContainText(
+    /max_dsp[\s\S]*DSP limit/,
+  )
   await expect(page.getByLabel('-max_dsp value')).toHaveValue('0')
   await page.getByLabel('-max_dsp value').fill('24')
   await expect(page.getByLabel('Synthesis flags')).toHaveValue(
@@ -162,6 +198,7 @@ test('synthesizes from the webpage with the default Yosys flags', async ({
     mode: 'xilinx',
     extra_args: '-noiopad',
   })
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await expect(
     page.locator('.card').filter({ hasText: 'Cells' }).locator('.v'),
   ).toHaveText(/^\d+$/)
@@ -179,13 +216,12 @@ test('graph viewport follows browser and pane resizing without resetting user zo
       response.url().endsWith('/api/synthesize') &&
       response.request().method() === 'POST',
   )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
-  expect((await responsePromise).ok()).toBe(true)
-
   const netlistResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
-  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+  expect((await responsePromise).ok()).toBe(true)
+
   const netlistParams = new URL((await netlistResponse).url()).searchParams
   expect(netlistParams.get('hide_control')).toBe('true')
   expect(netlistParams.get('hide_const')).toBe('true')
@@ -201,6 +237,9 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await expect(page.locator('.g-node-body').first()).toBeVisible()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  await expect
+    .poll(async () => page.locator('.graph-toolbar').innerText())
+    .toMatch(/^max nodes[\s\S]*hide control[\s\S]*hide const[\s\S]*group buses[\s\S]*Focus/)
 
   const rovingNode = page.locator('.g-node-body[tabindex="0"]')
   await expect(rovingNode).toHaveCount(1)
@@ -355,10 +394,10 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   const schematicTab = page.getByRole('tab', { name: 'Schematic', exact: true })
   await schematicTab.focus()
   await schematicTab.press('ArrowLeft')
-  const fanoutTab = page.getByRole('tab', { name: 'Fanout', exact: true })
-  await expect(fanoutTab).toBeFocused()
-  await expect(fanoutTab).toHaveAttribute('aria-selected', 'true')
-  await fanoutTab.press('ArrowRight')
+  const overviewTab = page.getByRole('tab', { name: 'Overview', exact: true })
+  await expect(overviewTab).toBeFocused()
+  await expect(overviewTab).toHaveAttribute('aria-selected', 'true')
+  await overviewTab.press('ArrowRight')
   await expect(schematicTab).toBeFocused()
   await expect(schematicTab).toHaveAttribute('aria-selected', 'true')
 })
@@ -377,6 +416,7 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
     .locator('..')
     .locator('select')
     .selectOption('xilinx')
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
 
   const synthResponse = page.waitForResponse(
     (response) =>
@@ -476,27 +516,22 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
   expect(netlistRequests).toBe(1)
   await expect(viewport).toHaveAttribute('transform', stabilizedTransform ?? '')
 
-  // Rapid cursor movement schedules one latest-only live source probe.
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await page.keyboard.press('Control+Home')
-  await page.waitForTimeout(350)
+  // A cursor move while Focus is off schedules one live source probe.
   const burstProbeUrls: string[] = []
   const countBurstProbe = (request: Request) => {
     if (request.url().includes('/line-cone?')) burstProbeUrls.push(request.url())
   }
   page.on('request', countBurstProbe)
-  await page.keyboard.press('ArrowDown')
-  await page.keyboard.press('ArrowDown')
-  await page.keyboard.press('ArrowDown')
-  const finalCursorLine = (
+  await page
+    .locator('.cm-line', { hasText: "request_valid = 1'b1;" })
+    .click()
+  const cursorLine = (
     await page.locator('.cm-activeLineGutter').textContent()
   )?.trim()
-  await page.waitForTimeout(600)
+  await expect.poll(() => burstProbeUrls.length).toBe(1)
   page.off('request', countBurstProbe)
-  expect(burstProbeUrls).toHaveLength(1)
   expect(new URL(burstProbeUrls[0]).searchParams.get('start_line')).toBe(
-    finalCursorLine,
+    cursorLine,
   )
 
   // Escape clears the relevant source selection from outside CodeMirror. The

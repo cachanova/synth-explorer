@@ -17,6 +17,10 @@ describe('analysis surface labels', () => {
     )
   })
 
+  it('labels Xilinx mode without repeating the selected synthesis tool', () => {
+    expect(renderToStaticMarkup(<ModeName mode="xilinx" />)).toBe('Xilinx')
+  })
+
   it('formats grouped path bits as descending cohorts', () => {
     expect(renderToStaticMarkup(<BitCohort bits={[2, 1, 0, 6, 5, 2]} />)).toBe(
       '[6:5], [2:0]',

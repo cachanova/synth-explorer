@@ -283,8 +283,9 @@ a:hover {
   font-size: 12px;
 }
 .flags-menu-row {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 142px;
+  align-items: start;
   gap: 8px;
   padding: 6px;
   border-radius: 4px;
@@ -296,7 +297,8 @@ a:hover {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .flags-menu-toggle {
-  display: flex;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
   flex: 1;
   align-items: flex-start;
   gap: 8px;
@@ -313,22 +315,28 @@ a:hover {
 }
 .flags-menu-head {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
 }
 .flags-menu-head code {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--accent);
+  overflow-wrap: anywhere;
 }
 .flags-menu-label {
   font-size: 12px;
   color: var(--text);
+  line-height: 1.2;
 }
 .flags-menu-desc {
   font-size: 11px;
   color: var(--text-dim);
   margin-top: 1px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 .flags-menu-warn {
   color: var(--warn, #d0a215);
@@ -336,11 +344,11 @@ a:hover {
 .flags-menu-value {
   width: 62px;
   padding: 2px 4px;
-  align-self: center;
+  align-self: start;
 }
 .flags-menu-choice {
-  width: 132px;
-  max-width: 40%;
+  width: 100%;
+  max-width: none;
 }
 
 /* ---- Vivado owner unlock ---- */
@@ -1280,36 +1288,4 @@ th.sortable:hover {
 .g-control-label.clickable:focus-visible rect {
   stroke: var(--accent);
   stroke-width: 1.5;
-}
-
-/* ---- compare ---- */
-.cmp-slots {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-.cmp-slot {
-  flex: 1;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 10px;
-  background: var(--bg-2);
-}
-.cmp-slot h4 {
-  margin: 0 0 6px;
-}
-.delta-up {
-  color: var(--red);
-}
-.delta-down {
-  color: var(--green);
-}
-.delta-zero {
-  color: var(--text-faint);
-}
-.delta-add {
-  color: var(--green);
-}
-.delta-rm {
-  color: var(--red);
 }

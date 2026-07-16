@@ -20,7 +20,7 @@ function displayMode(mode: string): string {
     case 'ecp5':
       return 'ECP5 target'
     case 'xilinx':
-      return 'Xilinx — Yosys'
+      return 'Xilinx'
     default:
       return mode
   }
