@@ -120,14 +120,21 @@ the Yosys netlist itself into Vivado over EDIF and running the same
 - `vivado_edif.tcl` vs `vivado.tcl` = pure **mapping** (netlist-shape) error,
   Vivado's model on both sides.
 
-Export one EDIF per case/family with the app's exact baseline synthesis line —
-the flags must match what `calibrate estimate` runs (`estimate_case` in
-`server/examples/calibrate.rs` is the source of truth), or the two sides are
-different netlists again and the comparison is back to being ill-posed:
+Export one EDIF per case/family with the app's exact baseline synthesis
+script — the flags must match what `calibrate estimate` runs (`estimate_case`
+in `server/examples/calibrate.rs` is the source of truth), and the script
+shape must match `build_script` in `server/src/yosys.rs`, or the two sides are
+different netlists again and the comparison is back to being ill-posed. The
+app's Xilinx pipeline splits `synth_xilinx` at `fine` to soft-map narrow
+(<= 8-bit result) `$alu`/`$lcu` arithmetic away from carry chains, so the
+export must replay the same split:
 
 ```bash
 yosys -q -p "read_verilog -sv <case>/<file>; \
-  synth_xilinx -top <top> -flatten -family <xc7|xcu|xcup> <baseline flags>; \
+  synth_xilinx -top <top> -flatten -family <xc7|xcu|xcup> <baseline flags> -run begin:fine; \
+  select -set narrow_alu t:\$alu r:Y_WIDTH<=8 %i; techmap @narrow_alu; \
+  select -set narrow_lcu t:\$lcu r:WIDTH<=8 %i; techmap @narrow_lcu; \
+  synth_xilinx -top <top> -flatten -family <xc7|xcu|xcup> <baseline flags> -run fine:; \
   write_edif -pvector bra edif/<case>.<family>.edif"
 ```
 

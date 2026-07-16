@@ -13,13 +13,20 @@
 #   <cases_dir>/cases.json
 #   <cases_dir>/edif/<case>.<family>.edif
 #
-# Each EDIF is exported by Yosys with the app's exact baseline synthesis line:
+# Each EDIF is exported by Yosys with the app's exact baseline synthesis
+# script (see the export snippet in README.md — since the narrow-arithmetic
+# soft-map, that is a split synth_xilinx run, not a single line):
 #
 #   read_verilog -sv <case>.sv
-#   synth_xilinx -top <top> -flatten -nowidelut -family <xc7|xcu|xcup> -noiopad -noclkbuf
+#   synth_xilinx -top <top> -flatten -nowidelut -family <xc7|xcu|xcup> -noiopad -noclkbuf -run begin:fine
+#   select -set narrow_alu t:$alu r:Y_WIDTH<=8 %i
+#   techmap @narrow_alu
+#   select -set narrow_lcu t:$lcu r:WIDTH<=8 %i
+#   techmap @narrow_lcu
+#   synth_xilinx -top <top> -flatten -nowidelut -family <xc7|xcu|xcup> -noiopad -noclkbuf -run fine:
 #
-# (-nowidelut is the app default since #67; fit coefficients against EDIFs
-# exported with the same flags the app actually uses.)
+# (-nowidelut is the client-side default since #72; fit coefficients against
+# EDIFs exported with the same flags and script shape the app actually uses.)
 #   write_edif -pvector bra <case>.<family>.edif
 #
 # Usage: vivado -mode batch -source vivado_edif.tcl -tclargs <cases_dir> [case ...]

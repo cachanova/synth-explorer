@@ -1,5 +1,5 @@
 import type { Mode, SynthTool } from '../types'
-import { stripFlags, toggleFlag } from './synthFlags'
+import { hasFlag, setFlagValue, stripFlags, toggleFlag } from './synthFlags'
 
 interface BaseFlagDef {
   flag: string
@@ -48,6 +48,27 @@ const GENERIC: FlagDef[] = [
 ]
 
 const XILINX: FlagDef[] = [
+  {
+    flag: '-narrowcarry',
+    label: 'LUT-map narrow arithmetic \u2264 N bits',
+    description:
+      'App flag (not a yosys option): arithmetic with results up to N bits is ' +
+      'mapped to LUT logic instead of a carry chain; wider arithmetic keeps ' +
+      'its chain.',
+    value: 'int',
+    defaultValue: '8',
+    min: 1,
+    max: 64,
+    defaultOn: true,
+    defaultReason:
+      'Yosys otherwise commits every addition to CARRY4 no matter how small, ' +
+      'and a tiny chain costs entry/exit levels while blocking logic ' +
+      'optimization across it \u2014 a 3-bit add left a 4-level netlist where ' +
+      "Vivado needs one LUT. With the default of 8 (where Vivado's own " +
+      'synthesis stops using carry chains), netlist depth matches Vivado at ' +
+      'median parity on the calibration corpus. Remove the flag to always ' +
+      'use carry chains.',
+  },
   { flag: '-nocarry', label: 'No carry chains', description: 'Adders/comparators in LUT logic instead of CARRY4.' },
   { flag: '-nodsp', label: 'No DSP', description: 'Multipliers in logic instead of DSP48.' },
   { flag: '-nobram', label: 'No block RAM', description: 'Memories in registers/logic instead of RAMB.', warn: 'Can exhaust resources on large memories.' },
@@ -261,7 +282,15 @@ export function flagsForTool(tool: SynthTool, mode: Mode): FlagDef[] {
 
 /** `-family` is value-taking and Xilinx-only; the menu never lists it (the Target
  *  dropdown owns it), but mode-switching must still be able to strip it. */
-const VALUE_FLAGS = new Set(['-family', '-widemux'])
+// Derived from the registry so a newly added value-taking flag can never be
+// silently stripped without its value token on a mode change. `-family` is the
+// one value flag living outside the registry (it is the Target dropdown).
+const VALUE_FLAGS = new Set([
+  '-family',
+  ...Object.values(FLAG_REGISTRY).flatMap((defs) =>
+    defs.filter((def) => def.value).map((def) => def.flag),
+  ),
+])
 
 function allKnownFlags(): string[] {
   const all = new Set<string>(['-family'])
@@ -289,9 +318,10 @@ export function stripInvalidFlags(flags: string, mode: Mode): string {
 export function flagsForModeChange(flags: string, mode: Mode): string {
   let next = stripInvalidFlags(flags, mode)
   for (const definition of flagsForMode(mode)) {
-    if (definition.defaultOn) {
-      next = toggleFlag(next, definition.flag, true)
-    }
+    if (!definition.defaultOn || hasFlag(next, definition.flag)) continue
+    next = definition.value
+      ? setFlagValue(next, definition.flag, definition.defaultValue)
+      : toggleFlag(next, definition.flag, true)
   }
   return next
 }

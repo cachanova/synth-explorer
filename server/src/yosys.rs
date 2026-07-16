@@ -28,6 +28,13 @@ const CHILD_OPEN_FILES_LIMIT: libc::rlim_t = 128;
 #[cfg(target_os = "linux")]
 const CHILD_CPU_SECONDS_LIMIT: libc::rlim_t = 65;
 
+/// App-level pseudo-flag controlling the narrow-arithmetic soft-map in the
+/// Xilinx flow. It looks like a yosys flag in the request's `extra_args` (so
+/// it is visible, user-removable, and part of the design-id hash like any
+/// other flag) but yosys has no such option: the server strips it from the
+/// command line and interprets it as the split-pipeline threshold below.
+pub const NARROWCARRY_FLAG: &str = "-narrowcarry";
+
 /// How generic synthesis treats inferred memories. `Map` is today's default
 /// pipeline; `Abstract` stops `synth` before `memory_map` and replays the fine
 /// stage without it, so `$mem_v2` cells survive into the netlist.
@@ -227,6 +234,40 @@ impl SynthRequest {
                 ));
             }
             _ => {}
+        }
+        if let Some(i) = extra_args.iter().position(|arg| arg == NARROWCARRY_FLAG) {
+            // App-level pseudo-flag (see NARROWCARRY_FLAG): validated here so a
+            // malformed request fails clearly instead of surfacing as a yosys
+            // parse error for a flag yosys has never heard of.
+            if self.tool != SynthTool::Yosys || self.mode != SynthMode::Xilinx {
+                return Err(YosysError::Validation(
+                    "-narrowcarry is only supported in xilinx mode".to_owned(),
+                ));
+            }
+            if extra_args.iter().any(|arg| arg == "-run") {
+                return Err(YosysError::Validation(
+                    "-narrowcarry cannot be combined with -run: a caller-supplied \
+                     pipeline slice runs as one untouched invocation"
+                        .to_owned(),
+                ));
+            }
+            let valid = extra_args
+                .get(i + 1)
+                .and_then(|v| v.parse::<u32>().ok())
+                .is_some_and(|w| (1..=64).contains(&w));
+            if !valid {
+                return Err(YosysError::Validation(
+                    "-narrowcarry takes a width between 1 and 64".to_owned(),
+                ));
+            }
+            if extra_args[i + 1..]
+                .iter()
+                .any(|arg| arg == NARROWCARRY_FLAG)
+            {
+                return Err(YosysError::Validation(
+                    "-narrowcarry may only be given once".to_owned(),
+                ));
+            }
         }
         Ok(ValidatedSynth {
             files,
@@ -475,6 +516,23 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
+/// Split `-narrowcarry <N>` out of the flag list: returns the threshold (if
+/// the flag is present) and the remaining args destined for yosys. Validation
+/// has already guaranteed the pair is well-formed when present.
+fn split_narrowcarry(args: &[String]) -> (Option<u32>, Vec<String>) {
+    let mut out = Vec::with_capacity(args.len());
+    let mut width = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == NARROWCARRY_FLAG {
+            width = it.next().and_then(|v| v.parse().ok());
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    (width, out)
+}
+
 fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
     let mut script = String::new();
     push_read_verilog(&mut script, input);
@@ -544,16 +602,50 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
             if input.top.is_none() {
                 script.push_str("hierarchy -auto-top\n");
             }
-            // -nowidelut is NOT injected here: it is a default the web client
-            // puts into the visible flags string (see web flagRegistry
-            // `defaultOn`), so the user can see and remove it, and so the same
-            // request always produces the same netlist. Server-side injection
-            // briefly lived here (#67) and broke that: identical extra_args
-            // yielded different netlists across deploys.
-            script.push_str(&format!(
-                "synth_xilinx {} -flatten{extra}\n",
+            // -nowidelut/-noiopad style defaults are NOT injected here: they
+            // live in the CLIENT's visible flags string (web flagRegistry
+            // `defaultOn`), so the user can see and remove them, and the same
+            // request always produces the same netlist.
+            //
+            // `-narrowcarry <N>` is the one app-level pseudo-flag: yosys has
+            // no option for width-thresholded carry mapping, so the server
+            // strips the pair from the yosys command line and interprets it as
+            // a split of synth_xilinx at its `fine` label. Yosys commits every
+            // $alu/$lcu to CARRY primitives regardless of width; a chain only
+            // pays off once it amortizes its LUT-level entry and exit, and
+            // below that it walls the arithmetic off from ABC
+            // (round_robin_arbiter n=4: depth 4 vs Vivado's 1). Soft-mapping
+            // results <= N bits to generic gates ahead of `fine` lets ABC
+            // collapse them into surrounding logic; wide arithmetic keeps its
+            // chain. Both synth_xilinx invocations carry identical options,
+            // and the split is inert for designs with no narrow arithmetic.
+            // Absent flag = single untouched invocation. `validate()` already
+            // rejected -narrowcarry alongside a caller -run slice.
+            let (narrowcarry, yosys_args) = split_narrowcarry(&input.extra_args);
+            let extra = if yosys_args.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", yosys_args.join(" "))
+            };
+            let synth = format!(
+                "synth_xilinx {} -flatten{extra}",
                 top_only(input.top.as_deref())
-            ));
+            );
+            match narrowcarry {
+                Some(width) => {
+                    script.push_str(&format!("{synth} -run begin:fine\n"));
+                    script.push_str(&format!(
+                        "select -set narrow_alu t:$alu r:Y_WIDTH<={width} %i\n\
+                         techmap @narrow_alu\n\
+                         select -set narrow_lcu t:$lcu r:WIDTH<={width} %i\n\
+                         techmap @narrow_lcu\n"
+                    ));
+                    script.push_str(&format!("{synth} -run fine:\n"));
+                }
+                None => {
+                    script.push_str(&format!("{synth}\n"));
+                }
+            }
         }
     }
     script.push_str("write_json netlist.json\n");
@@ -662,6 +754,15 @@ mod tests {
         mode: SynthMode,
         extra_args: &str,
     ) -> ValidatedSynth {
+        request(files, top, mode, extra_args).validate().unwrap()
+    }
+
+    fn request(
+        files: &[&str],
+        top: Option<&str>,
+        mode: SynthMode,
+        extra_args: &str,
+    ) -> SynthRequest {
         SynthRequest {
             files: files
                 .iter()
@@ -680,8 +781,6 @@ mod tests {
                 Some(extra_args.to_owned())
             },
         }
-        .validate()
-        .unwrap()
     }
 
     #[test]
@@ -866,6 +965,91 @@ mod tests {
         let script = build_script(&plain, MemoryHandling::Map);
         assert!(!script.contains("-nowidelut"), "{script}");
         assert!(!script.contains("-noiopad"), "{script}");
+    }
+
+    #[test]
+    fn xilinx_soft_maps_narrow_arithmetic_between_identical_synth_halves() {
+        // `-narrowcarry <N>` splits the pipeline at `fine` so $alu/$lcu with
+        // results of at most N bits lower to generic gates (which ABC then
+        // collapses with the surrounding logic) instead of being committed to
+        // carry chains. The pseudo-flag itself must never reach yosys, and
+        // both synth_xilinx invocations must carry identical options, or the
+        // resumed half would synthesize a different flow than the one it
+        // stopped.
+        let tuned = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-narrowcarry 8 -family xc7 -nowidelut",
+        );
+        let script = build_script(&tuned, MemoryHandling::Map);
+        assert!(!script.contains("-narrowcarry"), "{script}");
+        let synth = "synth_xilinx -top top -flatten -family xc7 -nowidelut";
+        assert!(
+            script.contains(&format!(
+                "{synth} -run begin:fine\n\
+             select -set narrow_alu t:$alu r:Y_WIDTH<=8 %i\n\
+             techmap @narrow_alu\n\
+             select -set narrow_lcu t:$lcu r:WIDTH<=8 %i\n\
+             techmap @narrow_lcu\n\
+             {synth} -run fine:\n"
+            )),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn narrowcarry_is_validated_before_yosys_ever_sees_it() {
+        // Malformed uses fail as clear validation errors, not yosys parse
+        // errors for a flag yosys has never heard of.
+        let cases = [
+            ("-narrowcarry", "takes a width"),
+            ("-narrowcarry 0", "takes a width"),
+            ("-narrowcarry 65", "takes a width"),
+            ("-narrowcarry banana", "takes a width"),
+            ("-narrowcarry 8 -narrowcarry 4", "only be given once"),
+            (
+                "-narrowcarry 8 -run begin:fine",
+                "cannot be combined with -run",
+            ),
+        ];
+        for (flags, expect) in cases {
+            let err = request(&["design.sv"], Some("top"), SynthMode::Xilinx, flags)
+                .validate()
+                .expect_err(flags);
+            assert!(err.to_string().contains(expect), "{flags}: {err}");
+        }
+        let err = request(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Ice40,
+            "-narrowcarry 8",
+        )
+        .validate()
+        .expect_err("ice40");
+        assert!(
+            err.to_string().contains("only supported in xilinx"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_caller_supplied_run_slice_suppresses_the_soft_map_split() {
+        // Appending our own -run after the caller's would silently win (last
+        // flag counts), turning their requested pipeline slice into ours.
+        let sliced = validated(
+            &["design.sv"],
+            Some("top"),
+            SynthMode::Xilinx,
+            "-run begin:coarse",
+        );
+        let script = build_script(&sliced, MemoryHandling::Map);
+        assert!(
+            script.contains("synth_xilinx -top top -flatten -run begin:coarse\n"),
+            "{script}"
+        );
+        assert_eq!(script.matches("synth_xilinx").count(), 1, "{script}");
+        assert!(!script.contains("narrow_alu"), "{script}");
     }
 
     #[test]

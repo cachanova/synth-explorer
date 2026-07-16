@@ -62,7 +62,7 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
 | `lut6` | `synth -top <top> -flatten -lut 6` | `$lut` cells (WIDTH≤6) + FF cells |
 | `ice40` | `synth_ice40 -top <top> -flatten` | `SB_LUT4`, `SB_CARRY`, `SB_DFF*` |
 | `ecp5` | `synth_ecp5 -top <top> -flatten` | `LUT4`, `CCU2C`, `TRELLIS_FF` |
-| `xilinx` | `synth_xilinx -top <top> -flatten` | `LUT1-6`, `CARRY4`, `FD?E` |
+| `xilinx` | `synth_xilinx -top <top> -flatten` (split at `fine` to soft-map <= 8-bit `$alu`/`$lcu` results to LUTs instead of carry chains) | `LUT1-6`, `CARRY4`, `FD?E` |
 
 Vivado is a separate synthesis tool, not a mode. It uses `tool=vivado` and the
 API-compatible `mode=gates` value while the webpage hides the Mode control. Any
