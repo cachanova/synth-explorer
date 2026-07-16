@@ -168,6 +168,9 @@ export type DelayProfile =
   | 'ultrascale_plus'
   | 'ice40'
   | 'ecp5'
+  | 'sky130hd'
+  | 'gf180mcu'
+  | 'asap7'
   | 'generic'
 
 export type SpeedGrade = '-1' | '-2' | '-3'

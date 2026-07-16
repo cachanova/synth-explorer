@@ -96,6 +96,7 @@ export function Overview() {
         <TimingModel
           key={design.design_id}
           designId={design.design_id}
+          designMode={design.mode}
           fallbackDelayNs={stats.estimated_delay_ns ?? null}
           fallbackBreakdown={stats.estimated_delay_breakdown}
           vivadoTiming={design.vivado_timing}

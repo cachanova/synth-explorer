@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_TIMING_SETTINGS,
+  ECP5_SPEED_GRADE_OPTIONS,
+  PDK_PROFILES,
+  PROFILE_OPTIONS,
+  SPEED_GRADE_OPTIONS,
   isDefaultTiming,
   loadTimingSettings,
   saveTimingSettings,
+  speedGradeOptions,
   timingRequest,
   type TimingSettings,
 } from './timingSettings'
@@ -141,5 +146,39 @@ describe('load/save round-trip', () => {
   it('falls back to defaults on malformed JSON', () => {
     localStorage.setItem('synthexplorer.timing.v1', '{not valid json')
     expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
+  })
+})
+
+describe('speedGradeOptions', () => {
+  it('labels ECP5 grades by their real names when the profile is ecp5', () => {
+    const labels = speedGradeOptions('ecp5').map((o) => o.label)
+    expect(labels).toEqual(['6 (slowest)', '7', '8 (fastest)'])
+    // The wire values stay '-1'/'-2'/'-3' — only the labels change.
+    expect(speedGradeOptions('ecp5').map((o) => o.value)).toEqual(['-1', '-2', '-3'])
+  })
+
+  it('resolves auto to ECP5 labels only for an ECP5 design', () => {
+    expect(speedGradeOptions('auto', 'ecp5')).toBe(ECP5_SPEED_GRADE_OPTIONS)
+    expect(speedGradeOptions('auto', 'xilinx')).toBe(SPEED_GRADE_OPTIONS)
+    expect(speedGradeOptions('auto')).toBe(SPEED_GRADE_OPTIONS)
+  })
+
+  it('keeps generic grade labels for the non-ECP5 profiles', () => {
+    for (const profile of ['series7', 'ice40', 'sky130hd', 'generic'] as const) {
+      expect(speedGradeOptions(profile)).toBe(SPEED_GRADE_OPTIONS)
+    }
+  })
+})
+
+describe('PDK profiles', () => {
+  it('every PDK profile is selectable in the dropdown', () => {
+    const values = new Set(PROFILE_OPTIONS.map((o) => o.value))
+    for (const profile of PDK_PROFILES) expect(values.has(profile)).toBe(true)
+  })
+
+  it('flags exactly the ASIC library profiles', () => {
+    expect([...PDK_PROFILES].sort()).toEqual(['asap7', 'gf180mcu', 'sky130hd'])
+    expect(PDK_PROFILES.has('ecp5')).toBe(false)
+    expect(PDK_PROFILES.has('auto')).toBe(false)
   })
 })

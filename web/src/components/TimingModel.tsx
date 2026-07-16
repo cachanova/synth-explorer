@@ -8,10 +8,11 @@ import {
 } from '../lib/timing'
 import {
   DELAY_FIELDS,
+  PDK_PROFILES,
   PROFILE_OPTIONS,
-  SPEED_GRADE_OPTIONS,
   loadTimingSettings,
   saveTimingSettings,
+  speedGradeOptions,
   timingRequest,
   type ProfileChoice,
   type TimingSettings,
@@ -37,11 +38,15 @@ import { Card } from './Card'
  */
 export function TimingModel({
   designId,
+  designMode,
   fallbackDelayNs,
   fallbackBreakdown,
   vivadoTiming,
 }: {
   designId: string
+  // The design's synthesis mode (e.g. 'ecp5'), so the speed-grade select can
+  // label ECP5's real grade names even when the profile is 'auto'.
+  designMode?: string
   fallbackDelayNs: number | null
   fallbackBreakdown?: DelayBreakdown
   vivadoTiming?: VivadoTiming
@@ -160,12 +165,19 @@ export function TimingModel({
         </label>
         <label className="field">
           <span>Speed grade</span>
+          {/* ASIC library profiles have a single characterized corner — no
+              grade binning — and the server ignores the grade for them. */}
           <select
             value={settings.speedGrade}
-            title="Speed grade multiplier applied to every delay term."
+            disabled={PDK_PROFILES.has(settings.profile)}
+            title={
+              PDK_PROFILES.has(settings.profile)
+                ? 'ASIC library profiles are characterized at a single corner and have no speed grades.'
+                : 'Speed grade multiplier applied to every delay term.'
+            }
             onChange={(e) => setGrade(e.target.value as SpeedGrade)}
           >
-            {SPEED_GRADE_OPTIONS.map((o) => (
+            {speedGradeOptions(settings.profile, designMode).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
