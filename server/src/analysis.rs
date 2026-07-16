@@ -1598,52 +1598,15 @@ impl Analysis {
         options: FullNetlistOptions<'_>,
         grouping: Option<&GroupPartition>,
     ) -> Subgraph {
+        if !options.priority_roots.is_empty() {
+            return self.context_netlist(graph, options, grouping);
+        }
         let base = graph.nodes.len() as u32;
         let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
-        // When the client has a relevant cone, fill the bounded projection from
-        // that cone outward instead of taking arbitrary node-order context.
-        // The traversal is undirected because useful schematic context can sit
-        // on either side of the selected logic.
         let mut seen_units: HashSet<u32> = HashSet::new();
-        if !options.priority_roots.is_empty() {
-            let mut queued: HashSet<NodeId> = HashSet::new();
-            let mut queue = VecDeque::new();
-            for root in options.priority_roots {
-                if graph.nodes.get(*root as usize).is_some() && queued.insert(*root) {
-                    queue.push_back(*root);
-                }
-            }
-            while let Some(id) = queue.pop_front() {
-                let node = &graph.nodes[id as usize];
-                if options.hide_const && node.kind == NodeKind::Const {
-                    continue;
-                }
-                let unit = unit_id(grouping, base, id);
-                if !seen_units.contains(&unit) {
-                    if seen_units.len() >= cap {
-                        break;
-                    }
-                    seen_units.insert(unit);
-                }
-                for edge_idx in graph.incoming[id as usize]
-                    .iter()
-                    .chain(&graph.outgoing[id as usize])
-                {
-                    let edge = &graph.edges[*edge_idx];
-                    if options.hide_control && is_labeled_control_edge(graph, edge) {
-                        continue;
-                    }
-                    let neighbor = if edge.from == id { edge.to } else { edge.from };
-                    if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(neighbor) {
-                        queue.push_back(neighbor);
-                    }
-                }
-            }
-        }
 
-        // A group's members can be non-contiguous, so scan all nodes to admit
-        // every member of an already-counted unit. Disconnected capacity is
-        // filled deterministically in node order after the nearby component.
+        // A group's members can be non-contiguous, so a full projection scans
+        // all nodes. Selection context takes the bounded adjacency path above.
         let mut seen = HashSet::new();
         let mut truncated = false;
         for node in &graph.nodes {
@@ -1671,6 +1634,118 @@ impl Analysis {
             })
             .map(|(idx, _)| idx)
             .collect();
+        let empty = HashSet::new();
+        let subgraph = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &empty,
+                boundary_nodes: &empty,
+                truncated,
+                show_infrastructure: options.show_infrastructure,
+            },
+        );
+        match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph,
+        }
+    }
+
+    /// Bounded undirected context around relevant roots. Unlike a full-netlist
+    /// projection this walks only admitted adjacency, so changing selections
+    /// does not rescan every graph node and edge or fill spare capacity with an
+    /// arbitrary disconnected prefix.
+    fn context_netlist(
+        &self,
+        graph: &Graph,
+        options: FullNetlistOptions<'_>,
+        grouping: Option<&GroupPartition>,
+    ) -> Subgraph {
+        let base = graph.nodes.len() as u32;
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
+        let mut seen_units = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut queued = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut edge_set = HashSet::new();
+        let mut truncated = false;
+
+        let admit = |id: NodeId,
+                     seen_units: &mut HashSet<u32>,
+                     seen: &mut HashSet<NodeId>,
+                     queued: &mut HashSet<NodeId>,
+                     queue: &mut VecDeque<NodeId>| {
+            let unit = unit_id(grouping, base, id);
+            if seen_units.contains(&unit) {
+                return true;
+            }
+            if seen_units.len() >= cap {
+                return false;
+            }
+            seen_units.insert(unit);
+            if let Some(group) = grouping.and_then(|partition| {
+                partition
+                    .group_of
+                    .get(&id)
+                    .and_then(|group_id| partition.groups.get(*group_id as usize))
+            }) {
+                for member in &group.members {
+                    seen.insert(*member);
+                    if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(*member) {
+                        queue.push_back(*member);
+                    }
+                }
+            } else {
+                seen.insert(id);
+                if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(id) {
+                    queue.push_back(id);
+                }
+            }
+            true
+        };
+
+        for root in options.priority_roots {
+            if graph.nodes.get(*root as usize).is_none()
+                || (options.hide_const && graph.nodes[*root as usize].kind == NodeKind::Const)
+            {
+                continue;
+            }
+            if !admit(*root, &mut seen_units, &mut seen, &mut queued, &mut queue) {
+                truncated = true;
+                break;
+            }
+        }
+
+        while let Some(id) = queue.pop_front() {
+            for edge_idx in graph.incoming[id as usize]
+                .iter()
+                .chain(&graph.outgoing[id as usize])
+            {
+                let edge = &graph.edges[*edge_idx];
+                if options.hide_control && is_labeled_control_edge(graph, edge) {
+                    continue;
+                }
+                let neighbor = if edge.from == id { edge.to } else { edge.from };
+                if options.hide_const && graph.nodes[neighbor as usize].kind == NodeKind::Const {
+                    continue;
+                }
+                if !admit(
+                    neighbor,
+                    &mut seen_units,
+                    &mut seen,
+                    &mut queued,
+                    &mut queue,
+                ) {
+                    truncated = true;
+                    continue;
+                }
+                if seen.contains(&edge.from) && seen.contains(&edge.to) {
+                    edge_set.insert(*edge_idx);
+                }
+            }
+        }
+
         let empty = HashSet::new();
         let subgraph = self.subgraph_from_sets(
             graph,

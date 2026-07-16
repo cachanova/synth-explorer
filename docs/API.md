@@ -393,9 +393,11 @@ into single nodes carrying `width` and `members` (see `GraphNode`), and the
 wide datapath fits in far fewer nodes. Multi-bit I/O ports collapse the same
 way: bits sharing a port name become one bus node (`kind: "port"`, `width`,
 `members`), while scalar ports stay per-bit. Bus edges between groups merge into
-one edge carrying every bit and the vector net name. Grouped nodes use synthetic ids
-`>= graph node count`; those ids are display-only and are rejected by `/nodes`
-and by `node=`/`nodes=` (which address real per-bit ids). Defaults to `false`.
+one edge carrying every bit and the vector net name. Grouped nodes use synthetic
+ids `>= graph node count`. With `group_vectors=true`, `/cone` accepts a
+synthetic root and resolves it to the complete group server-side; this keeps
+vectors wider than the 200-id multi-root limit expandable. `/nodes` remains a
+real per-bit lookup API. Defaults to `false`.
 
 ## GET `/api/design/:id/fanout?limit=50`
 
@@ -419,10 +421,11 @@ design exceeds `max_nodes`). Constants are filtered before the node budget, and
 control edges before the edge budget, so hidden content does not consume its
 corresponding visible capacity. Used by the optional full-schematic view.
 Grouping has the same semantics as `/cone`, and the node budget counts grouped
-units. When `around` supplies up to 200 real node ids, the bounded projection is
-filled breadth-first in both directions from those roots before disconnected
-capacity is filled in node order. This keeps selection context local instead of
-depending on netlist node order. An unknown context root returns `404`.
+units. When `around` supplies up to 200 real or grouped-projection node ids, the
+server walks a bounded undirected neighborhood from those roots. It does not
+scan or fill from disconnected netlist order, so selection context stays local
+and request work scales with the returned neighborhood. An unknown context root
+returns `404`.
 
 ## GET `/api/design/:id/source-map`
 

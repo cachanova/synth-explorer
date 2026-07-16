@@ -387,9 +387,12 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
 
   const contextNodes = page.locator('.g-node-body[data-relevant="0"]')
   const relevantNodes = page.locator('.g-node-body[data-relevant="1"]')
+  const contextEdges = page.locator('.g-edge-wrap[data-relevant="0"]')
   expect(await contextNodes.count()).toBeGreaterThan(0)
+  expect(await contextEdges.count()).toBeGreaterThan(0)
   expect(await relevantNodes.count()).toBe(focusedNodeCount)
   await expect(contextNodes.first()).toHaveCSS('opacity', '0.25')
+  await expect(contextEdges.first()).toHaveCSS('opacity', '0.25')
   expect(await page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(await page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
   const stabilizedBox = await retainedNode.boundingBox()
@@ -400,6 +403,7 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
 
   await focus.check()
   await expect(contextNodes.first()).toHaveCSS('visibility', 'hidden')
+  await expect(contextEdges.first()).toHaveCSS('visibility', 'hidden')
   expect(await page.locator('.g-node-body').count()).toBe(laidOutNodeCount)
   expect(lineConeRequests).toBe(1)
   expect(netlistRequests).toBe(1)
@@ -407,6 +411,7 @@ test('Focus toggles a stable relevant overlay without refetching or refitting', 
 
   await focus.uncheck()
   await expect(contextNodes.first()).toHaveCSS('opacity', '0.25')
+  await expect(contextEdges.first()).toHaveCSS('opacity', '0.25')
   expect(await page.locator('.g-node-body').count()).toBe(laidOutNodeCount)
   expect(lineConeRequests).toBe(1)
   expect(netlistRequests).toBe(1)

@@ -6,7 +6,7 @@ type ContextRequest =
   | { kind: 'cone'; nodes: number[] }
   | { kind: 'source' }
 
-/** Real graph ids that seed the server's nearby-context projection. */
+/** Projected ids that seed the server's nearby-context projection. */
 export function contextRootsFor(
   request: ContextRequest,
   graph: Subgraph,
@@ -14,7 +14,6 @@ export function contextRootsFor(
 ): number[] {
   const roots: number[] = []
   const seen = new Set<number>()
-  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
   const add = (ids: number[]) => {
     for (const id of ids) {
       if (roots.length >= MAX_CONTEXT_ROOTS) return
@@ -24,15 +23,10 @@ export function contextRootsFor(
     }
   }
   if (request.kind === 'cone') add(request.nodes)
-  else {
-    for (const id of sourceHighlight) {
-      const node = nodeById.get(id)
-      add(node?.members ?? [id])
-    }
-  }
+  else add(sourceHighlight)
   for (const node of graph.nodes) {
-    if (node.is_boundary) add(node.members ?? [node.id])
+    if (node.is_boundary) add([node.id])
   }
-  for (const node of graph.nodes) add(node.members ?? [node.id])
+  for (const node of graph.nodes) add([node.id])
   return roots
 }

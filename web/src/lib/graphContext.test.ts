@@ -9,14 +9,14 @@ const graph = (nodes: GraphNode[]): Subgraph => ({
 })
 
 describe('contextRootsFor', () => {
-  it('expands grouped source highlights to real member ids', () => {
+  it('keeps source roots and adds the grouped projection id', () => {
     const relevant = graph([
       { id: 18, kind: 'cell', name: 'inv' },
       { id: 32, kind: 'cell', name: 'wait_count', members: [22, 23, 24, 25] },
     ])
 
-    expect(contextRootsFor({ kind: 'source' }, relevant, [18, 32])).toEqual([
-      18, 22, 23, 24, 25,
+    expect(contextRootsFor({ kind: 'source' }, relevant, [18, 22])).toEqual([
+      18, 22, 32,
     ])
   })
 

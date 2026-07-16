@@ -9,6 +9,7 @@ import {
   NETWORK_SIMPLEX_NODE_LIMIT,
   nodeDimensions,
   panViewport,
+  placementForIncrementalLayout,
   placementForLayout,
   preserveViewportAnchor,
   toElkGraph,
@@ -238,6 +239,7 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
     expect(placementForLayout(manyNodes)).toBe('BRANDES_KOEPF')
+    expect(placementForIncrementalLayout(manyNodes)).toBe('BRANDES_KOEPF')
 
     const denseEdges: Subgraph = {
       nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
@@ -252,6 +254,8 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
     expect(placementForLayout(denseEdges)).toBe('BRANDES_KOEPF')
+    expect(placementForIncrementalLayout(denseEdges)).toBe('BRANDES_KOEPF')
+    expect(placementForIncrementalLayout(small)).toBe('INTERACTIVE')
   })
 
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {

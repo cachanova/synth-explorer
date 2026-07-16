@@ -1104,7 +1104,7 @@ async fn cone(
                 "dir must be fanin or fanout",
             )
         })?;
-    let roots =
+    let requested_roots =
         match &query.nodes {
             Some(nodes) => {
                 let ids = parse_node_ids(nodes)?;
@@ -1126,6 +1126,8 @@ async fn cone(
                 ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "node is required")
             })?],
         };
+    let grouping = grouping_for(&design, query.group_vectors);
+    let roots = resolve_projection_roots(&design, requested_roots, grouping)?;
     let subgraph = design
         .analysis
         .multi_root_cone(
@@ -1139,7 +1141,7 @@ async fn cone(
                 hide_const: query.hide_const.unwrap_or(true),
                 show_infrastructure: query.show_infrastructure.unwrap_or(false),
             },
-            grouping_for(&design, query.group_vectors),
+            grouping,
         )
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown node"))?;
     Ok(Json(subgraph))
@@ -1311,24 +1313,21 @@ async fn netlist(
     Query(query): Query<NetlistQuery>,
 ) -> Result<Json<Subgraph>, ApiError> {
     let design = get_design(&state, &id).await?;
-    let priority_roots = query
+    let requested_roots = query
         .around
         .as_deref()
         .map(parse_node_ids)
         .transpose()?
         .unwrap_or_default();
-    if priority_roots.len() > 200 {
+    if requested_roots.len() > 200 {
         return Err(ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
             "at most 200 context roots may be requested",
         ));
     }
-    if priority_roots
-        .iter()
-        .any(|root| design.graph.nodes.get(*root as usize).is_none())
-    {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown context root"));
-    }
+    let grouping = grouping_for(&design, query.group_vectors);
+    let priority_roots = resolve_projection_roots(&design, requested_roots, grouping)
+        .map_err(|_| ApiError::new(StatusCode::NOT_FOUND, "unknown context root"))?;
     Ok(Json(design.analysis.full_netlist(
         &design.graph,
         FullNetlistOptions {
@@ -1338,8 +1337,34 @@ async fn netlist(
             hide_const: query.hide_const.unwrap_or(false),
             priority_roots: &priority_roots,
         },
-        grouping_for(&design, query.group_vectors),
+        grouping,
     )))
+}
+
+/// Resolve ids from a grouped projection back to the real graph. Public root
+/// lists remain capped before expansion, so one synthetic vector id can safely
+/// address an arbitrarily wide group without an unbounded query string.
+fn resolve_projection_roots(
+    design: &Design,
+    requested: Vec<u32>,
+    grouping: Option<&GroupPartition>,
+) -> Result<Vec<u32>, ApiError> {
+    let base = design.graph.nodes.len() as u32;
+    let mut roots = Vec::new();
+    for id in requested {
+        if id < base {
+            roots.push(id);
+            continue;
+        }
+        let Some(group) = grouping.and_then(|partition| {
+            id.checked_sub(base)
+                .and_then(|group_id| partition.groups.get(group_id as usize))
+        }) else {
+            return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown node"));
+        };
+        roots.extend(group.members.iter().copied());
+    }
+    Ok(roots)
 }
 
 /// The design's cached partition when the caller opted into grouping, else

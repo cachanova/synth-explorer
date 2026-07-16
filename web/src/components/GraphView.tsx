@@ -543,6 +543,9 @@ const SchematicNode = memo(function SchematicNode({
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
       data-relevant={relevant ? 1 : 0}
+      data-node-id={node.id}
+      data-member-count={node.members?.length}
+      data-boundary={node.is_boundary ? 'true' : undefined}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? 0 : undefined}
       aria-label={interactive ? title : undefined}
@@ -912,7 +915,7 @@ export const GraphView = memo(function GraphView({
             const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
             const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
             return (
-              <g key={index} data-relevant={relevant ? 1 : 0}>
+              <g className="g-edge-wrap" key={index} data-relevant={relevant ? 1 : 0}>
                 <path
                   className={className}
                   d={pathD(points)}

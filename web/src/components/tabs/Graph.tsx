@@ -45,6 +45,7 @@ interface DisplayedGraph {
 interface FullGraphCacheEntry {
   baseKey: string
   key: string
+  ownerKey: string
   controller: AbortController
   promise: Promise<Subgraph>
 }
@@ -75,6 +76,7 @@ export function Graph({ active }: { active: boolean }) {
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
+  const expansionControllers = useRef(new Set<AbortController>())
   const loadedRequestKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   const displayedGraphRef = useRef<DisplayedGraph | null>(null)
@@ -108,16 +110,19 @@ export function Graph({ active }: { active: boolean }) {
     () => () => {
       fullGraphCache.current?.controller.abort()
       fullGraphCache.current = null
+      for (const inFlight of expansionControllers.current) inFlight.abort()
+      expansionControllers.current.clear()
     },
     [],
   )
 
   const fetchFullGraph = useCallback(
-    (requestDesignId: string, around: number[] = []) => {
+    (requestDesignId: string, around: number[] = [], ownerKey = currentRequestKey) => {
       if (fullGraphKey == null) return Promise.reject(new Error('missing graph cache key'))
+      if (ownerKey == null) return Promise.reject(new Error('missing graph request owner'))
       const key = `${fullGraphKey}|${around.join(',')}`
       const cached = fullGraphCache.current
-      if (cached?.key === key) return cached.promise
+      if (cached?.key === key && cached.ownerKey === ownerKey) return cached.promise
       cached?.controller.abort()
       const fullController = new AbortController()
       let entry: FullGraphCacheEntry
@@ -136,12 +141,13 @@ export function Graph({ active }: { active: boolean }) {
         if (fullGraphCache.current === entry) fullGraphCache.current = null
         throw error
       })
-      entry = { baseKey: fullGraphKey, key, controller: fullController, promise }
+      entry = { baseKey: fullGraphKey, key, ownerKey, controller: fullController, promise }
       fullGraphCache.current = entry
       return promise
     },
     [
       fullGraphKey,
+      currentRequestKey,
       graphOptions.groupVectors,
       graphOptions.hideConst,
       graphOptions.hideControl,
@@ -180,6 +186,8 @@ export function Graph({ active }: { active: boolean }) {
     if (loadedRequestKey.current === requestKey) return
 
     const myReq = ++reqSeq.current
+    for (const inFlight of expansionControllers.current) inFlight.abort()
+    expansionControllers.current.clear()
     const controller = new AbortController()
     setLoading(true)
     setError(null)
@@ -285,7 +293,7 @@ export function Graph({ active }: { active: boolean }) {
     if (contextSubgraph?.requestKey === fetchedSubgraph.requestKey) return
     const owner = fetchedSubgraph
     let cancelled = false
-    fetchFullGraph(design.design_id, owner.contextRoots)
+    fetchFullGraph(design.design_id, owner.contextRoots, owner.requestKey)
       .then((graph) => {
         if (cancelled) return
         if (loadedRequestKey.current !== owner.requestKey) return
@@ -297,6 +305,11 @@ export function Graph({ active }: { active: boolean }) {
       })
     return () => {
       cancelled = true
+      const cached = fullGraphCache.current
+      if (cached?.ownerKey === owner.requestKey) {
+        cached.controller.abort()
+        fullGraphCache.current = null
+      }
     }
   }, [
     active,
@@ -330,6 +343,10 @@ export function Graph({ active }: { active: boolean }) {
     )
     return {
       graph: expanded.graph,
+      relevantIds: [
+        ...fetchedSubgraph.relevantIds,
+        ...(expansionState?.graph.nodes.map((node) => node.id) ?? []),
+      ],
       expansionDroppedNodes:
         (expansionState?.droppedNodes ?? 0) + expanded.droppedNodes,
       expansionDroppedEdges:
@@ -362,7 +379,7 @@ export function Graph({ active }: { active: boolean }) {
           requestKey: owner.requestKey,
           subgraph: toLayout,
           graph: g,
-          relevantIds: owner.relevantIds,
+          relevantIds: combined?.relevantIds ?? owner.relevantIds,
           overlayIds: owner.overlayIds,
         }
         displayedGraphRef.current = nextDisplay
@@ -381,7 +398,7 @@ export function Graph({ active }: { active: boolean }) {
       cancelled = true
       controller.abort()
     }
-  }, [active, fetchedSubgraph, combinedSubgraph, currentRequestKey])
+  }, [active, fetchedSubgraph, combined, combinedSubgraph, currentRequestKey])
 
   const sub = displayedGraph?.subgraph ?? null
   const laid = displayedGraph?.graph ?? null
@@ -390,13 +407,14 @@ export function Graph({ active }: { active: boolean }) {
     displayedGraph?.designId,
   )
   const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
-  const graphInteractive = analysisState === 'current' && displayedDesignCurrent
   const sourcePresentation = sourceProbePresentation(sourceStatus)
   const displayedRequestCurrent = isDisplayedRequestCurrent(
     currentRequestKey,
     fetchedSubgraph?.requestKey,
     displayedGraph?.requestKey,
   )
+  const graphInteractive =
+    analysisState === 'current' && displayedDesignCurrent && displayedRequestCurrent
   const relevantIds = useMemo(
     () =>
       new Set<number>(
@@ -431,14 +449,20 @@ export function Graph({ active }: { active: boolean }) {
   const designId = design?.design_id
   const onExpand = useCallback(
     (node: GraphNode) => {
-      if (!designId) return
+      if (!designId || !graphInteractive || !displayedGraph?.requestKey) return
       setError(null)
-      const ids = node.members ?? [node.id]
+      // Group projections expose a stable synthetic id. The grouped API
+      // contract resolves that id server-side, avoiding unbounded query strings
+      // and the public 200-root limit for wide vectors.
+      const ids = [node.id]
       // Guard on the last-started request sequence (bumped when a new base
       // fetch begins), not the last-completed key — otherwise an expansion that
       // resolves while a new base cone is still in-flight would leak stale nodes
       // into it, and clearing expansion state at fetch start would not stop it.
       const owner = reqSeq.current
+      const ownerKey = displayedGraph.requestKey
+      const controller = new AbortController()
+      expansionControllers.current.add(controller)
       const shared = {
         node: ids[0],
         nodes: ids.length > 1 ? ids : undefined,
@@ -450,12 +474,17 @@ export function Graph({ active }: { active: boolean }) {
         group_vectors: graphOptions.groupVectors,
       }
       Promise.all([
-        getCone(designId, { ...shared, dir: 'fanin' }),
-        getCone(designId, { ...shared, dir: 'fanout' }),
+        getCone(designId, { ...shared, dir: 'fanin' }, controller.signal),
+        getCone(designId, { ...shared, dir: 'fanout' }, controller.signal),
       ])
         .then(([fanin, fanout]) => {
           // Drop stale results if a new base fetch started while fetching.
-          if (reqSeq.current !== owner) return
+          if (
+            controller.signal.aborted ||
+            reqSeq.current !== owner ||
+            currentRequestKey !== ownerKey ||
+            loadedRequestKey.current !== ownerKey
+          ) return
           // A depth-1 neighborhood is deliberately shallow, so its truncated
           // flag (hit the depth limit) is expected and must not mark the whole
           // view truncated — only the base cone and render cap do that.
@@ -486,16 +515,25 @@ export function Graph({ active }: { active: boolean }) {
           })
         })
         .catch((e) => {
-          if (reqSeq.current !== owner) return
+          if (
+            controller.signal.aborted ||
+            reqSeq.current !== owner ||
+            currentRequestKey !== ownerKey ||
+            loadedRequestKey.current !== ownerKey
+          ) return
           setError(
             `Could not expand ${node.name || node.id}: ${
               e instanceof ApiRequestError ? e.message : String(e)
             }`,
           )
         })
+        .finally(() => expansionControllers.current.delete(controller))
     },
     [
       designId,
+      currentRequestKey,
+      displayedGraph?.requestKey,
+      graphInteractive,
       graphOptions.groupVectors,
       graphOptions.hideConst,
       graphOptions.hideControl,

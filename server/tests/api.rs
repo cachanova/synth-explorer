@@ -1193,7 +1193,7 @@ endmodule
 }
 
 #[tokio::test]
-async fn group_vectors_collapses_buses_and_rejects_synthetic_ids() {
+async fn group_vectors_collapses_buses_and_addresses_synthetic_roots() {
     let source = r#"
 module bus_regs (
     input  logic       clk,
@@ -1321,7 +1321,32 @@ endmodule
         "a member cone lands on its group node as root"
     );
 
-    // Synthetic group ids are not addressable through the per-bit APIs.
+    // Group-aware graph projections resolve a synthetic id to all real members
+    // server-side, so even groups wider than the public multi-root limit remain
+    // expandable without an unbounded URL.
+    let synthetic_cone = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/cone?node={synthetic_id}&dir=fanin&group_vectors=true"),
+    )
+    .await;
+    assert!(
+        synthetic_cone["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| {
+                node["id"].as_u64() == Some(synthetic_id) && node["is_root"].as_bool() == Some(true)
+            })
+    );
+    let synthetic_context = get_response(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?around={synthetic_id}&group_vectors=true"),
+    )
+    .await;
+    assert_eq!(synthetic_context.status(), StatusCode::OK);
+
+    // Without the grouping contract, synthetic ids remain unknown; /nodes is
+    // intentionally a real per-bit lookup API.
     let rejected = get_response(
         &mut app,
         &format!("/api/design/{design_id}/cone?node={synthetic_id}&dir=fanin"),
@@ -1337,6 +1362,97 @@ endmodule
         nodes_rejected["nodes"].as_array().unwrap().is_empty(),
         "/nodes ignores synthetic group ids"
     );
+
+    for (uri, expected) in [
+        (
+            format!("/api/design/{design_id}/netlist?around=abc"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!(
+                "/api/design/{design_id}/netlist?around={}",
+                (0..201)
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("/api/design/{design_id}/netlist?around=999999"),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            format!(
+                "/api/design/{design_id}/netlist?around={}&group_vectors=true",
+                members[0]
+            ),
+            StatusCode::OK,
+        ),
+    ] {
+        let response = get_response(&mut app, &uri).await;
+        assert_eq!(response.status(), expected, "unexpected status for {uri}");
+    }
+}
+
+#[tokio::test]
+async fn grouped_cone_expands_a_vector_wider_than_the_multi_root_limit() {
+    let source = r#"
+module wide_bus_regs (
+    input  logic         clk,
+    input  logic [255:0] d,
+    output logic [255:0] q
+);
+  always_ff @(posedge clk) q <= d;
+endmodule
+"#;
+    let mut app = app(AppState::default());
+    let response = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/synthesize")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "files": [{"name": "wide_bus_regs.sv", "content": source}],
+                        "top": "wide_bus_regs",
+                        "mode": "gates"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let design_id = body_json(response).await["design_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let grouped = get_json(
+        &mut app,
+        &format!("/api/design/{design_id}/netlist?group_vectors=true"),
+    )
+    .await;
+    let register = grouped["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["register"] == true && node["width"] == 256)
+        .expect("256-bit register group");
+    assert_eq!(register["members"].as_array().unwrap().len(), 256);
+    let synthetic_id = register["id"].as_u64().unwrap();
+
+    let response = get_response(
+        &mut app,
+        &format!(
+            "/api/design/{design_id}/cone?node={synthetic_id}&dir=fanin&max_depth=1&group_vectors=true"
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[tokio::test]

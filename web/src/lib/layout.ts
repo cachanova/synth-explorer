@@ -452,10 +452,17 @@ const pending = new Map<
   number,
   { resolve: (g: ElkNode) => void; reject: (e: Error) => void }
 >()
+export const LAYOUT_DEADLINE_MS = 10_000
 
 function abortError(): Error {
   const error = new Error('layout aborted')
   error.name = 'AbortError'
+  return error
+}
+
+function layoutTimeoutError(): Error {
+  const error = new Error('layout exceeded the 10 second safety deadline')
+  error.name = 'LayoutTimeoutError'
   return error
 }
 
@@ -501,7 +508,14 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
       return
     }
     const onAbort = () => terminateWorker(w, abortError())
-    const cleanup = () => signal?.removeEventListener('abort', onAbort)
+    const timeout = globalThis.setTimeout(
+      () => terminateWorker(w, layoutTimeoutError()),
+      LAYOUT_DEADLINE_MS,
+    )
+    const cleanup = () => {
+      globalThis.clearTimeout(timeout)
+      signal?.removeEventListener('abort', onAbort)
+    }
     pending.set(id, {
       resolve: (value) => {
         cleanup()
@@ -534,13 +548,21 @@ export function placementForLayout(sub: Subgraph): NodePlacement {
     : 'NETWORK_SIMPLEX'
 }
 
+/** Interactive placement is bounded to the graph sizes where it is reliable. */
+export function placementForIncrementalLayout(sub: Subgraph): NodePlacement {
+  return placementForLayout(sub) === 'BRANDES_KOEPF'
+    ? 'BRANDES_KOEPF'
+    : 'INTERACTIVE'
+}
+
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
   previous?: LaidOutGraph,
 ): Promise<LaidOutGraph> {
   if (previous) {
-    const result = await runLayout(toElkGraph(sub, 'INTERACTIVE', previous), signal)
+    const placement = placementForIncrementalLayout(sub)
+    const result = await runLayout(toElkGraph(sub, placement, previous), signal)
     return interpretResult(sub, result)
   }
   const placement = placementForLayout(sub)
@@ -552,7 +574,9 @@ export async function layoutSubgraph(
       result = await runLayout(toElkGraph(sub, 'NETWORK_SIMPLEX'), signal)
     } catch (error) {
       // Never retry an aborted (superseded) request.
-      if (signal?.aborted) throw error
+      if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
+        throw error
+      }
       result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
     }
   }
