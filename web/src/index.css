@@ -342,6 +342,11 @@ a:hover {
 .flags-menu-warn {
   color: var(--warn, #d0a215);
 }
+
+.flags-menu-default {
+  color: var(--text-muted, #8a8f98);
+  font-style: italic;
+}
 .flags-menu-value {
   width: 62px;
   padding: 2px 4px;

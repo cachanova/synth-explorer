@@ -544,20 +544,14 @@ fn build_script(input: &ValidatedSynth, memory: MemoryHandling) -> String {
             if input.top.is_none() {
                 script.push_str("hierarchy -auto-top\n");
             }
-            // -nowidelut by default: without it, ABC stacks MUXF7/8 trees on
-            // top of the LUT tree instead of absorbing levels, leaving the
-            // netlist 1.5-2x deeper than Vivado's for the same RTL — with
-            // slightly MORE cells, not fewer. Measured across the 24-design
-            // calibration corpus: median depth ratio vs Vivado 1.50 -> 1.10
-            // (series7) and 2.00 -> 1.23 (ultrascale+), no case deeper, ~4%
-            // fewer LUTs. Skipped if the caller already passed it.
-            let nowidelut = if input.extra_args.iter().any(|arg| arg == "-nowidelut") {
-                ""
-            } else {
-                " -nowidelut"
-            };
+            // -nowidelut is NOT injected here: it is a default the web client
+            // puts into the visible flags string (see web flagRegistry
+            // `defaultOn`), so the user can see and remove it, and so the same
+            // request always produces the same netlist. Server-side injection
+            // briefly lived here (#67) and broke that: identical extra_args
+            // yielded different netlists across deploys.
             script.push_str(&format!(
-                "synth_xilinx {} -flatten{nowidelut}{extra}\n",
+                "synth_xilinx {} -flatten{extra}\n",
                 top_only(input.top.as_deref())
             ));
         }
@@ -846,8 +840,7 @@ mod tests {
         // changing them re-synthesizes because extra_args is in the cache key.
         let plain = validated(&["design.sv"], Some("top"), SynthMode::Xilinx, "");
         assert!(
-            build_script(&plain, MemoryHandling::Map)
-                .contains("synth_xilinx -top top -flatten -nowidelut\n")
+            build_script(&plain, MemoryHandling::Map).contains("synth_xilinx -top top -flatten\n")
         );
 
         let tuned = validated(
@@ -858,23 +851,21 @@ mod tests {
         );
         assert!(
             build_script(&tuned, MemoryHandling::Map)
-                .contains("synth_xilinx -top top -flatten -nowidelut -family xcup -retime\n")
+                .contains("synth_xilinx -top top -flatten -family xcup -retime\n")
         );
         assert_ne!(plain.design_id(), tuned.design_id());
     }
 
     #[test]
-    fn an_explicit_nowidelut_is_not_duplicated() {
-        // A caller who already passes -nowidelut (e.g. saved flags from before
-        // it became the default) must not end up with the flag twice.
-        let explicit = validated(
-            &["design.sv"],
-            Some("top"),
-            SynthMode::Xilinx,
-            "-nowidelut -family xc7",
-        );
-        let script = build_script(&explicit, MemoryHandling::Map);
-        assert_eq!(script.matches("-nowidelut").count(), 1, "{script}");
+    fn the_server_injects_no_flags_of_its_own() {
+        // Defaults like -nowidelut belong to the CLIENT's visible flags string
+        // (web flagRegistry `defaultOn`), never silently added here: the same
+        // request must always produce the same netlist, and the user must be
+        // able to remove any flag they can see.
+        let plain = validated(&["design.sv"], Some("top"), SynthMode::Xilinx, "");
+        let script = build_script(&plain, MemoryHandling::Map);
+        assert!(!script.contains("-nowidelut"), "{script}");
+        assert!(!script.contains("-noiopad"), "{script}");
     }
 
     #[test]

@@ -181,6 +181,12 @@ export function FlagsMenu({
                         {def.warn && (
                           <span className="flags-menu-warn"> ⚠ {def.warn}</span>
                         )}
+                        {def.defaultOn && (
+                          <span className="flags-menu-default">
+                            {' '}
+                            On by default — {def.defaultReason}
+                          </span>
+                        )}
                       </div>
                     </div>
                   </label>
