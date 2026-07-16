@@ -16,7 +16,6 @@
   --blue: #8ab4f8;
   --amber: #c69026;
   --red: #e5534b;
-  --purple: #bc8cff;
   --seq: #c8a5f0;
   --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, 'Cascadia Code',
     Menlo, Consolas, monospace;
@@ -105,7 +104,7 @@ a:hover {
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #393b3f;
+  background: var(--border-strong);
   border-radius: 5px;
 }
 ::-webkit-scrollbar-track {
@@ -794,8 +793,10 @@ a:hover {
   display: inline-block;
   width: 13px;
   height: 13px;
-  border: 2px solid rgba(255, 255, 255, 0.25);
-  border-top-color: #fff;
+  /* currentColor so it reads on any ground: white on the teal primary button,
+     the banner's text color on the light-mode loading chip. */
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
   vertical-align: -2px;
@@ -1106,7 +1107,9 @@ th.sortable:hover {
   display: inline-block;
 }
 .bd-launch {
-  background: var(--purple);
+  /* --seq (register lavender) is regenerated per palette/mode; --purple only
+     exists on the base :root, so point the launch segment at the themed token. */
+  background: var(--seq);
 }
 .bd-logic {
   background: var(--accent);
