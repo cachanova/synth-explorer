@@ -5,6 +5,31 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Synth Explorer</title>
+    <script>
+      // No-FOUC theme bootstrap: apply the saved palette/mode to <html> before
+      // first paint. Keys + defaults mirror src/lib/theme.tsx & palettes.ts.
+      (function () {
+        try {
+          var DARK_ONLY = { dracula: 1, synthwave: 1 }
+          var palette = localStorage.getItem('se-palette') || 'tidepool'
+          var mode = localStorage.getItem('se-mode') || 'system'
+          var prefersDark = matchMedia('(prefers-color-scheme: dark)').matches
+          var resolved = DARK_ONLY[palette]
+            ? 'dark'
+            : mode === 'system'
+              ? prefersDark
+                ? 'dark'
+                : 'light'
+              : mode
+          var root = document.documentElement
+          root.dataset.palette = palette
+          root.dataset.theme = resolved
+        } catch (e) {
+          document.documentElement.dataset.palette = 'tidepool'
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import {
   Annotation,
+  Compartment,
   EditorState,
   StateEffect,
   StateField,
@@ -16,11 +17,31 @@ import {
   type DecorationSet,
 } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { StreamLanguage } from '@codemirror/language'
+import { StreamLanguage, defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { oneDark } from '@codemirror/theme-one-dark'
 import type { EditorHighlight } from '../store'
+import { useTheme } from '../lib/themeContext'
 import { shallowEqual, useStore } from '../useStore'
+
+// Light editor theme: defers chrome (background, gutters, active line) to the
+// app's token-driven CSS in index.css, and only supplies a readable caret,
+// selection, and syntax palette so light mode isn't oneDark on a light ground.
+const lightEditorTheme: Extension = [
+  EditorView.theme(
+    {
+      '&': { color: 'var(--text)' },
+      '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--text)' },
+      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
+        { backgroundColor: 'color-mix(in srgb, var(--accent) 24%, transparent)' },
+    },
+    { dark: false },
+  ),
+  syntaxHighlighting(defaultHighlightStyle),
+]
+
+const editorTheme = (mode: 'light' | 'dark'): Extension =>
+  mode === 'dark' ? oneDark : lightEditorTheme
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
@@ -134,11 +155,17 @@ export function Editor() {
   const hostRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
 
+  const { resolvedMode } = useTheme()
+
   // stable refs so the editor is created once
   const storeRef = useRef(store)
   storeRef.current = store
   const currentFileRef = useRef(store.activeFileName)
   currentFileRef.current = store.activeFileName
+  // theme lives in a compartment so it can be swapped without rebuilding the view
+  const themeCompartment = useRef(new Compartment())
+  const resolvedModeRef = useRef(resolvedMode)
+  resolvedModeRef.current = resolvedMode
 
   // create the view once
   useEffect(() => {
@@ -188,7 +215,7 @@ export function Editor() {
       highlightActiveLineGutter(),
       history(),
       StreamLanguage.define(verilog),
-      oneDark,
+      themeCompartment.current.of(editorTheme(resolvedModeRef.current)),
       highlightField,
       synthKeymap,
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -206,6 +233,15 @@ export function Editor() {
       viewRef.current = null
     }
   }, [])
+
+  // swap the CodeMirror theme when the resolved appearance changes
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: themeCompartment.current.reconfigure(editorTheme(resolvedMode)),
+    })
+  }, [resolvedMode])
 
   // reset document when the active file identity changes or its content is
   // replaced outside the editor (docRevision covers reloading the same file)
