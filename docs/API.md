@@ -178,8 +178,12 @@ Response `200`:
   // cell delays with a fanout-based net-delay estimate along the critical path
   // (carry-chain nets are dedicated/free) — the same shape as a vendor tool's
   // post-synthesis "estimated" timing, NOT timing closure. Omitted when the
-  // design has no combinational paths. The Xilinx presets are calibrated against
-  // Vivado 2026.1 (~6% mean error on an adder/mux sweep); Lattice/generic are not.
+  // design has no combinational paths. A relative guide: the ordering of paths
+  // is far more trustworthy than the absolute value. The coefficients are being
+  // re-derived against real Vivado ground truth (see `calibration/`), and the
+  // model is known to over- and under-estimate in ways a flat per-cell model
+  // cannot fix — most of all because Yosys and Vivado map the same RTL to
+  // structurally different netlists. Use the Vivado backend to time Vivado's.
   warnings: string[];      // e.g. combinational loop reports, unmapped cells
   log: string;             // yosys log (tail, capped)
   memories_abstracted: boolean; // true when a generic mode exhausted a sandbox

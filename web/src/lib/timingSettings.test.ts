@@ -34,10 +34,21 @@ describe('timingRequest', () => {
     ).toEqual({ profile: 'ultrascale_plus', speed_grade: '-2' })
   })
 
-  it('a full override wins over the profile', () => {
+  it('sends an override and the profile together', () => {
+    // The two answer different questions: the override supplies the
+    // coefficients, the profile picks whose speed-grade scaling applies. Sending
+    // only the override left the dropdown showing one family while the server
+    // scaled by the design's.
     expect(
       timingRequest({ profile: 'series7', speedGrade: '-3', overrides: MODEL, ...t }),
-    ).toEqual({ model: MODEL, speed_grade: '-3' })
+    ).toEqual({ model: MODEL, profile: 'series7', speed_grade: '-3' })
+  })
+
+  it('omits the profile on auto even with an override', () => {
+    // 'auto' means "the design's own family" -- the server resolves that.
+    expect(
+      timingRequest({ profile: 'auto', speedGrade: '-2', overrides: MODEL, ...t }),
+    ).toEqual({ model: MODEL, speed_grade: '-2' })
   })
 
   it('never includes the display-only target clock', () => {

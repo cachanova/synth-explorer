@@ -56,11 +56,17 @@ export const DELAY_FIELDS: { key: keyof DelayModel; label: string }[] = [
 const STORAGE_KEY = 'synthexplorer.timing.v1'
 
 /** Map settings to a `/timing` request. Precedence mirrors the server: a full
- *  override wins, then a named profile, then (auto) the design's own model. */
+ *  override wins for the coefficients, then a named profile, then (auto) the
+ *  design's own model.
+ *
+ *  `profile` is sent independently of `model`, because the server reads it for
+ *  two different things: which coefficients to start from, and which family's
+ *  speed-grade scaling to apply. Suppressing it when overrides exist would
+ *  leave the dropdown showing one family while the server scaled by another. */
 export function timingRequest(s: TimingSettings): TimingRequest {
   const req: TimingRequest = { speed_grade: s.speedGrade }
   if (s.overrides) req.model = s.overrides
-  else if (s.profile !== 'auto') req.profile = s.profile
+  if (s.profile !== 'auto') req.profile = s.profile
   return req
 }
 
