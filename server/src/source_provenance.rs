@@ -753,6 +753,14 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
                     .iter()
                     .position(|byte| *byte == b';')
                     .map_or(bytes.len(), |offset| index + offset);
+                if always_case_depth > 0
+                    && let Some(colon) = case_item_colon(&sanitized[token_start..statement_end])
+                {
+                    let after_colon = token_start + colon + 1;
+                    advance_nesting(&bytes[index..after_colon], &mut nesting);
+                    index = after_colon;
+                    continue;
+                }
                 if let Some(lhs_identifiers) =
                     procedural_assignment_lhs(&sanitized[token_start..statement_end])
                 {
@@ -804,7 +812,7 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
         let mut lhs_identifiers = if wire_alias {
             initialized_declaration_lhs(statement)
         } else if let Some(equals) = statement.find('=') {
-            identifiers(&statement[..equals])
+            assignment_lhs_identifiers(&statement[..equals])
         } else {
             Vec::new()
         };
@@ -828,6 +836,50 @@ fn scan_assignments(source: &str) -> ScannedAssignments {
         index = statement_end.saturating_add(1);
     }
     scanned
+}
+
+/// Return the case-item separator in a fragment that starts at a possible case
+/// label and extends through the first statement semicolon. Colons nested in a
+/// select or concatenation are ignored. A colon after the fragment's only
+/// assignment operator belongs to an RHS conditional expression instead.
+fn case_item_colon(fragment: &str) -> Option<usize> {
+    let bytes = fragment.as_bytes();
+    let mut nesting = 0usize;
+    let mut colon = None;
+    let mut assignment_before_colon = false;
+    let mut previous = 0u8;
+
+    for (offset, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => nesting += 1,
+            b')' | b']' | b'}' => nesting = nesting.saturating_sub(1),
+            b':' if nesting == 0 && colon.is_none() => colon = Some(offset),
+            // Only assignments *before* the first top-level colon matter: a real
+            // case-item label is a constant expression and cannot contain one, so
+            // a leading `=`/`<=` means this is an ordinary statement whose colon
+            // belongs to a ternary RHS (`x = c ? a : b`), not a case separator.
+            // An operator after the colon is irrelevant (and a relational `<=` in
+            // a ternary else-branch must not be mistaken for a nonblocking one).
+            b'<' if nesting == 0
+                && colon.is_none()
+                && previous != b'<'
+                && bytes.get(offset + 1) == Some(&b'=') =>
+            {
+                assignment_before_colon = true;
+            }
+            b'=' if nesting == 0
+                && colon.is_none()
+                && !matches!(previous, b'=' | b'!' | b'<' | b'>')
+                && bytes.get(offset + 1) != Some(&b'=') =>
+            {
+                assignment_before_colon = true;
+            }
+            _ => {}
+        }
+        previous = *byte;
+    }
+
+    colon.filter(|_| !assignment_before_colon)
 }
 
 /// Keywords that can open a procedural statement without being an assignment
@@ -1190,6 +1242,41 @@ endmodule
     }
 
     #[test]
+    fn continuous_assignment_selects_only_record_assigned_objects() {
+        let source = r#"
+module top;
+assign partial_sum[i + 1] = partial_sum[i] + value;
+assign y[3:0] = x;
+assign {a, b} = pair;
+endmodule
+"#;
+
+        assert_eq!(
+            scan_assignments(source).continuous,
+            vec![
+                ContinuousAssignment {
+                    module: "top".to_owned(),
+                    start_line: 3,
+                    end_line: 3,
+                    lhs_identifiers: vec!["partial_sum".to_owned()],
+                },
+                ContinuousAssignment {
+                    module: "top".to_owned(),
+                    start_line: 4,
+                    end_line: 4,
+                    lhs_identifiers: vec!["y".to_owned()],
+                },
+                ContinuousAssignment {
+                    module: "top".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    lhs_identifiers: vec!["a".to_owned(), "b".to_owned()],
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn procedural_assignments_record_targets_per_statement_line() {
         let source = r#"
 module top (input logic clk, input logic rst);
@@ -1344,6 +1431,181 @@ endmodule
                 },
             ]
         );
+    }
+
+    #[test]
+    fn multiline_case_item_begin_uses_the_assignment_line_and_target() {
+        let source = r#"
+module top;
+always_comb begin
+  case (state)
+    IDLE: begin
+      busy = 1'b0;
+    end
+  endcase
+end
+endmodule
+"#;
+
+        assert_eq!(
+            scan_assignments(source).procedural,
+            vec![ProceduralAssignment {
+                module: "top".to_owned(),
+                line: 6,
+                lhs_identifiers: vec!["busy".to_owned()],
+            }]
+        );
+    }
+
+    #[test]
+    fn ternary_rhs_with_relational_in_a_case_arm_records_the_real_target() {
+        // The `: b <= d` false-branch must not be mistaken for a case-item
+        // label separator: the statement assigns `x`, not `b`.
+        let source = r#"
+module top;
+always_comb begin
+  case (sel)
+    2'd0: x = c ? a : b <= d;
+  endcase
+end
+endmodule
+"#;
+
+        assert_eq!(
+            scan_assignments(source).procedural,
+            vec![ProceduralAssignment {
+                module: "top".to_owned(),
+                line: 5,
+                lhs_identifiers: vec!["x".to_owned()],
+            }]
+        );
+    }
+
+    #[test]
+    fn case_arms_and_post_endcase_assignment_fill_the_whole_always_block() {
+        let source = r#"
+module top;
+always_comb begin
+  case (state)
+    IDLE: begin first = 1'b0; end
+    ACTIVE: begin
+      later = 1'b1;
+    end
+    default: fallback = 1'b0;
+  endcase
+  after_case = later;
+end
+endmodule
+"#;
+        let scanned = scan_assignments(source);
+
+        assert_eq!(
+            scanned.procedural,
+            vec![
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 5,
+                    lhs_identifiers: vec!["first".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 7,
+                    lhs_identifiers: vec!["later".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 9,
+                    lhs_identifiers: vec!["fallback".to_owned()],
+                },
+                ProceduralAssignment {
+                    module: "top".to_owned(),
+                    line: 11,
+                    lhs_identifiers: vec!["after_case".to_owned()],
+                },
+            ]
+        );
+        assert_eq!(
+            scanned.blocks,
+            vec![ProceduralBlock {
+                start_line: 3,
+                end_line: 12,
+            }]
+        );
+    }
+
+    #[test]
+    fn example_case_scans_cover_every_arm_and_the_full_always_block() {
+        let adder = scan_assignments(include_str!("../../examples/adder_chain.sv"));
+        assert!(adder.continuous.iter().any(|assignment| {
+            assignment.start_line == 16 && assignment.lhs_identifiers == ["partial_sum"]
+        }));
+        let fifo = scan_assignments(include_str!("../../examples/fifo_pipe.sv"));
+        for line in [24, 27] {
+            assert!(fifo.continuous.iter().any(|assignment| {
+                assignment.start_line == line && assignment.lhs_identifiers == ["ready"]
+            }));
+        }
+
+        let handshake = scan_assignments(include_str!("../../examples/handshake_controller.sv"));
+        assert!(handshake.blocks.contains(&ProceduralBlock {
+            start_line: 31,
+            end_line: 62,
+        }));
+        assert!(
+            !handshake
+                .procedural
+                .iter()
+                .any(|assignment| assignment.line == 40)
+        );
+        assert_eq!(
+            handshake
+                .procedural
+                .iter()
+                .filter(|assignment| assignment.line == 41)
+                .map(|assignment| assignment.lhs_identifiers.as_slice())
+                .collect::<Vec<_>>(),
+            vec![["busy"].as_slice()]
+        );
+        for (line, target) in [
+            (46, "request_valid"),
+            (48, "next_state"),
+            (51, "response_ready"),
+            (53, "done"),
+            (54, "next_state"),
+            (56, "timed_out"),
+            (57, "next_state"),
+            (60, "next_state"),
+        ] {
+            assert!(handshake.procedural.iter().any(|assignment| {
+                assignment.line == line && assignment.lhs_identifiers == [target]
+            }));
+        }
+
+        let priority = scan_assignments(include_str!("../../examples/priority_encoder_case.sv"));
+        assert_eq!(
+            priority.blocks,
+            vec![ProceduralBlock {
+                start_line: 15,
+                end_line: 59,
+            }]
+        );
+        for line in 23..=54 {
+            assert_eq!(
+                priority
+                    .procedural
+                    .iter()
+                    .filter(|assignment| assignment.line == line)
+                    .map(|assignment| assignment.lhs_identifiers.as_slice())
+                    .collect::<Vec<_>>(),
+                vec![["one_hot_padded"].as_slice(), ["index"].as_slice()]
+            );
+        }
+        assert!(priority.procedural.iter().any(|assignment| {
+            assignment.line == 55 && assignment.lhs_identifiers == ["valid"]
+        }));
+        assert!(priority.procedural.iter().any(|assignment| {
+            assignment.line == 58 && assignment.lhs_identifiers == ["one_hot"]
+        }));
     }
 
     #[test]
