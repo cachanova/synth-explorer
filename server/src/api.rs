@@ -7,6 +7,7 @@ use crate::delay_model::{DelayModel, DelayProfile};
 use crate::design_store::{DesignStore, DesignStoreError};
 use crate::graph::Graph;
 use crate::grouping::GroupPartition;
+use crate::metrics::AppMetrics;
 use crate::netlist::{YosysNetlist, parse_value, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use crate::synthesis::{SynthesisError, run_synthesis};
@@ -51,6 +52,7 @@ pub struct AppState {
     cold_load: Arc<tokio::sync::Mutex<()>>,
     flights: Arc<SynthesisFlights>,
     running: Arc<Semaphore>,
+    metrics: Arc<AppMetrics>,
     metadata: Arc<BuildMetadata>,
     vivado_access: Option<Arc<VivadoAccess>>,
     vivado_parts: Arc<Vec<VivadoPart>>,
@@ -122,6 +124,7 @@ impl AppState {
             cold_load: Arc::new(tokio::sync::Mutex::new(())),
             flights: Arc::new(SynthesisFlights::new()),
             running: Arc::new(Semaphore::new(MAX_RUNNING_SYNTHESES)),
+            metrics: Arc::new(AppMetrics::new()),
             metadata: Arc::new(BuildMetadata {
                 status: "ok",
                 commit: env::var("BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_owned()),
@@ -887,6 +890,7 @@ pub fn app(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(health))
+        .route("/metrics", get(metrics))
         .nest("/api", api)
         .fallback_service(static_service)
         .with_state(health_state)
@@ -898,18 +902,33 @@ async fn health(State(state): State<AppState>) -> Json<BuildMetadata> {
     Json((*state.metadata).clone())
 }
 
+async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        state.metrics.render(),
+    )
+}
+
 async fn trace_request(request: Request<axum::body::Body>, next: Next) -> Response {
     let method = request.method().clone();
     let uri = request.uri().clone();
     let started = Instant::now();
     let response = next.run(request).await;
-    tracing::info!(
-        method = %method,
-        uri = %uri,
-        status = response.status().as_u16(),
-        latency_ms = started.elapsed().as_millis() as u64,
-        "http_request"
-    );
+    if uri.path() != "/metrics" {
+        tracing::info!(
+            method = %method,
+            uri = %uri,
+            status = response.status().as_u16(),
+            latency_ms = started.elapsed().as_millis() as u64,
+            "http_request"
+        );
+    }
     response
 }
 
@@ -929,10 +948,12 @@ async fn synthesize(
         require_vivado_access(&state, &headers)?;
         require_vivado_target(&state, validated.target.as_deref())?;
     }
+    state.metrics.record_synthesis_request();
     let design_id = validated.design_id();
     let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
     if let Some(design) = lookup_design(&state, &design_id).await? {
+        state.metrics.record_synthesis_cache_hit();
         tracing::info!(
             design_id,
             tool,
@@ -960,6 +981,7 @@ async fn synthesize(
                 // optimistic lookup but before this key was claimed.
                 let result = match lookup_design(&task_state, &task_design_id).await {
                     Ok(Some(design)) => {
+                        task_state.metrics.record_synthesis_cache_hit();
                         tracing::info!(
                             design_id = task_design_id,
                             tool = task_tool,
@@ -980,6 +1002,7 @@ async fn synthesize(
             // A task can publish its cache entry immediately before removing
             // its flight. Close that race before rejecting a distinct key.
             if let Some(design) = lookup_design(&state, &design_id).await? {
+                state.metrics.record_synthesis_cache_hit();
                 tracing::info!(
                     design_id,
                     tool,
@@ -989,6 +1012,7 @@ async fn synthesize(
                 );
                 return Ok(Json(design.response.clone()));
             }
+            state.metrics.record_synthesis_queue_rejection();
             return Err(ApiError::busy());
         }
     };
@@ -1071,6 +1095,7 @@ async fn synthesize_uncached(
     let tool = validated.tool.to_string();
     let mode = mode_string(validated.mode);
     if let Some(design) = lookup_design(state, design_id).await? {
+        state.metrics.record_synthesis_cache_hit();
         tracing::info!(
             design_id,
             tool,
@@ -1080,6 +1105,7 @@ async fn synthesize_uncached(
         );
         return Ok(design);
     }
+    let synthesis_run = state.metrics.start_synthesis();
     let started = Instant::now();
     let synthesis_failed = |err: &SynthesisError| {
         tracing::warn!(
@@ -1222,6 +1248,7 @@ async fn synthesize_uncached(
         persisted = stored_bytes.is_some(),
         "synthesis_complete"
     );
+    synthesis_run.succeed();
     Ok(design)
 }
 
@@ -2479,6 +2506,27 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| !value.is_empty())
         );
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_returns_prometheus_text() {
+        let response = app(AppState::new("Yosys test-version"))
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/plain; version=0.0.4; charset=utf-8"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("synth_explorer_synthesis_requests_total 0\n"));
     }
 
     #[tokio::test]

@@ -7,7 +7,8 @@
 
 Synth Explorer runs on one Hetzner CX33 in Helsinki. Caddy accepts public
 traffic on ports 80 and 443. The application container serves the React build,
-the Rust API, and bounded Yosys jobs on an internal Docker network.
+the Rust API, and bounded Yosys jobs on an internal Docker network and a
+host-loopback listener used only by Prometheus.
 
 Cloudflare holds the `synthexplorer.dev` registration and authoritative DNS.
 Keep each production record in **DNS only** mode. Caddy, rather than the
@@ -23,8 +24,11 @@ Cloudflare proxy, obtains and renews the TLS certificate.
 | Images | GHCR package | Immutable production images |
 | TLS and routing | Caddy container | Certificates, redirects, reverse proxy |
 | Application | Synth Explorer container | Static UI, API, and Yosys |
+| Metrics storage | Prometheus container | 15-second samples retained for up to one year, capped at 2 GB |
+| Host metrics | node-exporter container | Host CPU, load, memory, filesystem, and network counters |
+| Dashboard | Grafana container | Provisioned production overview over an SSH-only listener |
 
-The production stack has no database. The server keeps active designs in a
+The application has no product database. The server keeps active designs in a
 bounded memory cache and retains reconstruction data in the local
 `design_data` Docker volume. Stored designs have a 4-hour sliding TTL and an
 8 GiB byte budget, survive application deployments, and are not replicated off
@@ -346,6 +350,33 @@ runs a synthesize-to-design-fetch smoke test. GitHub sends workflow failure
 notifications according to repository notification settings. The scheduler can
 start late during GitHub Actions congestion, so treat it as a low-cost uptime
 check rather than a paging system.
+
+Prometheus scrapes the application and node-exporter every 15 seconds. Its
+`prometheus_data` volume keeps up to one year of history with a 2 GB size
+ceiling. Prometheus removes the oldest blocks sooner if the volume reaches that
+ceiling.
+Grafana provisions the **Synth Explorer / Production overview** dashboard with
+synth requests and actual backend runs, cache hits, failures, queue pressure,
+application RSS, host CPU/load, host memory, and root-disk use. The app's
+`/metrics` endpoint, Prometheus, node-exporter, and Grafana are all inaccessible
+from the public internet.
+
+Open the dashboard through an administrator SSH tunnel, then visit
+`http://127.0.0.1:3000/d/synth-explorer-production`:
+
+```bash
+ssh -N -L 3000:127.0.0.1:3000 deploy@SERVER_IPV4
+```
+
+Grafana is provisioned as a read-only anonymous viewer because the listener is
+host-loopback-only and the SSH key is the access boundary. It has no public DNS
+record or Caddy route.
+
+The 15-minute GitHub monitor also reads Prometheus over SSH and fails when
+sustained 15-minute load reaches 6, host memory reaches 90%, root-disk use
+reaches 85%, or application RSS reaches 5 GiB. Its job summary includes synth
+runs over the preceding 24 hours. These failures use the same GitHub
+notification path as the availability checks.
 
 Inspect the host when a monitor fails:
 

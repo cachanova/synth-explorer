@@ -55,3 +55,72 @@ jobs:
 
       - name: Run synthesis smoke test
         run: ./deploy/ops/smoke-test.sh "$PRODUCTION_URL" "${{ steps.health.outputs.commit }}"
+
+  metrics:
+    name: Check resource thresholds
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment:
+      name: production
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.PRODUCTION_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$SSH_KEY" > "$HOME/.ssh/production"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/production" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/production" >/dev/null
+
+      - name: Read private production metrics
+        env:
+          PRODUCTION_HOST: ${{ vars.PRODUCTION_HOST }}
+          PRODUCTION_USER: ${{ vars.PRODUCTION_USER }}
+        run: |
+          : "${PRODUCTION_HOST:?Set PRODUCTION_HOST in the production environment}"
+          : "${PRODUCTION_USER:?Set PRODUCTION_USER in the production environment}"
+          metrics="$(ssh -i "$HOME/.ssh/production" -o BatchMode=yes \
+            -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "${PRODUCTION_USER}@${PRODUCTION_HOST}" 'bash -se' <<'REMOTE'
+          set -Eeuo pipefail
+          query() {
+            curl --fail --silent --show-error --get \
+              --data-urlencode "query=$1" \
+              http://127.0.0.1:9090/api/v1/query \
+              | jq --raw-output --exit-status '.data.result[0].value[1]'
+          }
+          jq --null-input \
+            --arg synth_runs_24h "$(query 'sum(increase(synth_explorer_synthesis_runs_total[24h]))')" \
+            --arg load_15m "$(query 'node_load15')" \
+            --arg memory_used_percent "$(query '100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)')" \
+            --arg root_disk_used_percent "$(query '100 * (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"} / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"})')" \
+            --arg app_rss_bytes "$(query 'synth_explorer_process_resident_memory_bytes')" \
+            '{synth_runs_24h: ($synth_runs_24h | tonumber),
+              load_15m: ($load_15m | tonumber),
+              memory_used_percent: ($memory_used_percent | tonumber),
+              root_disk_used_percent: ($root_disk_used_percent | tonumber),
+              app_rss_bytes: ($app_rss_bytes | tonumber)}'
+          REMOTE
+          )"
+          jq . <<< "$metrics"
+          {
+            echo '### Production metrics'
+            echo
+            echo '| Metric | Value |'
+            echo '| --- | ---: |'
+            jq --raw-output '"| Synth runs (24h) | \(.synth_runs_24h | floor) |",
+              "| Load average (15m) | \(.load_15m) |",
+              "| Host memory used | \(.memory_used_percent | floor)% |",
+              "| Root disk used | \(.root_disk_used_percent | floor)% |",
+              "| App RSS | \((.app_rss_bytes / 1073741824 * 100 | floor) / 100) GiB |"' \
+              <<< "$metrics"
+          } >> "$GITHUB_STEP_SUMMARY"
+          jq --exit-status \
+            '.load_15m < 6
+              and .memory_used_percent < 90
+              and .root_disk_used_percent < 85
+              and .app_rss_bytes < 5368709120' \
+            <<< "$metrics" >/dev/null

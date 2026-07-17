@@ -4,6 +4,7 @@ pub mod delay_model;
 mod design_store;
 pub mod graph;
 pub mod grouping;
+mod metrics;
 pub mod netlist;
 mod source_provenance;
 pub mod synthesis;

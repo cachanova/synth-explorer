@@ -16,6 +16,7 @@ services:
     network_mode: host
     networks: !reset []
     expose: !reset []
+    ports: !reset []
     environment:
       BIND_ADDR: 127.0.0.1:8787
       HOME: /tmp/vivado-home

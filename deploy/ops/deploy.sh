@@ -291,6 +291,8 @@ main() {
   [[ -f "${VIVADO_COMPOSE_FILE}" ]] || die "missing ${VIVADO_COMPOSE_FILE}"
   [[ -f "${RELEASE_DIR}/Caddyfile" ]] || die "missing ${RELEASE_DIR}/Caddyfile"
   [[ -x "${SCRIPT_DIR}/smoke-test.sh" ]] || die "missing executable ${SCRIPT_DIR}/smoke-test.sh"
+  [[ -x "${SCRIPT_DIR}/monitoring-smoke.sh" ]] \
+    || die "missing executable ${SCRIPT_DIR}/monitoring-smoke.sh"
   docker compose version >/dev/null
 
   exec 9>"${LOCK_FILE}"
@@ -347,6 +349,10 @@ main() {
       die "external smoke test failed"
     fi
     handle_first_deployment_smoke_failure "${new_ref}" "${expected_commit}"
+  fi
+  if ! "${SCRIPT_DIR}/monitoring-smoke.sh"; then
+    rollback "${new_ref}" "${previous_ref}" "${previous_release}" || true
+    die "production monitoring smoke test failed"
   fi
 
   write_current_ref "${new_ref}"

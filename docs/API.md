@@ -4,7 +4,7 @@ This is the contract between `server/` (Rust, axum, port **8787**) and `web/`
 (React/TS). Both sides implement exactly this. Changes to this file are a
 cross-cutting decision owned by the coordinating agent.
 
-All endpoints are JSON. Errors return HTTP 4xx/5xx with body
+All endpoints except `/metrics` are JSON. Errors return HTTP 4xx/5xx with body
 `{ "error": string, "log"?: string }`. The server also serves the built SPA
 from `web/dist` at `/` (SPA fallback to `index.html` for non-`/api` routes).
 
@@ -29,6 +29,17 @@ The server does not start if the required Yosys preflight fails, or if
 only exposes the Vivado synthesis tool when `vivado_version` is present. A
 configured Vivado backend also requires `VIVADO_ACCESS_TOKEN_SHA256`; startup
 fails closed when the digest is missing or invalid.
+
+## GET `/metrics`
+
+Returns Prometheus text exposition for synthesis requests, actual backend runs,
+cache hits, failures, queue rejections, in-flight runs, process uptime, and
+resident memory. Production Caddy deliberately returns `404` for this path;
+Prometheus scrapes it over the host-only loopback listener.
+
+Counters reset when the application process restarts. Prometheus retains their
+time series across deployments and handles counter resets when calculating
+rates and increases.
 
 ## POST `/api/vivado/access`
 
