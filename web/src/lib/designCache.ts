@@ -1,12 +1,16 @@
 import type { ValidatedSynthesis } from './yosysScript'
+import { YOSYS_CACHE_SCHEMA, YOSYS_VERSION } from './yosysScript'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
 
 const databaseName = 'synth-explorer'
 const storeName = 'syntheses'
 const maxEntries = 24
 const maxEstimatedBytes = 128 * 1024 * 1024
+const maxAgeMs = 30 * 24 * 60 * 60 * 1_000
 
 export interface CachedSynthesis {
+  schema: number
+  producer: string
   key: string
   createdAt: number
   lastAccessedAt: number
@@ -17,13 +21,20 @@ export interface CachedSynthesis {
   output: YosysWorkerResult
 }
 
-export async function getCachedSynthesis(key: string): Promise<CachedSynthesis | null> {
+export async function getCachedSynthesis(
+  key: string,
+  expectedInput: ValidatedSynthesis,
+): Promise<CachedSynthesis | null> {
   try {
     const database = await openDatabase()
     const record = await request<CachedSynthesis | undefined>(
       database.transaction(storeName).objectStore(storeName).get(key),
     )
     if (!record) return null
+    if (!isValidRecord(record, key, expectedInput)) {
+      await deleteRecord(database, key)
+      return null
+    }
     record.lastAccessedAt = Date.now()
     const transaction = database.transaction(storeName, 'readwrite')
     transaction.objectStore(storeName).put(record)
@@ -35,17 +46,23 @@ export async function getCachedSynthesis(key: string): Promise<CachedSynthesis |
 }
 
 export async function putCachedSynthesis(
-  record: Omit<CachedSynthesis, 'createdAt' | 'lastAccessedAt' | 'estimatedBytes'>,
+  record: Omit<
+    CachedSynthesis,
+    'schema' | 'producer' | 'createdAt' | 'lastAccessedAt' | 'estimatedBytes'
+  >,
 ) {
   try {
     const database = await openDatabase()
     const now = Date.now()
     const completeRecord: CachedSynthesis = {
       ...record,
+      schema: YOSYS_CACHE_SCHEMA,
+      producer: YOSYS_VERSION,
       createdAt: now,
       lastAccessedAt: now,
       estimatedBytes: estimateBytes(record),
     }
+    if (completeRecord.estimatedBytes > maxEstimatedBytes) return
     const transaction = database.transaction(storeName, 'readwrite')
     transaction.objectStore(storeName).put(completeRecord)
     await complete(transaction)
@@ -53,6 +70,13 @@ export async function putCachedSynthesis(
   } catch {
     // IndexedDB can be unavailable in private mode or under quota pressure.
   }
+}
+
+export async function clearLocalSynthesisCache(): Promise<void> {
+  const database = await openDatabase()
+  const transaction = database.transaction(storeName, 'readwrite')
+  transaction.objectStore(storeName).clear()
+  await complete(transaction)
 }
 
 async function prune(database: IDBDatabase) {
@@ -63,6 +87,10 @@ async function prune(database: IDBDatabase) {
   let retainedBytes = 0
   const remove = new Set<string>()
   for (const [index, record] of records.entries()) {
+    if (!isStructurallyValid(record) || Date.now() - record.lastAccessedAt > maxAgeMs) {
+      remove.add(record.key)
+      continue
+    }
     retainedBytes += record.estimatedBytes
     if (index >= maxEntries || retainedBytes > maxEstimatedBytes) remove.add(record.key)
   }
@@ -72,7 +100,12 @@ async function prune(database: IDBDatabase) {
   await complete(transaction)
 }
 
-function estimateBytes(record: Omit<CachedSynthesis, 'createdAt' | 'lastAccessedAt' | 'estimatedBytes'>) {
+function estimateBytes(
+  record: Omit<
+    CachedSynthesis,
+    'schema' | 'producer' | 'createdAt' | 'lastAccessedAt' | 'estimatedBytes'
+  >,
+) {
   const sourceBytes = record.input.files.reduce(
     (total, file) => total + file.name.length + file.content.length,
     0,
@@ -84,6 +117,50 @@ function estimateBytes(record: Omit<CachedSynthesis, 'createdAt' | 'lastAccessed
       record.output.sourceNetlistJson.length +
       record.output.log.length)
   )
+}
+
+function isValidRecord(
+  record: unknown,
+  key: string,
+  expectedInput: ValidatedSynthesis,
+): record is CachedSynthesis {
+  return (
+    isStructurallyValid(record) &&
+    record.key === key &&
+    record.schema === YOSYS_CACHE_SCHEMA &&
+    record.producer === YOSYS_VERSION &&
+    Date.now() - record.lastAccessedAt <= maxAgeMs &&
+    JSON.stringify(record.input) === JSON.stringify(expectedInput)
+  )
+}
+
+function isStructurallyValid(record: unknown): record is CachedSynthesis {
+  if (typeof record !== 'object' || record === null) return false
+  const candidate = record as Partial<CachedSynthesis>
+  return (
+    typeof candidate.key === 'string' &&
+    typeof candidate.schema === 'number' &&
+    typeof candidate.producer === 'string' &&
+    typeof candidate.createdAt === 'number' &&
+    typeof candidate.lastAccessedAt === 'number' &&
+    typeof candidate.estimatedBytes === 'number' &&
+    candidate.estimatedBytes >= 0 &&
+    typeof candidate.profile === 'string' &&
+    typeof candidate.memoriesAbstracted === 'boolean' &&
+    typeof candidate.input === 'object' &&
+    candidate.input !== null &&
+    typeof candidate.output === 'object' &&
+    candidate.output !== null &&
+    typeof candidate.output.netlistJson === 'string' &&
+    typeof candidate.output.sourceNetlistJson === 'string' &&
+    typeof candidate.output.log === 'string'
+  )
+}
+
+async function deleteRecord(database: IDBDatabase, key: string): Promise<void> {
+  const transaction = database.transaction(storeName, 'readwrite')
+  transaction.objectStore(storeName).delete(key)
+  await complete(transaction)
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null

@@ -1,253 +1,71 @@
-# Browser-local synthesis and analysis migration
+# Browser-local migration record
 
-## Decision
+## Decision and outcome
 
-Synth Explorer will move public Yosys synthesis, netlist construction, graph
-analysis, and design retention into the browser. Rust remains the canonical
-analysis implementation and compiles to WebAssembly. Yosys runs in a dedicated
-browser worker. The browser stores synthesis artifacts in IndexedDB for the
-current browser profile.
+Synth Explorer production is a static application. Public Yosys synthesis,
+Rust netlist/graph analysis, source exploration, and completed-design retention
+all run in the browser. Production has no HTTP application server, hosted
+Vivado, database, volume, or server-side design cache.
 
-The static application will move to Vercel and production will have no HTTP
-application server. Hosted Vivado, the Rust HTTP server, the Hetzner deployment,
-its secrets, DNS records, and persistent volume will be removed after the static
-deployment passes production verification.
+Vivado is retained only as an optional licensed dependency for manual local
+calibration. Calibration imports the canonical production Yosys script builder;
+it is not a second production synthesis implementation.
 
-Vivado remains a developer-only calibration dependency. Calibration is run
-manually on a licensed local workstation and may update checked-in timing-model
-fixtures or reports. There is no public Vivado route, UI control, access token,
-container image, or disabled production implementation.
+## Completed cutovers
 
-## End state
+1. Pinned main control `3ffd95ef4f6c6fdaa74f715dfb97d68d19313197`
+   and added a repeatable browser benchmark harness.
+2. Extracted the server analysis into canonical `analysis-core` and proved the
+   extraction stayed within benchmark noise.
+3. Compiled that Rust core to WebAssembly and replaced all design-analysis HTTP
+   routes with a dedicated browser worker.
+4. Built project-owned Yosys 0.67 WebAssembly artifacts from exact Yosys, ABC,
+   and WASI SDK pins. The worker passes all seven supported synthesis modes.
+5. Added a per-browser SHA-256 IndexedDB cache with version/input validation,
+   corrupt-record deletion, expiry, size/LRU bounds, Web Lock coordination, and
+   a visible clear action.
+6. Removed Vivado UI/API support, Axum server code, container/Hetzner deployment
+   files, backend workflows, API documentation, and root example duplication.
+7. Added a static Vercel configuration and CI that executes real browser-local
+   synthesis and asserts zero `/api` requests.
 
-The browser owns:
+## No-shadow rule
 
-- Yosys synthesis for `rtl`, `gates`, `lut4`, `lut6`, `ice40`, `ecp5`, and
-  `xilinx` modes;
-- netlist parsing, graph construction, provenance recovery, grouping, timing
-  estimates, endpoints, paths, cones, fanout, source probes, and projections;
-- one active analysis session in a Rust WebAssembly worker;
-- a per-origin IndexedDB cache of synthesis artifacts;
-- examples and build metadata shipped as static assets.
+Each runtime responsibility has one implementation:
 
-Vercel owns static delivery, preview deployments, TLS, and the production
-domain. The deployment uses no Vercel Functions, rewrites to an API, server
-runtime, database, or persistent volume.
+- production synthesis script: `web/src/lib/yosysScript.ts`;
+- synthesis executor: browser Yosys worker;
+- structural analysis: Rust `analysis-core` in the analysis worker;
+- source-selection projection: TypeScript exploration worker;
+- completed design cache: browser IndexedDB.
 
-Developer workstations may own a licensed Vivado installation and a local-only
-calibration command. Calibration output is data consumed by the static build;
-it is not a runtime dependency.
+There is no runtime feature flag, remote fallback, alternate endpoint, native
+production Yosys, or disabled Vivado/backend implementation.
 
-## External constraints
+## Browser cache identity
 
-- The [YoWASP Yosys repository](https://github.com/YoWASP/yosys) was archived
-  on March 11, 2026 and describes its packages as unofficial. Use it only as a
-  build seed. Before browser Yosys ships, create a project-owned fork, pin the
-  Yosys and ABC sources, produce reproducible artifacts, record licenses and an
-  SBOM, and own security and browser-compatibility updates.
+The full cache digest covers the artifact schema, pinned Yosys producer version,
+mode, top, validated synthesis arguments, filenames, and exact RTL bytes.
+Timing-model changes do not invalidate synthesis because they do not change the
+netlist. The displayed twelve-character design ID is only a prefix; IndexedDB
+uses the full digest.
 
-## One implementation at each stage
+This cache is per origin and per browser profile. It is not per account or
+cross-device. The browser may evict it at any time.
 
-Production code will contain one implementation for each behavior.
+## Verification and retirement order
 
-- The server will consume the extracted Rust core as soon as the files move.
-  The old server-local modules will disappear in the same change.
-- The Rust WebAssembly worker will replace the TypeScript traversal currently
-  implemented in `web/src/lib/exploration.ts`. The TypeScript traversal will
-  disappear in the cutover change.
-- Browser analysis will replace the server exploration routes. The routes,
-  graph cache, disk store, and reconstruction code will disappear in that
-  change.
-- Browser Yosys will replace public server Yosys. The public server path will
-  disappear in that change. Native Yosys may remain only inside the Vivado
-  normalizer.
-- IndexedDB will become the only completed-design cache.
-
-The migration will not add a runtime flag, fallback transport, alternate
-endpoint, or local-versus-remote Yosys selector. Intermediate commits may move
-one responsibility at a time, but each commit will run one live path for that
-responsibility.
-
-## Artifact and browser cache
-
-The synthesis artifact will contain the validated synthesis request, producer
-version, final normalized netlist, source-provenance netlist, bounded log, and
-tool-specific metadata. Rust will rebuild its in-memory graph and indexes from
-that artifact. The cache will not serialize Rust heap state.
-
-The cache key will use the full SHA-256 digest of:
-
-1. artifact schema version and producer version;
-2. synthesis tool, mode, target, top, and synthesis-affecting arguments;
-3. validated filenames and exact source bytes.
-
-The twelve-character design id can remain a display identifier derived from
-the full digest. IndexedDB will use the full digest. A timing-model retune will
-not change the synthesis key because it does not change the netlist.
-
-The cache will use a byte budget, a per-entry limit, sliding expiry, and LRU
-eviction. It will reject artifacts with the wrong digest, schema, or producer
-version. A Web Lock keyed by the digest will coordinate tabs: a tab will check
-IndexedDB, acquire the lock on a miss, check again, and then synthesize. Browser
-eviction, private browsing, clearing site data, or using another browser or
-device can remove or hide the cache. No account-level or cross-device retention
-will exist.
-
-## Workers and resource bounds
-
-Yosys and Rust analysis will use separate workers. Yosys can block its worker
-without blocking graph queries or the React thread. The application will keep
-one running synthesis and one active analysis session.
-
-The Yosys worker will preserve the current input validation, 60-second timeout,
-log bound, output bound, and abstract-memory retry. Cancellation or timeout will
-terminate the worker and discard its virtual filesystem. The migration cannot
-ship as the default path until tests show that a runaway or out-of-memory
-synthesis leaves the page usable after worker replacement.
-
-The analysis worker will retain the graph and indexes. It will return the same
-bounded response shapes used by the current UI. React will receive endpoints,
-paths, and capped subgraphs rather than the full graph. A new synthesis will
-dispose the previous analysis session before the browser ingests the new
-artifact, which bounds peak retained graph memory.
-
-## Migration stages
-
-### 1. Pin the control and add the benchmark harness
-
-Record the feature branch's base commit. Build that commit in a read-only
-control worktree and build the candidate in this worktree. Run both builds on
-the same machine with the same Chrome version. Run them in sequence so one does
-not steal CPU or memory from the other.
-
-The initial base for this branch is `3ffd95e`, the main commit that moved source
-selection into a browser worker. The harness will record full commit hashes in
-each result so later main updates cannot change the control.
-
-### 2. Extract the canonical Rust core
-
-Create a root Cargo workspace with an analysis-core crate, a WebAssembly wrapper
-crate, and the server crate. Move netlist, graph, analysis, grouping,
-source-provenance, delay-model, and shared response types out of `server/`.
-Move the server's design-construction function into the core. Update the server
-to consume the core in the same commit.
-
-Run the existing Rust tests against the extracted crate. This stage must leave
-API output and performance within benchmark noise.
-
-### 3. Move exploration into Rust WebAssembly
-
-Add a dedicated analysis worker that owns one Rust core session. Move source
-selection from TypeScript into the core and delete the TypeScript traversal.
-Change synthesis to deliver one versioned artifact to the worker. Route
-endpoints, timing retunes, paths, cones, line selection, fanout, netlist views,
-source maps, and node lookup through worker messages.
-
-Delete `/api/design/:id/*`, `DesignCache`, `DesignStore`, the design volume, and
-server graph construction in the same cutover. Both Yosys and Vivado synthesis
-will return artifacts without retaining completed designs.
-
-### 4. Move Yosys into the browser
-
-Move synthesis request validation and Yosys script construction into portable
-code. Run the script through a pinned browser Yosys package in a synthesis
-worker. Package the technology libraries with the static build and load them on
-the first Yosys request.
-
-The deployed native tool is Yosys 0.67. The browser cutover requires a pinned
-0.67 WebAssembly build with ABC and every supported target flow. The published
-YoWASP package must not silently substitute an older compiler. Build and pin
-the 0.67 artifact through the project-owned packaging fork before continuing;
-an archived upstream package is not a production dependency.
-
-Delete public server Yosys handling after the worker passes the parity and
-resource tests. Native Yosys and Vivado may remain in local calibration tooling
-only.
-
-### 5. Add IndexedDB retention
-
-Write a verified artifact after synthesis and load it before starting Yosys or
-Vivado. Rebuild the Rust session from a cache hit. Add cross-tab locking,
-bounded LRU eviction, corrupt-record deletion, version invalidation, and a
-visible clear-local-cache action.
-
-Remove the remaining backend persistence configuration, deployment volume,
-retention documentation, and `unknown design` behavior.
-
-### 6. Move the static application to Vercel
-
-GitHub Actions will build Rust WebAssembly, package Yosys, build Vite, run the
-browser synthesis tests, and deploy the verified static output. Pull requests
-will receive Vercel previews. Production promotion will use the tested commit,
-not a rebuilt moving branch.
-
-Configure the SPA rewrite, correct WebAssembly content types, immutable caching
-for hashed assets, and a short cache lifetime for `index.html` and build
-metadata. A scheduled Playwright job will load the production URL and complete
-a browser-local synthesis.
-
-### 7. Retire the hosted stack
-
-After the exact static candidate passes the production monitor, delete the
-Vivado UI and hosted-server code, backend workflows, container deployment,
-server secrets, backend DNS record, persistent volume, and Hetzner instance.
-Keep the browser-synthesis monitor and the explicitly local calibration tools.
-
-## Benchmark method
-
-Committed summaries are recorded in
+The migration is verified against a production build of pinned main on the same
+machine and browser, both without artificial latency and with 150 ms request
+latency. Results are recorded in
 [`BROWSER_WASM_BENCHMARKS.md`](BROWSER_WASM_BENCHMARKS.md).
 
-The local control and candidate runs use production builds, the same machine,
-the same browser build, and the same fixtures. The harness will test two network
-profiles:
+Before retiring external infrastructure:
 
-- no artificial latency, which compares compute and serialization;
-- fixed 150 ms request latency, which exposes the round trips paid by the
-  current architecture.
-
-Each profile will include a fresh browser context for cold measurements and a
-warmed context for repeat measurements. The harness will report the median,
-p95, transferred bytes, request count, and renderer JavaScript heap use exposed
-by Chromium. The initial harness records the user-visible boundaries that exist
-today:
-
-- page ready;
-- synthesis request to Overview ready;
-- endpoints and paths ready;
-- endpoint selection to cone rendered;
-- fanout ready.
-
-As the workers land, explicit performance markers will split out:
-
-- page ready and Yosys asset ready;
-- synthesis execution and artifact ingestion;
-- analysis-session construction;
-- endpoints and paths ready;
-- endpoint selection to cone data;
-- source selection to focused graph;
-- neighbor expansion;
-- ELK layout completion;
-- IndexedDB hit to analysis ready.
-
-The semantic harness will run every example through every supported Yosys mode
-and compare stats, warnings, endpoint groups, ranked paths, fanout, representative
-cones, source probes, and node metadata. It will also cover `-noabc`, Xilinx
-family and retiming flags, narrow-carry handling, abstract memories,
-combinational loops, blackboxes, and source-provenance fixtures.
-
-## Release gates
-
-Each stage must pass its focused unit tests, full Rust and frontend checks, the
-semantic comparison, and the local control-versus-candidate benchmark.
-
-The browser-analysis cutover requires zero exploration HTTP requests after the
-artifact arrives. The Yosys cutover requires zero API requests for a complete
-Yosys synthesize-to-explore flow. The cache cutover requires a repeat synthesis
-to skip tool execution and reproduce the same analysis responses.
-
-The final build must recover from synthesis timeout, cancellation, malformed
-output, cache corruption, and worker failure without reloading the page. The
-largest supported fixtures must stay within the defined worker memory and
-artifact limits. The production deploy must pass the browser-local synthesis
-monitor before DNS or Hetzner cleanup begins.
+1. all Rust, TypeScript, build, and real-browser checks pass;
+2. local main-versus-branch responsiveness results are recorded;
+3. the exact candidate is deployed to Vercel and passes synthesis with zero API
+   requests;
+4. the production domain is verified on that static deployment;
+5. only then are old DNS, secrets, volumes, and the exact Hetzner instance
+   removed.

@@ -229,6 +229,20 @@ a:hover {
   color: var(--text-faint);
   margin: 0 2px 7px;
 }
+.cache-clear {
+  width: 100%;
+  padding: 6px 8px;
+  border-color: var(--border);
+  background: var(--bg-2);
+  color: var(--text);
+  font-size: 12px;
+}
+.cache-status {
+  display: block;
+  margin: 6px 2px 0;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
 .seg {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

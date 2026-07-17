@@ -1,34 +1,31 @@
 # Browser migration benchmark
 
-This harness compares a pinned control commit with the current candidate by
-driving the real production UI in Chromium. It measures browser-cold and warm
-flows at localhost latency and with 150 ms of artificial request latency.
+This harness compares the pinned main backend with the static browser-local
+candidate by driving the same production UI flow in Chromium. It measures cold
+and warm browser states at 0 ms and 150 ms artificial request latency.
 
-## Prepare the two builds
+## Prepare the builds
 
-Create a detached control worktree at the commit recorded in
-`docs/BROWSER_WASM_MIGRATION.md`. Build both frontends with `npm ci` and
-`npm run build`. Start each Rust server with a distinct port, static directory,
-and empty design-store directory. For example:
+Build both frontends with their locked dependencies. Start pinned main with its
+native server and an empty design store:
 
 ```bash
 BIND_ADDR=127.0.0.1:8787 \
-STATIC_DIR=/absolute/path/to/control/web/dist \
+STATIC_DIR=/absolute/path/to/main/web/dist \
 DESIGN_STORE_DIR=/tmp/synth-explorer-control-designs \
-cargo run --manifest-path /absolute/path/to/control/server/Cargo.toml --release
-
-BIND_ADDR=127.0.0.1:8788 \
-STATIC_DIR=/absolute/path/to/candidate/web/dist \
-DESIGN_STORE_DIR=/tmp/synth-explorer-candidate-designs \
-cargo run --manifest-path /absolute/path/to/candidate/server/Cargo.toml --release
+cargo run --manifest-path /absolute/path/to/main/server/Cargo.toml --release
 ```
 
-Use new, empty design-store directories for a cold backend comparison. Do not
-run unrelated CPU- or memory-heavy work during the benchmark.
+Serve the candidate as static files only:
+
+```bash
+cd /absolute/path/to/candidate/web
+npm run preview -- --host 127.0.0.1 --port 8788
+```
+
+Do not run unrelated CPU- or memory-heavy work during the benchmark.
 
 ## Run
-
-From the candidate's `web/` directory:
 
 ```bash
 npm run benchmark:migration -- \
@@ -40,13 +37,8 @@ npm run benchmark:migration -- \
   --output /tmp/browser-migration-result.json
 ```
 
-The harness runs the targets sequentially. Each trial uses a fresh browser
-context for its cold pass, then reloads that context for its warm pass. The
-result includes raw samples and median, p95, minimum, and maximum values for
-duration, HTTP traffic, failed requests, and renderer JavaScript heap use.
-
-The initial harness measures user-visible boundaries: page ready, synthesis to
-Overview, endpoints, endpoint cone, paths, and fanout. Add internal worker
-milestones as those workers land. Do not infer Yosys execution, artifact
-ingestion, Rust session construction, layout, or IndexedDB lookup time from a
-broader UI measurement.
+Each trial creates a fresh browser context for its cold pass and reloads the
+same context for its warm pass. The result includes raw samples and median,
+p95, min, and max duration, HTTP traffic, failed requests, and renderer heap.
+The phases cover page readiness, synthesis-to-Overview, endpoints, endpoint
+cone rendering, paths, and fanout.

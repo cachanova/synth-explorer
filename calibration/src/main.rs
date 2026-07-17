@@ -579,6 +579,55 @@ fn best_scale(pairs: &[(f64, f64)]) -> Option<f64> {
     (den > 0.0).then(|| num / den)
 }
 
+fn cmd_fit(args: &[String]) -> anyhow::Result<()> {
+    let viv_path = match args {
+        [a] => a.clone(),
+        _ => anyhow::bail!("usage: calibrate fit <vivado.json>"),
+    };
+    // Deliberately takes no estimate file: speed grade is derived from Vivado's
+    // own -1-vs-N on identical designs, so our model plays no part in it.
+    let vivado: Vec<VivadoTiming> = load(&viv_path)?;
+
+    // Speed grade is a property of the silicon, not of our model: fit it from
+    // Vivado's own -1 vs -N measurements on identical designs. Fitting logic and
+    // route separately tests the assumption that one flat multiplier is enough.
+    println!(
+        "{:<16} {:>6} {:>8} {:>8} {:>8} {:>5}",
+        "family", "grade", "total", "logic", "route", "n"
+    );
+    for family in ["series7", "ultrascale", "ultrascale_plus"] {
+        for grade in ["-2", "-3"] {
+            let mut total = Vec::new();
+            let mut logic = Vec::new();
+            let mut route = Vec::new();
+            for base in vivado
+                .iter()
+                .filter(|v| v.family == family && v.speed_grade == "-1")
+            {
+                let Some(fast) = vivado
+                    .iter()
+                    .find(|v| v.case == base.case && v.family == family && v.speed_grade == grade)
+                else {
+                    continue;
+                };
+                total.push((base.data_path_ns, fast.data_path_ns));
+                logic.push((base.logic_ns, fast.logic_ns));
+                route.push((base.route_ns, fast.route_ns));
+            }
+            let Some(t) = best_scale(&total) else {
+                continue;
+            };
+            let l = best_scale(&logic).unwrap_or(f64::NAN);
+            let r = best_scale(&route).unwrap_or(f64::NAN);
+            println!(
+                "{family:<16} {grade:>6} {t:>8.3} {l:>8.3} {r:>8.3} {:>5}",
+                total.len()
+            );
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,53 +752,4 @@ mod tests {
         assert_eq!(endpoint_kind_name(EndpointKind::Register), "register");
         assert_eq!(endpoint_kind_name(EndpointKind::Output), "output");
     }
-}
-
-fn cmd_fit(args: &[String]) -> anyhow::Result<()> {
-    let viv_path = match args {
-        [a] => a.clone(),
-        _ => anyhow::bail!("usage: calibrate fit <vivado.json>"),
-    };
-    // Deliberately takes no estimate file: speed grade is derived from Vivado's
-    // own -1-vs-N on identical designs, so our model plays no part in it.
-    let vivado: Vec<VivadoTiming> = load(&viv_path)?;
-
-    // Speed grade is a property of the silicon, not of our model: fit it from
-    // Vivado's own -1 vs -N measurements on identical designs. Fitting logic and
-    // route separately tests the assumption that one flat multiplier is enough.
-    println!(
-        "{:<16} {:>6} {:>8} {:>8} {:>8} {:>5}",
-        "family", "grade", "total", "logic", "route", "n"
-    );
-    for family in ["series7", "ultrascale", "ultrascale_plus"] {
-        for grade in ["-2", "-3"] {
-            let mut total = Vec::new();
-            let mut logic = Vec::new();
-            let mut route = Vec::new();
-            for base in vivado
-                .iter()
-                .filter(|v| v.family == family && v.speed_grade == "-1")
-            {
-                let Some(fast) = vivado
-                    .iter()
-                    .find(|v| v.case == base.case && v.family == family && v.speed_grade == grade)
-                else {
-                    continue;
-                };
-                total.push((base.data_path_ns, fast.data_path_ns));
-                logic.push((base.logic_ns, fast.logic_ns));
-                route.push((base.route_ns, fast.route_ns));
-            }
-            let Some(t) = best_scale(&total) else {
-                continue;
-            };
-            let l = best_scale(&logic).unwrap_or(f64::NAN);
-            let r = best_scale(&route).unwrap_or(f64::NAN);
-            println!(
-                "{family:<16} {grade:>6} {t:>8.3} {l:>8.3} {r:>8.3} {:>5}",
-                total.len()
-            );
-        }
-    }
-    Ok(())
 }

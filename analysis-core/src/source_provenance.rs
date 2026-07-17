@@ -1537,18 +1537,20 @@ endmodule
 
     #[test]
     fn example_case_scans_cover_every_arm_and_the_full_always_block() {
-        let adder = scan_assignments(include_str!("../../examples/adder_chain.sv"));
+        let adder = scan_assignments(include_str!("../../web/src/data/examples/adder_chain.sv"));
         assert!(adder.continuous.iter().any(|assignment| {
             assignment.start_line == 16 && assignment.lhs_identifiers == ["partial_sum"]
         }));
-        let fifo = scan_assignments(include_str!("../../examples/fifo_pipe.sv"));
+        let fifo = scan_assignments(include_str!("../../web/src/data/examples/fifo_pipe.sv"));
         for line in [24, 27] {
             assert!(fifo.continuous.iter().any(|assignment| {
                 assignment.start_line == line && assignment.lhs_identifiers == ["ready"]
             }));
         }
 
-        let handshake = scan_assignments(include_str!("../../examples/handshake_controller.sv"));
+        let handshake = scan_assignments(include_str!(
+            "../../web/src/data/examples/handshake_controller.sv"
+        ));
         assert!(handshake.blocks.contains(&ProceduralBlock {
             start_line: 31,
             end_line: 62,
@@ -1583,7 +1585,9 @@ endmodule
             }));
         }
 
-        let priority = scan_assignments(include_str!("../../examples/priority_encoder_case.sv"));
+        let priority = scan_assignments(include_str!(
+            "../../web/src/data/examples/priority_encoder_case.sv"
+        ));
         assert_eq!(
             priority.blocks,
             vec![ProceduralBlock {

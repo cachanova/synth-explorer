@@ -9,17 +9,18 @@ path, endpoint, fanin, fanout, or source location.
 
 [Try Synth Explorer in your browser](https://synthexplorer.dev)
 
+Synthesis and analysis run locally in the browser. RTL is not uploaded to an
+application server. Successful synthesis artifacts are cached only in that
+browser profile and can be cleared from the settings menu.
+
 ## Features
 
 - Synthesize generic gates, LUT4/LUT6 mappings, and iCE40, ECP5, or Xilinx
-  target flows.
+  target flows with a project-pinned Yosys WebAssembly build.
 - Rank logical paths and endpoints by combinational depth.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
-- Find high-fanout nets and identify clock, reset, and enable controls.
-- Jump from synthesized cells to the Verilog source that produced them.
-
-Synth Explorer also offers a size-capped full-schematic view. The main workflow
-focuses on small subgraphs that remain readable as designs grow.
+- Find high-fanout nets and jump from synthesized cells to source.
+- Reuse identical RTL + tool-setting results from a bounded IndexedDB cache.
 
 > [!IMPORTANT]
 > Synth Explorer reports structural estimates from a synthesized netlist,
@@ -29,92 +30,60 @@ focuses on small subgraphs that remain readable as designs grow.
 
 ## Quick start
 
-### Requirements
-
-- [Yosys](https://github.com/YosysHQ/yosys) 0.67 or a compatible release
-- Rust stable
-- Node.js 24.11.1 and npm 11.6.2
-
-Clone the repository, build the frontend, and start the server:
+Requirements are Node.js 24.11.1, npm 11.6.2, and a current Chromium browser.
 
 ```bash
 git clone https://github.com/cachanova/synth-explorer.git
 cd synth-explorer/web
 npm ci
-npm run build
-cd ../server
-cargo run
-```
-
-Open <http://127.0.0.1:8787>. The Rust server hosts the built frontend and the
-API on the same origin.
-
-For frontend development, run the server and Vite in separate terminals:
-
-```bash
-# Terminal 1
-cd server
-cargo run
-
-# Terminal 2
-cd web
-npm ci
 npm run dev
 ```
 
-Vite serves <http://localhost:5173> and proxies `/api` to port 8787.
+Open <http://localhost:5173>. No backend process, native Yosys, or Vivado
+installation is required for the application.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | [`analysis-core/`](analysis-core/) | Canonical Rust netlist, graph, provenance, grouping, and analysis engine |
-| [`server/`](server/) | Rust HTTP server plus native Yosys and Vivado runners |
-| [`web/`](web/) | React client, CodeMirror editor, and elkjs graph viewer |
-| [`examples/`](examples/) | Verilog/SystemVerilog designs used by the UI and tests |
-| [`docs/`](docs/) | Architecture, API contract, and operations documentation |
-| [`deploy/`](deploy/) | Container, Caddy, deployment, monitoring, and rollback files |
+| [`analysis-wasm/`](analysis-wasm/) | WebAssembly bindings for the Rust analysis engine |
+| [`web/`](web/) | Static React application, browser workers, bundled examples, and pinned WASM artifacts |
+| [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
+| [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
+| [`docs/`](docs/) | Architecture, migration record, and benchmarks |
 
-The server keeps synthesized designs in a bounded, content-addressed memory
-cache backed by a bounded local disk store, so active designs survive restarts
-without requiring a database or external credentials. Stored designs include
-submitted RTL and expire after 4 hours without a cold access.
+Production is the static `web/dist/` output. Vercel serves it through its CDN;
+there are no Functions, API routes, databases, persistent volumes, or hosted
+EDA tools.
+
+## Development checks
+
+```bash
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --locked --all-targets -- -D warnings
+
+cd web
+npm ci
+npm test
+npm run lint
+npx tsc -b --pretty false
+npm run build
+npm run test:e2e
+```
+
+Rebuild the Rust analysis WebAssembly package with `./analysis-wasm/build.sh`.
+See [`tools/yosys-wasm/README.md`](tools/yosys-wasm/README.md) before rebuilding
+the much larger Yosys artifact.
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Browser-local synthesis and analysis migration](docs/BROWSER_WASM_MIGRATION.md)
-- [Browser-local migration benchmark results](docs/BROWSER_WASM_BENCHMARKS.md)
-- [API contract](docs/API.md)
-- [Maintainer operations](docs/OPERATIONS.md)
+- [Browser-local migration record](docs/BROWSER_WASM_MIGRATION.md)
+- [Migration benchmark results](docs/BROWSER_WASM_BENCHMARKS.md)
 - [Web client](web/README.md)
-
-## Development checks
-
-Run Rust workspace checks from the repository root:
-
-```bash
-cargo fmt --all -- --check
-cargo test --locked
-cargo clippy --workspace --locked --all-targets -- -D warnings
-```
-
-Run frontend checks from `web/`:
-
-```bash
-npm ci
-npm test
-npm run lint
-npx tsc --noEmit
-npm run build
-```
-
-## Contributing
-
-Bug reports and pull requests are welcome. Open an issue before starting a
-large change so maintainers and contributors can agree on the API or product
-behavior. Include tests for behavior changes and run the checks for each package
-you modify.
+- [Local calibration](calibration/README.md)
 
 ## License
 

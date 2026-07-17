@@ -1,55 +1,44 @@
-# Synth Explorer web client
+# Synth Explorer web application
 
-The `web/` package contains the React interface for Synth Explorer. It provides
-the CodeMirror source editor, synthesis controls, analysis views, and the
-elkjs-based circuit viewer.
-
-Read the [repository README](../README.md) for the product overview and full
-stack setup.
+This package is the entire production application. It contains the React UI,
+CodeMirror editor, browser-local Yosys and Rust analysis workers, bundled
+examples, IndexedDB cache, and elkjs graph viewer.
 
 ## Development
-
-Install Node.js 24.11.1 and npm 11.6.2, then install the locked dependencies:
 
 ```bash
 npm ci
 npm run dev
 ```
 
-Vite serves <http://localhost:5173> and proxies `/api` to the Rust server at
-<http://127.0.0.1:8787>. Start the server from the repository's `server/`
-directory before synthesizing a design.
-
-## Commands
+Vite serves <http://localhost:5173>. Synthesis works directly from that origin;
+there is no API proxy or backend process.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the Vite development server |
-| `npm test` | Run the Vitest suite once |
-| `npm run test:watch` | Run Vitest in watch mode |
-| `npm run lint` | Check the source with Oxlint |
-| `npx tsc --noEmit` | Type-check without emitting files |
-| `npm run build` | Type-check and build `dist/` for production |
-| `npm run test:e2e` | Run Playwright against `PLAYWRIGHT_BASE_URL` |
-| `npm run verify:worker` | Verify the elkjs worker bundle in a Node VM |
+| `npm test` | Run Vitest |
+| `npm run lint` | Run Oxlint |
+| `npx tsc -b` | Type-check the application and workers |
+| `npm run build` | Produce the static `dist/` deployment |
+| `npm run test:e2e` | Build-independent Playwright checks against `PLAYWRIGHT_BASE_URL` or local preview |
+| `npm run benchmark:migration` | Compare pinned control and candidate deployments |
 
-## Structure
+Run `npm run build` before `npm run test:e2e`; Playwright starts a local Vite
+preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 
-| Path | Purpose |
-| --- | --- |
-| `src/components/` | Editor, controls, analysis tabs, and graph UI |
-| `src/lib/` | API-independent graph, synthesis, layout, and source helpers |
-| `src/workers/` | elkjs layout worker and browser environment shim |
-| `e2e/` | Playwright production-flow checks |
-| `public/` | Brand and favicon assets |
+## Runtime ownership
 
-`npm run build` writes static assets to `dist/`. The production image includes
-that directory, and the Rust server serves it with the `/api` routes on the same
-origin.
+- `src/workers/yosys.worker.ts` runs the pinned files in `public/yosys/`.
+- `src/workers/analysis.worker.ts` owns the active Rust analysis session.
+- `src/workers/exploration.worker.ts` owns the single source-selection
+  projection implementation.
+- `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
+- `src/data/examples/` is the canonical bundled example catalog.
 
-See the [architecture document](../docs/ARCHITECTURE.md) and
-[API contract](../docs/API.md) before changing shared server/client behavior.
+The browser cache is keyed by the exact validated RTL, top, mode, flags, Yosys
+version, and artifact schema. It is local to one browser profile, is not synced
+to an account, and can be removed from the settings menu.
 
-## License
-
-Synth Explorer is licensed under the [Apache License 2.0](../LICENSE).
+See the [architecture](../docs/ARCHITECTURE.md) and
+[migration record](../docs/BROWSER_WASM_MIGRATION.md).

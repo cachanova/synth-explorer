@@ -13,9 +13,9 @@ function usage() {
     --candidate-revision <40-character commit> \\
     [--trials ${DEFAULT_TRIALS}] [--output result.json]
 
-The control and candidate must be production builds served by separate local
-server processes. The harness runs them sequentially under 0 ms and 150 ms
-request-latency profiles.`
+The control is the pinned main production server and the candidate is the
+static production build. The harness runs them sequentially under 0 ms and
+150 ms request-latency profiles.`
 }
 
 function parseArgs(argv) {
@@ -174,7 +174,7 @@ function armSynthesisStart(page) {
   return page.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const button = document.querySelector('button[title="Synthesize (Ctrl+Enter)"]')
+        const button = document.querySelector('button.primary')
         if (!button) {
           reject(new Error('synthesis button is missing'))
           return

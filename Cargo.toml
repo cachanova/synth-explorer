@@ -1,3 +1,3 @@
 [workspace]
-members = ["analysis-core", "analysis-wasm", "calibration", "server"]
+members = ["analysis-core", "analysis-wasm", "calibration"]
 resolver = "3"

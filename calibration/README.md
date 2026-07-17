@@ -94,24 +94,15 @@ sink.
 
 ### Generating the Vivado ground truth
 
-Produces the `vivado-<version>.json` that `report`/`fit` read. Kept out of the
-repo; regenerate when you need it. Vivado is licensed and
-lives in the prod app container; the web path is key-gated for licensing, and the
-maintainer drives it over SSH instead. **Non-destructive only** — scratch work in
-`/tmp` inside the container, never touching the running app, its data, or config;
-remove the scratch dir afterwards.
+Produces the `vivado-<version>.json` that `report`/`fit` read. Keep it out of the
+repository and regenerate it only on a local workstation with a separately
+licensed Vivado installation. Vivado is not installed or invoked by production.
 
 ```bash
-tar czf payload.tgz cases vivado.tcl
-base64 -w0 payload.tgz | ssh deploy@<prod> "docker exec -i synth-explorer-app-1 \
-  bash -lc 'mkdir -p /tmp/cal && cd /tmp/cal && base64 -d > p.tgz && tar xzf p.tgz'"
-ssh deploy@<prod> "docker exec -i synth-explorer-app-1 bash -lc \
-  'cd /tmp/cal && /opt/AMD/2026.1/Vivado/bin/vivado -nolog -nojournal -mode batch \
-   -source vivado.tcl -tclargs cases'" | grep '^RESULT:' | cut -d' ' -f2- \
+vivado -nolog -nojournal -mode batch -source vivado.tcl -tclargs cases \
+  | grep '^RESULT:' | cut -d' ' -f2- \
   | jq -s . > vivado-2026.1.json
 ```
-
-Base64-pipe the payload rather than quoting scripts through two shells.
 
 ### Timing the Yosys netlist with Vivado (`vivado_edif.tcl`)
 
@@ -145,9 +136,8 @@ yosys -q -p "read_verilog -sv <case>/<file>; \
   write_edif -pvector bra edif/<case>.<family>.edif"
 ```
 
-and place them under `<cases-dir>/edif/`. Then, on the Vivado host (chunked —
-the host redeploys often, and a redeploy SIGKILLs Vivado and wipes `/tmp`;
-trailing case names restrict a run, and reruns are idempotent):
+and place them under `<cases-dir>/edif/`. Then run Vivado locally. Trailing case
+names restrict a run, and reruns are idempotent:
 
 ```bash
 vivado -nolog -nojournal -mode batch -source vivado_edif.tcl \

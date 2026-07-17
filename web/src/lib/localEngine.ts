@@ -45,7 +45,7 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
   const input = validateSynthesisRequest(request)
   const key = await synthesisKey(input)
   const designId = key.slice(0, 12)
-  const cached = await getCachedSynthesis(key)
+  const cached = await getCachedSynthesis(key, input)
   let output: YosysWorkerResult
   let memoriesAbstracted: boolean
   let profile: string
@@ -55,15 +55,35 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
     memoriesAbstracted = cached.memoriesAbstracted
     profile = cached.profile
   } else {
-    profile = defaultDelayProfile(input)
-    try {
-      output = await runYosys(input, 'map')
-      memoriesAbstracted = false
-    } catch (error) {
-      if (!isResourceFailure(error) || !isGeneric(input.mode)) throw error
-      output = await runYosys(input, 'abstract')
-      memoriesAbstracted = true
-    }
+    const generated = await withSynthesisLock(key, async () => {
+      const coordinated = await getCachedSynthesis(key, input)
+      if (coordinated) return coordinated
+      const generatedProfile = defaultDelayProfile(input)
+      let generatedOutput: YosysWorkerResult
+      let generatedMemoriesAbstracted = false
+      try {
+        generatedOutput = await runYosys(input, 'map')
+      } catch (error) {
+        if (!isResourceFailure(error) || !isGeneric(input.mode)) throw error
+        generatedOutput = await runYosys(input, 'abstract')
+        generatedMemoriesAbstracted = true
+      }
+      await putCachedSynthesis({
+        key,
+        input,
+        profile: generatedProfile,
+        memoriesAbstracted: generatedMemoriesAbstracted,
+        output: generatedOutput,
+      })
+      return {
+        profile: generatedProfile,
+        memoriesAbstracted: generatedMemoriesAbstracted,
+        output: generatedOutput,
+      }
+    })
+    output = generated.output
+    memoriesAbstracted = generated.memoriesAbstracted
+    profile = generated.profile
   }
 
   const summary = await initializeAnalysis<AnalysisSummary>({
@@ -74,15 +94,6 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
     mode: input.mode,
     profile,
   })
-  if (!cached) {
-    void putCachedSynthesis({
-      key,
-      input,
-      profile,
-      memoriesAbstracted,
-      output,
-    })
-  }
   return {
     design_id: summary.design_id,
     top: summary.top,
@@ -94,6 +105,11 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
     log: output.log,
     memories_abstracted: memoriesAbstracted || undefined,
   }
+}
+
+function withSynthesisLock<T>(key: string, action: () => Promise<T>): Promise<T> {
+  if (!navigator.locks) return action()
+  return navigator.locks.request(`synth-explorer:${key}`, action)
 }
 
 export function localEndpoints(_id: string): Promise<EndpointsResponse> {

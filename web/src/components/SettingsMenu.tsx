@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { PALETTES, type Mode } from '../lib/palettes'
 import { useTheme } from '../lib/themeContext'
+import { clearLocalSynthesisCache } from '../lib/designCache'
 
 function GearIcon() {
   return (
@@ -46,6 +47,7 @@ const MODE_META: { id: Mode; label: string; icon: ReactNode }[] = [
 export function SettingsMenu() {
   const { palette, mode, resolvedMode, setPalette, setMode } = useTheme()
   const [open, setOpen] = useState(false)
+  const [cacheStatus, setCacheStatus] = useState<'idle' | 'clearing' | 'cleared' | 'failed'>('idle')
   const rootRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuId = useId()
@@ -146,6 +148,31 @@ export function SettingsMenu() {
                 )
               })}
             </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-head">Local data</div>
+            <button
+              type="button"
+              className="cache-clear"
+              disabled={cacheStatus === 'clearing'}
+              onClick={() => {
+                setCacheStatus('clearing')
+                void clearLocalSynthesisCache().then(
+                  () => setCacheStatus('cleared'),
+                  () => setCacheStatus('failed'),
+                )
+              }}
+            >
+              {cacheStatus === 'clearing' ? 'Clearing…' : 'Clear synthesis cache'}
+            </button>
+            <span className="cache-status" role="status">
+              {cacheStatus === 'cleared'
+                ? 'Cleared from this browser.'
+                : cacheStatus === 'failed'
+                  ? 'Could not clear local data.'
+                  : 'Cached only in this browser profile.'}
+            </span>
           </div>
         </div>
       )}
