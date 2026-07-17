@@ -321,7 +321,7 @@ export interface TimingPath {
 export interface PathsResponse {
   paths: TimingPath[]
   comb_loops: string[] // names of nodes excluded due to comb cycles
-  truncated: boolean // response limit or bounded per-endpoint route sampling was hit
+  truncated: boolean // explicit response limit or bounded route-analysis work was hit
 }
 
 // --- GET /api/design/:id/fanout ---

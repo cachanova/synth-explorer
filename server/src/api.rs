@@ -1,7 +1,7 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
-    FullNetlistOptions, NodeRef, PathsResponse, SourceLineIndex, SourceMapResponse,
-    SourceRangeMapping, Stats, Subgraph, TimingEstimate,
+    FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathsResponse, SourceLineIndex,
+    SourceMapResponse, SourceRangeMapping, Stats, Subgraph, TimingEstimate,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::design_store::{DesignStore, DesignStoreError};
@@ -1370,7 +1370,7 @@ async fn paths(
     Query(query): Query<PathsQuery>,
 ) -> Result<Json<PathsResponse>, ApiError> {
     let design = get_design(&state, &id).await?;
-    let limit = query.limit.unwrap_or(25).min(500);
+    let limit = path_response_limit(query.limit);
     let model_override = query
         .model
         .as_deref()
@@ -1393,6 +1393,10 @@ async fn paths(
         }
     }
     Ok(Json(response))
+}
+
+fn path_response_limit(requested: Option<usize>) -> usize {
+    requested.unwrap_or(MAX_PATH_RESULTS).min(MAX_PATH_RESULTS)
 }
 
 #[derive(Debug, Deserialize)]
@@ -1947,6 +1951,16 @@ mod tests {
 
     const TEST_VIVADO_KEY: &str =
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn paths_without_a_requested_limit_use_the_full_bounded_analysis_budget() {
+        assert_eq!(path_response_limit(None), MAX_PATH_RESULTS);
+        assert_eq!(path_response_limit(Some(25)), 25);
+        assert_eq!(
+            path_response_limit(Some(MAX_PATH_RESULTS + 1)),
+            MAX_PATH_RESULTS
+        );
+    }
 
     fn test_vivado_access() -> VivadoAccess {
         let digest = Sha256::digest(TEST_VIVADO_KEY.as_bytes())

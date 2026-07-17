@@ -911,6 +911,40 @@ table.grid tr.clickable:hover td {
 table.grid tr.expanded td {
   background: var(--bg-2);
 }
+.bounded-results-tab {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.virtual-table-scroll {
+  flex: 1 1 auto;
+  min-height: 160px;
+  overflow: auto;
+  position: relative;
+}
+.virtual-grid-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  table-layout: fixed;
+}
+.virtual-grid-row {
+  table-layout: fixed;
+}
+.virtual-grid-row td {
+  overflow-wrap: anywhere;
+}
+.virtual-table-spacer {
+  position: relative;
+  width: 100%;
+}
+.virtual-table-item {
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 100%;
+}
 .num {
   font-variant-numeric: tabular-nums;
   text-align: right;
@@ -928,13 +962,6 @@ table.grid tr.expanded td {
 .filter-input {
   width: 100%;
   margin-bottom: 8px;
-}
-.pagination-controls {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 0 2px;
 }
 .pagination-button {
   color: var(--accent);

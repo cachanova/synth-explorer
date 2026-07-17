@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getPaths } from '../../api'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { formatBitRanges } from '../../lib/bitRanges'
@@ -23,6 +23,7 @@ import type {
 } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
+import { VirtualTable } from '../VirtualTable'
 
 interface RouteVariant {
   index: number
@@ -45,11 +46,12 @@ export function Paths() {
   }, [designMode])
   const { data, loading, error } = useDesignData(
     id,
-    (designId) => getPaths(designId, { limit: 25, ...timingReq }),
+    (designId) => getPaths(designId, timingReq),
     JSON.stringify(timingReq),
   )
   const [open, setOpen] = useState<number | null>(null)
   const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
+  useEffect(() => setOpen(null), [id])
   const sortedPaths = useMemo(() => {
     const paths = [...(data?.paths ?? [])]
     if (sortBy === 'delay') {
@@ -72,7 +74,7 @@ export function Paths() {
   }
 
   return (
-    <div>
+    <div className="bounded-results-tab">
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
         {STRUCTURAL_DEPTH_CAVEAT}
       </div>
@@ -88,17 +90,22 @@ export function Paths() {
       {data.truncated && (
         <div className="caveat" style={{ marginBottom: 10 }}>
           Additional endpoint bits or structural route variants were omitted by the
-          bounded path-analysis limit.
+          bounded path-analysis work budget.
         </div>
       )}
       <div className="section-title">
         Longest logical path variants ({data.paths.length})
       </div>
-      <table className="grid">
-        <thead>
-          <tr>
-            <th className="num">#</th>
+      <VirtualTable
+        rowCount={sortedPaths.length}
+        columnWidths={['4%', '7%', '10%', '14%', '18%', '18%', '18%', '11%']}
+        getRowKey={(index) => pathKey(sortedPaths[index])}
+        resetKey={sortBy}
+        header={
+          <>
+            <th role="columnheader" className="num">#</th>
             <th
+              role="columnheader"
               className="num sortable"
               onClick={() => {
                 setSortBy('depth')
@@ -109,6 +116,7 @@ export function Paths() {
               Depth{sortBy === 'depth' ? ' ▾' : ''}
             </th>
             <th
+              role="columnheader"
               className="num sortable"
               onClick={() => {
                 setSortBy('delay')
@@ -118,17 +126,17 @@ export function Paths() {
             >
               Est. delay{sortBy === 'delay' ? ' ▾' : ''}
             </th>
-            <th>Class</th>
-            <th>Startpoint</th>
-            <th>Logical endpoint</th>
-            <th>Bit / route cohort</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {sortedPaths.map((path, index) => (
+            <th role="columnheader">Class</th>
+            <th role="columnheader">Startpoint</th>
+            <th role="columnheader">Logical endpoint</th>
+            <th role="columnheader">Bit / route cohort</th>
+            <th role="columnheader"></th>
+          </>
+        }
+        renderRow={(index) => {
+          const path = sortedPaths[index]
+          return (
             <PathRow
-              key={pathKey(path, index)}
               index={index}
               path={path}
               variant={variants[index]}
@@ -136,21 +144,22 @@ export function Paths() {
               onToggle={() => setOpen(open === index ? null : index)}
               onShow={() => store.showPathInGraph(path)}
             />
-          ))}
-        </tbody>
-      </table>
+          )
+        }}
+      />
     </div>
   )
 }
 
-function pathKey(path: TimingPath, index: number): string {
+function pathKey(path: TimingPath): string {
   return [
     path.endpoint_kind,
     path.endpoint_group,
     path.class,
     path.bits.join(','),
     path.depth,
-    index,
+    path.endpoint_port,
+    path.nodes.map((node) => node.id).join(','),
   ].join(':')
 }
 
@@ -259,24 +268,24 @@ function PathRow({
 }) {
   return (
     <>
-      <tr className={`clickable${open ? ' expanded' : ''}`} onClick={onToggle}>
-        <td className="num faint">{index + 1}</td>
-        <td className="num">
+      <tr role="row" className={`clickable${open ? ' expanded' : ''}`} onClick={onToggle}>
+        <td role="cell" className="num faint">{index + 1}</td>
+        <td role="cell" className="num">
           <span className="depth-chip">{path.depth}</span>
         </td>
-        <td className="num mono">
+        <td role="cell" className="num mono">
           {path.estimated_delay_ns != null
             ? `${path.estimated_delay_ns.toFixed(2)} ns`
             : '—'}
         </td>
-        <td>
+        <td role="cell">
           <span className="tag">{pathClassLabel(path.class)}</span>
         </td>
-        <td>
+        <td role="cell">
           <span className="tag">{startpointKind(path.startpoint)}</span>{' '}
           <span className="mono">{displayNodeName(path.startpoint)}</span>
         </td>
-        <td>
+        <td role="cell">
           <span className="tag">{endpointKindLabel(path.endpoint_kind)}</span>{' '}
           <span className="mono"><PathEndpointName path={path} /></span>
           {path.output_aliases.map((alias) => (
@@ -285,7 +294,7 @@ function PathRow({
             </div>
           ))}
         </td>
-        <td>
+        <td role="cell">
           <span className="mono">bits {formatBitCohort(path.bits)}</span>
           <div className="faint" style={{ fontSize: 10 }}>
             {variant.total === 1
@@ -293,7 +302,7 @@ function PathRow({
               : `route ${variant.index} of ${variant.total}`}
           </div>
         </td>
-        <td>
+        <td role="cell">
           <a
             onClick={(event) => {
               event.stopPropagation()
@@ -305,8 +314,8 @@ function PathRow({
         </td>
       </tr>
       {open && (
-        <tr className="expanded">
-          <td colSpan={8}>
+        <tr className="expanded" role="row">
+          <td colSpan={8} role="cell">
             <div className="chain">
               {path.nodes.map((node, nodeIndex) => (
                 <Hop

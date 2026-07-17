@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
 import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { formatBitRanges } from '../../lib/bitRanges'
@@ -19,6 +19,7 @@ import type {
 import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { StaleResultsChip } from '../StaleResultsChip'
+import { VirtualTable } from '../VirtualTable'
 
 type EndpointFilter = 'all' | 'register' | 'registered_output' | 'output'
 
@@ -26,7 +27,6 @@ type LogicalEndpoint =
   | { kind: 'register'; endpoint: RegisterEndpoint }
   | { kind: 'output'; endpoint: OutputEndpoint }
 
-const ENDPOINT_PAGE_SIZE = 100
 const BIT_PAGE_SIZE = 64
 
 export function Endpoints() {
@@ -38,7 +38,13 @@ export function Endpoints() {
   const { data, loading, error } = useDesignData(id, getEndpoints)
   const [filter, setFilter] = useState('')
   const [kindFilter, setKindFilter] = useState<EndpointFilter>('all')
-  const [page, setPage] = useState(0)
+  const [openRows, setOpenRows] = useState<Set<string>>(() => new Set())
+  const [bitPages, setBitPages] = useState<Map<string, number>>(() => new Map())
+
+  useEffect(() => {
+    setOpenRows(new Set())
+    setBitPages(new Map())
+  }, [id])
 
   const rows = useMemo(() => {
     const all: LogicalEndpoint[] = [
@@ -71,14 +77,24 @@ export function Endpoints() {
   if (error) return <div className="empty-state">Failed to load endpoints: {error}</div>
 
   const total = (data?.registers.length ?? 0) + (data?.outputs.length ?? 0)
-  const lastPage = Math.max(0, Math.ceil(rows.length / ENDPOINT_PAGE_SIZE) - 1)
-  const currentPage = Math.min(page, lastPage)
-  const rowStart = currentPage * ENDPOINT_PAGE_SIZE
-  const visibleRows = rows.slice(rowStart, rowStart + ENDPOINT_PAGE_SIZE)
-  const rowsAfter = Math.max(0, rows.length - rowStart - visibleRows.length)
+  const toggleRow = (key: string) => {
+    setOpenRows((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+  const setBitPage = (key: string, page: number) => {
+    setBitPages((current) => {
+      const next = new Map(current)
+      next.set(key, page)
+      return next
+    })
+  }
 
   return (
-    <div>
+    <div className="bounded-results-tab">
       <StaleResultsChip state={store.analysisState} />
       <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
         {STRUCTURAL_DEPTH_CAVEAT} Registered top-level outputs are aliases of their
@@ -91,18 +107,12 @@ export function Endpoints() {
           style={{ marginBottom: 0 }}
           placeholder="Filter logical endpoints…"
           value={filter}
-          onChange={(e) => {
-            setFilter(e.target.value)
-            setPage(0)
-          }}
+          onChange={(e) => setFilter(e.target.value)}
         />
         <select
           aria-label="Endpoint kind"
           value={kindFilter}
-          onChange={(e) => {
-            setKindFilter(e.target.value as EndpointFilter)
-            setPage(0)
-          }}
+          onChange={(e) => setKindFilter(e.target.value as EndpointFilter)}
         >
           <option value="all">All kinds</option>
           <option value="register">Registers</option>
@@ -112,62 +122,55 @@ export function Endpoints() {
       </div>
 
       <div className="section-title">
-        Logical endpoints ({rows.length} matched / {total}; showing{' '}
-        {visibleRows.length === 0 ? 0 : rowStart + 1}–{rowStart + visibleRows.length})
+        Logical endpoints ({rows.length} matched / {total})
       </div>
       {rows.length === 0 ? (
         <div className="faint">No matching logical endpoints.</div>
       ) : (
-        <table className="grid">
-          <thead>
-            <tr>
-              <th>Endpoint</th>
-              <th>Kind</th>
-              <th className="num">Bits</th>
-              <th>Implementation</th>
-              <th className="num">Logic depth</th>
-              <th>Source</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map((row) =>
+        <VirtualTable
+          rowCount={rows.length}
+          columnWidths={['28%', '15%', '8%', '20%', '10%', '19%']}
+          getRowKey={(index) => {
+            const row = rows[index]
+            return `${row.kind}:${row.endpoint.name}`
+          }}
+          resetKey={`${filter}:${kindFilter}`}
+          header={
+            <>
+              <th role="columnheader">Endpoint</th>
+              <th role="columnheader">Kind</th>
+              <th role="columnheader" className="num">Bits</th>
+              <th role="columnheader">Implementation</th>
+              <th role="columnheader" className="num">Logic depth</th>
+              <th role="columnheader">Source</th>
+            </>
+          }
+          renderRow={(index) => {
+            const row = rows[index]
+            const key = `${row.kind}:${row.endpoint.name}`
+            return (
               row.kind === 'register' ? (
                 <RegisterRow
-                  key={`register:${row.endpoint.name}`}
                   endpoint={row.endpoint}
                   onOpen={store.openCone}
+                  open={openRows.has(key)}
+                  onToggle={() => toggleRow(key)}
+                  bitPage={bitPages.get(key) ?? 0}
+                  onBitPageChange={(page) => setBitPage(key, page)}
                 />
               ) : (
                 <OutputRow
-                  key={`output:${row.endpoint.name}`}
                   endpoint={row.endpoint}
                   onOpen={store.openCone}
+                  open={openRows.has(key)}
+                  onToggle={() => toggleRow(key)}
+                  bitPage={bitPages.get(key) ?? 0}
+                  onBitPageChange={(page) => setBitPage(key, page)}
                 />
-              ),
-            )}
-          </tbody>
-        </table>
-      )}
-      {rows.length > ENDPOINT_PAGE_SIZE && (
-        <div className="pagination-controls">
-          <button
-            type="button"
-            disabled={currentPage === 0}
-            onClick={() => setPage(Math.max(0, currentPage - 1))}
-          >
-            Previous page
-          </button>
-          <span className="faint">
-            Page {currentPage + 1} of {lastPage + 1}
-          </span>
-          <button
-            type="button"
-            disabled={rowsAfter === 0}
-            onClick={() => setPage(Math.min(lastPage, currentPage + 1))}
-          >
-            Next page ({rowsAfter} remaining)
-          </button>
-        </div>
+              )
+            )
+          }}
+        />
       )}
     </div>
   )
@@ -247,6 +250,8 @@ function BitsRow({
   openTitle = 'Open D-input fanin for',
   colSpan,
   onOpen,
+  page,
+  onPageChange,
 }: {
   name: string
   width: number
@@ -256,8 +261,9 @@ function BitsRow({
   openTitle?: string
   colSpan: number
   onOpen: Opener
+  page: number
+  onPageChange: (page: number) => void
 }) {
-  const [page, setPage] = useState(0)
   const sortedBits = useMemo(
     () => [...bits].sort((a, b) => b.bit - a.bit),
     [bits],
@@ -269,8 +275,8 @@ function BitsRow({
   const remaining = Math.max(0, sortedBits.length - start - visibleBits.length)
 
   return (
-    <tr className="expanded">
-      <td colSpan={colSpan}>
+    <tr className="expanded" role="row">
+      <td colSpan={colSpan} role="cell">
         <div className="chain">
           {visibleBits.map((bit) => {
             const outputNames = aliasesForBit(aliases, bit.bit)
@@ -300,7 +306,7 @@ function BitsRow({
             <button
               type="button"
               className="hop pagination-button"
-              onClick={() => setPage(currentPage - 1)}
+              onClick={() => onPageChange(currentPage - 1)}
             >
               <span className="t">Previous {Math.min(BIT_PAGE_SIZE, start)} bits</span>
             </button>
@@ -309,7 +315,7 @@ function BitsRow({
             <button
               type="button"
               className="hop pagination-button"
-              onClick={() => setPage(currentPage + 1)}
+              onClick={() => onPageChange(currentPage + 1)}
             >
               <span className="t">
                 Next {Math.min(BIT_PAGE_SIZE, remaining)} bits
@@ -326,17 +332,25 @@ function BitsRow({
 function RegisterRow({
   endpoint,
   onOpen,
+  open,
+  onToggle,
+  bitPage,
+  onBitPageChange,
 }: {
   endpoint: RegisterEndpoint
   onOpen: Opener
+  open: boolean
+  onToggle: () => void
+  bitPage: number
+  onBitPageChange: (page: number) => void
 }) {
-  const [open, setOpen] = useState(false)
   const aliases = endpoint.output_aliases
   const name = registerDisplayName(endpoint)
   return (
     <>
       <tr
         className={`clickable${open ? ' expanded' : ''}`}
+        role="row"
         onClick={() =>
           endpoint.bits.length > 0 &&
           onOpen({
@@ -348,30 +362,30 @@ function RegisterRow({
         }
         title="Open the D-input fanin cone of the whole register"
       >
-        <td>
+        <td role="cell">
           <span className="mono">{name}</span>
-          <ExpandButton open={open} onToggle={() => setOpen((value) => !value)} />
+          <ExpandButton open={open} onToggle={onToggle} />
           {aliases.map((alias) => (
             <div key={alias.name} className="faint" style={{ fontSize: 10 }}>
               top-level output <span className="mono">{aliasLabel(alias)}</span>
             </div>
           ))}
         </td>
-        <td>
+        <td role="cell">
           <span className="tag">Register</span>{' '}
           {aliases.length > 0 && <span className="tag">Registered output</span>}
         </td>
-        <td className="num">{endpoint.width}</td>
-        <td>
+        <td role="cell" className="num">{endpoint.width}</td>
+        <td role="cell">
           <span className="tag">{displayCellType(endpoint.cell_type)}</span>
           <div className="mono faint" style={{ fontSize: 10, marginTop: 2 }}>
             clk {endpoint.clock ? shortNetName(endpoint.clock) : 'unknown'}
           </div>
         </td>
-        <td className="num" title="Worst structural depth into the register D input">
+        <td role="cell" className="num" title="Worst structural depth into the register D input">
           <span className="depth-chip">{endpoint.worst_depth}</span>
         </td>
-        <td>
+        <td role="cell">
           <SrcLink src={endpoint.src} />
         </td>
       </tr>
@@ -383,6 +397,8 @@ function RegisterRow({
           aliases={aliases}
           colSpan={6}
           onOpen={onOpen}
+          page={bitPage}
+          onPageChange={onBitPageChange}
         />
       )}
     </>
@@ -392,16 +408,24 @@ function RegisterRow({
 function OutputRow({
   endpoint,
   onOpen,
+  open,
+  onToggle,
+  bitPage,
+  onBitPageChange,
 }: {
   endpoint: OutputEndpoint
   onOpen: Opener
+  open: boolean
+  onToggle: () => void
+  bitPage: number
+  onBitPageChange: (page: number) => void
 }) {
-  const [open, setOpen] = useState(false)
   const reportedBits = endpoint.bits.length
   return (
     <>
       <tr
         className={`clickable${open ? ' expanded' : ''}`}
+        role="row"
         onClick={() =>
           endpoint.bits.length > 0 &&
           onOpen({
@@ -413,14 +437,15 @@ function OutputRow({
         }
         title="Open the fanin cone of the whole combinational output"
       >
-        <td>
+        <td role="cell">
           <span className="mono">{endpoint.name}</span>
-          <ExpandButton open={open} onToggle={() => setOpen((value) => !value)} />
+          <ExpandButton open={open} onToggle={onToggle} />
         </td>
-        <td>
+        <td role="cell">
           <span className="tag">Combinational output</span>
         </td>
         <td
+          role="cell"
           className="num"
           title={
             reportedBits === endpoint.width
@@ -430,11 +455,11 @@ function OutputRow({
         >
           {reportedBits === endpoint.width ? endpoint.width : `${reportedBits} / ${endpoint.width}`}
         </td>
-        <td className="faint">Top-level output</td>
-        <td className="num" title="Worst structural depth into this top-level output">
+        <td role="cell" className="faint">Top-level output</td>
+        <td role="cell" className="num" title="Worst structural depth into this top-level output">
           <span className="depth-chip">{endpoint.worst_depth}</span>
         </td>
-        <td>—</td>
+        <td role="cell">—</td>
       </tr>
       {open && (
         <BitsRow
@@ -445,6 +470,8 @@ function OutputRow({
           openTitle="Open output fanin for"
           colSpan={6}
           onOpen={onOpen}
+          page={bitPage}
+          onPageChange={onBitPageChange}
         />
       )}
     </>
