@@ -25,9 +25,13 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
 
 ## Stack Decision
 
-- **Backend: Rust** (axum + tokio + serde). Netlist graphs get large; the
-  analysis engine (BFS cones, longest-path DP, SCC detection) wants a fast,
-  memory-tight language. Rust was also the user's preference.
+- **Analysis core: Rust.** The `analysis-core` crate owns netlist parsing,
+  graph construction, provenance recovery, grouping, BFS cones, longest-path
+  DP, and SCC detection. The server consumes this crate rather than carrying a
+  second implementation.
+- **Backend: Rust** (axum + tokio + serde). It owns the current HTTP API,
+  native synthesis processes, bounds, and retention while the browser-local
+  migration is in progress.
 - **Frontend: React + TypeScript + Vite.** CodeMirror 6 for editing,
   **elkjs** (layered layout, same engine netlistsvg uses) in a Web Worker for
   cone layout, custom SVG rendering with pan/zoom.
@@ -199,10 +203,10 @@ realistic blackbox boundary around vendor-generated clock-domain-crossing IP.
 
 ## Testing
 
-- **Rust:** unit tests on parser/graph/analysis over committed fixture JSONs;
-  integration tests that run yosys on `examples/` and assert semantic facts
-  (e.g. `adder_chain` depth > `reg_mux` depth and blackbox boundaries remain
-  explicit).
+- **Rust:** `analysis-core` unit and integration tests cover parser, graph, and
+  analysis semantics over committed fixture JSONs. Server integration tests
+  run Yosys on `examples/` and assert semantic facts such as `adder_chain`
+  depth exceeding `reg_mux` depth and blackbox boundaries remaining explicit.
 - **Frontend:** `tsc --noEmit`, `vite build`, vitest on pure logic (API client,
   graph transforms, and source-selection traversal).
 - **E2E:** drive Chrome against the built stack — synthesize each example, walk

@@ -1,3 +1,5 @@
+//! Bounded structural analysis and API response projections.
+
 use crate::delay_model::DelayModel;
 use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
@@ -3706,7 +3708,10 @@ mod tests {
     }
 
     fn fixture(name: &str) -> (Graph, Analysis) {
-        let json = std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name);
+        let json = std::fs::read_to_string(path).unwrap();
         let netlist = parse_str(&json).unwrap();
         let (top, module) = select_top(&netlist, None).unwrap();
         let graph = Graph::from_netlist(&netlist, top, module).unwrap();
@@ -3890,7 +3895,9 @@ mod tests {
         // gates-mode Yosys types this model dispatches. The chain becomes
         // XOR -> AND -> AND, so exact logic timing must be the sum of those
         // three characterized categories everywhere timing is surfaced.
-        let json = std::fs::read_to_string("tests/fixtures/and_chain_rtl.json").unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/and_chain_rtl.json");
+        let json = std::fs::read_to_string(path).unwrap();
         let mut netlist = parse_str(&json).unwrap();
         let cells = &mut netlist.modules.get_mut("top").unwrap().cells;
         for (cell, cell_type) in cells.values_mut().zip(["$_XOR_", "$_AND_", "$_AND_"]) {

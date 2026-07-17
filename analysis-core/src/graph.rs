@@ -1,3 +1,5 @@
+//! Netlist-to-graph construction and structural cell classification.
+
 use crate::netlist::{
     PortDirection, YosysBit, YosysCell, YosysModule, YosysNetlist, attr_truthy,
     binary_string_to_u64, module_blackboxes,

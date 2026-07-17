@@ -1,14 +1,12 @@
 use crate::analysis::{
-    Analysis, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, ExplorationSnapshot,
-    FanoutResponse, FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathSort, PathsResponse,
-    SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats, Subgraph, TimingEstimate,
+    ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, ExplorationSnapshot, FanoutResponse,
+    FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathSort, PathsResponse, SourceMapResponse,
+    Stats, Subgraph, TimingEstimate,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::design_store::{DesignStore, DesignStoreError};
-use crate::graph::Graph;
 use crate::grouping::GroupPartition;
-use crate::netlist::{YosysNetlist, parse_value, select_top};
-use crate::source_provenance::{SourceProvenance, recover_source_provenance};
+use crate::netlist::{YosysNetlist, parse_value};
 use crate::synthesis::{SynthesisError, run_synthesis};
 use crate::vivado::{VivadoBackend, VivadoError, VivadoPart, VivadoTiming};
 use crate::yosys::{
@@ -28,10 +26,12 @@ use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::io::{self, Write};
 use std::mem::size_of;
+use std::ops::Deref;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use subtle::{Choice, ConstantTimeEq};
+use synth_explorer_analysis::design::AnalysisDesign;
 use tokio::sync::{RwLock, Semaphore, watch};
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -615,17 +615,7 @@ impl Drop for FlightTaskGuard {
 #[derive(Debug, DeepSizeOf)]
 struct Design {
     response: SynthesizeResponse,
-    graph: Graph,
-    analysis: Analysis,
-    source_index: SourceLineIndex,
-    grouping: GroupPartition,
-    /// The delay model chosen from the synthesis target, i.e. the one that
-    /// produced `response.stats.estimated_delay_ns`. Used as the default base
-    /// for `/timing` retunes so a no-argument retune reproduces that number.
-    delay_model: DelayModel,
-    /// The family `delay_model` came from. Speed-grade scaling is a property of
-    /// the silicon rather than of the coefficients, so it is keyed on this.
-    delay_profile: DelayProfile,
+    core: AnalysisDesign,
 }
 
 impl Design {
@@ -639,9 +629,15 @@ impl Design {
     /// a real process/fabric profile enables retuned timing without synthesis.
     /// Mirrors the synth-time stats suppression in [`build_design`].
     fn hides_delay_estimate(&self, profile: DelayProfile) -> bool {
-        self.response.mode == "rtl"
-            || (matches!(self.response.mode.as_str(), "gates" | "lut4" | "lut6")
-                && profile == DelayProfile::Generic)
+        self.core.hides_delay_estimate(profile)
+    }
+}
+
+impl Deref for Design {
+    type Target = AnalysisDesign;
+
+    fn deref(&self) -> &Self::Target {
+        &self.core
     }
 }
 
@@ -664,56 +660,21 @@ struct StoredDesign {
 }
 
 fn build_design(stored: &StoredDesign) -> Result<Design, String> {
-    let (top, module) = select_top(&stored.netlist, None)
-        .map_err(|err| format!("failed to resolve top module: {err}"))?;
-    let graph = Graph::from_netlist(&stored.netlist, top, module)
-        .map_err(|err| format!("failed to build analysis graph: {err}"))?;
-    let (source_top, _) = select_top(&stored.source_netlist, None)
-        .map_err(|err| format!("failed to resolve source-provenance top module: {err}"))?;
-    let SourceProvenance {
-        mut ranges,
-        truncated: source_ranges_truncated,
-        procedural_targets,
-        probe_hints,
-    } = recover_source_provenance(
-        &graph,
+    let delay_profile = parse_stored_delay_profile(&stored.delay_profile)
+        .ok_or_else(|| format!("unknown stored delay profile: {}", stored.delay_profile))?;
+    let core = AnalysisDesign::from_netlists(
+        &stored.netlist,
         &stored.source_netlist,
         stored
             .files
             .iter()
-            .map(|file| (file.name.clone(), file.content.clone())),
-    );
-    if stored.tool == SynthTool::Vivado {
-        ranges.extend(vivado_procedural_ranges(&procedural_targets));
-    }
-    let delay_profile = parse_stored_delay_profile(&stored.delay_profile)
-        .ok_or_else(|| format!("unknown stored delay profile: {}", stored.delay_profile))?;
-    let delay_model = delay_profile.model();
-    let file_names = stored
-        .files
-        .iter()
-        .map(|file| file.name.clone())
-        .collect::<Vec<_>>();
-    let mut analysis = Analysis::with_delay_model(&graph, file_names.clone(), &delay_model);
-    let mut source_index =
-        SourceLineIndex::from_netlist(&stored.source_netlist, source_top, file_names);
-    source_index.extend_ranges(&ranges);
-    analysis.extend_source_ranges(ranges, source_ranges_truncated);
-    analysis.set_procedural_targets(procedural_targets);
-    analysis.set_source_probe_hints(probe_hints);
-    let mut stats = analysis.stats();
-    if stored.mode == SynthMode::Rtl
-        || (matches!(
-            stored.mode,
-            SynthMode::Gates | SynthMode::Lut4 | SynthMode::Lut6
-        ) && delay_profile == DelayProfile::Generic)
-    {
-        // RTL cells cannot be costed honestly, while generic gates/LUT modes
-        // have no real technology until the user retunes to one. Synth-time
-        // absolute estimates are withheld; structural depth remains.
-        stats.estimated_delay_ns = None;
-        stats.estimated_delay_breakdown = None;
-    }
+            .map(|file| (file.name.clone(), file.content.clone()))
+            .collect(),
+        stored.mode.to_string(),
+        delay_profile,
+        stored.tool == SynthTool::Vivado,
+    )
+    .map_err(|error| error.to_string())?;
     let response = SynthesizeResponse {
         design_id: stored.design_id.clone(),
         top: stored.resolved_top.clone(),
@@ -721,22 +682,13 @@ fn build_design(stored: &StoredDesign) -> Result<Design, String> {
         mode: stored.mode.to_string(),
         delay_profile: stored_delay_profile(delay_profile).to_owned(),
         target: stored.target.clone(),
-        stats,
-        warnings: analysis.warnings(),
+        stats: core.stats(),
+        warnings: core.warnings(),
         log: stored.log.clone(),
         memories_abstracted: stored.memories_abstracted,
         vivado_timing: stored.vivado_timing.clone(),
     };
-    let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
-    Ok(Design {
-        response,
-        graph,
-        analysis,
-        source_index,
-        grouping,
-        delay_model,
-        delay_profile,
-    })
+    Ok(Design { response, core })
 }
 
 fn stored_delay_profile(profile: DelayProfile) -> &'static str {
@@ -1230,25 +1182,6 @@ async fn synthesize_uncached(
         "synthesis_complete"
     );
     Ok(design)
-}
-
-fn vivado_procedural_ranges(
-    targets: &HashMap<(String, usize), Vec<u32>>,
-) -> Vec<SourceRangeMapping> {
-    let mut ranges = targets
-        .iter()
-        .map(|((file, line), node_ids)| SourceRangeMapping {
-            file: file.clone(),
-            start_line: *line,
-            end_line: *line,
-            node_ids: node_ids.clone(),
-            mapping_incomplete: false,
-        })
-        .collect::<Vec<_>>();
-    ranges.sort_by(|a, b| {
-        (&a.file, a.start_line, a.end_line).cmp(&(&b.file, b.start_line, b.end_line))
-    });
-    ranges
 }
 
 fn design_cache_weight(design_id: &str, design: &Design) -> usize {
@@ -2140,76 +2073,75 @@ mod tests {
             }
         }))
         .unwrap();
-        let (top, module) = select_top(&netlist, Some("top")).unwrap();
-        let graph = Graph::from_netlist(&netlist, top, module).unwrap();
-        let analysis = Analysis::new(&graph, vec!["test.sv".to_owned()]);
-        let source_index = SourceLineIndex::from_module(module, vec!["test.sv".to_owned()]);
-        let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
+        let core = AnalysisDesign::from_netlists(
+            &netlist,
+            &netlist,
+            vec![("test.sv".to_owned(), String::new())],
+            "rtl",
+            DelayProfile::Series7,
+            false,
+        )
+        .unwrap();
         Arc::new(Design {
             response: SynthesizeResponse {
                 design_id: design_id.to_owned(),
-                top: top.to_owned(),
+                top: core.graph.top.clone(),
                 tool: "yosys".to_owned(),
                 mode: "rtl".to_owned(),
                 delay_profile: "series7".to_owned(),
                 target: None,
-                stats: analysis.stats(),
-                warnings: analysis.warnings(),
+                stats: core.stats(),
+                warnings: core.warnings(),
                 log: String::new(),
                 memories_abstracted: false,
                 vivado_timing,
             },
-            graph,
-            analysis,
-            source_index,
-            grouping,
-            delay_model: DelayModel::default(),
-            delay_profile: DelayProfile::Series7,
+            core,
         })
     }
 
     fn timing_test_design(design_id: &str, mode: &str) -> Arc<Design> {
         let netlist = parse_value(
-            serde_json::from_str(include_str!("../tests/fixtures/and_chain_rtl.json")).unwrap(),
+            serde_json::from_str(include_str!(
+                "../../analysis-core/tests/fixtures/and_chain_rtl.json"
+            ))
+            .unwrap(),
         )
         .unwrap();
-        let (top, module) = select_top(&netlist, Some("top")).unwrap();
-        let graph = Graph::from_netlist(&netlist, top, module).unwrap();
         let delay_profile = DelayProfile::Generic;
-        let delay_model = delay_profile.model();
-        let analysis =
-            Analysis::with_delay_model(&graph, vec!["fixture.sv".to_owned()], &delay_model);
-        let source_index = SourceLineIndex::from_module(module, vec!["fixture.sv".to_owned()]);
-        let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
-        let mut stats = analysis.stats();
-        stats.estimated_delay_ns = None;
-        stats.estimated_delay_breakdown = None;
+        let core = AnalysisDesign::from_netlists(
+            &netlist,
+            &netlist,
+            vec![("fixture.sv".to_owned(), String::new())],
+            mode,
+            delay_profile,
+            false,
+        )
+        .unwrap();
         Arc::new(Design {
             response: SynthesizeResponse {
                 design_id: design_id.to_owned(),
-                top: top.to_owned(),
+                top: core.graph.top.clone(),
                 tool: "yosys".to_owned(),
                 mode: mode.to_owned(),
                 delay_profile: stored_delay_profile(delay_profile).to_owned(),
                 target: None,
-                stats,
-                warnings: analysis.warnings(),
+                stats: core.stats(),
+                warnings: core.warnings(),
                 log: String::new(),
                 memories_abstracted: false,
                 vivado_timing: None,
             },
-            graph,
-            analysis,
-            source_index,
-            grouping,
-            delay_model,
-            delay_profile,
+            core,
         })
     }
 
     fn stored_timing_test_design(mode: SynthMode, profile: DelayProfile) -> StoredDesign {
         let netlist = parse_value(
-            serde_json::from_str(include_str!("../tests/fixtures/and_chain_rtl.json")).unwrap(),
+            serde_json::from_str(include_str!(
+                "../../analysis-core/tests/fixtures/and_chain_rtl.json"
+            ))
+            .unwrap(),
         )
         .unwrap();
         StoredDesign {
@@ -3195,22 +3127,5 @@ mod tests {
         ));
         assert!(cache.get_at("large", Instant::now()).is_none());
         assert_eq!(cache.total_bytes, 0);
-    }
-
-    #[test]
-    fn vivado_procedural_targets_become_deterministic_source_ranges() {
-        let targets = HashMap::from([
-            (("top.sv".to_owned(), 17), vec![8, 9]),
-            (("top.sv".to_owned(), 14), vec![7]),
-        ]);
-        let ranges = vivado_procedural_ranges(&targets);
-        assert_eq!(
-            ranges
-                .iter()
-                .map(|range| (range.start_line, range.node_ids.clone()))
-                .collect::<Vec<_>>(),
-            vec![(14, vec![7]), (17, vec![8, 9])]
-        );
-        assert!(ranges.iter().all(|range| !range.mapping_incomplete));
     }
 }

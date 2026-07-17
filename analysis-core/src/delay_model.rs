@@ -1,4 +1,4 @@
-//! Rough pre-place-and-route timing estimate.
+//! Portable structural delay models and target-family profiles.
 //!
 //! This mirrors how a vendor tool (e.g. Vivado) reports *post-synthesis*
 //! timing: it sums characterized-ish cell delays with a **fanout-based** net
@@ -132,7 +132,7 @@ impl DelayProfile {
     }
 
     /// Pick the default profile for a synthesis target. `mode` is the
-    /// [`crate::yosys::SynthMode`] string; `family` is the Xilinx `-family`
+    /// synthesis-mode string; `family` is the Xilinx `-family`
     /// value when one was supplied, else `None`.
     pub fn for_target(mode: &str, family: Option<&str>) -> Self {
         match mode {
@@ -639,7 +639,7 @@ impl DelayModel {
     }
 
     /// Pick the default preset for a synthesis target. `mode` is the
-    /// [`crate::yosys::SynthMode`] string; `family` is the Xilinx `-family`
+    /// synthesis-mode string; `family` is the Xilinx `-family`
     /// value (e.g. `xcup`) when one was supplied, else `None`.
     pub fn for_target(mode: &str, family: Option<&str>) -> Self {
         DelayProfile::for_target(mode, family).model()

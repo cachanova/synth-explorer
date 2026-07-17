@@ -1,13 +1,16 @@
 use std::collections::HashSet;
-use synth_explorer_server::analysis::{
+use synth_explorer_analysis::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions,
 };
-use synth_explorer_server::graph::{Graph, NodeKind};
-use synth_explorer_server::grouping::{GroupKind, GroupPartition};
-use synth_explorer_server::netlist::{parse_str, parse_value, select_top};
+use synth_explorer_analysis::graph::{Graph, NodeKind};
+use synth_explorer_analysis::grouping::{GroupKind, GroupPartition};
+use synth_explorer_analysis::netlist::{parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
-    let json = std::fs::read_to_string(format!("tests/fixtures/{name}")).unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let json = std::fs::read_to_string(path).unwrap();
     let netlist = parse_str(&json).unwrap();
     let (top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
@@ -247,7 +250,9 @@ fn grouped_cone_from_member_lands_on_its_group_root() {
 
 #[test]
 fn parser_roundtrip_selects_binary_top_attr() {
-    let json = std::fs::read_to_string("tests/fixtures/reg_mux_rtl.json").unwrap();
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reg_mux_rtl.json");
+    let json = std::fs::read_to_string(path).unwrap();
     let netlist = parse_str(&json).unwrap();
     let (top, module) = select_top(&netlist, None).unwrap();
     assert_eq!(top, "top");
@@ -284,10 +289,12 @@ fn cone_stops_at_boundary_nodes() {
         )
         .unwrap();
     assert!(cone.nodes.iter().any(|node| node.is_root == Some(true)));
-    assert!(cone.nodes.iter().any(|node| matches!(
-        node.node.kind,
-        synth_explorer_server::analysis::ApiNodeKind::Port
-    ) && node.is_boundary == Some(true)));
+    assert!(
+        cone.nodes
+            .iter()
+            .any(|node| matches!(node.node.kind, ApiNodeKind::Port)
+                && node.is_boundary == Some(true))
+    );
 }
 
 #[test]

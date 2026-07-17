@@ -1,3 +1,5 @@
+//! Parsing and validation for Yosys JSON netlists.
+
 use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

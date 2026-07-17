@@ -1,0 +1,3 @@
+[workspace]
+members = ["analysis-core", "server"]
+resolver = "3"

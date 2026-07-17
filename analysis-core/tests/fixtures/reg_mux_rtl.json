@@ -1,5 +1,6 @@
 {
   "creator": "Yosys 0.64 (git sha1 6d2c445ae-dirty, g++ 15.2.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]",
+
   "modules": {
     "top": {
       "attributes": {

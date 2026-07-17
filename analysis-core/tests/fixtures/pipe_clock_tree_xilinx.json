@@ -1,5 +1,6 @@
 {
   "creator": "Yosys 0.64 (git sha1 6d2c445ae-dirty, g++ 15.2.1 -march=x86-64 -mtune=generic -O2 -fno-plt -fexceptions -fstack-clash-protection -fcf-protection -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -ffile-prefix-map=/build/yosys/src=/usr/src/debug/yosys -fPIC -O3) [startdir/yosys at makepkg]",
+
   "modules": {
     "pipe": {
       "attributes": {
@@ -59,6 +60,24 @@
         }
       },
       "cells": {
+        "$auto$clkbufmap.cc:261:execute$1720": {
+          "hide_name": 1,
+          "type": "BUFG",
+          "parameters": {},
+          "attributes": {},
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              21
+            ],
+            "O": [
+              22
+            ]
+          }
+        },
         "$auto$ff.cc:337:slice$1574": {
           "hide_name": 1,
           "type": "FDRE",
@@ -79,19 +98,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              5
+              24
             ],
             "Q": [
-              21
+              25
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -115,19 +134,19 @@
           },
           "connections": {
             "C": [
-              2
-            ],
-            "CE": [
-              4
-            ],
-            "D": [
-              6
-            ],
-            "Q": [
               22
             ],
+            "CE": [
+              23
+            ],
+            "D": [
+              27
+            ],
+            "Q": [
+              28
+            ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -151,19 +170,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
-            ],
-            "D": [
-              7
-            ],
-            "Q": [
               23
             ],
+            "D": [
+              29
+            ],
+            "Q": [
+              30
+            ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -187,19 +206,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              8
+              31
             ],
             "Q": [
-              24
+              32
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -223,19 +242,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              9
+              33
             ],
             "Q": [
-              25
+              34
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -259,19 +278,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              10
+              35
             ],
             "Q": [
-              26
+              36
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -295,19 +314,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              11
+              37
             ],
             "Q": [
-              27
+              38
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -331,19 +350,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              12
+              39
             ],
             "Q": [
-              28
+              40
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -367,19 +386,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              21
+              25
             ],
             "Q": [
-              29
+              41
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -403,19 +422,19 @@
           },
           "connections": {
             "C": [
-              2
-            ],
-            "CE": [
-              4
-            ],
-            "D": [
               22
             ],
+            "CE": [
+              23
+            ],
+            "D": [
+              28
+            ],
             "Q": [
-              30
+              42
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -439,19 +458,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
-            ],
-            "D": [
               23
             ],
+            "D": [
+              30
+            ],
             "Q": [
-              31
+              43
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -475,19 +494,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              24
-            ],
-            "Q": [
               32
             ],
+            "Q": [
+              44
+            ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -511,19 +530,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              25
+              34
             ],
             "Q": [
-              33
+              45
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -547,19 +566,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              26
+              36
             ],
             "Q": [
-              34
+              46
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -583,19 +602,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              27
+              38
             ],
             "Q": [
-              35
+              47
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -619,19 +638,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              28
+              40
             ],
             "Q": [
-              36
+              48
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -655,19 +674,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              29
+              41
             ],
             "Q": [
-              37
+              49
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -691,19 +710,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              30
+              42
             ],
             "Q": [
-              38
+              50
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -727,19 +746,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              31
+              43
             ],
             "Q": [
-              39
+              51
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -763,19 +782,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              32
+              44
             ],
             "Q": [
-              40
+              52
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -799,19 +818,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              33
+              45
             ],
             "Q": [
-              41
+              53
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -835,19 +854,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              34
+              46
             ],
             "Q": [
-              42
+              54
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -871,19 +890,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              35
+              47
             ],
             "Q": [
-              43
+              55
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -907,19 +926,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              36
+              48
             ],
             "Q": [
-              44
+              56
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -943,19 +962,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              37
+              49
             ],
             "Q": [
-              13
+              57
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -979,19 +998,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              38
+              50
             ],
             "Q": [
-              14
+              58
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -1015,19 +1034,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              39
+              51
             ],
             "Q": [
-              15
+              59
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -1051,19 +1070,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              40
+              52
             ],
             "Q": [
-              16
+              60
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -1087,19 +1106,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              41
+              53
             ],
             "Q": [
-              17
+              61
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -1123,19 +1142,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              42
+              54
             ],
             "Q": [
-              18
+              62
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -1159,19 +1178,19 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              43
+              55
             ],
             "Q": [
-              19
+              63
             ],
             "R": [
-              3
+              26
             ]
           }
         },
@@ -1195,24 +1214,446 @@
           },
           "connections": {
             "C": [
-              2
+              22
             ],
             "CE": [
-              4
+              23
             ],
             "D": [
-              44
+              56
             ],
             "Q": [
-              20
+              64
             ],
             "R": [
+              26
+            ]
+          }
+        },
+        "$iopadmap$pipe.clk": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              2
+            ],
+            "O": [
+              21
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              5
+            ],
+            "O": [
+              24
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_1": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              6
+            ],
+            "O": [
+              27
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_2": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              7
+            ],
+            "O": [
+              29
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_3": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              8
+            ],
+            "O": [
+              31
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_4": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              9
+            ],
+            "O": [
+              33
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_5": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              10
+            ],
+            "O": [
+              35
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_6": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              11
+            ],
+            "O": [
+              37
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_in_7": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              12
+            ],
+            "O": [
+              39
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              57
+            ],
+            "O": [
+              13
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_1": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              58
+            ],
+            "O": [
+              14
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_2": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              59
+            ],
+            "O": [
+              15
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_3": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              60
+            ],
+            "O": [
+              16
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_4": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              61
+            ],
+            "O": [
+              17
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_5": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              62
+            ],
+            "O": [
+              18
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_6": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              63
+            ],
+            "O": [
+              19
+            ]
+          }
+        },
+        "$iopadmap$pipe.data_out_7": {
+          "hide_name": 1,
+          "type": "OBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              64
+            ],
+            "O": [
+              20
+            ]
+          }
+        },
+        "$iopadmap$pipe.en": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
+              4
+            ],
+            "O": [
+              23
+            ]
+          }
+        },
+        "$iopadmap$pipe.rst": {
+          "hide_name": 1,
+          "type": "IBUF",
+          "parameters": {},
+          "attributes": {
+            "keep": "00000000000000000000000000000001"
+          },
+          "port_directions": {
+            "I": "input",
+            "O": "output"
+          },
+          "connections": {
+            "I": [
               3
+            ],
+            "O": [
+              26
             ]
           }
         }
       },
       "netnames": {
+        "$auto$clkbufmap.cc:262:execute$1721": {
+          "hide_name": 1,
+          "bits": [
+            21
+          ],
+          "attributes": {}
+        },
+        "$iopadmap$clk": {
+          "hide_name": 1,
+          "bits": [
+            22
+          ],
+          "attributes": {}
+        },
+        "$iopadmap$data_in": {
+          "hide_name": 1,
+          "bits": [
+            24,
+            27,
+            29,
+            31,
+            33,
+            35,
+            37,
+            39
+          ],
+          "attributes": {}
+        },
+        "$iopadmap$en": {
+          "hide_name": 1,
+          "bits": [
+            23
+          ],
+          "attributes": {}
+        },
+        "$iopadmap$rst": {
+          "hide_name": 1,
+          "bits": [
+            26
+          ],
+          "attributes": {}
+        },
         "clk": {
           "hide_name": 0,
           "bits": [
@@ -1275,14 +1716,14 @@
         "with_stages.stage[0]": {
           "hide_name": 0,
           "bits": [
-            21,
-            22,
-            23,
-            24,
             25,
-            26,
-            27,
-            28
+            28,
+            30,
+            32,
+            34,
+            36,
+            38,
+            40
           ],
           "attributes": {
             "src": "pipe.sv:16.23-16.28"
@@ -1291,14 +1732,14 @@
         "with_stages.stage[1]": {
           "hide_name": 0,
           "bits": [
-            29,
-            30,
-            31,
-            32,
-            33,
-            34,
-            35,
-            36
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48
           ],
           "attributes": {
             "src": "pipe.sv:16.23-16.28"
@@ -1307,14 +1748,14 @@
         "with_stages.stage[2]": {
           "hide_name": 0,
           "bits": [
-            37,
-            38,
-            39,
-            40,
-            41,
-            42,
-            43,
-            44
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56
           ],
           "attributes": {
             "src": "pipe.sv:16.23-16.28"
@@ -1323,14 +1764,14 @@
         "with_stages.stage[3]": {
           "hide_name": 0,
           "bits": [
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19,
-            20
+            57,
+            58,
+            59,
+            60,
+            61,
+            62,
+            63,
+            64
           ],
           "attributes": {
             "src": "pipe.sv:16.23-16.28"

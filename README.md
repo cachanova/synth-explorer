@@ -68,7 +68,8 @@ Vite serves <http://localhost:5173> and proxies `/api` to port 8787.
 
 | Path | Purpose |
 | --- | --- |
-| [`server/`](server/) | Rust server, Yosys runner, netlist parser, and graph analysis |
+| [`analysis-core/`](analysis-core/) | Canonical Rust netlist, graph, provenance, grouping, and analysis engine |
+| [`server/`](server/) | Rust HTTP server plus native Yosys and Vivado runners |
 | [`web/`](web/) | React client, CodeMirror editor, and elkjs graph viewer |
 | [`examples/`](examples/) | Verilog/SystemVerilog designs used by the UI and tests |
 | [`docs/`](docs/) | Architecture, API contract, and operations documentation |
@@ -89,12 +90,12 @@ submitted RTL and expire after 4 hours without a cold access.
 
 ## Development checks
 
-Run backend checks from `server/`:
+Run Rust workspace checks from the repository root:
 
 ```bash
 cargo fmt --all -- --check
 cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --workspace --locked --all-targets -- -D warnings
 ```
 
 Run frontend checks from `web/`:

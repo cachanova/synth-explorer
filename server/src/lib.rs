@@ -1,11 +1,6 @@
-pub mod analysis;
+pub use synth_explorer_analysis::{analysis, delay_model, graph, grouping, netlist};
 pub mod api;
-pub mod delay_model;
 mod design_store;
-pub mod graph;
-pub mod grouping;
-pub mod netlist;
-mod source_provenance;
 pub mod synthesis;
 pub mod vivado;
 pub mod yosys;

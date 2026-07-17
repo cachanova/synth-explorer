@@ -1,3 +1,5 @@
+//! Source-range recovery from provenance-preserving synthesis artifacts.
+
 use crate::analysis::{
     SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_ROOT_COLLECTION_CAP, SourceProbeDirection,
     SourceProbeHint, SourceProbeHintKind, SourceRangeMapping,

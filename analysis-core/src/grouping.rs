@@ -1,4 +1,4 @@
-//! Bit-parallel structural grouping. Register vectors come straight from the
+//! Deterministic bit-parallel grouping for schematic projections. Register vectors come straight from the
 //! endpoint analysis; combinational cells are grouped by bounded partition
 //! refinement plus a final 1:1 bit-correspondence check so that only true
 //! bit-parallel structures collapse (carry chains and shared-bit fanin never
