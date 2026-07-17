@@ -2170,8 +2170,9 @@ endmodule
         assert!(path.get("estimated_delay_ns").is_none());
     }
 
-    // The same design through gates mode keeps its estimate: the suppression
-    // is about RTL's word-level cells, not about the design.
+    // Gates mode is structurally costable, but its automatic profile is still
+    // technology-neutral. Absolute timing stays withheld until a real process
+    // node is selected.
     let gates = post_json(
         &mut app,
         "/api/synthesize",
@@ -2182,5 +2183,15 @@ endmodule
         }),
     )
     .await;
-    assert!(gates["stats"]["estimated_delay_ns"].as_f64().unwrap() > 0.0);
+    assert!(gates["stats"].get("estimated_delay_ns").is_none());
+    assert!(gates["stats"].get("estimated_delay_breakdown").is_none());
+    let gates_id = gates["design_id"].as_str().unwrap();
+    let targeted = post_json(
+        &mut app,
+        &format!("/api/design/{gates_id}/timing"),
+        json!({"profile": "sky130hd"}),
+    )
+    .await;
+    assert!(targeted["estimated_delay_ns"].as_f64().unwrap() > 0.0);
+    assert!(targeted.get("estimated_delay_breakdown").is_some());
 }

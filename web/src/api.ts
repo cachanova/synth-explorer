@@ -108,6 +108,7 @@ export function getPaths(
   opts: {
     limit?: number
     to?: number
+    sort?: 'depth' | 'delay'
     // Timing model so per-path delays track the client's retune settings.
     profile?: string
     speed_grade?: string
@@ -117,6 +118,7 @@ export function getPaths(
   const p = new URLSearchParams()
   if (opts.limit != null) p.set('limit', String(opts.limit))
   if (opts.to != null) p.set('to', String(opts.to))
+  if (opts.sort != null) p.set('sort', opts.sort)
   if (opts.profile != null) p.set('profile', opts.profile)
   if (opts.speed_grade != null) p.set('speed_grade', opts.speed_grade)
   if (opts.model != null) p.set('model', JSON.stringify(opts.model))

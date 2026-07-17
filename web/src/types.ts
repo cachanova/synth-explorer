@@ -129,7 +129,8 @@ export interface Stats {
   cell_categories: CellCategoryCounts
   // rough pre-place-and-route worst-case combinational delay (logic +
   // fanout-estimated routing), NOT timing closure. Absent when the design has
-  // no combinational paths.
+  // no combinational paths, for RTL, or for a generic gates/LUT design before
+  // the user selects a real process/fabric profile.
   estimated_delay_ns?: number
   estimated_delay_breakdown?: DelayBreakdown
 }
@@ -204,7 +205,7 @@ export interface TimingRequest {
 }
 
 export interface TimingResponse {
-  estimated_delay_ns: number | null // null when no combinational paths
+  estimated_delay_ns: number | null // also null when this mode/profile is notional
   estimated_delay_breakdown?: DelayBreakdown
   model: DelayModel // base coefficients used (pre speed-grade)
 }

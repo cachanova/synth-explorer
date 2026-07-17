@@ -313,17 +313,11 @@ describe('profilesForMode', () => {
   const values = (mode?: string) => profilesForMode(mode).map((o) => o.value)
 
   it('offers no FPGA presets for generic gates', () => {
-    expect(values('gates')).toEqual([
-      'auto',
-      'sky130hd',
-      'gf180mcu',
-      'asap7',
-      'generic',
-    ])
+    expect(values('gates')).toEqual(['auto', 'sky130hd', 'gf180mcu', 'asap7'])
   })
 
-  it('offers no process nodes for FPGA and LUT targets', () => {
-    for (const mode of ['xilinx', 'ice40', 'ecp5', 'lut4', 'lut6']) {
+  it('offers no process nodes for FPGA targets', () => {
+    for (const mode of ['xilinx', 'ice40', 'ecp5']) {
       expect(values(mode)).toEqual([
         'auto',
         'series7',
@@ -332,6 +326,19 @@ describe('profilesForMode', () => {
         'ice40',
         'ecp5',
         'generic',
+      ])
+    }
+  })
+
+  it('uses auto as the notional placeholder for generic LUT modes', () => {
+    for (const mode of ['lut4', 'lut6']) {
+      expect(values(mode)).toEqual([
+        'auto',
+        'series7',
+        'ultrascale',
+        'ultrascale_plus',
+        'ice40',
+        'ecp5',
       ])
     }
   })
@@ -347,12 +354,14 @@ describe('effectiveProfile', () => {
     // must not retune a Xilinx netlist with standard-cell numbers.
     expect(effectiveProfile('sky130hd', 'xilinx')).toBe('auto')
     expect(effectiveProfile('series7', 'gates')).toBe('auto')
+    expect(effectiveProfile('generic', 'gates')).toBe('auto')
+    expect(effectiveProfile('generic', 'lut4')).toBe('auto')
   })
 
   it('passes valid combinations through', () => {
     expect(effectiveProfile('sky130hd', 'gates')).toBe('sky130hd')
     expect(effectiveProfile('ultrascale', 'xilinx')).toBe('ultrascale')
     expect(effectiveProfile('ice40', 'lut4')).toBe('ice40')
-    expect(effectiveProfile('generic', 'gates')).toBe('generic')
+    expect(effectiveProfile('generic', 'xilinx')).toBe('generic')
   })
 })

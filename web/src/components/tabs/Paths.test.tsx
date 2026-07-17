@@ -34,6 +34,7 @@ vi.mock('@tanstack/react-virtual', () => ({
 }))
 vi.mock('../../api', () => ({ getPaths: getPathsMock }))
 vi.mock('../../lib/timingSettings', () => ({
+  effectiveProfile: (profile: string) => profile,
   loadTimingSettings: () => ({
     profile: 'auto',
     speedGrade: '-1',
@@ -87,7 +88,10 @@ describe('Paths result completeness', () => {
 
     const markup = renderToStaticMarkup(<Paths />)
 
-    expect(getPathsMock).toHaveBeenCalledWith('design', { speed_grade: '-1' })
+    expect(getPathsMock).toHaveBeenCalledWith('design', {
+      sort: 'depth',
+      speed_grade: '-1',
+    })
     expect(getPathsMock.mock.calls[0][1]).not.toHaveProperty('limit')
     expect(markup).toContain('Longest logical path variants (26)')
     expect(markup.match(/<tr[^>]*class="clickable"/g)).toHaveLength(26)

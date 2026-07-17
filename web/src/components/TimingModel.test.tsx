@@ -33,6 +33,7 @@ function render(args: {
   timing?: VivadoTiming
   estimate?: number | null
   breakdown?: DelayBreakdown
+  mode?: string
 }): string {
   return renderToStaticMarkup(
     <TimingModel
@@ -40,6 +41,7 @@ function render(args: {
       fallbackDelayNs={args.estimate ?? null}
       fallbackBreakdown={args.breakdown}
       vivadoTiming={args.timing}
+      designMode={args.mode}
     />,
   )
 }
@@ -250,5 +252,30 @@ describe('TimingModel coefficient vocabulary', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+})
+
+describe('TimingModel generic-mode placeholder', () => {
+  it('prompts gates users to choose a process node instead of showing timing cards', () => {
+    const markup = render({ mode: 'gates', estimate: null })
+    expect(markup).toContain('Pick a process node')
+    expect(markup).toContain('Delay profile')
+    expect(markup).not.toContain('Critical-path delay')
+    expect(markup).not.toContain('Implied Fmax')
+  })
+
+  it('prompts LUT users to choose an FPGA preset', () => {
+    for (const mode of ['lut4', 'lut6']) {
+      const markup = render({ mode, estimate: null })
+      expect(markup).toContain('Pick an FPGA preset')
+      expect(markup).not.toContain('Critical-path delay')
+    }
+  })
+
+  it('keeps normal timing cards for real FPGA modes', () => {
+    const markup = render({ mode: 'xilinx', estimate: 2.69, breakdown })
+    expect(markup).toContain('Critical-path delay')
+    expect(markup).toContain('2.69 ns')
+    expect(markup).not.toContain('Pick an FPGA preset')
   })
 })
