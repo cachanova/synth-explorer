@@ -1,4 +1,4 @@
-import type { LineConeStatus } from '../types'
+import type { SourceSelectionStatus } from '../types'
 
 export interface SourceProbePresentation {
   acceptReturnedGraph: boolean
@@ -7,7 +7,7 @@ export interface SourceProbePresentation {
 }
 
 export function sourceProbePresentation(
-  status: LineConeStatus | null,
+  status: SourceSelectionStatus | null,
 ): SourceProbePresentation {
   switch (status) {
     case null:

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ApiRequestError, getCone, getLineCone, getNetlist } from '../../api'
+import { ApiRequestError, getCone, getNetlist } from '../../api'
+import {
+  analyzeSourceInBrowser,
+  initializeExploration,
+  resetExploration,
+} from '../../lib/explorationClient'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
@@ -7,7 +12,7 @@ import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
-import type { GraphNode, LineConeStatus, Subgraph } from '../../types'
+import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
 import { GraphView } from '../GraphView'
@@ -91,7 +96,7 @@ export function Graph({ active }: { active: boolean }) {
   const [layingOut, setLayingOut] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
-  const [sourceStatus, setSourceStatus] = useState<LineConeStatus | null>(null)
+  const [sourceStatus, setSourceStatus] = useState<SourceSelectionStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
@@ -115,7 +120,24 @@ export function Graph({ active }: { active: boolean }) {
     return () => window.removeEventListener('keydown', clearSelection)
   }, [active, clearGraphSelection])
 
-  // Every option here changes what the server returns, so a change refetches.
+  useEffect(() => {
+    if (!design) {
+      resetExploration()
+      return
+    }
+    if (!active || analysisState !== 'current') return
+    let current = true
+    void initializeExploration(design.design_id).catch((reason) => {
+      if (!current || (reason instanceof DOMException && reason.name === 'AbortError')) return
+      setError(reason instanceof Error ? reason.message : String(reason))
+    })
+    return () => {
+      current = false
+    }
+  }, [active, analysisState, design])
+
+  // Every option changes a graph projection. Source projections are local;
+  // full and node-cone projections still come from the server.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}`
   const fullGraphKey = design
     ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.groupVectors}|${graphOptions.hideControl}|${graphOptions.hideConst}`
@@ -242,15 +264,15 @@ export function Graph({ active }: { active: boolean }) {
     if (request.kind !== 'source') setSelected(null)
     const fetchRelevantGraph =
       request.kind === 'source'
-        ? getLineCone(requestDesignId, {
+        ? analyzeSourceInBrowser(requestDesignId, {
             file: request.file,
-            start_line: request.startLine,
-            end_line: request.endLine,
-            max_nodes: graphOptions.maxNodes,
-            hide_control: graphOptions.hideControl,
-            hide_const: graphOptions.hideConst,
-            show_infrastructure: false,
-            group_vectors: graphOptions.groupVectors,
+            startLine: request.startLine,
+            endLine: request.endLine,
+          }, {
+            maxNodes: graphOptions.maxNodes,
+            hideControl: graphOptions.hideControl,
+            hideConst: graphOptions.hideConst,
+            groupVectors: graphOptions.groupVectors,
           }, controller.signal).then((response) => ({
             graph: response.graph,
             status: response.status,

@@ -1,7 +1,7 @@
 use crate::analysis::{
-    Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
-    FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathSort, PathsResponse, SourceLineIndex,
-    SourceMapResponse, SourceRangeMapping, Stats, Subgraph, TimingEstimate,
+    Analysis, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, ExplorationSnapshot,
+    FanoutResponse, FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathSort, PathsResponse,
+    SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats, Subgraph, TimingEstimate,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::design_store::{DesignStore, DesignStoreError};
@@ -14,6 +14,7 @@ use crate::vivado::{VivadoBackend, VivadoError, VivadoPart, VivadoTiming};
 use crate::yosys::{
     MemoryHandling, ResourceKind, SourceFile, SynthMode, SynthRequest, SynthTool, YosysError,
 };
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::middleware::{Next, from_fn};
@@ -25,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::env;
+use std::io::{self, Write};
 use std::mem::size_of;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -43,6 +45,9 @@ const DESIGN_STORE_FORMAT_VERSION: u32 = 1;
 const MAX_IN_FLIGHT_DESIGNS: usize = 16;
 const MAX_RUNNING_SYNTHESES: usize = 1;
 const SYNTHESIS_RETRY_AFTER_SECONDS: u64 = 5;
+const MAX_EXPLORATION_DESIGN_BYTES: usize = 64 * 1024 * 1024;
+const MAX_EXPLORATION_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONCURRENT_EXPLORATION_RESPONSES: usize = 1;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -51,6 +56,7 @@ pub struct AppState {
     cold_load: Arc<tokio::sync::Mutex<()>>,
     flights: Arc<SynthesisFlights>,
     running: Arc<Semaphore>,
+    exploration_responses: Arc<Semaphore>,
     metadata: Arc<BuildMetadata>,
     vivado_access: Option<Arc<VivadoAccess>>,
     vivado_parts: Arc<Vec<VivadoPart>>,
@@ -122,6 +128,7 @@ impl AppState {
             cold_load: Arc::new(tokio::sync::Mutex::new(())),
             flights: Arc::new(SynthesisFlights::new()),
             running: Arc::new(Semaphore::new(MAX_RUNNING_SYNTHESES)),
+            exploration_responses: Arc::new(Semaphore::new(MAX_CONCURRENT_EXPLORATION_RESPONSES)),
             metadata: Arc::new(BuildMetadata {
                 status: "ok",
                 commit: env::var("BUILD_COMMIT").unwrap_or_else(|_| "unknown".to_owned()),
@@ -866,7 +873,7 @@ pub fn app(state: AppState) -> Router {
         .route("/design/{id}/timing", post(design_timing))
         .route("/design/{id}/paths", get(paths))
         .route("/design/{id}/cone", get(cone))
-        .route("/design/{id}/line-cone", get(line_cone))
+        .route("/design/{id}/exploration", get(exploration))
         .route("/design/{id}/fanout", get(fanout))
         .route("/design/{id}/netlist", get(netlist))
         .route("/design/{id}/source-map", get(source_map))
@@ -1486,136 +1493,133 @@ async fn cone(
     Ok(Json(subgraph))
 }
 
-#[derive(Debug, Deserialize)]
-struct LineConeQuery {
-    file: Option<String>,
-    start_line: Option<isize>,
-    end_line: Option<isize>,
-    max_nodes: Option<usize>,
-    hide_control: Option<bool>,
-    hide_const: Option<bool>,
-    show_infrastructure: Option<bool>,
-    group_vectors: Option<bool>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SourceEnvelopeStatus {
-    Mapped,
-    MappingIncomplete,
-    OptimizedOrAbsorbed,
-    Unmapped,
-}
-
 #[derive(Debug, Serialize)]
-struct LineConeResponse {
-    status: SourceEnvelopeStatus,
-    control: bool,
-    highlight: Vec<u32>,
-    graph: Subgraph,
+struct ExplorationResponse {
+    design_id: String,
+    #[serde(flatten)]
+    snapshot: ExplorationSnapshot,
 }
 
-async fn line_cone(
+#[derive(Debug, PartialEq, Eq)]
+enum BoundedJsonError {
+    DesignTooLarge,
+    TooLarge,
+    Serialize(String),
+}
+
+struct BoundedJsonWriter {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl BoundedJsonWriter {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(limit.min(64 * 1024)),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for BoundedJsonWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.bytes.len().saturating_add(buf.len()) > self.limit {
+            self.exceeded = true;
+            return Err(io::Error::other("JSON response exceeded its byte limit"));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn serialize_json_bounded<T: Serialize>(
+    value: &T,
+    limit: usize,
+) -> Result<Vec<u8>, BoundedJsonError> {
+    let mut writer = BoundedJsonWriter::new(limit);
+    let serialized = serde_json::to_writer(&mut writer, value);
+    if writer.exceeded {
+        return Err(BoundedJsonError::TooLarge);
+    }
+    serialized.map_err(|error| BoundedJsonError::Serialize(error.to_string()))?;
+    Ok(writer.bytes)
+}
+
+fn build_exploration_payload(
+    design_id: String,
+    design: &Design,
+    design_limit: usize,
+    response_limit: usize,
+) -> Result<Vec<u8>, BoundedJsonError> {
+    if design.estimated_heap_bytes() > design_limit {
+        return Err(BoundedJsonError::DesignTooLarge);
+    }
+    let response = ExplorationResponse {
+        design_id,
+        snapshot: design.analysis.exploration_snapshot(
+            &design.graph,
+            &design.source_index,
+            &design.grouping,
+        ),
+    };
+    serialize_json_bounded(&response, response_limit)
+}
+
+async fn exploration(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(query): Query<LineConeQuery>,
-) -> Result<Json<LineConeResponse>, ApiError> {
+) -> Result<Response, ApiError> {
     let design = get_design(&state, &id).await?;
-    let file = query
-        .file
-        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "file is required"))?;
-    let start_line = query
-        .start_line
-        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "start_line is required"))?;
-    let end_line = query.end_line.unwrap_or(start_line);
-    if start_line < 1 || end_line < start_line {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "line range must satisfy 1 <= start_line <= end_line",
-        ));
-    }
-    if end_line - start_line >= 200 {
-        return Err(ApiError::new(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "at most 200 source lines may be selected",
-        ));
-    }
-    let probe = design
-        .analysis
-        .source_probe_range(&design.graph, &file, start_line as usize, end_line as usize)
-        .ok_or_else(|| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "unknown file"))?;
-    let roots = probe.roots;
-    let control = roots.iter().any(|root| {
-        design.graph.outgoing[*root as usize]
-            .iter()
-            .any(|edge_idx| design.graph.edges[*edge_idx].control)
-    });
-    let hide_control = query.hide_control.unwrap_or(true) && !control;
-    let options = ConeOptions {
-        dir: probe.direction.unwrap_or(ConeDir::Fanin),
-        max_depth: 64,
-        max_nodes: query.max_nodes.unwrap_or(400),
-        hide_control,
-        hide_const: query.hide_const.unwrap_or(true),
-        show_infrastructure: query.show_infrastructure.unwrap_or(false),
-    };
-    let grouping = grouping_for(&design, query.group_vectors);
-    let subgraph = match probe.direction {
-        Some(_) => design.analysis.multi_root_source_cone(
-            &design.graph,
-            &roots,
-            options,
-            grouping,
-            probe.expand_output_register_inputs,
+    let _permit = state
+        .exploration_responses
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            ApiError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "browser exploration is unavailable",
+            )
+        })?;
+    let serialized = tokio::task::spawn_blocking(move || {
+        build_exploration_payload(
+            id,
+            &design,
+            MAX_EXPLORATION_DESIGN_BYTES,
+            MAX_EXPLORATION_RESPONSE_BYTES,
+        )
+    })
+    .await
+    .map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("browser exploration task failed: {error}"),
+        )
+    })?
+    .map_err(|error| match error {
+        BoundedJsonError::DesignTooLarge => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "design is too large for browser exploration",
         ),
-        None => design
-            .analysis
-            .envelope(&design.graph, &roots, options, grouping),
-    }
-    .expect("source map contains only valid graph node ids");
-    let highlight = subgraph
-        .nodes
-        .iter()
-        .filter(|node| {
-            if probe.highlight_logic {
-                node.node.kind == ApiNodeKind::Cell
-            } else {
-                node.is_root == Some(true)
-            }
-        })
-        .map(|node| node.node.id)
-        .collect();
-    let mapping_incomplete = design
-        .analysis
-        .source_mapping_incomplete(&file, start_line as usize, end_line as usize)
-        .expect("final and provenance indexes contain the same source files");
-    let source_seen = design
-        .source_index
-        .contains_range(&file, start_line as usize, end_line as usize)
-        .expect("final and provenance indexes contain the same source files");
-    let status = source_envelope_status(!roots.is_empty(), mapping_incomplete, source_seen);
-    Ok(Json(LineConeResponse {
-        status,
-        control,
-        highlight,
-        graph: subgraph,
-    }))
-}
-
-fn source_envelope_status(
-    has_roots: bool,
-    mapping_incomplete: bool,
-    source_seen: bool,
-) -> SourceEnvelopeStatus {
-    if mapping_incomplete {
-        SourceEnvelopeStatus::MappingIncomplete
-    } else if has_roots {
-        SourceEnvelopeStatus::Mapped
-    } else if source_seen {
-        SourceEnvelopeStatus::OptimizedOrAbsorbed
-    } else {
-        SourceEnvelopeStatus::Unmapped
-    }
+        BoundedJsonError::TooLarge => ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "browser exploration snapshot exceeds the 16 MiB response limit",
+        ),
+        BoundedJsonError::Serialize(message) => ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to serialize browser exploration: {message}"),
+        ),
+    })?;
+    Ok(Response::builder()
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serialized))
+        .expect("static exploration response headers are valid"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2097,6 +2101,38 @@ mod tests {
         test_design(design_id, None)
     }
 
+    #[test]
+    fn bounded_json_serialization_never_crosses_its_limit() {
+        let value = serde_json::json!({"payload": "browser exploration"});
+        let exact = serde_json::to_vec(&value).unwrap();
+
+        assert_eq!(serialize_json_bounded(&value, exact.len()).unwrap(), exact);
+        assert_eq!(
+            serialize_json_bounded(&value, exact.len() - 1),
+            Err(BoundedJsonError::TooLarge)
+        );
+    }
+
+    #[test]
+    fn exploration_payload_checks_design_and_response_budgets() {
+        let design = empty_test_design("bounded");
+        assert_eq!(
+            build_exploration_payload("bounded".to_owned(), &design, 0, usize::MAX),
+            Err(BoundedJsonError::DesignTooLarge)
+        );
+        assert_eq!(
+            build_exploration_payload("bounded".to_owned(), &design, usize::MAX, 1),
+            Err(BoundedJsonError::TooLarge)
+        );
+        let payload =
+            build_exploration_payload("bounded".to_owned(), &design, usize::MAX, 1024 * 1024)
+                .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&payload).unwrap()["design_id"],
+            "bounded"
+        );
+    }
+
     fn test_design(design_id: &str, vivado_timing: Option<VivadoTiming>) -> Arc<Design> {
         let netlist = parse_value(serde_json::json!({
             "modules": {
@@ -2282,18 +2318,6 @@ mod tests {
         assert!(
             design_cache_weight("design", &large) > design_cache_weight("design", &small),
             "retained buffer capacity must contribute to cache accounting"
-        );
-    }
-
-    #[test]
-    fn incomplete_source_mapping_is_never_reported_as_optimized() {
-        assert_eq!(
-            source_envelope_status(false, true, true),
-            SourceEnvelopeStatus::MappingIncomplete
-        );
-        assert_eq!(
-            source_envelope_status(true, true, true),
-            SourceEnvelopeStatus::MappingIncomplete
         );
     }
 
