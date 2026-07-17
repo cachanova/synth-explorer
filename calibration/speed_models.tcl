@@ -2,12 +2,16 @@
 #
 # This replaces inferring cell delays from `report_timing` path tables. That
 # approach only ever saw cells that happened to land on some design's critical
-# path, which meant:
-#   * `MUXF*` was never measured at all (no example inferred one), and
-#   * every sample was drawn from the *slowest* paths -- a selection bias.
+# path, which meant MUXF* was absent from the path samples (no example inferred
+# one) and every sample was drawn from the *slowest* paths -- a selection bias.
 # `get_speed_models` has neither problem: it returns the numbers Vivado holds
 # for the device, whether or not a design uses them. It is a documented UG835
 # API (the same one Project X-Ray uses), not a decryption route.
+#
+# The previously missing UltraScale+ MUX pass was completed separately on
+# 2026-07-17 with Vivado 2026.1 / xcku5p-ffva676-1-e: F7MUX slow-max arcs were
+# 96/97/107 ps, F8MUX 41/41/103, and F9MUX 77/77/85. The preset uses the worst
+# pre-placement arc, 107 ps. Vendor-derived raw output remains a local artifact.
 #
 # NOTE: an empty in-memory project has zero speed models. A device must be
 # linked first, which is what makes `get_bels` (and hence `-of_objects`) work.

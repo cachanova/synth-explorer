@@ -273,17 +273,20 @@ impl DelayModel {
     }
 
     /// Xilinx UltraScale+ (16nm FinFET, xcku5p -1). Same basis as
-    /// [`Self::ultrascale`], with cell anchors scaled by the per-arc
+    /// [`Self::ultrascale`]. Most cell anchors use the per-arc
     /// UltraScale+/UltraScale ratios from `get_speed_models` (cascade 0.8x,
     /// FF C→Q 98 ps = the low speed-model variant, matching how Vivado charged
     /// the low variant on UltraScale paths; LUTs are *not* faster than
-    /// UltraScale's). Net terms fitted; Vivado's unplaced route estimate here
-    /// is tiny and often literally zero.
+    /// UltraScale's). `wide_mux_ps` is measured directly on an xcku5p -1 with
+    /// Vivado 2026.1: F7MUX slow-max arcs are 96/97/107 ps, F8MUX 41/41/103,
+    /// and F9MUX 77/77/85; the flat pre-placement model uses the worst arc,
+    /// 107 ps. Net terms fitted; Vivado's unplaced route estimate here is tiny
+    /// and often literally zero.
     pub fn ultrascale_plus() -> Self {
         Self {
             lut_ps: 146.0,
             carry_ps: 28.0,
-            wide_mux_ps: 90.0,
+            wide_mux_ps: 107.0,
             cell_ps: 200.0,
             ff_clk_to_q_ps: 98.0,
             ff_setup_ps: 25.0,
@@ -392,11 +395,19 @@ impl DelayModel {
     /// - `wide_mux_ps`: mux2_1 worst arc = 376.5.
     /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dfxtp_1 Q<-CLK rising edge = 369.7;
     ///   D setup_rising worst constraint at FO4 slews = 103.3.
-    /// - net terms: `net_base_ps` from the lib's "Small" wire_load model
-    ///   (fanout_length(1) x pF/len x nand2 load slope = 2.1 — sky130 wire
-    ///   loads are tiny); `net_per_fanout_ps` = nand2 delay-vs-load slope x
-    ///   one nand2 input cap = 15.0. Pre-place ASIC timing is gate-dominated,
-    ///   so the small net terms degrade gracefully.
+    /// - `net_base_ps`: the library's default `wire_load("Small")` model,
+    ///   `fanout_length(1)` 23.2746 x 1.42e-5 pF/length x the NAND2 load
+    ///   slope = 2.1 ps. This is a pre-layout wire-capacitance estimate, not a
+    ///   routed measurement: it omits distributed wire resistance and actual
+    ///   distance/topology, so it is expected to underestimate non-local
+    ///   post-route nets.
+    /// - `net_per_fanout_ps`: NAND2 delay-vs-load slope x one NAND2 input cap
+    ///   = 15.0 ps. It models the extra sink capacitance only; extra wire and
+    ///   inserted buffers are absent, so error is expected to become more
+    ///   optimistic as fanout and physical span grow.
+    ///
+    /// Pre-place ASIC timing is gate-dominated, so these small net terms are a
+    /// relative guide rather than a routed-delay claim.
     pub fn sky130hd() -> Self {
         Self {
             lut_ps: 256.1,
@@ -422,9 +433,16 @@ impl DelayModel {
     /// - `carry_ps`: ASSUMPTION — and2_1 + xor2_1 stand-in = 1213.
     /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dffq_1 Q<-CLK rising edge = 912.6;
     ///   D setup_rising = 250.
-    /// - net terms: ASSUMPTION — the lib ships no wire_load model, so both
-    ///   terms are nand2 slope x one nand2 input cap (0.0048 pF) = 48.3, i.e.
-    ///   wire capacitance assumed comparable to one gate input load.
+    /// - `net_base_ps`: ASSUMPTION — the library has no `wire_load` model, so
+    ///   one NAND2 input cap (0.0048 pF) is used as a short-local-wire proxy;
+    ///   NAND2 load slope x that cap = 48.3 ps. It can overestimate a
+    ///   near-zero local connection, but is expected to underestimate a
+    ///   physically routed net because metal resistance, distance, and
+    ///   topology are absent.
+    /// - `net_per_fanout_ps`: the same measured NAND2 load slope x one input
+    ///   cap = 48.3 ps per log2 fanout step. This accounts for sink load, not
+    ///   fanout-driven wire growth or buffer insertion, so its routed-delay
+    ///   error is expected to be optimistic as fanout and span increase.
     ///
     /// A 180nm 5V standard-cell gate really is slower than a 40nm FPGA LUT
     /// (556 vs 449 ps bare) — three process generations outweigh FPGA
@@ -458,8 +476,16 @@ impl DelayModel {
     /// - `carry_ps`: ASSUMPTION — AND2x2 + XOR2x1 stand-in = 67.9.
     /// - `ff_clk_to_q_ps` / `ff_setup_ps`: DFFHQNx1 QN<-CLK rising edge =
     ///   64.7; D setup_rising = 10.0.
-    /// - net terms: ASSUMPTION — no wire_load model; both terms = NAND2x1
-    ///   slope x one NAND2x1 input cap (0.99 fF) = 4.0.
+    /// - `net_base_ps`: ASSUMPTION — the libraries have no `wire_load` model,
+    ///   so one NAND2x1 input cap (0.99 fF) is used as a short-local-wire
+    ///   proxy; NAND2x1 load slope x that cap = 4.0 ps. It can overestimate a
+    ///   near-zero local connection, but is expected to underestimate routed
+    ///   interconnect because metal resistance, distance, and topology are
+    ///   absent.
+    /// - `net_per_fanout_ps`: the same measured NAND2x1 load slope x one input
+    ///   cap = 4.0 ps per log2 fanout step. It accounts for sink load only;
+    ///   wire growth and inserted buffers are absent, so routed-delay error is
+    ///   expected to become more optimistic as fanout and span increase.
     pub fn asap7() -> Self {
         Self {
             lut_ps: 30.0,
@@ -626,6 +652,27 @@ mod tests {
         );
         assert!(DelayModel::series7().carry_ps > DelayModel::ultrascale().carry_ps);
         assert_eq!(DelayModel::default(), DelayModel::series7());
+    }
+
+    #[test]
+    fn ultrascale_plus_wide_mux_uses_the_measured_worst_arc() {
+        // Vivado 2026.1 get_speed_models on xcku5p -1: the slowest
+        // F7MUX/F8MUX/F9MUX propagation arc is the F7 select arc at 107 ps.
+        assert_eq!(DelayModel::ultrascale_plus().wide_mux_ps, 107.0);
+    }
+
+    #[test]
+    fn asic_branched_net_delay_orders_by_process() {
+        // fanout 2 is the first point where this model's fanout term applies.
+        // It provides the intended sanity ordering without pretending that a
+        // wire-load assumption is a post-route measurement.
+        let asap7 = DelayModel::asap7().net_delay_ps(2);
+        let sky130 = DelayModel::sky130hd().net_delay_ps(2);
+        let gf180 = DelayModel::gf180mcu().net_delay_ps(2);
+        assert!(
+            asap7 < sky130 && sky130 < gf180,
+            "{asap7} < {sky130} < {gf180}"
+        );
     }
 
     #[test]
