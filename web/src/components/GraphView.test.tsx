@@ -103,7 +103,7 @@ describe('GraphView LUT labels', () => {
     expect(markup).toMatch(/g-node-body[^>]*\bhl\b/)
   })
 
-  it('highlights boundary nets without highlighting branches into context logic', () => {
+  it('highlights boundary and interior nets without context-logic branch bleed', () => {
     const markup = renderToStaticMarkup(
       <GraphView
         graph={{
@@ -140,18 +140,27 @@ describe('GraphView LUT labels', () => {
               height: 52,
               node: { id: 4, kind: 'cell', name: 'context', cell_type: '$_OR_' },
             },
+            {
+              id: 5,
+              x: 280,
+              y: 160,
+              width: 76,
+              height: 52,
+              node: { id: 5, kind: 'cell', name: 'interior', cell_type: '$_XOR_' },
+            },
           ],
           edges: [
             laidOutEdge(1, 2, 'input_net'),
             laidOutEdge(2, 3, 'output_net'),
             laidOutEdge(2, 4, 'context_branch'),
+            laidOutEdge(2, 5, 'interior_net'),
           ],
           width: 356,
-          height: 132,
+          height: 212,
         }}
         rootId={-1}
-        overlayIds={new Set([2])}
-        relevantIds={new Set([1, 2, 3])}
+        overlayIds={new Set([2, 5])}
+        relevantIds={new Set([1, 2, 3, 4, 5])}
         selectedId={null}
         interactive={false}
         onSelect={() => undefined}
@@ -161,11 +170,12 @@ describe('GraphView LUT labels', () => {
     )
 
     const edgeTags = markup.match(/<path class="g-edge[^"]*"[^>]*>/g) ?? []
-    expect(edgeTags).toHaveLength(3)
+    expect(edgeTags).toHaveLength(4)
     expect(edgeTags[0]).toContain('class="g-edge hl"')
     expect(edgeTags[1]).toContain('class="g-edge hl"')
     expect(edgeTags[2]).toContain('class="g-edge"')
     expect(edgeTags[2]).not.toContain('class="g-edge hl"')
+    expect(edgeTags[3]).toContain('class="g-edge hl"')
   })
 
   it('does not render a generated driving-net suffix as a node subtitle', () => {
