@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "benchmark:migration": "node benchmarks/browser-migration.mjs",
     "test:watch": "vitest",
     "verify:worker": "node scripts/verify-worker.mjs"
   },

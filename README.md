@@ -82,6 +82,7 @@ submitted RTL and expire after 4 hours without a cold access.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Browser-local synthesis and analysis migration](docs/BROWSER_WASM_MIGRATION.md)
 - [API contract](docs/API.md)
 - [Maintainer operations](docs/OPERATIONS.md)
 - [Web client](web/README.md)
