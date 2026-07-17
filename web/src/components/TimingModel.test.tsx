@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { VIVADO_TIMING_CAVEAT } from '../lib/timing'
-import type { DelayBreakdown, VivadoTiming } from '../types'
+import type { DelayBreakdown, DelayProfile, VivadoTiming } from '../types'
 import { TimingModel } from './TimingModel'
 
 // The four terms sum to the 2.69 ns estimate below.
@@ -34,6 +34,7 @@ function render(args: {
   estimate?: number | null
   breakdown?: DelayBreakdown
   mode?: string
+  profile?: DelayProfile
 }): string {
   return renderToStaticMarkup(
     <TimingModel
@@ -42,6 +43,7 @@ function render(args: {
       fallbackBreakdown={args.breakdown}
       vivadoTiming={args.timing}
       designMode={args.mode}
+      resolvedProfile={args.profile ?? 'generic'}
     />,
   )
 }
@@ -92,12 +94,11 @@ describe('TimingModel Vivado tier', () => {
     expect(markup).toContain('Worst register-to-register path')
   })
 
-  it('reports slack against the reference clock rather than a user target', () => {
+  it('shows measured path endpoints without a slack readout', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69, breakdown })
     expect(markup).toContain('ra_reg[1]/C')
     expect(markup).toContain('q_reg[13]/D')
-    expect(markup).toContain('10 ns')
-    expect(markup).toContain('reference clock')
+    expect(markup).not.toContain('slack +7.28')
   })
 
   it('surfaces the logic and route split and the logic-level count', () => {
@@ -144,7 +145,6 @@ describe('TimingModel coefficient vocabulary', () => {
           profile: 'sky130hd',
           speedGrade: '-1',
           overrides: null,
-          targetMhz: null,
         }),
       setItem: () => undefined,
     })
@@ -153,6 +153,7 @@ describe('TimingModel coefficient vocabulary', () => {
         <TimingModel
           designId="d"
           designMode="gates"
+          resolvedProfile="generic"
           fallbackDelayNs={2.69}
         />,
       )
@@ -183,7 +184,6 @@ describe('TimingModel coefficient vocabulary', () => {
           profile: 'asap7',
           speedGrade: '-1',
           overrides: sparseAsicModel,
-          targetMhz: null,
         }),
       setItem: () => undefined,
     })
@@ -192,6 +192,7 @@ describe('TimingModel coefficient vocabulary', () => {
         <TimingModel
           designId="d"
           designMode="gates"
+          resolvedProfile="generic"
           fallbackDelayNs={2.69}
         />,
       )
@@ -209,7 +210,6 @@ describe('TimingModel coefficient vocabulary', () => {
           profile: 'sky130hd',
           speedGrade: '-1',
           overrides: sparseAsicModel,
-          targetMhz: null,
         }),
       setItem: () => undefined,
     })
@@ -218,6 +218,7 @@ describe('TimingModel coefficient vocabulary', () => {
         <TimingModel
           designId="d"
           designMode="xilinx"
+          resolvedProfile="series7"
           fallbackDelayNs={2.69}
         />,
       )
@@ -228,14 +229,13 @@ describe('TimingModel coefficient vocabulary', () => {
     }
   })
 
-  it('clamps stored FPGA grade labels when viewing a gates design', () => {
+  it('renders no grade section for a gates design', () => {
     vi.stubGlobal('localStorage', {
       getItem: () =>
         JSON.stringify({
           profile: 'ecp5',
           speedGrade: '-1',
           overrides: null,
-          targetMhz: null,
         }),
       setItem: () => undefined,
     })
@@ -244,10 +244,12 @@ describe('TimingModel coefficient vocabulary', () => {
         <TimingModel
           designId="d"
           designMode="gates"
+          resolvedProfile="generic"
           fallbackDelayNs={2.69}
         />,
       )
-      expect(markup).toContain('-1 (slowest)')
+      expect(markup).not.toContain('Speed grade')
+      expect(markup).not.toContain('-1 (slowest)')
       expect(markup).not.toContain('6 (slowest)')
     } finally {
       vi.unstubAllGlobals()
@@ -262,6 +264,10 @@ describe('TimingModel generic-mode placeholder', () => {
     expect(markup).toContain('Delay profile')
     expect(markup).not.toContain('Critical-path delay')
     expect(markup).not.toContain('Implied Fmax')
+    expect(markup).not.toContain('Estimated timing')
+    expect(markup).not.toContain('Advanced: edit coefficients')
+    expect(markup).not.toContain('An estimate, not a measurement')
+    expect(markup).not.toContain('Speed grade')
   })
 
   it('prompts LUT users to choose an FPGA preset', () => {
@@ -273,9 +279,29 @@ describe('TimingModel generic-mode placeholder', () => {
   })
 
   it('keeps normal timing cards for real FPGA modes', () => {
-    const markup = render({ mode: 'xilinx', estimate: 2.69, breakdown })
+    const markup = render({
+      mode: 'xilinx',
+      profile: 'series7',
+      estimate: 2.69,
+      breakdown,
+    })
     expect(markup).toContain('Critical-path delay')
     expect(markup).toContain('2.69 ns')
     expect(markup).not.toContain('Pick an FPGA preset')
+    expect(markup).toContain('timing-profile-fixed')
+    expect(markup).toContain('Xilinx 7-series')
+  })
+
+  it('uses HX/LP rather than numeric grades for iCE40', () => {
+    const markup = render({ mode: 'ice40', profile: 'ice40', estimate: 2.69 })
+    expect(markup).toContain('>HX<')
+    expect(markup).toContain('>LP<')
+    expect(markup).not.toContain('-1 (slowest)')
+  })
+
+  it('removes the target-clock and estimated-slack controls', () => {
+    const markup = render({ mode: 'xilinx', profile: 'series7', estimate: 2.69 })
+    expect(markup).not.toContain('Target clock')
+    expect(markup).not.toContain('Slack @')
   })
 })

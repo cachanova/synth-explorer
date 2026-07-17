@@ -188,7 +188,7 @@ export type DelayProfile =
   | 'asap7'
   | 'generic'
 
-export type SpeedGrade = '-1' | '-2' | '-3'
+export type SpeedGrade = '-1' | '-2' | '-3' | 'hx' | 'lp'
 
 // Critical-path delay split; the four terms sum to estimated_delay_ns.
 export interface DelayBreakdown {
@@ -200,7 +200,7 @@ export interface DelayBreakdown {
 
 export interface TimingRequest {
   profile?: DelayProfile // omitted -> the design's synth-time model
-  speed_grade?: SpeedGrade // omitted -> -1
+  speed_grade?: SpeedGrade // omitted -> the profile's baseline grade
   model?: DelayModel // full override; wins over profile
 }
 
@@ -233,6 +233,7 @@ export interface SynthesizeResponse {
   top: string // resolved top module
   tool: SynthTool
   mode: string
+  delay_profile: DelayProfile // resolved per-design timing family
   target?: string
   stats: Stats
   warnings: string[]

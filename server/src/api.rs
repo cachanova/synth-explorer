@@ -712,6 +712,7 @@ fn build_design(stored: &StoredDesign) -> Result<Design, String> {
         top: stored.resolved_top.clone(),
         tool: stored.tool.to_string(),
         mode: stored.mode.to_string(),
+        delay_profile: stored_delay_profile(delay_profile).to_owned(),
         target: stored.target.clone(),
         stats,
         warnings: analysis.warnings(),
@@ -766,6 +767,9 @@ pub struct SynthesizeResponse {
     pub top: String,
     pub tool: String,
     pub mode: String,
+    /// Resolved delay-model family used for synth-time timing. This is the
+    /// per-design lock target for timing controls in the client.
+    pub delay_profile: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     pub stats: Stats,
@@ -2111,6 +2115,7 @@ mod tests {
                 top: top.to_owned(),
                 tool: "yosys".to_owned(),
                 mode: "rtl".to_owned(),
+                delay_profile: "series7".to_owned(),
                 target: None,
                 stats: analysis.stats(),
                 warnings: analysis.warnings(),
@@ -2149,6 +2154,7 @@ mod tests {
                 top: top.to_owned(),
                 tool: "yosys".to_owned(),
                 mode: mode.to_owned(),
+                delay_profile: stored_delay_profile(delay_profile).to_owned(),
                 target: None,
                 stats,
                 warnings: analysis.warnings(),
@@ -2199,6 +2205,7 @@ mod tests {
             assert!(design.response.stats.estimated_delay_ns.is_none());
             assert!(design.response.stats.estimated_delay_breakdown.is_none());
             assert!(design.response.stats.max_depth > 0);
+            assert_eq!(design.response.delay_profile, "generic");
         }
 
         let targeted = build_design(&stored_timing_test_design(
@@ -2207,6 +2214,7 @@ mod tests {
         ))
         .expect("targeted fixture design builds");
         assert!(targeted.response.stats.estimated_delay_ns.is_some());
+        assert_eq!(targeted.response.delay_profile, "series7");
 
         let rtl = build_design(&stored_timing_test_design(
             SynthMode::Rtl,

@@ -1012,6 +1012,17 @@ table.grid tr.expanded td {
 .timing-controls .field select {
   min-width: 160px;
 }
+.timing-controls .timing-profile-fixed {
+  min-width: 160px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  background: var(--bg-1);
+  font-size: 12px;
+  letter-spacing: normal;
+  text-transform: none;
+}
 .timing-coeffs {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));

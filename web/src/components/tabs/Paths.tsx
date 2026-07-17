@@ -10,9 +10,9 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import {
-  effectiveProfile,
   loadTimingSettings,
-  timingRequestForMode,
+  resolveTimingView,
+  timingRequestForView,
 } from '../../lib/timingSettings'
 import type {
   EndpointKind,
@@ -36,26 +36,30 @@ export function Paths() {
     shallowEqual,
   )
   const id = store.design?.design_id ?? null
-  const designMode = store.design?.mode
+  const designMode = store.design
+    ? store.design.tool === 'vivado'
+      ? 'vivado'
+      : store.design.mode
+    : undefined
+  const resolvedProfile = store.design?.delay_profile
   const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
-  // Cost per-path delays with the same retune settings as the timing panel,
-  // read from localStorage on mount (the tab remounts on switch). The stored
-  // profile is clamped to this design's mode, mirroring the timing panel.
+  // Cost per-path delays from the same per-design resolved view as the timing
+  // panel. The tab remounts on switch, so persisted settings are read here.
   const timing = useMemo(() => {
     const settings = loadTimingSettings()
-    const profile = effectiveProfile(settings.profile, designMode)
+    if (!resolvedProfile) return null
+    const view = resolveTimingView(settings, designMode, resolvedProfile)
     return {
-      request: timingRequestForMode(settings, designMode),
-      hidden:
-        (designMode === 'gates' || designMode === 'lut4' || designMode === 'lut6') &&
-        profile === 'auto',
+      request: timingRequestForView(settings, view),
+      hidden: !view.showTiming,
     }
-  }, [designMode])
-  const effectiveSort = timing.hidden ? 'depth' : sortBy
+  }, [designMode, resolvedProfile])
+  const timingHidden = timing?.hidden ?? true
+  const effectiveSort = timingHidden ? 'depth' : sortBy
   const { data, loading, error } = useDesignData(
     id,
-    (designId) => getPaths(designId, { sort: effectiveSort, ...timing.request }),
-    JSON.stringify({ sort: effectiveSort, ...timing.request }),
+    (designId) => getPaths(designId, { sort: effectiveSort, ...timing?.request }),
+    JSON.stringify({ sort: effectiveSort, ...timing?.request }),
   )
   const [open, setOpen] = useState<number | null>(null)
   useEffect(() => setOpen(null), [id])
@@ -93,9 +97,13 @@ export function Paths() {
       </div>
       <VirtualTable
         rowCount={sortedPaths.length}
-        columnWidths={['4%', '7%', '10%', '14%', '18%', '18%', '18%', '11%']}
+        columnWidths={
+          timingHidden
+            ? ['4%', '8%', '15%', '19%', '20%', '22%', '12%']
+            : ['4%', '7%', '10%', '14%', '18%', '18%', '18%', '11%']
+        }
         getRowKey={(index) => pathKey(sortedPaths[index])}
-        resetKey={sortBy}
+        resetKey={effectiveSort}
         header={
           <>
             <th role="columnheader" className="num">#</th>
@@ -110,22 +118,19 @@ export function Paths() {
             >
               Depth{effectiveSort === 'depth' ? ' ▾' : ''}
             </th>
-            <th
-              role="columnheader"
-              className={timing.hidden ? 'num' : 'num sortable'}
-              onClick={() => {
-                if (timing.hidden) return
-                setSortBy('delay')
-                setOpen(null)
-              }}
-              title={
-                timing.hidden
-                  ? 'Pick a real delay profile in Estimated timing to rank by delay'
-                  : 'Rank paths by estimated delay'
-              }
-            >
-              Est. delay{effectiveSort === 'delay' ? ' ▾' : ''}
-            </th>
+            {!timingHidden && (
+              <th
+                role="columnheader"
+                className="num sortable"
+                onClick={() => {
+                  setSortBy('delay')
+                  setOpen(null)
+                }}
+                title="Rank paths by estimated delay"
+              >
+                Est. delay{effectiveSort === 'delay' ? ' ▾' : ''}
+              </th>
+            )}
             <th role="columnheader">Class</th>
             <th role="columnheader">Startpoint</th>
             <th role="columnheader">Logical endpoint</th>
@@ -140,6 +145,7 @@ export function Paths() {
               index={index}
               path={path}
               variant={variants[index]}
+              showTiming={!timingHidden}
               open={open === index}
               onToggle={() => setOpen(open === index ? null : index)}
               onShow={() => store.showPathInGraph(path)}
@@ -255,6 +261,7 @@ function PathRow({
   index,
   path,
   variant,
+  showTiming,
   open,
   onToggle,
   onShow,
@@ -262,6 +269,7 @@ function PathRow({
   index: number
   path: TimingPath
   variant: RouteVariant
+  showTiming: boolean
   open: boolean
   onToggle: () => void
   onShow: () => void
@@ -273,11 +281,13 @@ function PathRow({
         <td role="cell" className="num">
           <span className="depth-chip">{path.depth}</span>
         </td>
-        <td role="cell" className="num mono">
-          {path.estimated_delay_ns != null
-            ? `${path.estimated_delay_ns.toFixed(2)} ns`
-            : '—'}
-        </td>
+        {showTiming && (
+          <td role="cell" className="num mono">
+            {path.estimated_delay_ns != null
+              ? `${path.estimated_delay_ns.toFixed(2)} ns`
+              : '—'}
+          </td>
+        )}
         <td role="cell">
           <span className="tag">{pathClassLabel(path.class)}</span>
         </td>
@@ -315,7 +325,7 @@ function PathRow({
       </tr>
       {open && (
         <tr className="expanded" role="row">
-          <td colSpan={8} role="cell">
+          <td colSpan={showTiming ? 8 : 7} role="cell">
             <div className="chain">
               {path.nodes.map((node, nodeIndex) => (
                 <Hop

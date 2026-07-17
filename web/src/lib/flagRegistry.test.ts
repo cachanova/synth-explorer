@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   flagsForMode,
   flagsForModeChange,
+  flagsForModeTransition,
   flagsForTool,
   stripInvalidFlags,
 } from './flagRegistry'
@@ -76,5 +77,38 @@ describe('flagRegistry', () => {
     expect(flagsForModeChange('-narrowcarry 8 -nowidelut -noiopad', 'xilinx')).toBe(
       '-narrowcarry 8 -nowidelut -noiopad',
     )
+  })
+
+  it('restores exact per-mode edits across a real Xilinx/ECP5 round-trip', () => {
+    let memory = {}
+    let transition = flagsForModeTransition('', 'gates', 'xilinx', memory)
+    expect(transition.flags).toBe('-narrowcarry 8 -nowidelut -noiopad')
+
+    // The user tunes narrow-carry and removes a default before leaving.
+    transition = flagsForModeTransition(
+      '-narrowcarry 4 -noiopad',
+      'xilinx',
+      'ecp5',
+      transition.memory,
+    )
+    memory = transition.memory
+    expect(transition.flags).toBe('-noiopad')
+    expect(transition.flags).not.toContain('-nowidelut')
+
+    // ECP5 remembers its own edits, while Xilinx returns byte-for-byte.
+    transition = flagsForModeTransition(
+      '-noccu2',
+      'ecp5',
+      'xilinx',
+      memory,
+    )
+    expect(transition.flags).toBe('-narrowcarry 4 -noiopad')
+    transition = flagsForModeTransition(
+      transition.flags,
+      'xilinx',
+      'ecp5',
+      transition.memory,
+    )
+    expect(transition.flags).toBe('-noccu2')
   })
 })

@@ -23,7 +23,10 @@ import {
 import { displayNodeName } from './lib/prettyType'
 import { createLatestGuard } from './lib/latest'
 import { designSrcSpans, type SrcSpan } from './lib/src'
-import { flagsForModeChange } from './lib/flagRegistry'
+import {
+  flagsForModeTransition,
+  type ModeFlagMemory,
+} from './lib/flagRegistry'
 import type {
   DesignFile,
   Example,
@@ -299,6 +302,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   modeRef.current = mode
   const extraArgsRef = useRef(extraArgs)
   extraArgsRef.current = extraArgs
+  // Session-local by design: the app has no persisted editor/input-state
+  // store. Each mode still retains exact user edits for the lifetime of this
+  // store provider.
+  const modeFlagMemoryRef = useRef<ModeFlagMemory>({})
   const vivadoTargetRef = useRef(vivadoTarget)
   vivadoTargetRef.current = vivadoTarget
   const vivadoExtraArgsRef = useRef(vivadoExtraArgs)
@@ -512,11 +519,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const setMode = useCallback(
     (value: Mode) => {
       if (modeRef.current === value) return
+      const transition = flagsForModeTransition(
+        extraArgsRef.current,
+        modeRef.current,
+        value,
+        modeFlagMemoryRef.current,
+      )
+      modeFlagMemoryRef.current = transition.memory
       modeRef.current = value
-      // Synthesis flags are mode-specific, so drop any that the new mode's pass
-      // would reject (keeping shared and free-form flags). Free-form tokens the
-      // registry doesn't know about are preserved.
-      const nextFlags = flagsForModeChange(extraArgsRef.current, value)
+      const nextFlags = transition.flags
       if (nextFlags !== extraArgsRef.current) {
         extraArgsRef.current = nextFlags
         setExtraArgsState(nextFlags)

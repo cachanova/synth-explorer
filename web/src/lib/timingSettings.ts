@@ -5,6 +5,7 @@ import type {
   SpeedGrade,
   TimingRequest,
 } from '../types'
+import { estimatedTimingCaveat } from './timing'
 
 // 'auto' resolves, server-side, to the model chosen from the design's synthesis
 // target — so a fresh design shows the same estimate as the synthesis panel.
@@ -15,18 +16,15 @@ export interface TimingSettings {
   speedGrade: SpeedGrade
   // Full coefficient override from the advanced editor; null uses `profile`.
   overrides: DelayModel | null
-  // Target clock in MHz for the slack readout; null hides it.
-  targetMhz: number | null
 }
 
 export const DEFAULT_TIMING_SETTINGS: TimingSettings = {
   profile: 'auto',
   speedGrade: '-1',
   overrides: null,
-  targetMhz: null,
 }
 
-export const PROFILE_OPTIONS: { value: ProfileChoice; label: string }[] = [
+const PROFILE_OPTIONS: { value: ProfileChoice; label: string }[] = [
   { value: 'auto', label: 'Auto (from target)' },
   { value: 'series7', label: 'Xilinx 7-series' },
   { value: 'ultrascale', label: 'Xilinx UltraScale' },
@@ -69,7 +67,7 @@ const ASIC_PROFILES: ProfileChoice[] = [
  *  no ASIC process nodes. Gates/LUT menus omit `generic`: `auto` is their
  *  notional no-absolute-timing placeholder until a real profile is selected.
  *  Unknown/absent mode falls back to the full list. */
-export function profilesForMode(
+function profilesForMode(
   mode?: string,
 ): { value: ProfileChoice; label: string }[] {
   let allowed: ProfileChoice[] | null = null
@@ -84,19 +82,6 @@ export function profilesForMode(
   return PROFILE_OPTIONS.filter((o) => allowed.includes(o.value))
 }
 
-/** A stored profile can be invalid for the design being viewed (settings are
- *  global; the user may have picked sky130hd on a gates design and then opened
- *  a Xilinx one). Fall back to 'auto' rather than retuning an FPGA netlist
- *  with standard-cell numbers or vice versa. */
-export function effectiveProfile(
-  profile: ProfileChoice,
-  mode?: string,
-): ProfileChoice {
-  return profilesForMode(mode).some((o) => o.value === profile)
-    ? profile
-    : 'auto'
-}
-
 // ASIC standard-cell profiles are characterized at a single corner (TT); there
 // is no speed-grade binning and the server applies no grade scaling to them.
 export const PDK_PROFILES: ReadonlySet<ProfileChoice> = new Set([
@@ -105,7 +90,7 @@ export const PDK_PROFILES: ReadonlySet<ProfileChoice> = new Set([
   'asap7',
 ])
 
-export const SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
+const SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
   { value: '-1', label: '-1 (slowest)' },
   { value: '-2', label: '-2' },
   { value: '-3', label: '-3 (fastest)' },
@@ -115,22 +100,86 @@ export const SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
 // preset is characterized at. The wire format keeps '-1'/'-2'/'-3'; only the
 // labels change: '-2' maps to grade 7 and '-3' to grade 8 (prjtrellis-measured
 // factors on the server).
-export const ECP5_SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
+const ECP5_SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
   { value: '-1', label: '6 (slowest)' },
   { value: '-2', label: '7' },
   { value: '-3', label: '8 (fastest)' },
 ]
 
-/** Labels for the speed-grade select. ECP5 shows its real grade names (6/7/8);
- *  `designMode` resolves the 'auto' profile when the design itself was
- *  synthesized for an ECP5 target. */
-export function speedGradeOptions(
+const ICE40_SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
+  { value: 'hx', label: 'HX' },
+  { value: 'lp', label: 'LP' },
+]
+
+export interface TimingView {
+  profile: ProfileChoice
+  profileLocked: boolean
+  profileOptions: { value: ProfileChoice; label: string }[]
+  grade: SpeedGrade
+  gradeOptions: { value: SpeedGrade; label: string }[]
+  showTiming: boolean
+  showGradeSection: boolean
+  caveat: string
+}
+
+function gradeOptionsForProfile(
   profile: ProfileChoice,
-  designMode?: string,
 ): { value: SpeedGrade; label: string }[] {
-  const isEcp5 =
-    profile === 'ecp5' || (profile === 'auto' && designMode === 'ecp5')
-  return isEcp5 ? ECP5_SPEED_GRADE_OPTIONS : SPEED_GRADE_OPTIONS
+  if (profile === 'ice40') return ICE40_SPEED_GRADE_OPTIONS
+  if (profile === 'ecp5') return ECP5_SPEED_GRADE_OPTIONS
+  return SPEED_GRADE_OPTIONS
+}
+
+function lockedTimingMode(mode?: string): boolean {
+  return mode === 'xilinx' || mode === 'ice40' || mode === 'ecp5' || mode === 'vivado'
+}
+
+/** Resolve global persisted preferences into the one effective timing view for
+ * a concrete design. All renderers and requests consume this value, never raw
+ * settings fields whose validity depends on the design. */
+export function resolveTimingView(
+  settings: TimingSettings,
+  designMode: string | undefined,
+  resolvedProfile: DelayProfile,
+): TimingView {
+  const selectableProfiles = profilesForMode(designMode)
+  const profileLocked = lockedTimingMode(designMode)
+  const profile = profileLocked
+    ? resolvedProfile
+    : selectableProfiles.some((option) => option.value === settings.profile)
+      ? settings.profile
+      : 'auto'
+  const profileOptions =
+    designMode === 'rtl'
+      ? []
+      : profileLocked
+        ? PROFILE_OPTIONS.filter((option) => option.value === resolvedProfile)
+        : selectableProfiles
+  const showTiming =
+    designMode !== 'rtl' &&
+    !(
+      (designMode === 'gates' || designMode === 'lut4' || designMode === 'lut6') &&
+      profile === 'auto'
+    )
+  const showGradeSection =
+    showTiming && designMode !== 'gates' && !PDK_PROFILES.has(profile)
+  const availableGrades = gradeOptionsForProfile(profile)
+  const grade = availableGrades.some((option) => option.value === settings.speedGrade)
+    ? settings.speedGrade
+    : profile === 'ice40'
+      ? 'hx'
+      : '-1'
+
+  return {
+    profile,
+    profileLocked,
+    profileOptions,
+    grade,
+    gradeOptions: showGradeSection ? availableGrades : [],
+    showTiming,
+    showGradeSection,
+    caveat: showTiming ? estimatedTimingCaveat(profile === 'auto' ? resolvedProfile : profile) : '',
+  }
 }
 
 type FlatDelayKey = Exclude<keyof DelayModel, 'gate_ps'>
@@ -200,10 +249,13 @@ const STORAGE_KEY = 'synthexplorer.timing.v1'
  *  two different things: which coefficients to start from, and which family's
  *  speed-grade scaling to apply. Suppressing it when overrides exist would
  *  leave the dropdown showing one family while the server scaled by another. */
-export function timingRequest(s: TimingSettings): TimingRequest {
-  const req: TimingRequest = { speed_grade: s.speedGrade }
-  if (s.overrides) req.model = s.overrides
-  if (s.profile !== 'auto') req.profile = s.profile
+function timingRequest(
+  view: TimingView,
+  overrides: DelayModel | null,
+): TimingRequest {
+  const req: TimingRequest = { speed_grade: view.grade }
+  if (overrides) req.model = overrides
+  if (view.profile !== 'auto') req.profile = view.profile
   return req
 }
 
@@ -213,11 +265,10 @@ export function timingRequest(s: TimingSettings): TimingRequest {
  * flat override to a named PDK profile). */
 export function compatibleTimingOverrides(
   settings: TimingSettings,
-  mode?: string,
+  view: TimingView,
 ): DelayModel | null {
   if (!settings.overrides) return null
-  const profile = effectiveProfile(settings.profile, mode)
-  const pdkActive = PDK_PROFILES.has(profile)
+  const pdkActive = PDK_PROFILES.has(view.profile)
   const overrideIsPdk = settings.overrides.gate_ps !== undefined
   return pdkActive === overrideIsPdk ? settings.overrides : null
 }
@@ -234,20 +285,13 @@ export function editorModelForRequest(
   return result?.requestKey === requestKey ? result.model : null
 }
 
-/** Build a timing request using the profile and compatible override for one
- * design mode. */
-export function timingRequestForMode(
+/** Build a timing request from the resolved per-design view and only a
+ * technology-compatible override. */
+export function timingRequestForView(
   settings: TimingSettings,
-  mode?: string,
+  view: TimingView,
 ): TimingRequest {
-  const profile = effectiveProfile(settings.profile, mode)
-  const overrides = compatibleTimingOverrides(settings, mode)
-  return timingRequest({ ...settings, profile, overrides })
-}
-
-/** True when the settings reproduce the design's synth-time estimate exactly. */
-export function isDefaultTiming(s: TimingSettings): boolean {
-  return s.profile === 'auto' && s.speedGrade === '-1' && !s.overrides
+  return timingRequest(view, compatibleTimingOverrides(settings, view))
 }
 
 const DELAY_KEYS: FlatDelayKey[] = DELAY_FIELDS.map((f) => f.key)
@@ -286,17 +330,11 @@ export function loadTimingSettings(): TimingSettings {
     const profile = PROFILE_OPTIONS.some((o) => o.value === parsed.profile)
       ? (parsed.profile as ProfileChoice)
       : 'auto'
-    const speedGrade = SPEED_GRADE_OPTIONS.some((o) => o.value === parsed.speedGrade)
+    const speedGrade = [...SPEED_GRADE_OPTIONS, ...ICE40_SPEED_GRADE_OPTIONS].some((o) => o.value === parsed.speedGrade)
       ? (parsed.speedGrade as SpeedGrade)
       : '-1'
     const overrides = isDelayModel(parsed.overrides) ? parsed.overrides : null
-    const targetMhz =
-      typeof parsed.targetMhz === 'number' &&
-      isFinite(parsed.targetMhz) &&
-      parsed.targetMhz > 0
-        ? parsed.targetMhz
-        : null
-    return { profile, speedGrade, overrides, targetMhz }
+    return { profile, speedGrade, overrides }
   } catch {
     return DEFAULT_TIMING_SETTINGS
   }
