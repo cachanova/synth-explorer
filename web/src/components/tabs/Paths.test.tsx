@@ -34,14 +34,13 @@ vi.mock('@tanstack/react-virtual', () => ({
 }))
 vi.mock('../../api', () => ({ getPaths: getPathsMock }))
 vi.mock('../../lib/timingSettings', () => ({
-  effectiveProfile: (profile: string) => profile,
   loadTimingSettings: () => ({
     profile: 'auto',
     speedGrade: '-1',
     overrides: null,
-    targetMhz: null,
   }),
-  timingRequestForMode: () => ({ speed_grade: '-1' }),
+  resolveTimingView: () => ({ showTiming: false }),
+  timingRequestForView: () => ({ speed_grade: '-1' }),
 }))
 vi.mock('../../lib/useDesignData', () => ({
   useDesignData: (id: string, fetcher: (designId: string) => unknown) => {
@@ -52,7 +51,12 @@ vi.mock('../../lib/useDesignData', () => ({
 vi.mock('../../useStore', () => ({
   shallowEqual: Object.is,
   useStore: () => ({
-    design: { design_id: 'design', mode: 'rtl' },
+    design: {
+      design_id: 'design',
+      tool: 'yosys',
+      mode: 'rtl',
+      delay_profile: 'generic',
+    },
     showPathInGraph: vi.fn(),
   }),
 }))
@@ -94,6 +98,7 @@ describe('Paths result completeness', () => {
     })
     expect(getPathsMock.mock.calls[0][1]).not.toHaveProperty('limit')
     expect(markup).toContain('Longest logical path variants (26)')
+    expect(markup).not.toContain('Est. delay')
     expect(markup.match(/<tr[^>]*class="clickable"/g)).toHaveLength(26)
     expect(markup).toContain('endpoint-26')
   })

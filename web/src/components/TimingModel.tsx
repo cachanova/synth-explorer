@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { retuneTiming } from '../api'
-import {
-  ESTIMATED_TIMING_CAVEAT,
-  VIVADO_TIMING_CAVEAT,
-  fmaxMhz,
-  slackNs,
-} from '../lib/timing'
+import { VIVADO_TIMING_CAVEAT, fmaxMhz } from '../lib/timing'
 import {
   ASIC_GATE_FIELDS,
   ASIC_SHARED_FIELDS,
@@ -13,13 +8,11 @@ import {
   PDK_PROFILES,
   compatibleTimingOverrides,
   editorModelForRequest,
-  effectiveProfile,
   gateDelayValue,
-  profilesForMode,
   loadTimingSettings,
+  resolveTimingView,
   saveTimingSettings,
-  speedGradeOptions,
-  timingRequestForMode,
+  timingRequestForView,
   withGateDelay,
   type ProfileChoice,
   type TimingSettings,
@@ -27,6 +20,7 @@ import {
 import type {
   DelayBreakdown,
   DelayModel,
+  DelayProfile,
   GateDelays,
   SpeedGrade,
   VivadoTiming,
@@ -47,6 +41,7 @@ import { Card } from './Card'
 export function TimingModel({
   designId,
   designMode,
+  resolvedProfile,
   fallbackDelayNs,
   fallbackBreakdown,
   vivadoTiming,
@@ -55,6 +50,9 @@ export function TimingModel({
   // The design's synthesis mode (e.g. 'ecp5'), so the speed-grade select can
   // label ECP5's real grade names even when the profile is 'auto'.
   designMode?: string
+  // Server-resolved synth-time family. Concrete FPGA and Vivado designs lock
+  // their timing view to this value.
+  resolvedProfile: DelayProfile
   fallbackDelayNs: number | null
   fallbackBreakdown?: DelayBreakdown
   vivadoTiming?: VivadoTiming
@@ -70,13 +68,12 @@ export function TimingModel({
 
   useEffect(() => saveTimingSettings(settings), [settings])
 
-  // Debounce so dragging a coefficient field doesn't spam the endpoint. Key on
-  // the request only, so changing the (display-only) target clock never refetches.
-  // The stored profile is global across designs; clamp it to the profiles that
-  // make sense for THIS design's mode (no FPGA presets on gates netlists, no
-  // ASIC nodes on FPGA/LUT netlists) before it reaches the select or the wire.
-  const modeProfile = effectiveProfile(settings.profile, designMode)
-  const requestKey = JSON.stringify(timingRequestForMode(settings, designMode))
+  const view = useMemo(
+    () => resolveTimingView(settings, designMode, resolvedProfile),
+    [settings, designMode, resolvedProfile],
+  )
+  // Debounce so dragging a coefficient field doesn't spam the endpoint.
+  const requestKey = JSON.stringify(timingRequestForView(settings, view))
   const [debouncedKey, setDebouncedKey] = useState(requestKey)
   useEffect(() => {
     const t = setTimeout(() => setDebouncedKey(requestKey), 250)
@@ -99,14 +96,10 @@ export function TimingModel({
 
   const delayNs = result?.estimated_delay_ns ?? fallbackDelayNs
   const breakdown = result?.estimated_delay_breakdown ?? fallbackBreakdown
-  const awaitsRealProfile =
-    matchesNotionalMode(designMode) &&
-    modeProfile === 'auto' &&
-    delayNs == null
   // What the editor shows: the compatible user override if any, else a preset
   // response that belongs to the current request. A profile switch leaves the
   // prior response on screen briefly; never let an edit clone that stale model.
-  const activeOverrides = compatibleTimingOverrides(settings, designMode)
+  const activeOverrides = compatibleTimingOverrides(settings, view)
   const editorModel = editorModelForRequest(
     activeOverrides,
     result,
@@ -123,7 +116,7 @@ export function TimingModel({
   ) =>
     setSettings((s) => {
       const base = editorModelForRequest(
-        compatibleTimingOverrides(s, designMode),
+        compatibleTimingOverrides(s, view),
         result,
         requestKey,
       )
@@ -133,7 +126,7 @@ export function TimingModel({
   const editGateField = (key: keyof GateDelays, value: number) =>
     setSettings((s) => {
       const base = editorModelForRequest(
-        compatibleTimingOverrides(s, designMode),
+        compatibleTimingOverrides(s, view),
         result,
         requestKey,
       )
@@ -144,40 +137,27 @@ export function TimingModel({
       }
     })
   const resetOverrides = () => setSettings((s) => ({ ...s, overrides: null }))
-  const setTarget = (targetMhz: number | null) =>
-    setSettings((s) => ({ ...s, targetMhz }))
 
   const fmax = useMemo(
     () => (delayNs != null && delayNs > 0 ? fmaxMhz(delayNs) : null),
     [delayNs],
   )
-  const slack = useMemo(
-    () =>
-      delayNs != null && delayNs > 0 && settings.targetMhz
-        ? slackNs(delayNs, settings.targetMhz)
-        : null,
-    [delayNs, settings.targetMhz],
-  )
+
+  const profileLabel =
+    view.profileOptions.find((option) => option.value === view.profile)?.label ??
+    view.profile
 
   return (
     <>
-      {/* The tag appears only when Vivado's measured tier is alongside it:
-          with nothing to contrast against, "estimated" is what the section
-          already says, and the Yosys view must stay exactly as it was. */}
-      <div className="section-title">
-        Estimated timing{' '}
-        {vivadoTiming && (
-          <span className="tier-tag tier-estimated">estimated</span>
-        )}
-      </div>
-      {awaitsRealProfile ? (
-        <div className="empty-state timing-profile-placeholder">
-          {designMode === 'gates'
-            ? 'Pick a process node from the Delay profile menu to estimate absolute timing.'
-            : 'Pick an FPGA preset from the Delay profile menu to estimate absolute timing.'}
-        </div>
-      ) : (
+      {view.showTiming && (
         <>
+          {/* The tag appears only when Vivado's measured tier is alongside it. */}
+          <div className="section-title">
+            Estimated timing{' '}
+            {vivadoTiming && (
+              <span className="tier-tag tier-estimated">estimated</span>
+            )}
+          </div>
           <div className="cards">
             <Card
               k="Critical-path delay"
@@ -188,13 +168,6 @@ export function TimingModel({
               k="Implied Fmax"
               v={fmax != null ? `${fmax.toFixed(0)} MHz` : '—'}
             />
-            {slack != null && (
-              <Card
-                k={`Slack @ ${settings.targetMhz} MHz`}
-                v={`${slack >= 0 ? '+' : ''}${slack.toFixed(2)} ns`}
-                tone={slack >= 0 ? 'ok' : 'bad'}
-              />
-            )}
           </div>
 
           {breakdown && delayNs != null && delayNs > 0 && (
@@ -203,120 +176,112 @@ export function TimingModel({
         </>
       )}
 
-      {vivadoTiming && <VivadoTimingPanel timing={vivadoTiming} />}
+      {view.showTiming && vivadoTiming && (
+        <VivadoTimingPanel timing={vivadoTiming} />
+      )}
 
       <div className="timing-controls">
         <label className="field">
           <span>Delay profile</span>
-          <select
-            value={modeProfile}
-            title="Delay preset for this design's technology. 'Auto' uses the model chosen from the synthesis target."
-            onChange={(e) => setProfile(e.target.value as ProfileChoice)}
-          >
-            {profilesForMode(designMode).map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
+          {view.profileLocked ? (
+            <span className="timing-profile-fixed">{profileLabel}</span>
+          ) : (
+            <select
+              value={view.profile}
+              title="Delay preset for this design's technology. 'Auto' leaves generic designs without absolute timing."
+              onChange={(e) => setProfile(e.target.value as ProfileChoice)}
+            >
+              {view.profileOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          )}
         </label>
-        <label className="field">
-          <span>Speed grade</span>
-          {/* ASIC library profiles have a single characterized corner — no
-              grade binning — and the server ignores the grade for them. */}
-          <select
-            value={settings.speedGrade}
-            disabled={PDK_PROFILES.has(modeProfile)}
-            title={
-              PDK_PROFILES.has(modeProfile)
-                ? 'ASIC library profiles are characterized at a single corner and have no speed grades.'
-                : 'Speed grade multiplier applied to every delay term.'
-            }
-            onChange={(e) => setGrade(e.target.value as SpeedGrade)}
-          >
-            {speedGradeOptions(modeProfile, designMode).map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Target clock (MHz)</span>
-          <input
-            type="number"
-            min={0}
-            step={10}
-            placeholder="none"
-            title="Enter a target frequency to see setup slack against the estimate."
-            value={settings.targetMhz ?? ''}
-            onChange={(e) => {
-              const text = e.target.value
-              if (text.trim() === '') return setTarget(null)
-              const n = Number(text)
-              if (Number.isFinite(n) && n > 0) setTarget(n)
-            }}
-          />
-        </label>
+        {view.showGradeSection && (
+          <label className="field">
+            <span>Speed grade</span>
+            <select
+              value={view.grade}
+              title="Speed-grade multiplier applied to every delay term."
+              onChange={(e) => setGrade(e.target.value as SpeedGrade)}
+            >
+              {view.gradeOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
-      <details
-        className="collapsible"
-        open={advanced}
-        onToggle={(e) => setAdvanced((e.target as HTMLDetailsElement).open)}
-      >
-        <summary>
-          Advanced: edit coefficients (ps){activeOverrides ? ' — custom' : ''}
-        </summary>
-        <div className="timing-coeffs">
-          {PDK_PROFILES.has(modeProfile) ? (
-            <>
-              {ASIC_GATE_FIELDS.map((f) => (
-                <CoeffInput
-                  key={`gate-${f.key}`}
-                  label={f.label}
-                  value={
-                    editorModel ? gateDelayValue(editorModel, f.key) : null
-                  }
-                  onCommit={(n) => editGateField(f.key, n)}
-                />
-              ))}
-              {ASIC_SHARED_FIELDS.map((f) => (
+      {!view.showTiming && designMode !== 'rtl' && (
+        <div className="empty-state timing-profile-placeholder">
+          {designMode === 'gates'
+            ? 'Pick a process node from the Delay profile menu to estimate absolute timing.'
+            : 'Pick an FPGA preset from the Delay profile menu to estimate absolute timing.'}
+        </div>
+      )}
+
+      {view.showTiming && (
+        <details
+          className="collapsible"
+          open={advanced}
+          onToggle={(e) => setAdvanced((e.target as HTMLDetailsElement).open)}
+        >
+          <summary>
+            Advanced: edit coefficients (ps){activeOverrides ? ' — custom' : ''}
+          </summary>
+          <div className="timing-coeffs">
+            {PDK_PROFILES.has(view.profile) ? (
+              <>
+                {ASIC_GATE_FIELDS.map((f) => (
+                  <CoeffInput
+                    key={`gate-${f.key}`}
+                    label={f.label}
+                    value={
+                      editorModel ? gateDelayValue(editorModel, f.key) : null
+                    }
+                    onCommit={(n) => editGateField(f.key, n)}
+                  />
+                ))}
+                {ASIC_SHARED_FIELDS.map((f) => (
+                  <CoeffInput
+                    key={f.key}
+                    label={f.label}
+                    value={editorModel ? editorModel[f.key] : null}
+                    onCommit={(n) => editField(f.key, n)}
+                  />
+                ))}
+              </>
+            ) : (
+              DELAY_FIELDS.map((f) => (
                 <CoeffInput
                   key={f.key}
                   label={f.label}
                   value={editorModel ? editorModel[f.key] : null}
                   onCommit={(n) => editField(f.key, n)}
                 />
-              ))}
-            </>
-          ) : (
-            DELAY_FIELDS.map((f) => (
-              <CoeffInput
-                key={f.key}
-                label={f.label}
-                value={editorModel ? editorModel[f.key] : null}
-                onCommit={(n) => editField(f.key, n)}
-              />
-            ))
+              ))
+            )}
+          </div>
+          {activeOverrides && (
+            <button className="link-button" onClick={resetOverrides}>
+              Reset to profile preset
+            </button>
           )}
-        </div>
-        {activeOverrides && (
-          <button className="link-button" onClick={resetOverrides}>
-            Reset to profile preset
-          </button>
-        )}
-      </details>
+        </details>
+      )}
 
-      <div className="caveat" style={{ marginTop: 8 }}>
-        {ESTIMATED_TIMING_CAVEAT}
-      </div>
+      {view.showTiming && (
+        <div className="caveat" style={{ marginTop: 8 }}>
+          {view.caveat}
+        </div>
+      )}
     </>
   )
-}
-
-function matchesNotionalMode(mode?: string): boolean {
-  return mode === 'gates' || mode === 'lut4' || mode === 'lut6'
 }
 
 /**

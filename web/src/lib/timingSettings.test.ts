@@ -1,25 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { DelayModel, DelayProfile } from '../types'
 import {
   DEFAULT_TIMING_SETTINGS,
   compatibleTimingOverrides,
   editorModelForRequest,
-  effectiveProfile,
   gateDelayValue,
-  profilesForMode,
-  ECP5_SPEED_GRADE_OPTIONS,
-  PDK_PROFILES,
-  PROFILE_OPTIONS,
-  SPEED_GRADE_OPTIONS,
-  isDefaultTiming,
   loadTimingSettings,
+  PDK_PROFILES,
+  resolveTimingView,
   saveTimingSettings,
-  speedGradeOptions,
-  timingRequest,
-  timingRequestForMode,
+  timingRequestForView,
   withGateDelay,
   type TimingSettings,
 } from './timingSettings'
-import type { DelayModel } from '../types'
 
 const MODEL: DelayModel = {
   lut_ps: 10,
@@ -31,155 +24,175 @@ const MODEL: DelayModel = {
   net_base_ps: 20,
   net_per_fanout_ps: 5,
 }
-
 const ASIC_MODEL: DelayModel = {
   ...MODEL,
   gate_ps: { and: 11, xor: 22, not: 7 },
 }
 
-describe('ASIC gate overrides', () => {
-  it('reads missing categories through cell_ps and edits them immutably', () => {
-    const sparse: DelayModel = {
-      ...ASIC_MODEL,
-      cell_ps: 30,
-      gate_ps: { and: 25.4, xor: 42.5 },
+function settings(patch: Partial<TimingSettings> = {}): TimingSettings {
+  return { ...DEFAULT_TIMING_SETTINGS, ...patch }
+}
+
+function view(
+  mode: string,
+  profile: DelayProfile,
+  patch: Partial<TimingSettings> = {},
+) {
+  return resolveTimingView(settings(patch), mode, profile)
+}
+
+describe('resolved TimingView', () => {
+  it('locks concrete FPGA and Vivado designs to the server profile', () => {
+    for (const [mode, profile] of [
+      ['xilinx', 'ultrascale_plus'],
+      ['ecp5', 'ecp5'],
+      ['ice40', 'ice40'],
+      ['vivado', 'series7'],
+    ] as const) {
+      const resolved = view(mode, profile, { profile: 'sky130hd' })
+      expect(resolved.profileLocked).toBe(true)
+      expect(resolved.profile).toBe(profile)
+      expect(resolved.profileOptions.map((option) => option.value)).toEqual([
+        profile,
+      ])
+      expect(resolved.showTiming).toBe(true)
     }
-    expect(gateDelayValue(sparse, 'mux')).toBe(30)
+  })
 
-    const edited = withGateDelay(sparse, 'mux', 31)
-    expect(edited.gate_ps).toEqual({ and: 25.4, xor: 42.5, mux: 31 })
-    expect(edited.cell_ps).toBe(30)
-    expect(sparse.gate_ps).toEqual({ and: 25.4, xor: 42.5 })
+  it('offers only process nodes for gates and never shows a grade section', () => {
+    const auto = view('gates', 'generic')
+    expect(auto.profileOptions.map((option) => option.value)).toEqual([
+      'auto',
+      'sky130hd',
+      'gf180mcu',
+      'asap7',
+    ])
+    expect(auto.showTiming).toBe(false)
+    expect(auto.showGradeSection).toBe(false)
+    expect(auto.caveat).toBe('')
+
+    const selected = view('gates', 'generic', { profile: 'sky130hd' })
+    expect(selected.showTiming).toBe(true)
+    expect(selected.showGradeSection).toBe(false)
+    expect(selected.gradeOptions).toEqual([])
+  })
+
+  it('offers FPGA presets for LUT modes and hides all timing until selected', () => {
+    for (const mode of ['lut4', 'lut6']) {
+      const auto = view(mode, 'generic')
+      expect(auto.showTiming).toBe(false)
+      expect(auto.showGradeSection).toBe(false)
+      expect(auto.profileOptions.map((option) => option.value)).toEqual([
+        'auto',
+        'series7',
+        'ultrascale',
+        'ultrascale_plus',
+        'ice40',
+        'ecp5',
+      ])
+      expect(view(mode, 'generic', { profile: 'series7' }).showTiming).toBe(true)
+    }
+  })
+
+  it('hides timing and controls in RTL', () => {
+    const resolved = view('rtl', 'generic')
+    expect(resolved.showTiming).toBe(false)
+    expect(resolved.showGradeSection).toBe(false)
+    expect(resolved.profileOptions).toEqual([])
+  })
+
+  it('uses wire-accurate ECP5 and iCE40 grade axes', () => {
+    const ecp5 = view('ecp5', 'ecp5', { speedGrade: '-3' })
+    expect(ecp5.gradeOptions).toEqual([
+      { value: '-1', label: '6 (slowest)' },
+      { value: '-2', label: '7' },
+      { value: '-3', label: '8 (fastest)' },
+    ])
+    expect(ecp5.grade).toBe('-3')
+
+    const ice40 = view('ice40', 'ice40', { speedGrade: '-3' })
+    expect(ice40.gradeOptions).toEqual([
+      { value: 'hx', label: 'HX' },
+      { value: 'lp', label: 'LP' },
+    ])
+    expect(ice40.grade).toBe('hx')
+    expect(view('ice40', 'ice40', { speedGrade: 'lp' }).grade).toBe('lp')
+  })
+
+  it('clamps stale global profiles only once, in the view', () => {
+    expect(view('gates', 'generic', { profile: 'series7' }).profile).toBe('auto')
+    expect(view('lut4', 'generic', { profile: 'sky130hd' }).profile).toBe('auto')
+  })
+
+  it('makes the caveat recommendation match the resolved technology', () => {
+    expect(view('xilinx', 'series7').caveat).toContain('Vivado')
+    expect(view('ecp5', 'ecp5').caveat).toContain('nextpnr')
+    expect(view('ice40', 'ice40').caveat).toContain('icetime')
+    expect(view('gates', 'generic', { profile: 'asap7' }).caveat).toContain(
+      'OpenSTA',
+    )
   })
 })
 
-describe('editor model provenance', () => {
-  const result = { model: MODEL, requestKey: 'profile=series7' }
-
-  it('uses only a response matching the current timing request', () => {
-    expect(
-      editorModelForRequest(null, result, 'profile=series7'),
-    ).toBe(MODEL)
-    expect(editorModelForRequest(null, result, 'profile=asap7')).toBeNull()
-  })
-
-  it('prefers a compatible active override over any response', () => {
-    expect(
-      editorModelForRequest(ASIC_MODEL, result, 'profile=asap7'),
-    ).toBe(ASIC_MODEL)
-  })
-})
-
-describe('timingRequest', () => {
-  const t = { targetMhz: null }
-  it('omits profile for auto and defaults speed grade', () => {
-    expect(timingRequest({ profile: 'auto', speedGrade: '-1', overrides: null, ...t })).toEqual({
-      speed_grade: '-1',
+describe('timing request from the resolved view', () => {
+  it('uses the locked profile and clamped grade on the wire', () => {
+    const stored = settings({ profile: 'sky130hd', speedGrade: '-3' })
+    const resolved = resolveTimingView(stored, 'ice40', 'ice40')
+    expect(timingRequestForView(stored, resolved)).toEqual({
+      profile: 'ice40',
+      speed_grade: 'hx',
     })
   })
 
-  it('sends a named profile', () => {
-    expect(
-      timingRequest({ profile: 'ultrascale_plus', speedGrade: '-2', overrides: null, ...t }),
-    ).toEqual({ profile: 'ultrascale_plus', speed_grade: '-2' })
-  })
+  it('omits auto, and sends a selected profile with a compatible override', () => {
+    const auto = settings()
+    expect(timingRequestForView(auto, view('gates', 'generic'))).toEqual({
+      speed_grade: '-1',
+    })
 
-  it('sends an override and the profile together', () => {
-    // The two answer different questions: the override supplies the
-    // coefficients, the profile picks whose speed-grade scaling applies. Sending
-    // only the override left the dropdown showing one family while the server
-    // scaled by the design's.
-    expect(
-      timingRequest({ profile: 'series7', speedGrade: '-3', overrides: MODEL, ...t }),
-    ).toEqual({ model: MODEL, profile: 'series7', speed_grade: '-3' })
-  })
-
-  it('omits the profile on auto even with an override', () => {
-    // 'auto' means "the design's own family" -- the server resolves that.
-    expect(
-      timingRequest({ profile: 'auto', speedGrade: '-2', overrides: MODEL, ...t }),
-    ).toEqual({ model: MODEL, speed_grade: '-2' })
-  })
-
-  it('never includes the display-only target clock', () => {
-    const req = timingRequest({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: 200 })
-    expect(req).not.toHaveProperty('targetMhz')
-  })
-})
-
-describe('timingRequestForMode', () => {
-  const targetMhz = null
-
-  it('keeps a PDK override on its gates-mode profile', () => {
-    expect(
-      timingRequestForMode(
-        {
-          profile: 'sky130hd',
-          speedGrade: '-1',
-          overrides: ASIC_MODEL,
-          targetMhz,
-        },
-        'gates',
-      ),
-    ).toEqual({
+    const pdk = settings({ profile: 'sky130hd', overrides: ASIC_MODEL })
+    const resolved = resolveTimingView(pdk, 'gates', 'generic')
+    expect(timingRequestForView(pdk, resolved)).toEqual({
       profile: 'sky130hd',
       speed_grade: '-1',
       model: ASIC_MODEL,
     })
   })
 
-  it('suppresses a stored PDK override on an FPGA design', () => {
-    const settings: TimingSettings = {
-      profile: 'sky130hd',
-      speedGrade: '-1',
-      overrides: ASIC_MODEL,
-      targetMhz,
-    }
-    expect(compatibleTimingOverrides(settings, 'xilinx')).toBeNull()
-    expect(
-      timingRequestForMode(settings, 'xilinx'),
-    ).toEqual({ speed_grade: '-1' })
-  })
+  it('suppresses overrides from the wrong technology class', () => {
+    const pdk = settings({ profile: 'sky130hd', overrides: ASIC_MODEL })
+    const fpgaView = resolveTimingView(pdk, 'xilinx', 'series7')
+    expect(compatibleTimingOverrides(pdk, fpgaView)).toBeNull()
 
-  it('suppresses a legacy flat override under a named PDK profile', () => {
-    const settings: TimingSettings = {
-      profile: 'asap7',
-      speedGrade: '-1',
-      overrides: MODEL,
-      targetMhz,
-    }
-    expect(compatibleTimingOverrides(settings, 'gates')).toBeNull()
-    expect(
-      timingRequestForMode(settings, 'gates'),
-    ).toEqual({ profile: 'asap7', speed_grade: '-1' })
+    const flat = settings({ profile: 'asap7', overrides: MODEL })
+    const pdkView = resolveTimingView(flat, 'gates', 'generic')
+    expect(compatibleTimingOverrides(flat, pdkView)).toBeNull()
   })
 })
 
-describe('isDefaultTiming', () => {
-  it('is true only for auto / -1 / no overrides', () => {
-    const base = { targetMhz: null }
-    expect(isDefaultTiming(DEFAULT_TIMING_SETTINGS)).toBe(true)
-    expect(isDefaultTiming({ profile: 'ice40', speedGrade: '-1', overrides: null, ...base })).toBe(
-      false,
-    )
-    expect(isDefaultTiming({ profile: 'auto', speedGrade: '-2', overrides: null, ...base })).toBe(
-      false,
-    )
-    expect(isDefaultTiming({ profile: 'auto', speedGrade: '-1', overrides: MODEL, ...base })).toBe(
-      false,
-    )
+describe('coefficient editor helpers', () => {
+  it('uses cell_ps for sparse categories and edits immutably', () => {
+    const sparse = { ...ASIC_MODEL, cell_ps: 30, gate_ps: { and: 25.4 } }
+    expect(gateDelayValue(sparse, 'mux')).toBe(30)
+    const edited = withGateDelay(sparse, 'mux', 31)
+    expect(edited.gate_ps).toEqual({ and: 25.4, mux: 31 })
+    expect(sparse.gate_ps).toEqual({ and: 25.4 })
+  })
+
+  it('never seeds an edit from a stale response', () => {
+    const result = { model: MODEL, requestKey: 'series7' }
+    expect(editorModelForRequest(null, result, 'series7')).toBe(MODEL)
+    expect(editorModelForRequest(null, result, 'asap7')).toBeNull()
+    expect(editorModelForRequest(ASIC_MODEL, result, 'asap7')).toBe(ASIC_MODEL)
   })
 })
 
 describe('load/save round-trip', () => {
   beforeEach(() => {
-    // Provide an in-memory localStorage for the node test environment.
     const store = new Map<string, string>()
     vi.stubGlobal('localStorage', {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => void store.set(key, value),
     })
   })
 
@@ -187,76 +200,54 @@ describe('load/save round-trip', () => {
     expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
   })
 
-  it('persists and restores settings', () => {
-    const s: TimingSettings = {
-      profile: 'ecp5',
-      speedGrade: '-3',
-      overrides: MODEL,
-      targetMhz: 250,
-    }
-    saveTimingSettings(s)
-    expect(loadTimingSettings()).toEqual(s)
+  it('persists current settings and iCE40 grades', () => {
+    const stored = settings({ profile: 'ice40', speedGrade: 'lp', overrides: MODEL })
+    saveTimingSettings(stored)
+    expect(loadTimingSettings()).toEqual(stored)
   })
 
-  it('persists and restores a sparse ASIC gate table', () => {
-    const s: TimingSettings = {
-      profile: 'sky130hd',
-      speedGrade: '-1',
-      overrides: ASIC_MODEL,
-      targetMhz: null,
-    }
-    saveTimingSettings(s)
-    expect(loadTimingSettings()).toEqual(s)
+  it('persists a sparse ASIC gate table', () => {
+    const stored = settings({ profile: 'sky130hd', overrides: ASIC_MODEL })
+    saveTimingSettings(stored)
+    expect(loadTimingSettings()).toEqual(stored)
 
-    const fallbackOnly = { ...s, overrides: { ...MODEL, gate_ps: {} } }
+    const fallbackOnly = settings({
+      profile: 'sky130hd',
+      overrides: { ...MODEL, gate_ps: {} },
+    })
     saveTimingSettings(fallbackOnly)
     expect(loadTimingSettings()).toEqual(fallbackOnly)
   })
 
-  it('rejects a non-positive or non-numeric target clock', () => {
+  it('tolerates and drops legacy targetMhz from old blobs', () => {
     localStorage.setItem(
       'synthexplorer.timing.v1',
-      JSON.stringify({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: -5 }),
+      JSON.stringify({ ...settings({ profile: 'ecp5' }), targetMhz: 250 }),
     )
-    expect(loadTimingSettings().targetMhz).toBeNull()
-    localStorage.setItem(
-      'synthexplorer.timing.v1',
-      JSON.stringify({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: 'fast' }),
+    const loaded = loadTimingSettings()
+    expect(loaded).toEqual(settings({ profile: 'ecp5' }))
+    expect(loaded).not.toHaveProperty('targetMhz')
+    saveTimingSettings(loaded)
+    expect(localStorage.getItem('synthexplorer.timing.v1')).not.toContain(
+      'targetMhz',
     )
-    expect(loadTimingSettings().targetMhz).toBeNull()
   })
 
-  it('sanitizes invalid stored values', () => {
+  it('sanitizes malformed values and partial overrides', () => {
     localStorage.setItem(
       'synthexplorer.timing.v1',
-      JSON.stringify({ profile: 'bogus', speedGrade: '-9', overrides: { lut_ps: 'x' } }),
+      JSON.stringify({ profile: 'bogus', speedGrade: '-9', overrides: { lut_ps: 1 } }),
     )
     expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
-  })
 
-  it('rejects a partial override (missing coefficients)', () => {
-    const { lut_ps: _drop, ...partial } = MODEL
+    const { lut_ps: _missing, ...partial } = MODEL
     localStorage.setItem(
       'synthexplorer.timing.v1',
       JSON.stringify({ profile: 'series7', speedGrade: '-1', overrides: partial }),
     )
     expect(loadTimingSettings().overrides).toBeNull()
-  })
 
-  it('rejects non-finite coefficients', () => {
-    localStorage.setItem(
-      'synthexplorer.timing.v1',
-      JSON.stringify({ profile: 'series7', speedGrade: '-1', overrides: { ...MODEL, lut_ps: null } }),
-    )
-    expect(loadTimingSettings().overrides).toBeNull()
-  })
-
-  it('rejects unknown or non-numeric gate entries', () => {
-    for (const gate_ps of [
-      [],
-      { and: 'slow' },
-      { and: 10, aoi3: 20 },
-    ]) {
+    for (const gate_ps of [[], { and: 'slow' }, { and: 10, aoi3: 20 }]) {
       localStorage.setItem(
         'synthexplorer.timing.v1',
         JSON.stringify({
@@ -267,101 +258,12 @@ describe('load/save round-trip', () => {
       )
       expect(loadTimingSettings().overrides).toBeNull()
     }
-  })
 
-  it('falls back to defaults on malformed JSON', () => {
-    localStorage.setItem('synthexplorer.timing.v1', '{not valid json')
+    localStorage.setItem('synthexplorer.timing.v1', '{broken')
     expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
   })
-})
 
-describe('speedGradeOptions', () => {
-  it('labels ECP5 grades by their real names when the profile is ecp5', () => {
-    const labels = speedGradeOptions('ecp5').map((o) => o.label)
-    expect(labels).toEqual(['6 (slowest)', '7', '8 (fastest)'])
-    // The wire values stay '-1'/'-2'/'-3' — only the labels change.
-    expect(speedGradeOptions('ecp5').map((o) => o.value)).toEqual(['-1', '-2', '-3'])
-  })
-
-  it('resolves auto to ECP5 labels only for an ECP5 design', () => {
-    expect(speedGradeOptions('auto', 'ecp5')).toBe(ECP5_SPEED_GRADE_OPTIONS)
-    expect(speedGradeOptions('auto', 'xilinx')).toBe(SPEED_GRADE_OPTIONS)
-    expect(speedGradeOptions('auto')).toBe(SPEED_GRADE_OPTIONS)
-  })
-
-  it('keeps generic grade labels for the non-ECP5 profiles', () => {
-    for (const profile of ['series7', 'ice40', 'sky130hd', 'generic'] as const) {
-      expect(speedGradeOptions(profile)).toBe(SPEED_GRADE_OPTIONS)
-    }
-  })
-})
-
-describe('PDK profiles', () => {
-  it('every PDK profile is selectable in the dropdown', () => {
-    const values = new Set(PROFILE_OPTIONS.map((o) => o.value))
-    for (const profile of PDK_PROFILES) expect(values.has(profile)).toBe(true)
-  })
-
-  it('flags exactly the ASIC library profiles', () => {
+  it('recognizes exactly the ASIC library profiles', () => {
     expect([...PDK_PROFILES].sort()).toEqual(['asap7', 'gf180mcu', 'sky130hd'])
-    expect(PDK_PROFILES.has('ecp5')).toBe(false)
-    expect(PDK_PROFILES.has('auto')).toBe(false)
-  })
-})
-
-describe('profilesForMode', () => {
-  const values = (mode?: string) => profilesForMode(mode).map((o) => o.value)
-
-  it('offers no FPGA presets for generic gates', () => {
-    expect(values('gates')).toEqual(['auto', 'sky130hd', 'gf180mcu', 'asap7'])
-  })
-
-  it('offers no process nodes for FPGA targets', () => {
-    for (const mode of ['xilinx', 'ice40', 'ecp5']) {
-      expect(values(mode)).toEqual([
-        'auto',
-        'series7',
-        'ultrascale',
-        'ultrascale_plus',
-        'ice40',
-        'ecp5',
-        'generic',
-      ])
-    }
-  })
-
-  it('uses auto as the notional placeholder for generic LUT modes', () => {
-    for (const mode of ['lut4', 'lut6']) {
-      expect(values(mode)).toEqual([
-        'auto',
-        'series7',
-        'ultrascale',
-        'ultrascale_plus',
-        'ice40',
-        'ecp5',
-      ])
-    }
-  })
-
-  it('falls back to the full list when the mode is unknown', () => {
-    expect(values(undefined).length).toBeGreaterThan(7)
-  })
-})
-
-describe('effectiveProfile', () => {
-  it('clamps a stored profile that is invalid for the design mode to auto', () => {
-    // Settings are global across designs: sky130hd picked on a gates design
-    // must not retune a Xilinx netlist with standard-cell numbers.
-    expect(effectiveProfile('sky130hd', 'xilinx')).toBe('auto')
-    expect(effectiveProfile('series7', 'gates')).toBe('auto')
-    expect(effectiveProfile('generic', 'gates')).toBe('auto')
-    expect(effectiveProfile('generic', 'lut4')).toBe('auto')
-  })
-
-  it('passes valid combinations through', () => {
-    expect(effectiveProfile('sky130hd', 'gates')).toBe('sky130hd')
-    expect(effectiveProfile('ultrascale', 'xilinx')).toBe('ultrascale')
-    expect(effectiveProfile('ice40', 'lut4')).toBe('ice40')
-    expect(effectiveProfile('generic', 'xilinx')).toBe('generic')
   })
 })

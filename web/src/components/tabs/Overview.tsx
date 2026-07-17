@@ -82,16 +82,15 @@ export function Overview() {
         <Card k="Input → output" v={depthValue(stats.depths.input_to_output)} />
       </div>
 
-      {/* Either tier alone is worth a panel: Vivado can measure a path the
-          estimate has no figure for (a design with no combinational logic
-          still has a real clk-to-Q + route delay), and the estimate stands on
-          its own everywhere Vivado never ran. */}
-      {((stats.estimated_delay_ns != null && stats.estimated_delay_ns > 0) ||
-        design.vivado_timing != null) && (
+      {/* Every non-RTL design gets the timing controls. Generic gates/LUT modes
+          need the profile selector even while auto deliberately withholds all
+          timing figures. */}
+      {design.mode !== 'rtl' && (
         <TimingModel
           key={design.design_id}
           designId={design.design_id}
-          designMode={design.mode}
+          designMode={design.tool === 'vivado' ? 'vivado' : design.mode}
+          resolvedProfile={design.delay_profile}
           fallbackDelayNs={stats.estimated_delay_ns ?? null}
           fallbackBreakdown={stats.estimated_delay_breakdown}
           vivadoTiming={design.vivado_timing}

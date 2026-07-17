@@ -315,3 +315,24 @@ export function flagsForModeChange(flags: string, mode: Mode): string {
   }
   return next
 }
+
+export type ModeFlagMemory = Partial<Record<Mode, string>>
+
+/** Remember the exact visible flags for the mode being left, then restore the
+ * destination's own string. A mode visited for the first time starts only from
+ * its registry defaults, so valid-but-unexplained flags cannot leak across
+ * families. */
+export function flagsForModeTransition(
+  flags: string,
+  currentMode: Mode,
+  nextMode: Mode,
+  memory: ModeFlagMemory,
+): { flags: string; memory: ModeFlagMemory } {
+  const nextMemory = { ...memory, [currentMode]: flags }
+  const remembered = nextMemory[nextMode]
+  return {
+    flags:
+      remembered === undefined ? flagsForModeChange('', nextMode) : remembered,
+    memory: nextMemory,
+  }
+}

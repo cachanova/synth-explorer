@@ -184,6 +184,16 @@ test('synthesizes from the webpage with the default Yosys flags', async ({
     .selectOption('xilinx')
   await expect(flags).toHaveValue('-narrowcarry 8 -nowidelut -noiopad')
 
+  // Each mode owns its exact flags string. A tuned value and a removed default
+  // survive a family round-trip, while a fresh ECP5 visit gets no Xilinx-only
+  // -nowidelut leak.
+  await flags.fill('-narrowcarry 4 -noiopad')
+  await page.getByLabel('Mode').selectOption('ecp5')
+  await expect(flags).toHaveValue('-noiopad')
+  await page.getByLabel('Mode').selectOption('xilinx')
+  await expect(flags).toHaveValue('-narrowcarry 4 -noiopad')
+  await flags.fill('-narrowcarry 8 -nowidelut -noiopad')
+
   const responsePromise = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/synthesize') &&
@@ -276,6 +286,7 @@ test('scrolls every endpoint and path without mounting the full result set', asy
 
   await page.getByRole('tab', { name: 'Paths', exact: true }).click()
   await expect(page.getByText('Longest logical path variants (500)')).toBeVisible()
+  await expect(page.getByRole('columnheader', { name: /Est\. delay/ })).toHaveCount(0)
   expect(new URL(pathsUrl).searchParams.get('limit')).toBeNull()
   const pathScroller = page.locator('.virtual-table-scroll')
   expect(await pathScroller.locator('tr.clickable').count()).toBeLessThan(100)
