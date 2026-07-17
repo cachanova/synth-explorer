@@ -309,10 +309,7 @@ function VivadoTimingPanel({ timing }: { timing: VivadoTiming }) {
       </div>
 
       <div className="faint vivado-path" title="Vivado's worst-path endpoints">
-        Worst register-to-register path: {timing.source} → {timing.destination} ·
-        slack {timing.slack_ns >= 0 ? '+' : ''}
-        {timing.slack_ns.toFixed(2)} ns vs the {timing.reference_period_ns} ns
-        reference clock ({timing.slack_met ? 'met' : 'violated'})
+        Worst register-to-register path: {timing.source} → {timing.destination}
       </div>
 
       <div className="caveat" style={{ marginTop: 8 }}>

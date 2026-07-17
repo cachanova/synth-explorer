@@ -94,12 +94,11 @@ describe('TimingModel Vivado tier', () => {
     expect(markup).toContain('Worst register-to-register path')
   })
 
-  it('reports slack against the reference clock rather than a user target', () => {
+  it('shows measured path endpoints without a slack readout', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69, breakdown })
     expect(markup).toContain('ra_reg[1]/C')
     expect(markup).toContain('q_reg[13]/D')
-    expect(markup).toContain('10 ns')
-    expect(markup).toContain('reference clock')
+    expect(markup).not.toContain('slack +7.28')
   })
 
   it('surfaces the logic and route split and the logic-level count', () => {
