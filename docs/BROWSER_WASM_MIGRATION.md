@@ -47,6 +47,17 @@ The retained service will expose a versioned Vivado artifact endpoint and
 `/healthz`. It will not expose public Yosys synthesis or `/api/design/:id/*`
 exploration routes.
 
+## External constraints
+
+- [Vercel limits](https://vercel.com/docs/limits) cap proxied external requests
+  at 120 seconds. The current five-minute Vivado allowance therefore requires
+  a direct browser request to the Hetzner API origin.
+- The [YoWASP Yosys repository](https://github.com/YoWASP/yosys) was archived
+  on March 11, 2026 and describes its packages as unofficial. Use it only as a
+  build seed. Before browser Yosys ships, create a project-owned fork, pin the
+  Yosys and ABC sources, produce reproducible artifacts, record licenses and an
+  SBOM, and own security and browser-compatibility updates.
+
 ## One implementation at each stage
 
 Production code will contain one implementation for each behavior.
@@ -159,9 +170,9 @@ the first Yosys request.
 
 The deployed native tool is Yosys 0.67. The browser cutover requires a pinned
 0.67 WebAssembly build with ABC and every supported target flow. The published
-YoWASP package must not silently substitute an older compiler. If no compatible
-package exists, build and pin the 0.67 artifact from the YoWASP packaging source
-before continuing.
+YoWASP package must not silently substitute an older compiler. Build and pin
+the 0.67 artifact through the project-owned packaging fork before continuing;
+an archived upstream package is not a production dependency.
 
 Delete public server Yosys handling after the worker passes the parity and
 resource tests. Keep native Yosys only if the Vivado normalizer still needs it.
