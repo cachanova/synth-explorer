@@ -659,21 +659,6 @@ a:hover {
   font-family: var(--mono);
   font-size: 13px;
 }
-/* Blend oneDark's chrome into the Graphite surfaces; the extra specificity
-   beats oneDark's single generated class. Syntax colors stay oneDark's. */
-.editor-wrap .cm-editor {
-  background: var(--bg);
-}
-.editor-wrap .cm-editor .cm-gutters {
-  background: var(--bg);
-  border-right: none;
-}
-.editor-wrap .cm-editor .cm-activeLine {
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-}
-.editor-wrap .cm-editor .cm-activeLineGutter {
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-}
 .cm-src-hl {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   transition: background 0.4s ease;
