@@ -3,6 +3,7 @@ import { MODE_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import type { Mode, SynthTool, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
+import { BubbleLoader } from './BubbleLoader'
 import { FlagsMenu } from './FlagsMenu'
 import { VivadoUnlockDialog } from './VivadoUnlockDialog'
 
@@ -322,9 +323,9 @@ export function Toolbar() {
         title="Synthesize (Ctrl+Enter)"
       >
         {store.synthesizing ? (
-          <>
-            <span className="spinner" /> Synthesizing…
-          </>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <BubbleLoader size={16} tone="mono" /> Synthesizing…
+          </span>
         ) : (
           'Synthesize'
         )}
