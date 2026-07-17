@@ -143,6 +143,8 @@ Parsed from yosys JSON (`modules.<top>` after flatten):
 - `GET  /api/design/:id/fanout?limit` — fanout ranking
 - `GET  /api/design/:id/netlist?max_nodes` — full graph (capped) for the
   optional schematic view
+- `GET  /api/design/:id/exploration` — complete prepared graph and provenance
+  indexes loaded once by the browser's source-selection worker
 - `GET  /api/examples` — bundled example designs
 - Server serves `web/dist` statically; SPA fallback.
 
@@ -171,7 +173,11 @@ Compiler-Explorer-style split view, dark theme:
   - **Fanout** — ranked high-fanout drivers; control nets badged; click → fanout
     cone.
 - **Source cross-probe:** node src (`file.sv:12.16-12.21`) → editor highlight;
-  editor cursor line → matching nodes listed/highlighted.
+  editor cursor line → a dedicated TypeScript worker queries the exploration
+  snapshot locally and returns the focused subgraph/highlights without another
+  server request. The worker lazily fetches and parses the snapshot itself when
+  the schematic becomes active; bounded, serialized snapshot construction runs
+  off the server's async executor.
 - Store consumers subscribe through field selectors, so editor keystrokes do
   not invalidate analysis tabs or the schematic. Superseded ELK results are
   discarded by sequence id while the worker stays warm; the worker is replaced
@@ -198,9 +204,12 @@ realistic blackbox boundary around vendor-generated clock-domain-crossing IP.
   (e.g. `adder_chain` depth > `reg_mux` depth and blackbox boundaries remain
   explicit).
 - **Frontend:** `tsc --noEmit`, `vite build`, vitest on pure logic (API client,
-  graph transforms).
+  graph transforms, and source-selection traversal).
 - **E2E:** drive Chrome against the built stack — synthesize each example, walk
-  endpoints → cone → paths → fanout → source probe.
+  endpoints → cone → paths → fanout → browser-worker source probe. Contract
+  tests feed real Rust/Yosys exploration snapshots through the canonical
+  TypeScript selector for procedural narrowing, registered-output expansion,
+  and assignment direction.
 
 ## Future (explicitly out of scope now)
 

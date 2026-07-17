@@ -7,18 +7,20 @@
 use crate::analysis::RegisterGroup;
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use deepsize::DeepSizeOf;
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub type GroupId = u32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, DeepSizeOf)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, DeepSizeOf)]
+#[serde(rename_all = "lowercase")]
 pub enum GroupKind {
     Register,
     Comb,
     Port,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, DeepSizeOf)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, DeepSizeOf)]
 pub struct Group {
     pub kind: GroupKind,
     /// Sorted, always at least two distinct nodes.

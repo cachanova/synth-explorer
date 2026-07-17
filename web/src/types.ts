@@ -55,17 +55,83 @@ export interface Subgraph {
   truncated: boolean // hit max_nodes/max_depth; UI must say so
 }
 
-export type LineConeStatus =
+export type SourceSelectionStatus =
   | 'mapped'
   | 'mapping_incomplete'
   | 'optimized_or_absorbed'
   | 'unmapped'
 
-export interface LineConeResponse {
-  status: LineConeStatus
+export interface SourceSelectionResult {
+  status: SourceSelectionStatus
   control: boolean
   highlight: number[]
   graph: Subgraph
+}
+
+export interface ExplorationNode extends GraphNode {
+  /** Native Yosys source metadata retained for production-identical grouped nodes. */
+  group_src?: string
+  boundary: boolean
+  comb: boolean
+  constant: boolean
+  output_frontier: boolean
+  addressable_sequential: boolean
+  register_type: boolean
+  infrastructure: boolean
+  transparent_buffer: boolean
+  group_id?: number
+}
+
+export interface ExplorationEdge {
+  from: number
+  to: number
+  from_port: string
+  to_port: string
+  net_name: string
+  bit?: number
+  control: boolean
+  hidden_control: boolean
+  depth_input: boolean
+  depth_output: boolean
+}
+
+export type SourceProbeDirection = 'fanin' | 'fanout'
+export type SourceProbeHintKind = 'block' | 'output_port' | 'procedural' | 'signal'
+
+export interface SourceProbeHint {
+  file: string
+  start_line: number
+  end_line: number
+  direction: SourceProbeDirection
+  kind: SourceProbeHintKind
+}
+
+export interface SourceSeenRange {
+  file: string
+  start_line: number
+  end_line: number
+}
+
+export interface ExplorationGroup {
+  kind: 'register' | 'comb' | 'port'
+  members: number[]
+  label: string
+  cell_type: string
+}
+
+export interface ExplorationSnapshot {
+  design_id: string
+  schema_version: number
+  files: string[]
+  nodes: ExplorationNode[]
+  edges: ExplorationEdge[]
+  source_by_line: Record<string, number[]>
+  source_ranges: SourceRangeMapping[]
+  source_hints: SourceProbeHint[]
+  procedural_targets: Record<string, Record<string, number[]>>
+  source_seen_lines: string[]
+  source_seen_ranges: SourceSeenRange[]
+  groups: ExplorationGroup[]
 }
 
 // --- POST /api/synthesize ---

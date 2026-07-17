@@ -14,7 +14,9 @@ export interface SourceProbeDebouncer {
 
 export function createSourceProbeDebouncer(
   onProbe: (selection: SourceSelection) => void,
-  delayMs = 250,
+  // Local worker queries are cheap; retain only a short coalescing window so a
+  // drag does not trigger repeated ELK layouts while clicks still feel direct.
+  delayMs = 50,
 ): SourceProbeDebouncer {
   let timer: ReturnType<typeof setTimeout> | null = null
   const cancel = () => {

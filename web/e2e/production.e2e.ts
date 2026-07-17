@@ -494,6 +494,44 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await expect(schematicTab).toHaveAttribute('aria-selected', 'true')
 })
 
+test('a stale exploration preload cannot report an error on the next design', async ({ page }) => {
+  let explorationRequests = 0
+  await page.route('**/api/design/*/exploration', async (route) => {
+    explorationRequests += 1
+    if (explorationRequests === 1) {
+      const response = await route.fetch()
+      await new Promise((resolve) => setTimeout(resolve, 1_000))
+      await route.fulfill({ response })
+      return
+    }
+    await route.continue()
+  })
+  await page.goto('/')
+  await page.getByLabel('Example').selectOption('reg_mux')
+
+  const firstSynthesis = page.waitForResponse(
+    (response) => response.url().endsWith('/api/synthesize') && response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+  expect((await firstSynthesis).ok()).toBe(true)
+  await expect.poll(() => explorationRequests).toBe(1)
+
+  await page.getByLabel('Example').selectOption('handshake_controller')
+  const secondSynthesis = page.waitForResponse(
+    (response) => response.url().endsWith('/api/synthesize') && response.request().method() === 'POST',
+  )
+  const currentExploration = page.waitForResponse(
+    (response) => new URL(response.url()).pathname.endsWith('/exploration') && response.ok(),
+  )
+  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+  expect((await secondSynthesis).ok()).toBe(true)
+  await currentExploration
+
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+  await expect(page.locator('.g-node-body').first()).toBeVisible()
+  expect(explorationRequests).toBe(2)
+})
+
 test('Focus defaults on and non-focus selections preserve the full layout', async ({
   page,
 }) => {
@@ -510,25 +548,31 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
     .selectOption('xilinx')
   await page.getByRole('tab', { name: 'Overview', exact: true }).click()
 
+  let explorationRequests = 0
+  let lineConeRequests = 0
+  let netlistRequests = 0
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.endsWith('/exploration')) explorationRequests += 1
+    if (request.url().includes('/line-cone')) lineConeRequests += 1
+    if (request.url().includes('/netlist?')) netlistRequests += 1
+  })
   const synthResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith('/api/synthesize') &&
       response.request().method() === 'POST',
   )
+  const explorationResponse = page.waitForResponse((response) =>
+    new URL(response.url()).pathname.endsWith('/exploration'),
+  )
   await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
   expect((await synthResponse).ok()).toBe(true)
-
-  let lineConeRequests = 0
-  let netlistRequests = 0
-  page.on('request', (request) => {
-    if (request.url().includes('/line-cone?')) lineConeRequests += 1
-    if (request.url().includes('/netlist?')) netlistRequests += 1
-  })
+  expect(explorationRequests).toBe(0)
 
   const fullResponse = page.waitForResponse((response) =>
     response.url().includes('/netlist?'),
   )
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  expect((await explorationResponse).ok()).toBe(true)
   const resolvedFullResponse = await fullResponse
   expect(resolvedFullResponse.ok()).toBe(true)
   expect(new URL(resolvedFullResponse.url()).searchParams.get('around')).toBeNull()
@@ -543,23 +587,21 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
   )
   expect(fullNodeIds.length).toBeGreaterThan(0)
   expect(lineConeRequests).toBe(0)
+  expect(explorationRequests).toBe(1)
   expect(netlistRequests).toBe(1)
 
   // The first selection uses the default Focus-on mode and renders its subset.
-  const firstSelectionResponse = page.waitForResponse((response) =>
-    response.url().includes('/line-cone?'),
-  )
   await page
     .locator('.cm-line', { hasText: 'wait_count <= wait_count + 1\'b1;' })
     .click()
-  expect((await firstSelectionResponse).ok()).toBe(true)
   await expect(focus).toBeEnabled()
   await expect(focus).toBeChecked()
   await expect
     .poll(async () => page.locator('.g-node-body').count())
     .toBeLessThan(fullNodeIds.length)
   expect(await page.locator('.g-node-body').count()).toBeGreaterThan(0)
-  expect(lineConeRequests).toBe(1)
+  expect(lineConeRequests).toBe(0)
+  expect(explorationRequests).toBe(1)
   expect(netlistRequests).toBe(1)
 
   // Focus off restores the full projection. A different selection then changes
@@ -574,11 +616,7 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
   const retainedNodeTransform = await retainedNode.getAttribute('transform')
   expect(retainedNodeTransform).toMatch(/^translate\(/)
 
-  const secondSelectionResponse = page.waitForResponse((response) =>
-    response.url().includes('/line-cone?'),
-  )
   await page.locator('.cm-line', { hasText: "request_valid = 1'b1;" }).click()
-  expect((await secondSelectionResponse).ok()).toBe(true)
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(
     await fullNodes.evaluateAll((nodes) =>
@@ -587,7 +625,8 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
   ).toEqual(fullNodeIds)
   await expect(viewport).toHaveAttribute('transform', fullTransform ?? '')
   await expect(retainedNode).toHaveAttribute('transform', retainedNodeTransform ?? '')
-  expect(lineConeRequests).toBe(2)
+  expect(lineConeRequests).toBe(0)
+  expect(explorationRequests).toBe(1)
   expect(netlistRequests).toBe(1)
 
   // Turning Focus back on re-lays out only the current selection's subset.
@@ -597,7 +636,7 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
     .toBeLessThan(fullNodeIds.length)
   const focusedNodeCount = await page.locator('.g-node-body').count()
   expect(focusedNodeCount).toBeGreaterThan(0)
-  expect(lineConeRequests).toBe(2)
+  expect(lineConeRequests).toBe(0)
   expect(netlistRequests).toBe(1)
 
   // Focus off restores the already-loaded full projection without refetching.
@@ -608,7 +647,7 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
       nodes.map((node) => node.getAttribute('data-graph-node-id')),
     ),
   ).toEqual(fullNodeIds)
-  expect(lineConeRequests).toBe(2)
+  expect(lineConeRequests).toBe(0)
   expect(netlistRequests).toBe(1)
 
   // Escape clears the relevant source selection from outside CodeMirror. The
@@ -618,6 +657,6 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
-  expect(lineConeRequests).toBe(2)
+  expect(lineConeRequests).toBe(0)
   expect(netlistRequests).toBe(1)
 })

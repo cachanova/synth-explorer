@@ -654,69 +654,60 @@ also retains at most 20,000 range-to-node associations globally.
 `mapping_incomplete` marks each interval affected by that global bound or its
 per-range root bound. `truncated` is true when either public response bound or
 an internal per-line/per-range/global root collection bound was hit.
-Internal line-cone and optimized/absorbed queries retain the complete sparse
-interval index and its per-interval completeness independently of this bounded
-response projection.
+The browser exploration snapshot retains the complete sparse interval index and
+its per-interval completeness independently of this bounded public projection.
 
-## GET `/api/design/:id/line-cone?file=<name>&start_line=<n>&end_line=<n>&max_nodes=400&hide_control=true&hide_const=true&show_infrastructure=false`
+## GET `/api/design/:id/exploration`
 
-Source-range schematic for one to 200 RTL lines. Directional source constructs
-return only the circuit owned by that selection: an input declaration follows
-fanout, while output declarations, continuous assignments, and procedural
-assignments follow fanin. When an output declaration is connected directly to
-an ordinary register (optionally through transparent I/O buffers), its probe
-also expands that register's inputs; upstream registers remain boundaries. A
-non-assignment line inside an `always` block uses the union of every resolved
-assignment target in that block. Unclassified source ranges retain the
-bidirectional register-boundary envelope around cells whose `src` maps to the
-selection. Every other traversal stops at sequential cells / ports / consts as
-usual. A selected register may be the center of an unclassified envelope so its
-upstream D and downstream Q neighborhoods are both visible without implying a
-combinational path through it. If selected roots drive control pins, control
-edges are included and `control` is true.
-Accepts `group_vectors=true` (same grouping semantics as `/cone`); a group is a
-root when any member is a root.
+Immutable data prepared once for the browser's source-selection worker. The
+worker fetches and parses this response directly when the schematic becomes
+active, so the main browser thread never parses or structured-clones the full
+snapshot. Rust
+performs synthesis, graph construction, provenance recovery, cell
+classification, control metadata, timing depth, and vector grouping. The
+browser performs only bounded source lookups and graph walks; selecting source
+does not issue another HTTP request.
 
 ```ts
 {
-  status: "mapped" | "mapping_incomplete" |
-          "optimized_or_absorbed" | "unmapped";
-  control: boolean;
-  highlight: number[]; // graph node ids owned by the selected source construct
-  graph: Subgraph;
+  design_id: string;
+  schema_version: 1;
+  files: string[];
+  nodes: ExplorationNode[];       // render metadata plus prepared traversal flags;
+                                  // group_src preserves native grouped-node provenance
+  edges: ExplorationEdge[];       // raw bit edges plus prepared control/depth flags
+  source_by_line: Record<string, number[]>;
+  source_ranges: SourceRangeMapping[];
+  source_hints: SourceProbeHint[];
+  procedural_targets: Record<string, Record<string, number[]>>;
+  source_seen_lines: string[];
+  source_seen_ranges: { file: string; start_line: number; end_line: number }[];
+  groups: { kind: "register" | "comb" | "port"; members: number[];
+            label: string; cell_type: string }[];
 }
 ```
 
-`mapping_incomplete` means a selected recovered interval exceeded provenance
-association bounds. The graph contains any retained roots, but is partial; this
-status takes priority over `mapped` and `optimized_or_absorbed` so capped
-provenance is never presented as logic proven to have been optimized away.
-`optimized_or_absorbed` means a pre-mapping synthesis object was attributed to
-the range but no final object retained that attribution; it deliberately does
-not claim whether the logic was removed, folded, shared, or absorbed. `422` for
-an unknown file, invalid range, or a range longer than 200 lines.
-Wire-only continuous assignments and port declarations, which Yosys JSON does
-not reliably source-attribute, are indexed from the selected top's live
-elaborated hierarchy and resolved through the final signal aliases. Continuous
-assignments use inclusive `assign` spans; declaration aliases such as
-`wire alias = value` retain the same recovery. Exact flattened instance scopes
-are derived from the reachable pre-flatten module-instance graph, so
-unreachable sibling modules cannot contribute aliases even on Yosys versions
-without post-flatten scope metadata.
-This recovered attribution is also returned by `/nodes` for graph-to-source
-probing as one `file:start-end` source span rather than one alias per line.
-Yosys attributes procedural cells to whole `always` blocks, so recovery also
-indexes per-line assignment targets (`<lhs> <=` and leading `<lhs> =`
-statements) and the enclosing block range, resolved through the same scope and
-net-alias machinery. Probing `idx <= 5'd0;` therefore follows only the fanin of
-`idx`; probing an `if`/`for`/block line follows the fanin of every resolved
-target assigned by that block. Any parsing or resolution gap falls back to
-Yosys source attribution rather than inventing ownership.
-Files containing conditional-preprocessor branches use only Yosys provenance
-to avoid attributing an inactive branch. If the LHS no longer exists, the span
-reports `optimized_or_absorbed`. Source-range root collection retains at most
-2,001 deterministic node ids so exceeding the 2,000-node graph ceiling is
-reported through `graph.truncated` without constructing an unbounded root set.
+The snapshot contains complete graph and source-selection indexes, so it is not
+subject to the `/netlist` render cap or the `/source-map` public response cap.
+It excludes raw Yosys netlists, submitted source text, logs, timing paths, and
+other analysis that source selection does not need. `schema_version` is checked
+by the worker before accepting the snapshot.
+
+Browser exploration is intentionally bounded independently of the retained
+design cache: designs with more than 64 MiB of retained analysis allocations or
+snapshots whose JSON exceeds 16 MiB return `413`. Snapshot construction and
+serialization run off the async executor and only one response is materialized
+at a time, bounding transient server memory. The UI reports the returned error
+instead of falling back to a second server-side selection implementation.
+
+Directional semantics remain the same: input declarations follow fanout;
+output declarations and continuous/procedural assignments follow fanin;
+unclassified source follows a bidirectional register-boundary envelope. Direct
+registered outputs expand the selected register's inputs. Procedural statement
+lines narrow whole-block Yosys attribution to their prepared assignment
+targets. Mapping completeness, optimized/absorbed status, grouping, control and
+constant filtering, node/edge caps, and infrastructure projection are applied
+inside the browser worker.
 
 ## GET `/api/design/:id/nodes?ids=1,2,3`
 

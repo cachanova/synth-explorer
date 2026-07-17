@@ -119,3 +119,108 @@ console.log(
       .map((c) => c.x)
       .join(',')})`,
 )
+
+const explorationFile = readdirSync(assets).find(
+  (f) => f.startsWith('exploration.worker-') && f.endsWith('.js'),
+)
+if (!explorationFile) {
+  console.error('FAIL: no exploration.worker-*.js chunk in dist/assets')
+  process.exit(1)
+}
+const explorationMessages = []
+const explorationFetches = []
+const explorationSandbox = {
+  console,
+  postMessage: (message) => explorationMessages.push(message),
+  fetch: async (url) => {
+    explorationFetches.push(url)
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => JSON.parse(JSON.stringify(snapshot)),
+    }
+  },
+}
+explorationSandbox.self = explorationSandbox
+explorationSandbox.globalThis = explorationSandbox
+vm.createContext(explorationSandbox)
+try {
+  vm.runInContext(readFileSync(join(assets, explorationFile), 'utf8'), explorationSandbox, {
+    filename: explorationFile,
+  })
+} catch (error) {
+  console.error(`FAIL: exploration worker chunk threw at eval time: ${error}`)
+  process.exit(1)
+}
+const snapshot = {
+  design_id: 'verify',
+  schema_version: 1,
+  files: ['top.sv'],
+  nodes: [
+    {
+      id: 0, kind: 'port', name: 'a', boundary: true, comb: false, constant: false,
+      output_frontier: false, addressable_sequential: false, register_type: false,
+      infrastructure: false, transparent_buffer: false,
+    },
+    {
+      id: 1, kind: 'cell', name: 'logic', boundary: false, comb: true, constant: false,
+      output_frontier: false, addressable_sequential: false, register_type: false,
+      infrastructure: false, transparent_buffer: false,
+    },
+  ],
+  edges: [{
+    from: 0, to: 1, from_port: 'a', to_port: 'A', net_name: 'a', control: false,
+    hidden_control: false, depth_input: true, depth_output: true,
+  }],
+  source_by_line: { 'top.sv:2': [1] },
+  source_ranges: [],
+  source_hints: [{
+    file: 'top.sv', start_line: 2, end_line: 2, direction: 'fanin', kind: 'signal',
+  }],
+  procedural_targets: {},
+  source_seen_lines: [],
+  source_seen_ranges: [],
+  groups: [],
+}
+function sendExplorationRequest(request) {
+  vm.runInContext(
+    `(self.onmessage ?? globalThis.onmessage)({ data: JSON.parse(${JSON.stringify(
+      JSON.stringify(request),
+    )}) })`,
+    explorationSandbox,
+  )
+}
+sendExplorationRequest({ id: 1, kind: 'initialize', designId: 'verify' })
+const explorationDeadline = Date.now() + 10000
+while (!explorationMessages.some((message) => message.id === 1) && Date.now() < explorationDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 25))
+}
+const initializationResult = explorationMessages.find((message) => message.id === 1)
+if (!initializationResult?.ok || explorationFetches[0] !== '/api/design/verify/exploration') {
+  console.error('FAIL: exploration worker initialization malformed:', initializationResult)
+  process.exit(1)
+}
+sendExplorationRequest({
+  id: 2,
+  kind: 'source',
+  file: 'top.sv',
+  startLine: 2,
+  endLine: 2,
+  options: { maxNodes: 400, hideControl: true, hideConst: true, groupVectors: false },
+})
+while (!explorationMessages.some((message) => message.id === 2) && Date.now() < explorationDeadline) {
+  await new Promise((resolve) => setTimeout(resolve, 25))
+}
+const explorationResult = explorationMessages.find((message) => message.id === 2)
+if (
+  !explorationResult?.ok ||
+  explorationResult.result?.status !== 'mapped' ||
+  explorationResult.result?.graph?.nodes?.length !== 2
+) {
+  console.error('FAIL: exploration worker result malformed:', explorationResult)
+  process.exit(1)
+}
+console.log(
+  `PASS: ${explorationFile} fetched a prepared design and resolved a source cone locally`,
+)

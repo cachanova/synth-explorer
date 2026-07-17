@@ -7,7 +7,6 @@ import type {
   ExamplesResponse,
   FanoutResponse,
   HealthResponse,
-  LineConeResponse,
   Mode,
   NodesResponse,
   PathsResponse,
@@ -164,39 +163,6 @@ export function getCone(
   if (opts.group_vectors != null) p.set('group_vectors', String(opts.group_vectors))
   return getJson<Subgraph>(
     `/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`,
-    signal,
-  )
-}
-
-export interface LineConeOptions {
-  file: string
-  start_line: number
-  end_line: number
-  max_nodes?: number
-  hide_control?: boolean
-  hide_const?: boolean
-  show_infrastructure?: boolean
-  group_vectors?: boolean
-}
-
-export function getLineCone(
-  id: string,
-  opts: LineConeOptions,
-  signal?: AbortSignal,
-): Promise<LineConeResponse> {
-  const p = new URLSearchParams()
-  p.set('file', opts.file)
-  p.set('start_line', String(opts.start_line))
-  p.set('end_line', String(opts.end_line))
-  if (opts.max_nodes != null) p.set('max_nodes', String(opts.max_nodes))
-  if (opts.hide_control != null) p.set('hide_control', String(opts.hide_control))
-  if (opts.hide_const != null) p.set('hide_const', String(opts.hide_const))
-  if (opts.show_infrastructure != null) {
-    p.set('show_infrastructure', String(opts.show_infrastructure))
-  }
-  if (opts.group_vectors != null) p.set('group_vectors', String(opts.group_vectors))
-  return getJson<LineConeResponse>(
-    `/api/design/${encodeURIComponent(id)}/line-cone?${p.toString()}`,
     signal,
   )
 }
