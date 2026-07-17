@@ -836,6 +836,7 @@ a:hover {
   background: var(--bg-1);
   border: 1px solid var(--border);
   border-radius: 8px;
+  min-width: 0;
   padding: 10px 12px;
 }
 .card .k {
@@ -849,6 +850,7 @@ a:hover {
   font-weight: 700;
   margin-top: 3px;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 .card .v.accent {
   color: var(--accent);
