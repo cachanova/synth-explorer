@@ -44,6 +44,8 @@ interface Props {
   rootId: number
   relevantIds: Set<number>
   overlayIds: Set<number>
+  /** Extend source-selection overlays across adjacent port/constant nets. */
+  extendOverlayToBoundaryNets?: boolean
   selectedId: number | null
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
@@ -676,6 +678,7 @@ export const GraphView = memo(function GraphView({
   rootId,
   relevantIds,
   overlayIds,
+  extendOverlayToBoundaryNets = false,
   selectedId,
   interactive,
   onSelect,
@@ -1148,8 +1151,25 @@ export const GraphView = memo(function GraphView({
             const relevant =
               relevantIds.size === 0 ||
               (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
+            const fromHighlighted = overlayIds.has(laidOutEdge.from)
+            const toHighlighted = overlayIds.has(laidOutEdge.to)
+            const fromKind =
+              extendOverlayToBoundaryNets && toHighlighted
+                ? metadata.nodeById.get(laidOutEdge.from)?.node.kind
+                : undefined
+            const toKind =
+              extendOverlayToBoundaryNets && fromHighlighted
+                ? metadata.nodeById.get(laidOutEdge.to)?.node.kind
+                : undefined
+            // Source overlays name logic cells, not their port/constant boundary
+            // nodes. Keep those terminal nets continuous without lighting up
+            // branches from the selected logic into unrelated context cells.
             const highlighted =
-              overlayIds.has(laidOutEdge.from) && overlayIds.has(laidOutEdge.to)
+              (fromHighlighted && toHighlighted) ||
+              (extendOverlayToBoundaryNets &&
+                relevant &&
+                ((fromHighlighted && toKind != null && toKind !== 'cell') ||
+                  (toHighlighted && fromKind != null && fromKind !== 'cell')))
             let points = laidOutEdge.points
             if (points.length < 2) {
               const from = metadata.nodeById.get(laidOutEdge.from)

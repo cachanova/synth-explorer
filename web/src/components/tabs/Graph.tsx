@@ -618,6 +618,7 @@ export function Graph({ active }: { active: boolean }) {
             rootId={rootId}
             relevantIds={relevantIds}
             overlayIds={overlayIds}
+            extendOverlayToBoundaryNets={coneReq?.kind === 'source'}
             selectedId={graphInteractive ? (selected?.id ?? null) : null}
             interactive={graphInteractive}
             onSelect={onGraphSelect}
