@@ -205,6 +205,9 @@ Record the authorization evidence before production cutover.
 
 ## Benchmark method
 
+Committed summaries are recorded in
+[`BROWSER_WASM_BENCHMARKS.md`](BROWSER_WASM_BENCHMARKS.md).
+
 The local control and candidate runs use production builds, the same machine,
 the same browser build, and the same fixtures. The harness will test two network
 profiles:
