@@ -1148,8 +1148,18 @@ export const GraphView = memo(function GraphView({
             const relevant =
               relevantIds.size === 0 ||
               (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
+            const fromHighlighted = overlayIds.has(laidOutEdge.from)
+            const toHighlighted = overlayIds.has(laidOutEdge.to)
+            const fromNode = metadata.nodeById.get(laidOutEdge.from)?.node
+            const toNode = metadata.nodeById.get(laidOutEdge.to)?.node
+            // Source overlays name logic cells, not their port/constant boundary
+            // nodes. Keep those terminal nets continuous without lighting up
+            // branches from the selected logic into unrelated context cells.
             const highlighted =
-              overlayIds.has(laidOutEdge.from) && overlayIds.has(laidOutEdge.to)
+              (fromHighlighted && toHighlighted) ||
+              (relevant &&
+                ((fromHighlighted && toNode != null && toNode.kind !== 'cell') ||
+                  (toHighlighted && fromNode != null && fromNode.kind !== 'cell')))
             let points = laidOutEdge.points
             if (points.length < 2) {
               const from = metadata.nodeById.get(laidOutEdge.from)

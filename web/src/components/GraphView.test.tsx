@@ -103,6 +103,71 @@ describe('GraphView LUT labels', () => {
     expect(markup).toMatch(/g-node-body[^>]*\bhl\b/)
   })
 
+  it('highlights boundary nets without highlighting branches into context logic', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 76,
+              height: 52,
+              node: { id: 1, kind: 'port', name: 'response_valid' },
+            },
+            {
+              id: 2,
+              x: 140,
+              y: 0,
+              width: 76,
+              height: 52,
+              node: { id: 2, kind: 'cell', name: 'selected', cell_type: '$_AND_' },
+            },
+            {
+              id: 3,
+              x: 280,
+              y: 0,
+              width: 76,
+              height: 52,
+              node: { id: 3, kind: 'port', name: 'done' },
+            },
+            {
+              id: 4,
+              x: 280,
+              y: 80,
+              width: 76,
+              height: 52,
+              node: { id: 4, kind: 'cell', name: 'context', cell_type: '$_OR_' },
+            },
+          ],
+          edges: [
+            laidOutEdge(1, 2, 'input_net'),
+            laidOutEdge(2, 3, 'output_net'),
+            laidOutEdge(2, 4, 'context_branch'),
+          ],
+          width: 356,
+          height: 132,
+        }}
+        rootId={-1}
+        overlayIds={new Set([2])}
+        relevantIds={new Set([1, 2, 3])}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    const edgeTags = markup.match(/<path class="g-edge[^"]*"[^>]*>/g) ?? []
+    expect(edgeTags).toHaveLength(3)
+    expect(edgeTags[0]).toContain('class="g-edge hl"')
+    expect(edgeTags[1]).toContain('class="g-edge hl"')
+    expect(edgeTags[2]).toContain('class="g-edge"')
+    expect(edgeTags[2]).not.toContain('class="g-edge hl"')
+  })
+
   it('does not render a generated driving-net suffix as a node subtitle', () => {
     const markup = renderToStaticMarkup(
       <GraphView
@@ -274,3 +339,22 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('Esc clears')
   })
 })
+
+function laidOutEdge(from: number, to: number, netName: string) {
+  return {
+    from,
+    to,
+    points: [
+      { x: 76, y: 26 },
+      { x: 140, y: 26 },
+    ],
+    edge: {
+      from,
+      to,
+      from_port: 'Y',
+      to_port: 'A',
+      net_name: netName,
+      bits: [1],
+    },
+  }
+}
