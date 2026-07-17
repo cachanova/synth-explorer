@@ -104,69 +104,19 @@ describe('GraphView LUT labels', () => {
   })
 
   it('highlights boundary and interior nets without context-logic branch bleed', () => {
+    const props = {
+      graph: boundaryHighlightGraph(),
+      rootId: -1,
+      overlayIds: new Set([2, 5]),
+      relevantIds: new Set([1, 2, 3, 4, 5]),
+      selectedId: null,
+      interactive: false,
+      onSelect: () => undefined,
+      active: false,
+      fitNonce: 0,
+    }
     const markup = renderToStaticMarkup(
-      <GraphView
-        graph={{
-          nodes: [
-            {
-              id: 1,
-              x: 0,
-              y: 0,
-              width: 76,
-              height: 52,
-              node: { id: 1, kind: 'port', name: 'response_valid' },
-            },
-            {
-              id: 2,
-              x: 140,
-              y: 0,
-              width: 76,
-              height: 52,
-              node: { id: 2, kind: 'cell', name: 'selected', cell_type: '$_AND_' },
-            },
-            {
-              id: 3,
-              x: 280,
-              y: 0,
-              width: 76,
-              height: 52,
-              node: { id: 3, kind: 'port', name: 'done' },
-            },
-            {
-              id: 4,
-              x: 280,
-              y: 80,
-              width: 76,
-              height: 52,
-              node: { id: 4, kind: 'cell', name: 'context', cell_type: '$_OR_' },
-            },
-            {
-              id: 5,
-              x: 280,
-              y: 160,
-              width: 76,
-              height: 52,
-              node: { id: 5, kind: 'cell', name: 'interior', cell_type: '$_XOR_' },
-            },
-          ],
-          edges: [
-            laidOutEdge(1, 2, 'input_net'),
-            laidOutEdge(2, 3, 'output_net'),
-            laidOutEdge(2, 4, 'context_branch'),
-            laidOutEdge(2, 5, 'interior_net'),
-          ],
-          width: 356,
-          height: 212,
-        }}
-        rootId={-1}
-        overlayIds={new Set([2, 5])}
-        relevantIds={new Set([1, 2, 3, 4, 5])}
-        selectedId={null}
-        interactive={false}
-        onSelect={() => undefined}
-        active={false}
-        fitNonce={0}
-      />,
+      <GraphView {...props} extendOverlayToBoundaryNets />,
     )
 
     const edgeTags = markup.match(/<path class="g-edge[^"]*"[^>]*>/g) ?? []
@@ -176,6 +126,13 @@ describe('GraphView LUT labels', () => {
     expect(edgeTags[2]).toContain('class="g-edge"')
     expect(edgeTags[2]).not.toContain('class="g-edge hl"')
     expect(edgeTags[3]).toContain('class="g-edge hl"')
+
+    const pathMarkup = renderToStaticMarkup(<GraphView {...props} />)
+    const pathEdgeTags = pathMarkup.match(/<path class="g-edge[^"]*"[^>]*>/g) ?? []
+    expect(pathEdgeTags[0]).not.toContain('class="g-edge hl"')
+    expect(pathEdgeTags[1]).not.toContain('class="g-edge hl"')
+    expect(pathEdgeTags[2]).not.toContain('class="g-edge hl"')
+    expect(pathEdgeTags[3]).toContain('class="g-edge hl"')
   })
 
   it('does not render a generated driving-net suffix as a node subtitle', () => {
@@ -366,5 +323,60 @@ function laidOutEdge(from: number, to: number, netName: string) {
       net_name: netName,
       bits: [1],
     },
+  }
+}
+
+function boundaryHighlightGraph() {
+  return {
+    nodes: [
+      {
+        id: 1,
+        x: 0,
+        y: 0,
+        width: 76,
+        height: 52,
+        node: { id: 1, kind: 'port' as const, name: 'response_valid' },
+      },
+      {
+        id: 2,
+        x: 140,
+        y: 0,
+        width: 76,
+        height: 52,
+        node: { id: 2, kind: 'cell' as const, name: 'selected', cell_type: '$_AND_' },
+      },
+      {
+        id: 3,
+        x: 280,
+        y: 0,
+        width: 76,
+        height: 52,
+        node: { id: 3, kind: 'port' as const, name: 'done' },
+      },
+      {
+        id: 4,
+        x: 280,
+        y: 80,
+        width: 76,
+        height: 52,
+        node: { id: 4, kind: 'cell' as const, name: 'context', cell_type: '$_OR_' },
+      },
+      {
+        id: 5,
+        x: 280,
+        y: 160,
+        width: 76,
+        height: 52,
+        node: { id: 5, kind: 'cell' as const, name: 'interior', cell_type: '$_XOR_' },
+      },
+    ],
+    edges: [
+      laidOutEdge(1, 2, 'input_net'),
+      laidOutEdge(2, 3, 'output_net'),
+      laidOutEdge(2, 4, 'context_branch'),
+      laidOutEdge(2, 5, 'interior_net'),
+    ],
+    width: 356,
+    height: 212,
   }
 }

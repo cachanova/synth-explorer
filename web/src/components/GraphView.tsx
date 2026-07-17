@@ -44,6 +44,8 @@ interface Props {
   rootId: number
   relevantIds: Set<number>
   overlayIds: Set<number>
+  /** Extend source-selection overlays across adjacent port/constant nets. */
+  extendOverlayToBoundaryNets?: boolean
   selectedId: number | null
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
@@ -676,6 +678,7 @@ export const GraphView = memo(function GraphView({
   rootId,
   relevantIds,
   overlayIds,
+  extendOverlayToBoundaryNets = false,
   selectedId,
   interactive,
   onSelect,
@@ -1157,7 +1160,8 @@ export const GraphView = memo(function GraphView({
             // branches from the selected logic into unrelated context cells.
             const highlighted =
               (fromHighlighted && toHighlighted) ||
-              (relevant &&
+              (extendOverlayToBoundaryNets &&
+                relevant &&
                 ((fromHighlighted && toNode != null && toNode.kind !== 'cell') ||
                   (toHighlighted && fromNode != null && fromNode.kind !== 'cell')))
             let points = laidOutEdge.points
