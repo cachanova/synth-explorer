@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
+pub const MAX_PATH_RESULTS: usize = 8_000;
 pub const MAX_SUBGRAPH_NODES: usize = 2_000;
 pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
 const FULL_NETLIST_CONTEXT_NODE_BUDGET: usize = MAX_SUBGRAPH_NODES * 16;
@@ -1045,7 +1046,7 @@ impl Analysis {
             &recomputed
         };
         const TARGETS_PER_GROUP_CAP: usize = 64;
-        let candidate_cap = limit.max(1).saturating_mul(16).min(8000);
+        let candidate_cap = limit.max(1).saturating_mul(16).min(MAX_PATH_RESULTS);
         let mut total_targets = 0;
         let mut grouped_targets: HashMap<(EndpointKind, &str), Vec<&EndpointTarget>> =
             HashMap::new();
@@ -4135,6 +4136,16 @@ mod tests {
         assert_eq!(paths.paths.len(), 25);
         assert_eq!(groups.len(), 25);
         assert!(paths.truncated);
+
+        let all_paths = analysis.paths(&graph, MAX_PATH_RESULTS, None);
+        let all_groups: HashSet<_> = all_paths
+            .paths
+            .iter()
+            .map(|path| path.endpoint_group.as_str())
+            .collect();
+        assert_eq!(all_paths.paths.len(), 30);
+        assert_eq!(all_groups.len(), 30);
+        assert!(!all_paths.truncated);
     }
 
     #[test]

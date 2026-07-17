@@ -476,7 +476,7 @@ This endpoint retunes the estimate only. It deliberately does not echo
 design id, so it is carried once by `/api/synthesize` and `/api/design/:id`
 rather than resent on every retune. No retune can change it.
 
-## GET `/api/design/:id/paths?limit=25&to=<node_id>&profile=<p>&speed_grade=<g>&model=<json>`
+## GET `/api/design/:id/paths?limit=<n>&to=<node_id>&profile=<p>&speed_grade=<g>&model=<json>`
 
 Ranked longest structural paths (deepest first). Paths with the same logical
 endpoint, depth, and normalized structural route are grouped into bit cohorts;
@@ -490,6 +490,10 @@ with the same model resolution as `POST /api/design/:id/timing` (so per-path
 URL-encoded JSON `DelayModel`; an unparseable value falls back to the
 profile/default. Ranking and truncation are still by structural depth, not
 delay.
+
+When `limit` is omitted, the response includes every reconstructed path variant
+that fits the bounded analysis budgets below. An explicit `limit` returns only
+the first `n` ranked variants and is clamped to 8,000.
 
 ```ts
 {
@@ -520,13 +524,14 @@ delay.
                                  // every other absolute delay figure.
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
-  truncated: boolean;            // response limit or bounded route sampling hit
+  truncated: boolean;            // explicit response limit or bounded analysis hit
 }
 ```
 
 To keep wide designs bounded, the server retains at most 64 deepest bit targets
-per logical endpoint and examines at most `min(limit * 16, 8000)` targets overall
-before grouping route variants. Candidates are assigned one per logical
+per logical endpoint and examines at most 8,000 targets overall when `limit` is
+omitted, or `min(limit * 16, 8000)` when it is present, before grouping route
+variants. Candidates are assigned one per logical
 endpoint, deepest groups first, before additional bits are selected round-robin.
 A returned route contains at most 512 nodes while retaining its actual
 startpoint and endpoint. Reconstructing candidates has a shared 65,536-node

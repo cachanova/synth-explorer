@@ -204,6 +204,87 @@ test('synthesizes from the webpage with the default Yosys flags', async ({
   ).toHaveText(/^\d+$/)
 })
 
+test('scrolls every endpoint and path without mounting the full result set', async ({
+  page,
+}) => {
+  const endpoints = Array.from({ length: 500 }, (_, index) => ({
+    name: `endpoint-${String(index + 1).padStart(3, '0')}`,
+    width: 1,
+    worst_depth: 500 - index,
+    bits: [{ bit: 0, node_id: index + 1, depth: 500 - index }],
+  }))
+  const paths = Array.from({ length: 500 }, (_, index) => {
+    const number = index + 1
+    const startpoint = {
+      id: number * 2,
+      kind: 'port',
+      name: `input-${number}`,
+    }
+    const endpoint = {
+      id: number * 2 + 1,
+      kind: 'port',
+      name: `path-endpoint-${String(number).padStart(3, '0')}`,
+    }
+    return {
+      depth: 501 - number,
+      class: 'input_to_output',
+      endpoint_group: endpoint.name,
+      endpoint_kind: 'output',
+      bits: [0],
+      output_aliases: [],
+      startpoint,
+      endpoint,
+      endpoint_port: 'Y',
+      nodes: [startpoint, endpoint],
+    }
+  })
+  await page.route('**/api/design/*/endpoints', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ registers: [], outputs: endpoints, inputs: [] }),
+    }),
+  )
+  let pathsUrl = ''
+  await page.route('**/api/design/*/paths*', (route) => {
+    pathsUrl = route.request().url()
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ paths, comb_loops: [], truncated: false }),
+    })
+  })
+
+  await page.goto('/')
+  await page.getByLabel('Example').selectOption('reg_mux')
+  const synthResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith('/api/synthesize') &&
+      response.request().method() === 'POST',
+  )
+  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+  expect((await synthResponse).ok()).toBe(true)
+
+  await page.getByRole('tab', { name: 'Endpoints', exact: true }).click()
+  await expect(page.getByText('Logical endpoints (500 matched / 500)')).toBeVisible()
+  const endpointScroller = page.locator('.virtual-table-scroll')
+  expect(await endpointScroller.locator('tr.clickable').count()).toBeLessThan(100)
+  await endpointScroller.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await expect(page.getByText('endpoint-500', { exact: true })).toBeVisible()
+
+  await page.getByRole('tab', { name: 'Paths', exact: true }).click()
+  await expect(page.getByText('Longest logical path variants (500)')).toBeVisible()
+  expect(new URL(pathsUrl).searchParams.get('limit')).toBeNull()
+  const pathScroller = page.locator('.virtual-table-scroll')
+  expect(await pathScroller.locator('tr.clickable').count()).toBeLessThan(100)
+  await pathScroller.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await expect(page.getByText('path-endpoint-500', { exact: true })).toBeVisible()
+})
+
 test('graph viewport follows browser and pane resizing without resetting user zoom', async ({
   page,
 }) => {
