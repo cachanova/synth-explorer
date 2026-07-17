@@ -52,9 +52,8 @@ const XILINX: FlagDef[] = [
     flag: '-narrowcarry',
     label: 'LUT-map narrow arithmetic \u2264 N bits',
     description:
-      'App flag (not a yosys option): arithmetic with results up to N bits is ' +
-      'mapped to LUT logic instead of a carry chain; wider arithmetic keeps ' +
-      'its chain.',
+      'Custom Synth Explorer flag, not a yosys option: arithmetic with ' +
+      'results up to N bits maps to LUT logic; wider keeps its carry chain.',
     value: 'int',
     defaultValue: '8',
     min: 1,
@@ -72,7 +71,9 @@ const XILINX: FlagDef[] = [
   {
     flag: '-nowidelut',
     label: 'No wide-LUT muxes',
-    description: 'No MUXF7/MUXF8 mux resources.',
+    description:
+      'Cap mapping at native LUT6 instead of building 7/8-input functions ' +
+      'from LUT pairs glued by MUXF7/MUXF8.',
     defaultOn: true,
     defaultReason:
       'Wide-LUT mapping measured 1.5\u20132\u00d7 deeper than Vivado, with more ' +
@@ -83,7 +84,7 @@ const XILINX: FlagDef[] = [
     label: 'No I/O buffers',
     description: 'Skip IBUF/OBUF insertion for a cleaner netlist.',
     defaultOn: true,
-    defaultReason: 'Pad buffers clutter the netlist without changing the logic.',
+    defaultReason: 'De-clutters the netlist for better visibility.',
   },
   { flag: '-noclkbuf', label: 'No clock buffers', description: 'Skip BUFG clock-buffer insertion.' },
   { flag: '-uram', label: 'Infer UltraRAM', description: 'URAM288 for large memories (UltraScale+ only).' },
@@ -113,7 +114,7 @@ const ECP5: FlagDef[] = [
     label: 'No I/O buffers',
     description: 'Do not insert I/O buffers.',
     defaultOn: true,
-    defaultReason: 'Pad buffers clutter the netlist without changing the logic.',
+    defaultReason: 'De-clutters the netlist for better visibility.',
   },
   { flag: '-dff', label: 'FF-aware mapping', description: 'Run ABC with -dff (flip-flop-aware).' },
   { flag: '-abc9', label: 'ABC9 flow', description: 'Newer ABC9 area/delay mapping.' },
