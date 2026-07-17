@@ -7,20 +7,27 @@ import {
   slackNs,
 } from '../lib/timing'
 import {
+  ASIC_GATE_FIELDS,
+  ASIC_SHARED_FIELDS,
   DELAY_FIELDS,
   PDK_PROFILES,
+  compatibleTimingOverrides,
+  editorModelForRequest,
   effectiveProfile,
+  gateDelayValue,
   profilesForMode,
   loadTimingSettings,
   saveTimingSettings,
   speedGradeOptions,
-  timingRequest,
+  timingRequestForMode,
+  withGateDelay,
   type ProfileChoice,
   type TimingSettings,
 } from '../lib/timingSettings'
 import type {
   DelayBreakdown,
   DelayModel,
+  GateDelays,
   SpeedGrade,
   VivadoTiming,
 } from '../types'
@@ -57,6 +64,7 @@ export function TimingModel({
     estimated_delay_ns: number | null
     estimated_delay_breakdown?: DelayBreakdown
     model: DelayModel
+    requestKey: string
   } | null>(null)
   const [advanced, setAdvanced] = useState(false)
 
@@ -68,9 +76,7 @@ export function TimingModel({
   // make sense for THIS design's mode (no FPGA presets on gates netlists, no
   // ASIC nodes on FPGA/LUT netlists) before it reaches the select or the wire.
   const modeProfile = effectiveProfile(settings.profile, designMode)
-  const requestKey = JSON.stringify(
-    timingRequest({ ...settings, profile: modeProfile }),
-  )
+  const requestKey = JSON.stringify(timingRequestForMode(settings, designMode))
   const [debouncedKey, setDebouncedKey] = useState(requestKey)
   useEffect(() => {
     const t = setTimeout(() => setDebouncedKey(requestKey), 250)
@@ -81,7 +87,7 @@ export function TimingModel({
     let cancelled = false
     retuneTiming(designId, JSON.parse(debouncedKey))
       .then((r) => {
-        if (!cancelled) setResult(r)
+        if (!cancelled) setResult({ ...r, requestKey: debouncedKey })
       })
       .catch(() => {
         // keep the last good result on a transient error
@@ -93,18 +99,45 @@ export function TimingModel({
 
   const delayNs = result?.estimated_delay_ns ?? fallbackDelayNs
   const breakdown = result?.estimated_delay_breakdown ?? fallbackBreakdown
-  // What the editor shows: the user's override if any, else the resolved preset.
-  const editorModel = settings.overrides ?? result?.model ?? null
+  // What the editor shows: the compatible user override if any, else a preset
+  // response that belongs to the current request. A profile switch leaves the
+  // prior response on screen briefly; never let an edit clone that stale model.
+  const activeOverrides = compatibleTimingOverrides(settings, designMode)
+  const editorModel = editorModelForRequest(
+    activeOverrides,
+    result,
+    requestKey,
+  )
 
   const setProfile = (profile: ProfileChoice) =>
     setSettings((s) => ({ ...s, profile, overrides: null }))
   const setGrade = (speedGrade: SpeedGrade) =>
     setSettings((s) => ({ ...s, speedGrade }))
-  const editField = (key: keyof DelayModel, value: number) =>
+  const editField = (
+    key: Exclude<keyof DelayModel, 'gate_ps'>,
+    value: number,
+  ) =>
     setSettings((s) => {
-      const base = s.overrides ?? result?.model
+      const base = editorModelForRequest(
+        compatibleTimingOverrides(s, designMode),
+        result,
+        requestKey,
+      )
       if (!base) return s
       return { ...s, overrides: { ...base, [key]: value } }
+    })
+  const editGateField = (key: keyof GateDelays, value: number) =>
+    setSettings((s) => {
+      const base = editorModelForRequest(
+        compatibleTimingOverrides(s, designMode),
+        result,
+        requestKey,
+      )
+      if (!base) return s
+      return {
+        ...s,
+        overrides: withGateDelay(base, key, value),
+      }
     })
   const resetOverrides = () => setSettings((s) => ({ ...s, overrides: null }))
   const setTarget = (targetMhz: number | null) =>
@@ -176,15 +209,15 @@ export function TimingModel({
               grade binning — and the server ignores the grade for them. */}
           <select
             value={settings.speedGrade}
-            disabled={PDK_PROFILES.has(settings.profile)}
+            disabled={PDK_PROFILES.has(modeProfile)}
             title={
-              PDK_PROFILES.has(settings.profile)
+              PDK_PROFILES.has(modeProfile)
                 ? 'ASIC library profiles are characterized at a single corner and have no speed grades.'
                 : 'Speed grade multiplier applied to every delay term.'
             }
             onChange={(e) => setGrade(e.target.value as SpeedGrade)}
           >
-            {speedGradeOptions(settings.profile, designMode).map((o) => (
+            {speedGradeOptions(modeProfile, designMode).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>
@@ -216,19 +249,42 @@ export function TimingModel({
         onToggle={(e) => setAdvanced((e.target as HTMLDetailsElement).open)}
       >
         <summary>
-          Advanced: edit coefficients (ps){settings.overrides ? ' — custom' : ''}
+          Advanced: edit coefficients (ps){activeOverrides ? ' — custom' : ''}
         </summary>
         <div className="timing-coeffs">
-          {DELAY_FIELDS.map((f) => (
-            <CoeffInput
-              key={f.key}
-              label={f.label}
-              value={editorModel ? editorModel[f.key] : null}
-              onCommit={(n) => editField(f.key, n)}
-            />
-          ))}
+          {PDK_PROFILES.has(modeProfile) ? (
+            <>
+              {ASIC_GATE_FIELDS.map((f) => (
+                <CoeffInput
+                  key={`gate-${f.key}`}
+                  label={f.label}
+                  value={
+                    editorModel ? gateDelayValue(editorModel, f.key) : null
+                  }
+                  onCommit={(n) => editGateField(f.key, n)}
+                />
+              ))}
+              {ASIC_SHARED_FIELDS.map((f) => (
+                <CoeffInput
+                  key={f.key}
+                  label={f.label}
+                  value={editorModel ? editorModel[f.key] : null}
+                  onCommit={(n) => editField(f.key, n)}
+                />
+              ))}
+            </>
+          ) : (
+            DELAY_FIELDS.map((f) => (
+              <CoeffInput
+                key={f.key}
+                label={f.label}
+                value={editorModel ? editorModel[f.key] : null}
+                onCommit={(n) => editField(f.key, n)}
+              />
+            ))
+          )}
         </div>
-        {settings.overrides && (
+        {activeOverrides && (
           <button className="link-button" onClick={resetOverrides}>
             Reset to profile preset
           </button>

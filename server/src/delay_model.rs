@@ -61,9 +61,10 @@
 //! values — which, as the Xilinx history above shows, can score *worse* on
 //! end-to-end totals than compensating-error fits; they serve the model's
 //! stated "relative guide" purpose rather than promising absolute accuracy.
-//! The `generic` preset remains notional. Every coefficient is a flat,
-//! tunable number so a request can override any of them. This is still a
-//! pre-place-and-route estimate, NOT timing closure.
+//! The `generic` preset remains notional. FPGA and legacy callers keep the
+//! original flat coefficients; ASIC presets add a sparse per-gate table for
+//! the categories directly characterized in their Liberty source. This is
+//! still a pre-place-and-route estimate, NOT timing closure.
 
 use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
@@ -202,6 +203,60 @@ impl DelayProfile {
     }
 }
 
+/// Measured per-gate propagation delays for a standard-cell profile
+/// (picoseconds). Entries are optional because not every source library has a
+/// characterized cell for every category (ASAP7 has no MUX2, for example).
+/// Missing and compound gate kinds fall back to [`DelayModel::cell_ps`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize, DeepSizeOf)]
+#[serde(deny_unknown_fields)]
+pub struct GateDelays {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub and: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub or: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nand: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xnor: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mux: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not: Option<f64>,
+}
+
+impl GateDelays {
+    fn scaled(self, factor: f64) -> Self {
+        Self {
+            and: self.and.map(|value| value * factor),
+            or: self.or.map(|value| value * factor),
+            xor: self.xor.map(|value| value * factor),
+            nand: self.nand.map(|value| value * factor),
+            nor: self.nor.map(|value| value * factor),
+            xnor: self.xnor.map(|value| value * factor),
+            mux: self.mux.map(|value| value * factor),
+            not: self.not.map(|value| value * factor),
+        }
+    }
+
+    fn delay_for(self, upper: &str) -> Option<f64> {
+        match upper {
+            "$_AND_" => self.and,
+            "$_OR_" => self.or,
+            "$_XOR_" => self.xor,
+            "$_NAND_" => self.nand,
+            "$_NOR_" => self.nor,
+            "$_XNOR_" => self.xnor,
+            "$_MUX_" => self.mux,
+            "$_NOT_" => self.not,
+            _ => None,
+        }
+    }
+}
+
 /// Tunable delay coefficients (picoseconds). See module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DeepSizeOf)]
 pub struct DelayModel {
@@ -221,6 +276,10 @@ pub struct DelayModel {
     pub net_base_ps: f64,
     /// Added per sink on the net (fanout term).
     pub net_per_fanout_ps: f64,
+    /// Standard-cell propagation by generic Yosys gate kind. Absent preserves
+    /// the historical eight-field FPGA/generic model and its exact wire shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_ps: Option<GateDelays>,
 }
 
 impl Default for DelayModel {
@@ -251,6 +310,7 @@ impl DelayModel {
             ff_setup_ps: 40.0,
             net_base_ps: 773.0,
             net_per_fanout_ps: 29.0,
+            gate_ps: None,
         }
     }
 
@@ -272,6 +332,7 @@ impl DelayModel {
             ff_setup_ps: 30.0,
             net_base_ps: 136.0,
             net_per_fanout_ps: 28.0,
+            gate_ps: None,
         }
     }
 
@@ -295,6 +356,7 @@ impl DelayModel {
             ff_setup_ps: 25.0,
             net_base_ps: 51.0,
             net_per_fanout_ps: 20.0,
+            gate_ps: None,
         }
     }
 
@@ -341,6 +403,7 @@ impl DelayModel {
             ff_setup_ps: 21.0,
             net_base_ps: 589.1,
             net_per_fanout_ps: 259.5,
+            gate_ps: None,
         }
     }
 
@@ -385,6 +448,7 @@ impl DelayModel {
             ff_setup_ps: 0.0,
             net_base_ps: 450.0,
             net_per_fanout_ps: 53.7,
+            gate_ps: None,
         }
     }
 
@@ -396,9 +460,12 @@ impl DelayModel {
     /// capacitance, worst rise/fall arc.
     ///
     /// Provenance / stated assumptions:
-    /// - `lut_ps` / `cell_ps`: blend = mean of nand2_1, nor2_1, and2_1, or2_1,
-    ///   xor2_1, xnor2_1, mux2_1 worst arcs at FO4 — the model maps every
-    ///   `$_*_` gates-mode cell to a single number.
+    /// - `gate_ps`: measured nand2_1 135.5, nor2_1 171.4, and2_1 189.2,
+    ///   or2_1 253.8, xor2_1 330.5, xnor2_1 335.7, mux2_1 376.5, and inv_1
+    ///   121.1 worst arcs at FO4.
+    /// - `lut_ps` / `cell_ps`: 256.1 blend of those two-input logic gates;
+    ///   retained for legacy overrides and used when a compound Yosys gate has
+    ///   no directly characterized category.
     /// - `carry_ps`: ASSUMPTION — gates mode has no carry chains; the value is
     ///   an and2_1 + xor2_1 stand-in (a full-adder carry+sum stage) = 519.6.
     /// - `wide_mux_ps`: mux2_1 worst arc = 376.5.
@@ -427,6 +494,16 @@ impl DelayModel {
             ff_setup_ps: 103.3,
             net_base_ps: 2.1,
             net_per_fanout_ps: 15.0,
+            gate_ps: Some(GateDelays {
+                and: Some(189.2),
+                or: Some(253.8),
+                xor: Some(330.5),
+                nand: Some(135.5),
+                nor: Some(171.4),
+                xnor: Some(335.7),
+                mux: Some(376.5),
+                not: Some(121.1),
+            }),
         }
     }
 
@@ -437,8 +514,11 @@ impl DelayModel {
     /// inverter FO4 slew 365 ps).
     ///
     /// Provenance / stated assumptions:
-    /// - `lut_ps` / `cell_ps`: blend of the same seven gates, worst arcs at
-    ///   FO4 = 556.2.
+    /// - `gate_ps`: measured nand2_1 333.8, nor2_1 476.8, and2_1 359.0,
+    ///   or2_1 478.3, xor2_1 854.0, xnor2_1 727.1, mux2_1 664.7, and inv_1
+    ///   307.5 worst arcs at FO4.
+    /// - `lut_ps` / `cell_ps`: 556.2 blend, retained for legacy overrides and
+    ///   used for uncharacterized compound gate kinds.
     /// - `carry_ps`: ASSUMPTION — and2_1 + xor2_1 stand-in = 1213.
     /// - `ff_clk_to_q_ps` / `ff_setup_ps`: dffq_1 Q<-CLK rising edge = 912.6;
     ///   D setup_rising = 250.
@@ -467,6 +547,16 @@ impl DelayModel {
             ff_setup_ps: 250.0,
             net_base_ps: 48.3,
             net_per_fanout_ps: 48.3,
+            gate_ps: Some(GateDelays {
+                and: Some(359.0),
+                or: Some(478.3),
+                xor: Some(854.0),
+                nand: Some(333.8),
+                nor: Some(476.8),
+                xnor: Some(727.1),
+                mux: Some(664.7),
+                not: Some(307.5),
+            }),
         }
     }
 
@@ -479,9 +569,12 @@ impl DelayModel {
     /// numbers.
     ///
     /// Provenance / stated assumptions:
-    /// - `lut_ps` / `cell_ps`: blend of NAND2x1, NOR2x1, AND2x2, OR2x2,
-    ///   XOR2x1, XNOR2x1 worst arcs at FO4 = 30.0. No MUX2 cell exists in this
-    ///   NLDM set, so `wide_mux_ps` = the blend.
+    /// - `gate_ps`: measured NAND2x1 24.6, NOR2x1 22.4, AND2x2 25.4, OR2x2
+    ///   27.3, XOR2x1 42.5, XNOR2x1 38.0, and INVx1 21.2 worst arcs at FO4.
+    ///   No MUX2 cell exists in this NLDM set, so the MUX entry is absent.
+    /// - `lut_ps` / `cell_ps`: 30.0 blend of those six two-input gates,
+    ///   retained for legacy overrides and used for ASAP7 MUXes and other
+    ///   uncharacterized gate kinds. `wide_mux_ps` remains the same blend.
     /// - `carry_ps`: ASSUMPTION — AND2x2 + XOR2x1 stand-in = 67.9.
     /// - `ff_clk_to_q_ps` / `ff_setup_ps`: DFFHQNx1 QN<-CLK rising edge =
     ///   64.7; D setup_rising = 10.0.
@@ -505,6 +598,18 @@ impl DelayModel {
             ff_setup_ps: 10.0,
             net_base_ps: 4.0,
             net_per_fanout_ps: 4.0,
+            gate_ps: Some(GateDelays {
+                and: Some(25.4),
+                or: Some(27.3),
+                xor: Some(42.5),
+                nand: Some(24.6),
+                nor: Some(22.4),
+                xnor: Some(38.0),
+                // No MUX2 cell exists in the ASAP7 7.5t NLDM set. Keep this
+                // absent so `cell_ps` is visibly the uncharacterized fallback.
+                mux: None,
+                not: Some(21.2),
+            }),
         }
     }
 
@@ -521,6 +626,7 @@ impl DelayModel {
             ff_setup_ps: 40.0,
             net_base_ps: 200.0,
             net_per_fanout_ps: 50.0,
+            gate_ps: None,
         }
     }
 
@@ -547,6 +653,7 @@ impl DelayModel {
             ff_setup_ps: self.ff_setup_ps * f,
             net_base_ps: self.net_base_ps * f,
             net_per_fanout_ps: self.net_per_fanout_ps * f,
+            gate_ps: self.gate_ps.map(|gates| gates.scaled(f)),
         }
     }
 
@@ -557,6 +664,16 @@ impl DelayModel {
             self.carry_ps
         } else if is_wide_mux(&upper) {
             self.wide_mux_ps
+        } else if upper.starts_with("$_") && upper.ends_with('_') {
+            self.gate_ps
+                .and_then(|gates| gates.delay_for(&upper))
+                .unwrap_or_else(|| {
+                    if self.gate_ps.is_some() {
+                        self.cell_ps
+                    } else {
+                        self.lut_ps
+                    }
+                })
         } else if is_lut(&upper) {
             self.lut_ps
         } else {
@@ -630,6 +747,138 @@ mod tests {
         assert_eq!(m.net_delay_ps(0), m.net_delay_ps(1));
         assert_eq!(m.launch_ps(true), m.ff_clk_to_q_ps);
         assert_eq!(m.launch_ps(false), 0.0);
+    }
+
+    #[test]
+    fn asic_profiles_price_generic_cells_by_gate_kind() {
+        let model = DelayModel::sky130hd();
+        let gates = model
+            .gate_ps
+            .expect("ASIC profiles must carry per-gate delays");
+
+        assert_eq!(model.cell_delay_ps("$_AND_"), gates.and.unwrap());
+        assert_eq!(model.cell_delay_ps("$_OR_"), gates.or.unwrap());
+        assert_eq!(model.cell_delay_ps("$_XOR_"), gates.xor.unwrap());
+        assert_eq!(model.cell_delay_ps("$_XNOR_"), gates.xnor.unwrap());
+        assert_eq!(model.cell_delay_ps("$_NAND_"), gates.nand.unwrap());
+        assert_eq!(model.cell_delay_ps("$_NOR_"), gates.nor.unwrap());
+        assert_eq!(model.cell_delay_ps("$_MUX_"), gates.mux.unwrap());
+        assert_eq!(model.cell_delay_ps("$_NOT_"), gates.not.unwrap());
+
+        // Compound and uncharacterized Yosys gates do not borrow a simpler
+        // gate's measured value; the documented flat blend is the fallback.
+        for cell in [
+            "$_ANDNOT_",
+            "$_ORNOT_",
+            "$_NMUX_",
+            "$_BUF_",
+            "$_AOI3_",
+            "$_FUTURE_GATE_",
+        ] {
+            assert_eq!(model.cell_delay_ps(cell), model.cell_ps, "{cell}");
+        }
+
+        // ASAP7 has no characterized MUX2, so MUX also takes the fallback.
+        let asap = DelayModel::asap7();
+        assert_eq!(asap.gate_ps.unwrap().mux, None);
+        assert_eq!(asap.cell_delay_ps("$_MUX_"), asap.cell_ps);
+    }
+
+    #[test]
+    fn asic_gate_tables_preserve_measured_values_and_orderings() {
+        let sky = DelayModel::sky130hd().gate_ps.unwrap();
+        let gf = DelayModel::gf180mcu().gate_ps.unwrap();
+        let asap = DelayModel::asap7().gate_ps.unwrap();
+
+        assert_eq!(
+            sky,
+            GateDelays {
+                and: Some(189.2),
+                or: Some(253.8),
+                xor: Some(330.5),
+                nand: Some(135.5),
+                nor: Some(171.4),
+                xnor: Some(335.7),
+                mux: Some(376.5),
+                not: Some(121.1),
+            }
+        );
+        assert_eq!(
+            gf,
+            GateDelays {
+                and: Some(359.0),
+                or: Some(478.3),
+                xor: Some(854.0),
+                nand: Some(333.8),
+                nor: Some(476.8),
+                xnor: Some(727.1),
+                mux: Some(664.7),
+                not: Some(307.5),
+            }
+        );
+        assert_eq!(
+            asap,
+            GateDelays {
+                and: Some(25.4),
+                or: Some(27.3),
+                xor: Some(42.5),
+                nand: Some(24.6),
+                nor: Some(22.4),
+                xnor: Some(38.0),
+                mux: None,
+                not: Some(21.2),
+            }
+        );
+        for gates in [sky, gf, asap] {
+            assert!(gates.xor.unwrap() > gates.nand.unwrap());
+        }
+        for (asap_value, sky_value, gf_value) in [
+            (asap.and, sky.and, gf.and),
+            (asap.or, sky.or, gf.or),
+            (asap.xor, sky.xor, gf.xor),
+            (asap.nand, sky.nand, gf.nand),
+            (asap.nor, sky.nor, gf.nor),
+            (asap.xnor, sky.xnor, gf.xnor),
+            (asap.not, sky.not, gf.not),
+        ] {
+            assert!(
+                asap_value.unwrap() < sky_value.unwrap() && sky_value.unwrap() < gf_value.unwrap()
+            );
+        }
+        assert!(DelayModel::asap7().cell_ps < DelayModel::sky130hd().cell_ps);
+        assert!(DelayModel::sky130hd().cell_ps < DelayModel::gf180mcu().cell_ps);
+
+        let asap_json = serde_json::to_value(DelayModel::asap7()).unwrap();
+        assert!(asap_json["gate_ps"].get("and").is_some());
+        assert!(asap_json["gate_ps"].get("mux").is_none());
+
+        let mut mistyped = serde_json::to_value(DelayModel::sky130hd()).unwrap();
+        mistyped["gate_ps"]["xor_ps"] = serde_json::json!(330.5);
+        assert!(serde_json::from_value::<DelayModel>(mistyped).is_err());
+    }
+
+    #[test]
+    fn legacy_flat_models_remain_valid_wire_input() {
+        let json = serde_json::json!({
+            "lut_ps": 1.0,
+            "carry_ps": 2.0,
+            "wide_mux_ps": 3.0,
+            "cell_ps": 4.0,
+            "ff_clk_to_q_ps": 5.0,
+            "ff_setup_ps": 6.0,
+            "net_base_ps": 7.0,
+            "net_per_fanout_ps": 8.0
+        });
+        let model: DelayModel = serde_json::from_value(json).unwrap();
+        assert_eq!(model.gate_ps, None);
+        assert_eq!(model.cell_delay_ps("$_XOR_"), model.lut_ps);
+        assert!(
+            !serde_json::to_value(model)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("gate_ps")
+        );
     }
 
     #[test]
@@ -829,5 +1078,12 @@ mod tests {
         // absurd factors are clamped rather than producing zero/huge delays
         assert_eq!(base.scaled(0.0), base.scaled(0.1));
         assert_eq!(base.scaled(1000.0), base.scaled(10.0));
+
+        let asic = DelayModel::sky130hd();
+        let faster = asic.scaled(0.8);
+        assert_eq!(
+            faster.gate_ps.unwrap().xor,
+            asic.gate_ps.unwrap().xor.map(|value| value * 0.8)
+        );
     }
 }

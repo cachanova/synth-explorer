@@ -150,7 +150,20 @@ export interface CellCategoryCounts {
 
 // --- POST /api/design/:id/timing ---
 
-// Flat delay coefficients (picoseconds) — mirrors the server DelayModel.
+export interface GateDelays {
+  and?: number
+  or?: number
+  xor?: number
+  nand?: number
+  nor?: number
+  xnor?: number
+  mux?: number
+  not?: number
+}
+
+// Delay coefficients (picoseconds) — mirrors the server DelayModel. gate_ps is
+// present only for standard-cell profiles; its absence preserves the legacy
+// eight-field FPGA/generic shape.
 export interface DelayModel {
   lut_ps: number
   carry_ps: number
@@ -160,6 +173,7 @@ export interface DelayModel {
   ff_setup_ps: number
   net_base_ps: number
   net_per_fanout_ps: number
+  gate_ps?: GateDelays
 }
 
 export type DelayProfile =

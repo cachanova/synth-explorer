@@ -404,11 +404,32 @@ synthesis panel (the preset `for_target` chose from the design's mode/family).
 Unknown `profile` or `speed_grade` values fall back leniently (to the design
 model and `-1` respectively) rather than erroring.
 
-`DelayModel` is the flat set of picosecond coefficients: `lut_ps`, `carry_ps`,
-`wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`, `ff_setup_ps`, `net_base_ps`,
-`net_per_fanout_ps`. The Xilinx presets are calibrated against Vivado 2026.1 at
-the `-1` grade (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p),
-with per-family Vivado-measured `speed_grade` factors. The Lattice presets are
+`DelayModel` keeps the original eight required picosecond coefficients:
+`lut_ps`, `carry_ps`, `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`,
+`ff_setup_ps`, `net_base_ps`, and `net_per_fanout_ps`. It may additionally carry
+this standard-cell table:
+
+```ts
+gate_ps?: {
+  and?: number; or?: number; xor?: number;
+  nand?: number; nor?: number; xnor?: number;
+  mux?: number; not?: number;
+}
+```
+
+The table is absent from FPGA/generic presets and may be omitted by callers, so
+the historical eight-field request and response shape remains valid. Without a
+table, generic Yosys `$_..._` cells retain the legacy `lut_ps` price. With a
+table, the directly corresponding `$_AND_`, `$_OR_`, `$_XOR_`, `$_NAND_`,
+`$_NOR_`, `$_XNOR_`, `$_MUX_`, and `$_NOT_` cells use a present entry. A
+missing entry or any compound/unrecognized generic gate (`$_ANDNOT_`,
+`$_ORNOT_`, `$_NMUX_`, AOI/OAI, etc.) falls back to `cell_ps`; no simpler
+gate's measured value is substituted. DFFs remain outside `gate_ps`:
+`ff_clk_to_q_ps` prices a register launch and `ff_setup_ps` prices capture.
+
+The Xilinx presets are calibrated against Vivado 2026.1 at the `-1` grade
+(Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p), with
+per-family Vivado-measured `speed_grade` factors. The Lattice presets are
 derived from measured open timing databases (Project IceStorm for `ice40`, the
 HX grade; prjtrellis-db for `ecp5` at speed grade 6); for `ecp5`, `-2`/`-3` map
 to its real grades 7/8 with prjtrellis-measured factors 0.875/0.755. The ASIC
@@ -417,6 +438,21 @@ those PDKs' open Liberty files at the TT corner and **ignore `speed_grade`**: a
 standard-cell library has no grade binning, so the multiplier is always 1.
 `generic` keeps notional values and hand-picked grade factors (`-2`≈0.87,
 `-3`≈0.78), as does `ice40` (iCE40 has no speed-grade binning of its own).
+
+ASIC `gate_ps` values use the same extraction convention: the worst rise/fall
+Liberty arc at a self-consistent smallest-inverter FO4 slew and a load nearest
+four times that gate's own input capacitance. Shipped values (ps) and sources:
+
+| profile | AND | OR | XOR | NAND | NOR | XNOR | MUX | NOT | source |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `sky130hd` | 189.2 | 253.8 | 330.5 | 135.5 | 171.4 | 335.7 | 376.5 | 121.1 | `sky130_fd_sc_hd__tt_025C_1v80.lib` (Apache-2.0) |
+| `gf180mcu` | 359.0 | 478.3 | 854.0 | 333.8 | 476.8 | 727.1 | 664.7 | 307.5 | `gf180mcu_fd_sc_mcu7t5v0__tt_025C_5v00.lib` (Apache-2.0) |
+| `asap7` | 25.4 | 27.3 | 42.5 | 24.6 | 22.4 | 38.0 | — | 21.2 | `asap7sc7p5t_*_RVT_TT_nldm` (BSD-3-Clause; predictive PDK) |
+
+ASAP7 has no MUX2 cell in the characterized 7.5-track NLDM set, so its MUX
+entry is deliberately absent and resolves through `cell_ps` (the 30.0 ps
+six-gate blend). These values match measured library arcs with provenance; they
+are not an ASIC accuracy or timing-closure claim. NanGate45 is not shipped.
 
 Response:
 

@@ -1268,7 +1268,8 @@ async fn endpoints(
 #[derive(Debug, Deserialize)]
 struct TimingRequest {
     /// Named preset: series7 | ultrascale | ultrascale_plus | ice40 | ecp5 |
-    /// generic. Ignored when `model` is present. Defaults to series7.
+    /// sky130hd | gf180mcu | asap7 | generic. Ignored when `model` is present.
+    /// Defaults to series7.
     profile: Option<String>,
     /// Speed grade: "-1" (slowest, default), "-2", or "-3".
     speed_grade: Option<String>,
@@ -2708,6 +2709,13 @@ mod tests {
         )
         .await;
         assert_eq!(model, DelayModel::ultrascale_plus());
+
+        // ASIC profiles include their sparse measured gate table.
+        let model =
+            timing_model(post_timing(&state, "d", serde_json::json!({"profile": "asap7"})).await)
+                .await;
+        assert_eq!(model.gate_ps.unwrap().xor, Some(42.5));
+        assert_eq!(model.gate_ps.unwrap().mux, None);
 
         // A full override wins over a conflicting profile.
         let override_model = DelayModel::ice40();

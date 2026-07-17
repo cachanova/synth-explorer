@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_TIMING_SETTINGS,
+  compatibleTimingOverrides,
+  editorModelForRequest,
   effectiveProfile,
+  gateDelayValue,
   profilesForMode,
   ECP5_SPEED_GRADE_OPTIONS,
   PDK_PROFILES,
@@ -12,6 +15,8 @@ import {
   saveTimingSettings,
   speedGradeOptions,
   timingRequest,
+  timingRequestForMode,
+  withGateDelay,
   type TimingSettings,
 } from './timingSettings'
 import type { DelayModel } from '../types'
@@ -26,6 +31,44 @@ const MODEL: DelayModel = {
   net_base_ps: 20,
   net_per_fanout_ps: 5,
 }
+
+const ASIC_MODEL: DelayModel = {
+  ...MODEL,
+  gate_ps: { and: 11, xor: 22, not: 7 },
+}
+
+describe('ASIC gate overrides', () => {
+  it('reads missing categories through cell_ps and edits them immutably', () => {
+    const sparse: DelayModel = {
+      ...ASIC_MODEL,
+      cell_ps: 30,
+      gate_ps: { and: 25.4, xor: 42.5 },
+    }
+    expect(gateDelayValue(sparse, 'mux')).toBe(30)
+
+    const edited = withGateDelay(sparse, 'mux', 31)
+    expect(edited.gate_ps).toEqual({ and: 25.4, xor: 42.5, mux: 31 })
+    expect(edited.cell_ps).toBe(30)
+    expect(sparse.gate_ps).toEqual({ and: 25.4, xor: 42.5 })
+  })
+})
+
+describe('editor model provenance', () => {
+  const result = { model: MODEL, requestKey: 'profile=series7' }
+
+  it('uses only a response matching the current timing request', () => {
+    expect(
+      editorModelForRequest(null, result, 'profile=series7'),
+    ).toBe(MODEL)
+    expect(editorModelForRequest(null, result, 'profile=asap7')).toBeNull()
+  })
+
+  it('prefers a compatible active override over any response', () => {
+    expect(
+      editorModelForRequest(ASIC_MODEL, result, 'profile=asap7'),
+    ).toBe(ASIC_MODEL)
+  })
+})
 
 describe('timingRequest', () => {
   const t = { targetMhz: null }
@@ -61,6 +104,54 @@ describe('timingRequest', () => {
   it('never includes the display-only target clock', () => {
     const req = timingRequest({ profile: 'auto', speedGrade: '-1', overrides: null, targetMhz: 200 })
     expect(req).not.toHaveProperty('targetMhz')
+  })
+})
+
+describe('timingRequestForMode', () => {
+  const targetMhz = null
+
+  it('keeps a PDK override on its gates-mode profile', () => {
+    expect(
+      timingRequestForMode(
+        {
+          profile: 'sky130hd',
+          speedGrade: '-1',
+          overrides: ASIC_MODEL,
+          targetMhz,
+        },
+        'gates',
+      ),
+    ).toEqual({
+      profile: 'sky130hd',
+      speed_grade: '-1',
+      model: ASIC_MODEL,
+    })
+  })
+
+  it('suppresses a stored PDK override on an FPGA design', () => {
+    const settings: TimingSettings = {
+      profile: 'sky130hd',
+      speedGrade: '-1',
+      overrides: ASIC_MODEL,
+      targetMhz,
+    }
+    expect(compatibleTimingOverrides(settings, 'xilinx')).toBeNull()
+    expect(
+      timingRequestForMode(settings, 'xilinx'),
+    ).toEqual({ speed_grade: '-1' })
+  })
+
+  it('suppresses a legacy flat override under a named PDK profile', () => {
+    const settings: TimingSettings = {
+      profile: 'asap7',
+      speedGrade: '-1',
+      overrides: MODEL,
+      targetMhz,
+    }
+    expect(compatibleTimingOverrides(settings, 'gates')).toBeNull()
+    expect(
+      timingRequestForMode(settings, 'gates'),
+    ).toEqual({ profile: 'asap7', speed_grade: '-1' })
   })
 })
 
@@ -107,6 +198,21 @@ describe('load/save round-trip', () => {
     expect(loadTimingSettings()).toEqual(s)
   })
 
+  it('persists and restores a sparse ASIC gate table', () => {
+    const s: TimingSettings = {
+      profile: 'sky130hd',
+      speedGrade: '-1',
+      overrides: ASIC_MODEL,
+      targetMhz: null,
+    }
+    saveTimingSettings(s)
+    expect(loadTimingSettings()).toEqual(s)
+
+    const fallbackOnly = { ...s, overrides: { ...MODEL, gate_ps: {} } }
+    saveTimingSettings(fallbackOnly)
+    expect(loadTimingSettings()).toEqual(fallbackOnly)
+  })
+
   it('rejects a non-positive or non-numeric target clock', () => {
     localStorage.setItem(
       'synthexplorer.timing.v1',
@@ -143,6 +249,24 @@ describe('load/save round-trip', () => {
       JSON.stringify({ profile: 'series7', speedGrade: '-1', overrides: { ...MODEL, lut_ps: null } }),
     )
     expect(loadTimingSettings().overrides).toBeNull()
+  })
+
+  it('rejects unknown or non-numeric gate entries', () => {
+    for (const gate_ps of [
+      [],
+      { and: 'slow' },
+      { and: 10, aoi3: 20 },
+    ]) {
+      localStorage.setItem(
+        'synthexplorer.timing.v1',
+        JSON.stringify({
+          profile: 'sky130hd',
+          speedGrade: '-1',
+          overrides: { ...MODEL, gate_ps },
+        }),
+      )
+      expect(loadTimingSettings().overrides).toBeNull()
+    }
   })
 
   it('falls back to defaults on malformed JSON', () => {

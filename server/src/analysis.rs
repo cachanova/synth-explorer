@@ -3966,6 +3966,54 @@ mod tests {
     }
 
     #[test]
+    fn asic_gate_prices_flow_through_overview_and_paths() {
+        // Reuse the three-cell chain fixture but spell its generic cells as the
+        // gates-mode Yosys types this model dispatches. The chain becomes
+        // XOR -> AND -> AND, so exact logic timing must be the sum of those
+        // three characterized categories everywhere timing is surfaced.
+        let json = std::fs::read_to_string("tests/fixtures/and_chain_rtl.json").unwrap();
+        let mut netlist = parse_str(&json).unwrap();
+        let cells = &mut netlist.modules.get_mut("top").unwrap().cells;
+        for (cell, cell_type) in cells.values_mut().zip(["$_XOR_", "$_AND_", "$_AND_"]) {
+            cell.cell_type = cell_type.to_owned();
+        }
+        let module = netlist.modules.get("top").unwrap();
+        let graph = Graph::from_netlist(&netlist, "top", module).unwrap();
+
+        let mut model = DelayModel::sky130hd();
+        model.ff_clk_to_q_ps = 0.0;
+        model.ff_setup_ps = 0.0;
+        model.net_base_ps = 0.0;
+        model.net_per_fanout_ps = 0.0;
+        let analysis = Analysis::with_delay_model(&graph, vec!["fixture.sv".to_owned()], &model);
+        let expected_ns = (330.5 + 189.2 + 189.2) / 1000.0;
+
+        let breakdown = analysis.stats.estimated_delay_breakdown.unwrap();
+        assert!((breakdown.logic_ns - expected_ns).abs() < 1e-9);
+        assert_eq!(breakdown.net_ns, 0.0);
+        assert_eq!(analysis.stats.estimated_delay_ns, Some(expected_ns));
+
+        let worst_path_delay = |response: &PathsResponse| {
+            response
+                .paths
+                .iter()
+                .filter_map(|path| path.estimated_delay_ns)
+                .fold(0.0f64, f64::max)
+        };
+        assert!((worst_path_delay(&analysis.paths(&graph, 25, None)) - expected_ns).abs() < 1e-9);
+
+        // Force the Paths recomputation branch with a custom XOR override and
+        // prove it agrees exactly with the Overview estimator for that model.
+        let mut retuned = model;
+        retuned.gate_ps.as_mut().unwrap().xor = Some(500.0);
+        let retuned_overview = analysis.estimate_timing(&graph, &retuned).delay_ns.unwrap();
+        let retuned_paths = analysis.paths_with_model(&graph, &retuned, 25, None);
+        let retuned_expected_ns = (500.0 + 189.2 + 189.2) / 1000.0;
+        assert!((retuned_overview - retuned_expected_ns).abs() < 1e-9);
+        assert!((worst_path_delay(&retuned_paths) - retuned_expected_ns).abs() < 1e-9);
+    }
+
+    #[test]
     fn delay_breakdown_sums_to_the_total() {
         let (_graph, analysis) = fixture("reg_mux_rtl.json");
         let total = analysis.stats.estimated_delay_ns.unwrap();
