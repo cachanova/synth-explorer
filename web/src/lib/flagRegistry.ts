@@ -61,13 +61,8 @@ const XILINX: FlagDef[] = [
     max: 64,
     defaultOn: true,
     defaultReason:
-      'Yosys otherwise commits every addition to CARRY4 no matter how small, ' +
-      'and a tiny chain costs entry/exit levels while blocking logic ' +
-      'optimization across it \u2014 a 3-bit add left a 4-level netlist where ' +
-      "Vivado needs one LUT. With the default of 8 (where Vivado's own " +
-      'synthesis stops using carry chains), netlist depth matches Vivado at ' +
-      'median parity on the calibration corpus. Remove the flag to always ' +
-      'use carry chains.',
+      'Tiny carry chains are slower than plain LUTs and block optimization; ' +
+      '8 is where Vivado also stops using them.',
   },
   { flag: '-nocarry', label: 'No carry chains', description: 'Adders/comparators in LUT logic instead of CARRY4.' },
   { flag: '-nodsp', label: 'No DSP', description: 'Multipliers in logic instead of DSP48.' },
@@ -80,19 +75,15 @@ const XILINX: FlagDef[] = [
     description: 'No MUXF7/MUXF8 mux resources.',
     defaultOn: true,
     defaultReason:
-      'Measured on the calibration corpus, wide-LUT mapping stacked MUXF7/8 ' +
-      'levels on top of the LUT tree: netlists came out 1.5\u20132\u00d7 deeper than ' +
-      "Vivado's, with more cells. Without it, depth matches Vivado's synthesis " +
-      'at median parity. Remove the flag to get the wide-LUT mapping back.',
+      'Wide-LUT mapping measured 1.5\u20132\u00d7 deeper than Vivado, with more ' +
+      'cells.',
   },
   {
     flag: '-noiopad',
     label: 'No I/O buffers',
     description: 'Skip IBUF/OBUF insertion for a cleaner netlist.',
     defaultOn: true,
-    defaultReason:
-      'The explorer analyzes the fabric logic; pad buffers add IBUF/OBUF ' +
-      'cells on every port that obscure the netlist without changing it.',
+    defaultReason: 'Pad buffers clutter the netlist without changing the logic.',
   },
   { flag: '-noclkbuf', label: 'No clock buffers', description: 'Skip BUFG clock-buffer insertion.' },
   { flag: '-uram', label: 'Infer UltraRAM', description: 'URAM288 for large memories (UltraScale+ only).' },
@@ -122,9 +113,7 @@ const ECP5: FlagDef[] = [
     label: 'No I/O buffers',
     description: 'Do not insert I/O buffers.',
     defaultOn: true,
-    defaultReason:
-      'The explorer analyzes the fabric logic; pad buffers add cells on ' +
-      'every port that obscure the netlist without changing it.',
+    defaultReason: 'Pad buffers clutter the netlist without changing the logic.',
   },
   { flag: '-dff', label: 'FF-aware mapping', description: 'Run ABC with -dff (flip-flop-aware).' },
   { flag: '-abc9', label: 'ABC9 flow', description: 'Newer ABC9 area/delay mapping.' },
