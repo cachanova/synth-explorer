@@ -48,10 +48,13 @@
 //! estimate is not agreement with routed silicon. Depth and delay ordering
 //! remain more trustworthy than any individual path's picoseconds.
 //!
-//! The Lattice presets are derived from measured open timing data rather than
-//! a vendor tool run: Project IceStorm's silicon-measured SDF database for
-//! iCE40 (github.com/YosysHQ/icestorm, ISC licence) and the prjtrellis timing
-//! database for ECP5 (github.com/YosysHQ/prjtrellis-db, CC0-1.0). The ASIC
+//! The Lattice presets are derived from measured open timing data and validated
+//! end to end with open timing tools: Project IceStorm's silicon-measured SDF
+//! database plus icetime/nextpnr for iCE40 (github.com/YosysHQ/icestorm, ISC
+//! licence), and the prjtrellis timing database plus nextpnr for ECP5
+//! (github.com/YosysHQ/prjtrellis-db, CC0-1.0). The cell and fanout terms remain
+//! direct database values; the net bases are fitted against shape-matched
+//! internal paths on the app's own netlists. The ASIC
 //! PDK profiles for gates mode (sky130hd / gf180mcu / asap7) are read from
 //! those PDKs' open Liberty files at the TT corner. Per-coefficient
 //! provenance lives on each preset. These are physically true per-stage
@@ -315,9 +318,11 @@ impl DelayModel {
     ///   in0->lcout arc 448.861 = 21.0. The database measures setup at the LUT
     ///   inputs (the FF D pin physically sits behind the LUT), so the raw
     ///   SETUP would double-count the LUT delay this model already charges.
-    /// - `net_base_ps`: one nearest-neighbour local route = Odrv4 371.713 +
-    ///   LocalMux 329.632 + InMux 259.498 = 960.8. Routing dominates this
-    ///   fabric — the previous guessed 320 was ~3x optimistic.
+    /// - `net_base_ps`: one nearest-neighbour local route = LocalMux 329.632 +
+    ///   InMux 259.498 = 589.1. The earlier 960.8 also added Odrv4 371.713,
+    ///   but that driver is not present on a local hop: nextpnr reports 588 ps
+    ///   and icetime shows exactly the LocalMux + InMux stages on the same
+    ///   placed netlist. End-to-end checks use app-produced netlists on HX8K.
     /// - `net_per_fanout_ps`: = InMux 259.498 (the worst sink gains roughly
     ///   one extra input-mux/span hop per fanout doubling, matching the
     ///   model's log2 damping). The least-measured iCE40 number.
@@ -334,7 +339,7 @@ impl DelayModel {
             cell_ps: 448.9,
             ff_clk_to_q_ps: 540.0,
             ff_setup_ps: 21.0,
-            net_base_ps: 960.8,
+            net_base_ps: 589.1,
             net_per_fanout_ps: 259.5,
         }
     }
@@ -358,9 +363,13 @@ impl DelayModel {
     /// - `ff_clk_to_q_ps`: `SLOGICB CLK->Q0` = 525.
     /// - `ff_setup_ps`: measured 0 for DI0/DI1/M0/M1 — the cost sits in hold
     ///   (303 ps), which this model has no term for; 0 is the honest value.
-    /// - `net_base_ps`: interconnect.json `f_to_span2he_e1` 196.2 +
-    ///   `span2he_to_a_e1` 498.7 = 695 — one span-2 hop, LUT output to LUT
-    ///   input.
+    /// - `net_base_ps`: 450, the 449.5 ps least-squares intercept from five
+    ///   shape-matched internal register paths (24-case corpus, nextpnr ECP5
+    ///   45K speed-6, fixed seed) with every cell and fanout term held fixed.
+    ///   The previous 695 was one specific span-2 route
+    ///   (`f_to_span2he_e1` + `span2he_to_a_e1`), not a representative base
+    ///   hop; it made even post-route internal paths faster than the pre-place
+    ///   estimate.
     /// - `net_per_fanout_ps`: prjtrellis models fanout linearly per pip class
     ///   (1.65 + 18.5 = 20.1 ps/sink on that route); converted to this log2
     ///   model by matching the total at fanout 8: 20.1 x 8 / log2(8) = 53.7.
@@ -374,7 +383,7 @@ impl DelayModel {
             cell_ps: 236.0,
             ff_clk_to_q_ps: 525.0,
             ff_setup_ps: 0.0,
-            net_base_ps: 695.0,
+            net_base_ps: 450.0,
             net_per_fanout_ps: 53.7,
         }
     }
@@ -673,6 +682,14 @@ mod tests {
             asap7 < sky130 && sky130 < gf180,
             "{asap7} < {sky130} < {gf180}"
         );
+    }
+
+    #[test]
+    fn lattice_net_bases_are_the_end_to_end_validated_intercepts() {
+        // These are the only Lattice terms fitted end to end. The cell and
+        // fanout terms remain direct IceStorm/prjtrellis database values.
+        assert_eq!(DelayModel::ice40().net_base_ps, 589.1);
+        assert_eq!(DelayModel::ecp5().net_base_ps, 450.0);
     }
 
     #[test]

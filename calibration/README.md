@@ -59,11 +59,19 @@ a local artifact, not checked in — regenerate it (below) before using them:
 
 ```bash
 cd server
-cargo run --example calibrate -- gen ../examples /tmp/cal-cases
-cargo run --example calibrate -- estimate /tmp/cal-cases /tmp/est.json
-cargo run --example calibrate -- report /tmp/est.json ../calibration/vivado-2026.1.json
+cargo run --example calibrate -- gen ../examples /home/leela/tmp/cal-cases
+cargo run --example calibrate -- estimate /home/leela/tmp/cal-cases /home/leela/tmp/est.json
+cargo run --example calibrate -- estimate-lattice /home/leela/tmp/cal-cases /home/leela/tmp/lattice-est.json
+cargo run --example calibrate -- report /home/leela/tmp/est.json ../calibration/vivado-2026.1.json
 cargo run --example calibrate -- fit    ../calibration/vivado-2026.1.json
 ```
+
+`estimate` runs the three Xilinx families. `estimate-lattice` runs iCE40 and
+ECP5 through the production synthesis modes and shipped visible defaults (ECP5
+includes `-noiopad`; iCE40 has no such synthesis flag). It also records the
+delay-critical path class and endpoint kind so an external timing report can be
+paired with the same input/register/output domain instead of whichever domain
+the implementation tool happened to print first.
 
 `gen` rewrites parameter *defaults* in the source rather than passing
 `-generic`/`chparam`, so Yosys and Vivado read byte-identical RTL and a
@@ -247,10 +255,69 @@ exist (`xcku025` only has -1/-2, so UltraScale uses `xcku035`):
 Presets are characterized at **-1**; `fit` derives the -2/-3 multipliers from
 Vivado's own -1-vs-N measurements on identical designs.
 
+## Lattice validation with open tools
+
+The Lattice presets are validated against the app's own netlists with nextpnr;
+iCE40 is cross-checked with icetime. The July 2026 run used Yosys 0.64 (the app
+runtime) and nextpnr `0.10-86-g261152be` / IceStorm from OSS CAD Suite
+2026-07-17. Tool reports are local artifacts, like the Vivado JSON.
+
+Generate each netlist in its own Yosys process and match `build_script` exactly:
+
+```bash
+yosys -p 'read_verilog -sv <case.sv>; synth_ice40 -top <top> -flatten; write_json <ice40.json>'
+yosys -p 'read_verilog -sv <case.sv>; synth_ecp5 -top <top> -flatten -noiopad; write_json <ecp5.json>'
+```
+
+Then place and route with a fixed seed. ECP5 uses out-of-context mode for
+internal register paths so nextpnr does not insert I/O or global resources that
+the app netlist deliberately omits:
+
+```bash
+nextpnr-ice40 --hx8k --package ct256 --seed 1 --threads 1 \
+  --timing-allow-fail --json <ice40.json> --asc <out.asc> --report <out.json>
+nextpnr-ecp5 --45k --package CABGA381 --speed 6 --out-of-context \
+  --seed 1 --threads 1 --timing-allow-fail \
+  --json <ecp5.json> --write <routed.json> --report <out.json>
+icetime -d hx8k -i -t -j <icetime.json> <out.asc>
+```
+
+Compare our `launch + logic + net` with the sum of nextpnr's `clk-to-q`,
+`logic`, and `routing` steps; exclude `setup` on both sides. icetime's JSON is
+cumulative and includes setup as its final `[setup]` step, so use the preceding
+cumulative delay for the same quantity.
+
+Only shape-matched internal register paths are fit inputs. Check model depth
+against nextpnr's number of `logic` steps first. I/O-bound runs may be useful
+validation, but must not be fitted: nextpnr inserts package I/O and randomly
+places unconstrained pins, making those routes systematically slower than the
+app's fabric-only pre-place estimate.
+
+The 24-case run found that cell terms already matched. Both net bases were too
+high on internal paths: iCE40 included an `Odrv4` stage absent from a local hop,
+and ECP5 used one specific span-2 route as its generic base. With only those
+intercepts changed, the internal-path results were:
+
+| family | pairs | mean abs error before | after | median before | after | median tool / estimate after |
+|---|---:|---:|---:|---:|---:|---:|
+| iCE40 HX8K | 5 | 50.8% | 15.7% | 33.0% | 0.1% | 0.999 |
+| ECP5 45K grade 6 | 7 | 27.8% | 9.8% | 25.4% | 7.0% | 1.040 |
+
+For transparency, the post-route boundary-path median tool/estimate ratios
+after the fit were 1.174 (iCE40) and 3.127 (ECP5). Those numbers measure the
+package-I/O and unconstrained-placement gap, not a fabric coefficient error.
+Across all 24 cases iCE40 mean absolute error improved from 31.0% to 23.2%; the
+ECP5 all-path number moved from 48.8% to 49.8% because its normal-mode boundary
+runs add I/O that the shipped `-noiopad` netlist intentionally excludes.
+
+The ECP5 grade factors were also checked end to end over seven internal cases.
+Grade 7's least-squares factor was 0.878 (shipped: 0.875). Grade 8 was 0.731 by
+least squares and 0.766 by median (shipped: 0.755); placement-sensitive ratios
+spanned 0.724-0.883. The existing factors remain within the measured spread.
+
 ## What is not calibrated
 
-The Lattice (`ice40`, `ecp5`) and `generic` presets. Vivado cannot target them and
-there is no Lattice tool on the host; they are scaled to the same picosecond scale
-and are marked not-vendor-calibrated in the `delay_model.rs` module docs. Fitting
-them would need Radiant/Diamond. (`icetime` from Project IceStorm has real iCE40
-delay data and would be the obvious source if iCE40 ever matters enough.)
+The `generic` preset remains notional. Lattice I/O/package delay is deliberately
+outside these fabric presets, and this validation does not turn the app's
+pre-place fabric estimate into timing closure for a user's eventual placed,
+routed, and board-constrained design.

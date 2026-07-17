@@ -472,6 +472,10 @@ struct DepthComputation {
     estimated_max_delay_ps: Option<f64>,
     /// The critical path's delay split into launch/logic/net/setup (picoseconds).
     estimated_max_delay_breakdown: Option<DelayBreakdownPs>,
+    /// Domain of the same delay-critical path. Kept with the overview result so
+    /// callers do not have to infer it from the bounded, depth-sorted path list.
+    estimated_max_delay_starts_at_register: Option<bool>,
+    estimated_max_delay_endpoint_kind: Option<EndpointKind>,
     /// Per-node arrival time (picoseconds) at each comb node's output, for
     /// reconstructing a specific path's estimated delay.
     node_delay: Vec<f64>,
@@ -584,6 +588,7 @@ impl Analysis {
             estimated_max_delay_ps,
             estimated_max_delay_breakdown,
             node_delay,
+            ..
         } = compute_depths(graph, &loop_set, model);
         let (endpoints, endpoint_targets) =
             discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
@@ -1189,6 +1194,8 @@ impl Analysis {
             breakdown: dc
                 .estimated_max_delay_breakdown
                 .map(DelayBreakdown::from_ps),
+            starts_at_register: dc.estimated_max_delay_starts_at_register,
+            endpoint_kind: dc.estimated_max_delay_endpoint_kind,
         }
     }
 
@@ -2406,6 +2413,8 @@ fn compute_depths(
     // the clock tree and dangling logic out of the estimate.
     let mut best_arrival: Option<f64> = None;
     let mut best_arrival_bd: Option<DelayBreakdownPs> = None;
+    let mut best_arrival_starts_at_register = None;
+    let mut best_arrival_endpoint_kind = None;
     for edge in &graph.edges {
         if !is_data_sink_edge(graph, edge) || loop_set.contains(&edge.from) {
             continue;
@@ -2442,6 +2451,22 @@ fn compute_depths(
             let mut bd = base_bd;
             bd.net += net;
             best_arrival_bd = Some(bd);
+            let origin = if is_depth_node(graph, from) && is_depth_output_edge(graph, edge) {
+                startpoint[from as usize].unwrap_or(from)
+            } else {
+                from
+            };
+            best_arrival_starts_at_register = Some(
+                graph
+                    .nodes
+                    .get(origin as usize)
+                    .is_some_and(|node| node.seq),
+            );
+            best_arrival_endpoint_kind = Some(match graph.nodes[edge.to as usize].kind {
+                NodeKind::PortBit => EndpointKind::Output,
+                NodeKind::Cell => EndpointKind::Register,
+                NodeKind::Const => unreachable!("a constant cannot be a data sink"),
+            });
         }
     }
     let estimated_max_delay_ps = best_arrival.map(|d| d + model.ff_setup_ps);
@@ -2456,6 +2481,8 @@ fn compute_depths(
         node_startpoint: startpoint,
         estimated_max_delay_ps,
         estimated_max_delay_breakdown,
+        estimated_max_delay_starts_at_register: best_arrival_starts_at_register,
+        estimated_max_delay_endpoint_kind: best_arrival_endpoint_kind,
         node_delay,
     }
 }
@@ -2470,6 +2497,8 @@ fn fanout_of(graph: &Graph, id: NodeId) -> u32 {
 pub struct TimingEstimate {
     pub delay_ns: Option<f64>,
     pub breakdown: Option<DelayBreakdown>,
+    pub starts_at_register: Option<bool>,
+    pub endpoint_kind: Option<EndpointKind>,
 }
 
 fn is_addressable_sequential_node(graph: &Graph, id: NodeId) -> bool {
@@ -3783,7 +3812,7 @@ mod tests {
 
     #[test]
     fn estimates_a_positive_critical_path_delay() {
-        let (_graph, analysis) = fixture("and_chain_rtl.json");
+        let (graph, analysis) = fixture("and_chain_rtl.json");
         let est = analysis
             .stats
             .estimated_delay_ns
@@ -3791,6 +3820,9 @@ mod tests {
         // A depth-3 chain: a few cells + fanout nets + capture setup — the rough
         // pre-route figure should be positive and in a sane nanosecond range.
         assert!(est > 0.3 && est < 30.0, "implausible estimate: {est} ns");
+        let timing = analysis.estimate_timing(&graph, &DelayModel::default());
+        assert_eq!(timing.starts_at_register, Some(false));
+        assert_eq!(timing.endpoint_kind, Some(EndpointKind::Output));
     }
 
     /// The single node of `cell_type` in a fixture, by cell name.
@@ -3882,6 +3914,8 @@ mod tests {
         assert_eq!(bd.logic_ns, 0.0, "a direct FF->FF hop has no logic levels");
         assert_eq!(bd.net_ns, model.net_delay_ps(1) / 1000.0);
         assert_eq!(bd.setup_ns, model.ff_setup_ps / 1000.0);
+        assert_eq!(est.starts_at_register, Some(true));
+        assert_eq!(est.endpoint_kind, Some(EndpointKind::Register));
         let expected = (model.ff_clk_to_q_ps + model.net_delay_ps(1) + model.ff_setup_ps) / 1000.0;
         assert!(
             (delay - expected).abs() < 1e-9,
