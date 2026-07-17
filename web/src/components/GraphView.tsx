@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  controlRoleForPin,
   fitViewportToContent,
   panViewport,
   preserveViewportAnchor,
@@ -7,6 +8,7 @@ import {
   REG_CLOCK_Y_FRAC,
   REG_DATA_IN_Y_FRAC,
   REG_DATA_OUT_Y_FRAC,
+  registerControlYFraction,
   viewportTransformAttribute,
   zoomViewportAt,
   type LaidOutGraph,
@@ -30,7 +32,12 @@ import {
   type PortDirection,
   type SymbolKind,
 } from '../lib/symbols'
-import type { ControlRef, GraphNode } from '../types'
+import type { ControlRef, ControlRole, GraphNode } from '../types'
+
+interface RegisterControlPin {
+  pin: string
+  role: ControlRole
+}
 
 interface Props {
   graph: LaidOutGraph
@@ -51,13 +58,15 @@ interface Props {
 interface NodePins {
   incoming: string[]
   outgoing: string[]
+  controlInputs: RegisterControlPin[]
 }
 
-const EMPTY_NODE_PINS: NodePins = { incoming: [], outgoing: [] }
+const EMPTY_NODE_PINS: NodePins = { incoming: [], outgoing: [], controlInputs: [] }
 
 interface MutableNodePins {
   incoming: Set<string>
   outgoing: Set<string>
+  controlInputs: Map<string, ControlRole>
 }
 
 interface NodeVisual {
@@ -384,14 +393,15 @@ function controlPinLetter(role: ControlRef['role']): string | null {
 // Every flip-flop / latch draws the same recognizable pins: D data-in (upper
 // west), the clock triangle (lower west), Q data-out (east), and a letter per
 // remaining control (R/S/EN) so an FDRE shows its enable while a plain DFF
-// shows its reset. The data edges are routed to the D and Q ports in layout.ts,
-// so the arrows land on these pins and never on the clock notch.
+// shows its reset. Every edge is routed to the matching pin in layout.ts.
 function RegisterPins({
   node,
+  pins,
   width,
   bodyHeight,
 }: {
   node: GraphNode
+  pins: NodePins
   width: number
   bodyHeight: number
 }) {
@@ -402,9 +412,14 @@ function RegisterPins({
   const body = Math.min(bodyHeight, REG_BODY_HEIGHT)
   const dInY = body * REG_DATA_IN_Y_FRAC
   const qY = body * REG_DATA_OUT_Y_FRAC
-  const controlLetters = controlsFor(node)
-    .map((control) => controlPinLetter(control.role))
-    .filter((letter): letter is string => letter !== null)
+  const seenRoles = new Set<ControlRole>()
+  const controls = [...controlsFor(node), ...pins.controlInputs].filter((control) => {
+    if (controlPinLetter(control.role) === null || seenRoles.has(control.role)) {
+      return false
+    }
+    seenRoles.add(control.role)
+    return true
+  })
   return (
     <g className="g-reg-pins" aria-hidden="true">
       <line className="g-reg-pin-tick" x1={0} x2={7} y1={dInY} y2={dInY} />
@@ -415,16 +430,17 @@ function RegisterPins({
       <text className="g-reg-pin" x={width - 9} y={qY + 3} textAnchor="end">
         Q
       </text>
-      {controlLetters.map((letter, index) => (
-        <text
-          className="g-reg-pin g-reg-ctrl-pin"
-          key={letter}
-          x={9}
-          y={body * 0.5 + 3 + index * 11}
-        >
-          {letter}
-        </text>
-      ))}
+      {controls.map((control) => {
+        const y = body * registerControlYFraction(control.role)
+        return (
+          <g key={`${control.role}-${control.pin}`}>
+            <line className="g-reg-pin-tick" x1={0} x2={7} y1={y} y2={y} />
+            <text className="g-reg-pin g-reg-ctrl-pin" x={9} y={y + 3}>
+              {controlPinLetter(control.role)}
+            </text>
+          </g>
+        )
+      })}
     </g>
   )
 }
@@ -631,6 +647,7 @@ const SchematicNode = memo(function SchematicNode({
       {(kind === 'reg' || kind === 'latch') && (
         <RegisterPins
           node={node}
+          pins={pins}
           width={laidOutNode.width}
           bodyHeight={bodyHeight}
         />
@@ -690,13 +707,25 @@ export const GraphView = memo(function GraphView({
 
     for (const laidOutNode of graph.nodes) {
       nodeById.set(laidOutNode.id, laidOutNode)
-      pinSetsById.set(laidOutNode.id, { incoming: new Set(), outgoing: new Set() })
+      pinSetsById.set(laidOutNode.id, {
+        incoming: new Set(),
+        outgoing: new Set(),
+        controlInputs: new Map(),
+      })
     }
     for (const edge of graph.edges) {
       const fromPins = pinSetsById.get(edge.from)
       const toPins = pinSetsById.get(edge.to)
       if (fromPins && edge.edge.from_port) fromPins.outgoing.add(edge.edge.from_port)
-      if (toPins && edge.edge.to_port) toPins.incoming.add(edge.edge.to_port)
+      if (toPins && edge.edge.to_port) {
+        toPins.incoming.add(edge.edge.to_port)
+        if (edge.edge.control) {
+          toPins.controlInputs.set(
+            edge.edge.to_port,
+            controlRoleForPin(edge.edge.to_port),
+          )
+        }
+      }
     }
 
     const portDirection = inferPortDirections(
@@ -710,6 +739,7 @@ export const GraphView = memo(function GraphView({
       pinsById.set(nodeId, {
         incoming: [...pins.incoming],
         outgoing: [...pins.outgoing],
+        controlInputs: [...pins.controlInputs].map(([pin, role]) => ({ pin, role })),
       })
     }
     return { nodeById, pinsById, portDirection }

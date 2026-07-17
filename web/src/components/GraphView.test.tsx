@@ -151,6 +151,72 @@ describe('GraphView LUT labels', () => {
     expect(markup).not.toMatch(/class="g-node-name"[^>]*>X<\/text>/)
   })
 
+  it('draws a visible reset-edge pin even when control metadata is absent', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 12,
+              width: 74,
+              height: 34,
+              node: { id: 1, kind: 'port', name: 'rst' },
+            },
+            {
+              id: 2,
+              x: 140,
+              y: 0,
+              width: 92,
+              height: 58,
+              node: {
+                id: 2,
+                kind: 'cell',
+                name: 'q',
+                cell_type: '$_DFFSR_PPP_',
+                seq: true,
+              },
+            },
+          ],
+          edges: [
+            {
+              from: 1,
+              to: 2,
+              points: [
+                { x: 74, y: 29 },
+                { x: 140, y: 29 },
+              ],
+              edge: {
+                from: 1,
+                to: 2,
+                from_port: 'rst',
+                to_port: 'R',
+                net_name: 'rst',
+                bits: [0],
+                control: true,
+              },
+            },
+          ],
+          width: 232,
+          height: 58,
+        }}
+        rootId={2}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain(
+      'class="g-reg-pin g-reg-ctrl-pin" x="9" y="32">R</text>',
+    )
+  })
+
   it('exposes one roving node tab stop regardless of graph size', () => {
     const markup = renderToStaticMarkup(
       <GraphView

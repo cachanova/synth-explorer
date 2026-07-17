@@ -2,7 +2,7 @@
 // positioned nodes + routed edges for SVG rendering.
 
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
-import type { GraphEdge, GraphNode, Subgraph } from '../types'
+import type { ControlRole, GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import { groupBadgeText, nodeLabel } from './prettyType'
@@ -229,6 +229,53 @@ export const REG_BODY_HEIGHT = 58
 export const REG_DATA_IN_Y_FRAC = 0.32
 export const REG_DATA_OUT_Y_FRAC = 0.5
 export const REG_CLOCK_Y_FRAC = 0.72
+export const REG_RESET_Y_FRAC = 0.5
+export const REG_SET_Y_FRAC = 0.14
+export const REG_ENABLE_Y_FRAC = 0.88
+
+/** Fixed schematic position for a register's non-data input pin. */
+export function registerControlYFraction(role: ControlRole): number {
+  switch (role) {
+    case 'clock':
+      return REG_CLOCK_Y_FRAC
+    case 'reset':
+      return REG_RESET_Y_FRAC
+    case 'set':
+      return REG_SET_Y_FRAC
+    case 'enable':
+      return REG_ENABLE_Y_FRAC
+    case 'other':
+      return 0.6
+  }
+}
+
+export function controlRoleForPin(pin: string): ControlRole {
+  switch (pin.toUpperCase()) {
+    case 'CLK':
+    case 'C':
+      return 'clock'
+    case 'R':
+    case 'RST':
+    case 'ARST':
+    case 'SRST':
+    case 'CLR':
+    case 'LSR':
+      return 'reset'
+    case 'S':
+    case 'SET':
+    case 'PRE':
+    case 'SR':
+      return 'set'
+    case 'E':
+    case 'EN':
+    case 'CE':
+    case 'G':
+    case 'GE':
+      return 'enable'
+    default:
+      return 'other'
+  }
+}
 
 function isRegKind(node: GraphNode): boolean {
   const kind = symbolKind(node)
@@ -269,14 +316,33 @@ export function toElkGraph(
   for (const arr of inPins.values()) arr.sort()
   for (const arr of outPins.values()) arr.sort()
 
+  const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
+  const controlPins = new Map<number, Map<string, ControlRole>>()
+  for (const edge of sub.edges) {
+    if (!edge.control) continue
+    const node = nodeById.get(edge.to)
+    if (!node || !isRegKind(node)) continue
+    let pins = controlPins.get(edge.to)
+    if (!pins) {
+      pins = new Map()
+      controlPins.set(edge.to, pins)
+    }
+    pins.set(edge.to_port, controlRoleForPin(edge.to_port))
+  }
+
   const regIds = new Set<number>()
   const children: ElkNode[] = sub.nodes.map((n) => {
     const { width, height } = nodeDimensions(n)
     if (isRegKind(n)) {
       regIds.add(n.id)
-      // Fixed D (west) and Q (east) ports so elk routes the data edges to the
-      // real pins instead of the box centre (which is the clock notch).
+      // Fixed D/control (west) and Q (east) ports keep every visible register
+      // connection on its real schematic pin.
       const body = Math.min(height, REG_BODY_HEIGHT)
+      const controls = [...(controlPins.get(n.id)?.entries() ?? [])].sort(
+        ([pinA, roleA], [pinB, roleB]) =>
+          registerControlYFraction(roleA) - registerControlYFraction(roleB) ||
+          pinA.localeCompare(pinB),
+      )
       return {
         id: String(n.id),
         width,
@@ -290,6 +356,12 @@ export function toElkGraph(
             y: body * REG_DATA_IN_Y_FRAC,
             layoutOptions: { 'elk.port.side': 'WEST' },
           },
+          ...controls.map(([pin, role]) => ({
+            id: `${n.id}#control:${pin}`,
+            x: 0,
+            y: body * registerControlYFraction(role),
+            layoutOptions: { 'elk.port.side': 'WEST' },
+          })),
           {
             id: `${n.id}#out`,
             x: width,
@@ -338,7 +410,13 @@ export function toElkGraph(
   const edges: ElkExtendedEdge[] = sub.edges.map((e, i) => ({
     id: `e${i}`,
     sources: [regIds.has(e.from) ? `${e.from}#out` : pinId(outPins, e.from, e.from_port, 'o')],
-    targets: [regIds.has(e.to) ? `${e.to}#in` : pinId(inPins, e.to, e.to_port, 'i')],
+    targets: [
+      regIds.has(e.to)
+        ? e.control
+          ? `${e.to}#control:${e.to_port}`
+          : `${e.to}#in`
+        : pinId(inPins, e.to, e.to_port, 'i'),
+    ],
   }))
 
   return {
@@ -402,17 +480,21 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
     const match = /^e(\d+)$/.exec(edge.id)
     if (match) routedByInputIndex.set(Number(match[1]), edge)
   }
-  const fallbackPoint = (id: number, output: boolean): Point => {
+  const fallbackPoint = (id: number, output: boolean, edge: GraphEdge): Point => {
     const laidOut = laidOutById.get(id)
     if (!laidOut) return { x: 0, y: 0 }
     const register = isRegKind(laidOut.node)
+    const registerYFraction = output
+      ? REG_DATA_OUT_Y_FRAC
+      : edge.control
+        ? registerControlYFraction(controlRoleForPin(edge.to_port))
+        : REG_DATA_IN_Y_FRAC
     return {
       x: laidOut.x + (output ? laidOut.width : 0),
       y:
         laidOut.y +
         (register
-          ? Math.min(laidOut.height, REG_BODY_HEIGHT) *
-            (output ? REG_DATA_OUT_Y_FRAC : REG_DATA_IN_Y_FRAC)
+          ? Math.min(laidOut.height, REG_BODY_HEIGHT) * registerYFraction
           : laidOut.height / 2),
     }
   }
@@ -428,7 +510,10 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       // Preserve the structural edge even if ELK omits a routed section. This
       // is especially important for grouped register D inputs: without the
       // fallback the driver cone and register render as disconnected islands.
-      points.push(fallbackPoint(src.from, true), fallbackPoint(src.to, false))
+      points.push(
+        fallbackPoint(src.from, true, src),
+        fallbackPoint(src.to, false, src),
+      )
     }
     return {
       from: src.from,
