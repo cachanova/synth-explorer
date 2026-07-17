@@ -201,6 +201,26 @@ mean charge per CARRY4 (192 ps). UltraScale/UltraScale+ must use the cascade
 arc (35/28 ps): their cascade is nearly free, so Vivado's worst path enters
 chains near the top bit and an amortized mean overestimates long chains badly.
 
+### Rejected carry entry/cascade split (2026-07)
+
+Vivado's path rows confirm that entry and cascade are physically different:
+Series-7 entry arcs are roughly 448–520 ps versus 117 ps cascade, UltraScale
+roughly 327–384 ps versus 35 ps, and UltraScale+ roughly 168–213 ps versus
+28 ps. A `carry_entry_ps` experiment charged the first carry cell from a
+non-carry predecessor separately and charged later carry-to-carry cells at the
+cascade value. The tested entry/propagate pairs were 520/117 ps, 384/35 ps,
+and 213/28 ps respectively. It was evaluated with the app's
+`-narrowcarry 8 -nowidelut` shape against `edif_nowl.json`, holding out every
+zero-logic row.
+
+The split improved several long carry paths but made aggregate family accuracy
+worse: Series-7 mean/median absolute error moved 12.9/9.4% to 15.2/10.6%,
+UltraScale 18.6/15.8% to 20.5/15.3%, and UltraScale+ 15.4/11.5% to 20.4/13.0%.
+The fitted net intercepts already compensate for entry cost across the broader
+corpus, so adding a physical entry term without a richer route/path model
+double-counts that compensation. The field was therefore not shipped; retain
+the flat family coefficients until a split can at least hold aggregate parity.
+
 `net_delay = net_base_ps + net_per_fanout_ps * log2(fanout)` supplies the only
 fitted numbers, per family:
 

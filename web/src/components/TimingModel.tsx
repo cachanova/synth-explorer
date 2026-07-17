@@ -99,6 +99,10 @@ export function TimingModel({
 
   const delayNs = result?.estimated_delay_ns ?? fallbackDelayNs
   const breakdown = result?.estimated_delay_breakdown ?? fallbackBreakdown
+  const awaitsRealProfile =
+    matchesNotionalMode(designMode) &&
+    modeProfile === 'auto' &&
+    delayNs == null
   // What the editor shows: the compatible user override if any, else a preset
   // response that belongs to the current request. A profile switch leaves the
   // prior response on screen briefly; never let an edit clone that stale model.
@@ -166,24 +170,37 @@ export function TimingModel({
           <span className="tier-tag tier-estimated">estimated</span>
         )}
       </div>
-      <div className="cards">
-        <Card
-          k="Critical-path delay"
-          v={delayNs != null ? `${delayNs.toFixed(2)} ns` : '—'}
-          accent
-        />
-        <Card k="Implied Fmax" v={fmax != null ? `${fmax.toFixed(0)} MHz` : '—'} />
-        {slack != null && (
-          <Card
-            k={`Slack @ ${settings.targetMhz} MHz`}
-            v={`${slack >= 0 ? '+' : ''}${slack.toFixed(2)} ns`}
-            tone={slack >= 0 ? 'ok' : 'bad'}
-          />
-        )}
-      </div>
+      {awaitsRealProfile ? (
+        <div className="empty-state timing-profile-placeholder">
+          {designMode === 'gates'
+            ? 'Pick a process node from the Delay profile menu to estimate absolute timing.'
+            : 'Pick an FPGA preset from the Delay profile menu to estimate absolute timing.'}
+        </div>
+      ) : (
+        <>
+          <div className="cards">
+            <Card
+              k="Critical-path delay"
+              v={delayNs != null ? `${delayNs.toFixed(2)} ns` : '—'}
+              accent
+            />
+            <Card
+              k="Implied Fmax"
+              v={fmax != null ? `${fmax.toFixed(0)} MHz` : '—'}
+            />
+            {slack != null && (
+              <Card
+                k={`Slack @ ${settings.targetMhz} MHz`}
+                v={`${slack >= 0 ? '+' : ''}${slack.toFixed(2)} ns`}
+                tone={slack >= 0 ? 'ok' : 'bad'}
+              />
+            )}
+          </div>
 
-      {breakdown && delayNs != null && delayNs > 0 && (
-        <BreakdownBar breakdown={breakdown} total={delayNs} />
+          {breakdown && delayNs != null && delayNs > 0 && (
+            <BreakdownBar breakdown={breakdown} total={delayNs} />
+          )}
+        </>
       )}
 
       {vivadoTiming && <VivadoTimingPanel timing={vivadoTiming} />}
@@ -296,6 +313,10 @@ export function TimingModel({
       </div>
     </>
   )
+}
+
+function matchesNotionalMode(mode?: string): boolean {
+  return mode === 'gates' || mode === 'lut4' || mode === 'lut6'
 }
 
 /**

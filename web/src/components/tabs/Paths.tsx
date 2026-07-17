@@ -10,6 +10,7 @@ import {
   shortNetName,
 } from '../../lib/prettyType'
 import {
+  effectiveProfile,
   loadTimingSettings,
   timingRequestForMode,
 } from '../../lib/timingSettings'
@@ -36,33 +37,32 @@ export function Paths() {
   )
   const id = store.design?.design_id ?? null
   const designMode = store.design?.mode
+  const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
   // Cost per-path delays with the same retune settings as the timing panel,
   // read from localStorage on mount (the tab remounts on switch). The stored
   // profile is clamped to this design's mode, mirroring the timing panel.
-  const timingReq = useMemo(() => {
+  const timing = useMemo(() => {
     const settings = loadTimingSettings()
-    return timingRequestForMode(settings, designMode)
+    const profile = effectiveProfile(settings.profile, designMode)
+    return {
+      request: timingRequestForMode(settings, designMode),
+      hidden:
+        (designMode === 'gates' || designMode === 'lut4' || designMode === 'lut6') &&
+        profile === 'auto',
+    }
   }, [designMode])
+  const effectiveSort = timing.hidden ? 'depth' : sortBy
   const { data, loading, error } = useDesignData(
     id,
-    (designId) => getPaths(designId, timingReq),
-    JSON.stringify(timingReq),
+    (designId) => getPaths(designId, { sort: effectiveSort, ...timing.request }),
+    JSON.stringify({ sort: effectiveSort, ...timing.request }),
   )
   const [open, setOpen] = useState<number | null>(null)
-  const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
   useEffect(() => setOpen(null), [id])
-  const sortedPaths = useMemo(() => {
-    const paths = [...(data?.paths ?? [])]
-    if (sortBy === 'delay') {
-      paths.sort(
-        (a, b) =>
-          (b.estimated_delay_ns ?? -1) - (a.estimated_delay_ns ?? -1) ||
-          b.depth - a.depth,
-      )
-    }
-    // 'depth' keeps the backend order (already sorted deepest-first).
-    return paths
-  }, [data, sortBy])
+  // The server ranks, truncates, and reconstructs routes in the requested
+  // order (sort=depth|delay), so the response is rendered as-is — a client
+  // re-sort could only reorder the survivors of the wrong ranking.
+  const sortedPaths = useMemo(() => data?.paths ?? [], [data])
   const variants = useMemo(() => routeVariants(sortedPaths), [sortedPaths])
 
   if (!store.design) return <div className="empty-state">No design yet.</div>
@@ -108,18 +108,23 @@ export function Paths() {
               }}
               title="Sort by structural depth"
             >
-              Depth{sortBy === 'depth' ? ' ▾' : ''}
+              Depth{effectiveSort === 'depth' ? ' ▾' : ''}
             </th>
             <th
               role="columnheader"
-              className="num sortable"
+              className={timing.hidden ? 'num' : 'num sortable'}
               onClick={() => {
+                if (timing.hidden) return
                 setSortBy('delay')
                 setOpen(null)
               }}
-              title="Sort by estimated delay (reorders the depth-ranked paths shown; the globally slowest may lie outside them)"
+              title={
+                timing.hidden
+                  ? 'Pick a real delay profile in Estimated timing to rank by delay'
+                  : 'Rank paths by estimated delay'
+              }
             >
-              Est. delay{sortBy === 'delay' ? ' ▾' : ''}
+              Est. delay{effectiveSort === 'delay' ? ' ▾' : ''}
             </th>
             <th role="columnheader">Class</th>
             <th role="columnheader">Startpoint</th>

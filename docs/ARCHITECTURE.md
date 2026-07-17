@@ -135,7 +135,7 @@ Parsed from yosys JSON (`modules.<top>` after flatten):
 - `POST /api/synthesize` → `{design_id, top, tool, mode, target?, stats, warnings, log}`
 - `GET  /api/design/:id/endpoints` — registers (grouped, with width/clock/src/
   depth), outputs, inputs
-- `GET  /api/design/:id/paths?limit&to&profile&speed_grade&model` — ranked
+- `GET  /api/design/:id/paths?limit&to&sort&profile&speed_grade&model` — ranked
   longest paths w/ full node list and optional retuned per-path delay
 - `POST /api/design/:id/timing` — retune the cached design's estimated critical
   delay and category breakdown without re-synthesizing
@@ -155,7 +155,8 @@ Compiler-Explorer-style split view, dark theme:
 - **Right pane tabs:**
   - **Overview** — cell-type histogram, reg/port counts, warnings, yosys log,
     and an estimated-timing panel with profiles, speed grades, and coefficient
-    overrides.
+    overrides. Technology-neutral gates/LUT modes keep the selector visible but
+    withhold absolute timing until the user chooses a real process or FPGA.
   - **Schematic** — the cone viewer: elkjs layered layout in a worker, SVG nodes
     (cells with type + name, ports, consts), pan/zoom, click node → expand
     cone / show src; toggles for constants and clock/reset/enable; direction

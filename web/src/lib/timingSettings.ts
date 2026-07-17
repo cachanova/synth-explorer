@@ -48,31 +48,38 @@ const FPGA_PROFILES: ProfileChoice[] = [
   'ecp5',
   'generic',
 ]
+const LUT_PROFILES: ProfileChoice[] = [
+  'auto',
+  'series7',
+  'ultrascale',
+  'ultrascale_plus',
+  'ice40',
+  'ecp5',
+]
 const ASIC_PROFILES: ProfileChoice[] = [
   'auto',
   'sky130hd',
   'gf180mcu',
   'asap7',
-  'generic',
 ]
 
 /** The profiles that make sense for a design's synthesis mode. A gates-mode
  *  netlist is generic gates headed for standard cells — FPGA LUT/carry presets
  *  don't describe it; an FPGA or LUT-mapped netlist is the reverse, so it gets
- *  no ASIC process nodes. Unknown/absent mode falls back to the full list. */
+ *  no ASIC process nodes. Gates/LUT menus omit `generic`: `auto` is their
+ *  notional no-absolute-timing placeholder until a real profile is selected.
+ *  Unknown/absent mode falls back to the full list. */
 export function profilesForMode(
   mode?: string,
 ): { value: ProfileChoice; label: string }[] {
-  const allowed =
-    mode === 'gates'
-      ? ASIC_PROFILES
-      : mode === 'xilinx' ||
-          mode === 'ice40' ||
-          mode === 'ecp5' ||
-          mode === 'lut4' ||
-          mode === 'lut6'
-        ? FPGA_PROFILES
-        : null
+  let allowed: ProfileChoice[] | null = null
+  if (mode === 'gates') {
+    allowed = ASIC_PROFILES
+  } else if (mode === 'lut4' || mode === 'lut6') {
+    allowed = LUT_PROFILES
+  } else if (mode === 'xilinx' || mode === 'ice40' || mode === 'ecp5') {
+    allowed = FPGA_PROFILES
+  }
   if (!allowed) return PROFILE_OPTIONS
   return PROFILE_OPTIONS.filter((o) => allowed.includes(o.value))
 }

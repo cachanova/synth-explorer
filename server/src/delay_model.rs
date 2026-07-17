@@ -33,7 +33,9 @@
 //! method and its traps). One modelling compromise is documented per preset:
 //! a single `carry_ps` cannot represent chain entry vs cascade, and the right
 //! constant differs by family — Series-7 wants the amortized mean, UltraScale
-//! and UltraScale+ want the near-free cascade arc.
+//! and UltraScale+ want the near-free cascade arc. A 2026-07 entry/cascade
+//! split was tested and rejected because it worsened every family's aggregate
+//! error; `calibration/README.md` records the coefficients and scores.
 //!
 //! [`DelayModel::net_delay_to_ps`] treating any net into a carry chain as free is
 //! **correct**, and measurement backs it: over the full corpus the median

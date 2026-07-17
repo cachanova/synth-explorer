@@ -182,10 +182,13 @@ Response `200`:
   // output; a direct register-to-register hop is a path with zero logic levels.
   // The clock network is not a data path, and neither is a route that ends only
   // at a control pin (CE/R). Omitted when the design has no timing paths at
-  // all — and ALWAYS omitted (with the breakdown) in `rtl` mode: an RTL
-  // netlist keeps word-level cells ($add, $mul, shifts, …) whose delay a flat
-  // per-cell model cannot cost meaningfully, so only the depth statistics are
-  // reported there. A relative guide: the ordering of paths is far more trustworthy than
+  // all. ALWAYS omitted (with the breakdown) in `rtl` mode: an RTL netlist
+  // keeps word-level cells ($add, $mul, shifts, …) whose delay a flat per-cell
+  // model cannot cost meaningfully. Also omitted for technology-neutral
+  // `gates`, `lut4`, and `lut6` synthesis: their automatic profile is notional,
+  // not a real process or FPGA. Structural depth remains in every mode; use
+  // POST /timing with a real profile to obtain absolute timing for those three
+  // generic modes. A relative guide: the ordering of paths is far more trustworthy than
   // the absolute value. The coefficients are being re-derived against real
   // Vivado ground truth (see `calibration/`), and the model is known to over-
   // and under-estimate in ways a flat per-cell model cannot fix — most of all
@@ -430,6 +433,14 @@ gate's measured value is substituted. DFFs remain outside `gate_ps`:
 The Xilinx presets are calibrated against Vivado 2026.1 at the `-1` grade
 (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p), with
 per-family Vivado-measured `speed_grade` factors. The Lattice presets are
+
+For `gates`, `lut4`, and `lut6` designs, an omitted profile (`auto`) or explicit
+`profile: 'generic'` returns no absolute timing. A full coefficient override by
+itself does not turn a notional design into a real target; pair it with an
+explicit real profile. Gates mode accepts the process-node profiles
+`sky130hd`/`gf180mcu`/`asap7`; LUT modes accept the FPGA presets. The web profile
+menus omit `generic` for these modes because `auto` already represents the
+notional state. `generic` remains available for real FPGA synthesis modes.
 derived from measured open timing databases (Project IceStorm for `ice40`, the
 HX grade; prjtrellis-db for `ecp5` at speed grade 6); for `ecp5`, `-2`/`-3` map
 to its real grades 7/8 with prjtrellis-measured factors 0.875/0.755. The ASIC
@@ -458,10 +469,10 @@ Response:
 
 ```ts
 {
-  estimated_delay_ns: number | null;  // null when the design has no timing paths,
-                                      // and always null for an `rtl`-mode design
-                                      // (see /api/synthesize: word-level cells
-                                      // cannot be costed per cell)
+  estimated_delay_ns: number | null;  // null when the design has no timing paths;
+                                      // always null for rtl; also null for
+                                      // gates/lut4/lut6 until a real profile
+                                      // is explicitly selected
   estimated_delay_breakdown?: { launch_ns; logic_ns; net_ns; setup_ns }; // sums to delay
   model: DelayModel;                   // base coefficients used, pre speed-grade
                                        // (so a client can populate an editor)
@@ -476,20 +487,24 @@ This endpoint retunes the estimate only. It deliberately does not echo
 design id, so it is carried once by `/api/synthesize` and `/api/design/:id`
 rather than resent on every retune. No retune can change it.
 
-## GET `/api/design/:id/paths?limit=<n>&to=<node_id>&profile=<p>&speed_grade=<g>&model=<json>`
+## GET `/api/design/:id/paths?limit=<n>&to=<node_id>&sort=depth|delay&profile=<p>&speed_grade=<g>&model=<json>`
 
-Ranked longest structural paths (deepest first). Paths with the same logical
-endpoint, depth, and normalized structural route are grouped into bit cohorts;
-different vector-bit routes remain separate. Direct registered-output aliases
-share the register endpoint and do not create a duplicate zero-depth path.
-With `to`, only variants ending at that node are returned.
+Ranked paths. `sort=depth` (the default) ranks and reconstructs the structurally
+deepest paths; `sort=delay` ranks and reconstructs the largest delay-model
+arrivals. Endpoint candidate selection and response truncation use the requested
+ranking, so a shallow-but-slow endpoint remains reachable in delay order. Paths
+with the same logical endpoint, depth, and normalized structural route are
+grouped into bit cohorts; different vector-bit routes remain separate. Direct
+registered-output aliases share the register endpoint and do not create a
+duplicate zero-depth path. With `to`, only variants ending at that node are
+returned.
 
 The optional `profile` / `speed_grade` / `model` params delay-cost each path
 with the same model resolution as `POST /api/design/:id/timing` (so per-path
 `estimated_delay_ns` tracks the client's retune settings). `model` is a
 URL-encoded JSON `DelayModel`; an unparseable value falls back to the
-profile/default. Ranking and truncation are still by structural depth, not
-delay.
+profile/default. The displayed hop chain and its estimate follow the same
+depth- or delay-critical predecessor selected by `sort`.
 
 When `limit` is omitted, the response includes every reconstructed path variant
 that fits the bounded analysis budgets below. An explicit `limit` returns only
@@ -513,29 +528,30 @@ the first `n` ranked variants and is clamped to 8,000.
     endpoint: NodeRef;           // FF cell (D) / output port bit / blackbox
     endpoint_port: string;       // "D", output port name, ...
     nodes: NodeRef[];            // startpoint -> ... -> endpoint, capped at 512
-    estimated_delay_ns?: number; // rough per-path delay, same model as the
-                                 // overview estimate (uses the design's
-                                 // synth-time delay model, not /timing retunes).
-                                 // Over ALL endpoints the max equals stats for
-                                 // register-bound designs, but this list is
-                                 // depth-sorted and truncated, so its max may
-                                 // be lower than stats.estimated_delay_ns.
+    estimated_delay_ns?: number; // rough delay of the displayed path, under
+                                 // the profile/speed_grade/model query settings.
+                                 // With sort=delay, the first path is the worst
+                                 // modeled endpoint arrival.
                                  // Always omitted for `rtl`-mode designs, like
-                                 // every other absolute delay figure.
+                                 // every other absolute delay figure. Also
+                                 // omitted for gates/lut4/lut6 under auto or
+                                 // generic; delay sorting then falls back to
+                                 // structural depth until a real profile is set.
   }[];
   comb_loops: string[];          // names of nodes excluded due to comb cycles
   truncated: boolean;            // explicit response limit or bounded analysis hit
 }
 ```
 
-To keep wide designs bounded, the server retains at most 64 deepest bit targets
-per logical endpoint and examines at most 8,000 targets overall when `limit` is
-omitted, or `min(limit * 16, 8000)` when it is present, before grouping route
-variants. Candidates are assigned one per logical
-endpoint, deepest groups first, before additional bits are selected round-robin.
+To keep wide designs bounded, the server retains at most 64 top-ranked bit
+targets per logical endpoint and examines at most 8,000 targets overall when
+`limit` is omitted, or `min(limit * 16, 8000)` when it is present, before
+grouping route variants. Ranking follows the requested `sort`. Candidates are
+assigned one per logical endpoint, top-ranked groups first, before additional
+bits are selected round-robin.
 A returned route contains at most 512 nodes while retaining its actual
 startpoint and endpoint. Reconstructing candidates has a shared 65,536-node
-work budget per request; deepest logical endpoint representatives consume that
+work budget per request; top-ranked logical endpoint representatives consume that
 budget before additional bit variants.
 `truncated` is true when endpoint variants or route nodes were omitted.
 

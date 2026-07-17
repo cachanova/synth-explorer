@@ -1,6 +1,6 @@
 use crate::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, FanoutResponse,
-    FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathsResponse, SourceLineIndex,
+    FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathSort, PathsResponse, SourceLineIndex,
     SourceMapResponse, SourceRangeMapping, Stats, Subgraph, TimingEstimate,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
@@ -627,14 +627,14 @@ impl Design {
         self.deep_size_of()
     }
 
-    /// RTL-mode netlists keep word-level cells (`$add`, `$mul`, shifts, …)
-    /// whose delay a flat per-cell model cannot cost meaningfully — a 64-bit
-    /// multiplier would be charged like a single gate. Absolute delay
-    /// estimates are therefore withheld for RTL designs everywhere they would
-    /// surface (`stats`, `/timing`, per-path delays); depth statistics remain.
-    /// Mirrors the stats suppression in [`build_design`].
-    fn hides_delay_estimate(&self) -> bool {
+    /// RTL always withholds absolute timing. Generic gates/LUT modes withhold
+    /// it while the resolved profile is the notional generic model; selecting
+    /// a real process/fabric profile enables retuned timing without synthesis.
+    /// Mirrors the synth-time stats suppression in [`build_design`].
+    fn hides_delay_estimate(&self, profile: DelayProfile) -> bool {
         self.response.mode == "rtl"
+            || (matches!(self.response.mode.as_str(), "gates" | "lut4" | "lut6")
+                && profile == DelayProfile::Generic)
     }
 }
 
@@ -695,11 +695,15 @@ fn build_design(stored: &StoredDesign) -> Result<Design, String> {
     analysis.set_procedural_targets(procedural_targets);
     analysis.set_source_probe_hints(probe_hints);
     let mut stats = analysis.stats();
-    if stored.mode == SynthMode::Rtl {
-        // An RTL netlist's word-level cells can't be costed per cell, so the
-        // absolute estimate is withheld (same absence shape as "no
-        // combinational paths"); depth stats stay. See
-        // `Design::hides_delay_estimate`.
+    if stored.mode == SynthMode::Rtl
+        || (matches!(
+            stored.mode,
+            SynthMode::Gates | SynthMode::Lut4 | SynthMode::Lut6
+        ) && delay_profile == DelayProfile::Generic)
+    {
+        // RTL cells cannot be costed honestly, while generic gates/LUT modes
+        // have no real technology until the user retunes to one. Synth-time
+        // absolute estimates are withheld; structural depth remains.
         stats.estimated_delay_ns = None;
         stats.estimated_delay_breakdown = None;
     }
@@ -1332,10 +1336,9 @@ async fn design_timing(
         request.profile.as_deref(),
     );
     let effective = base.scaled(profile.speed_grade_factor(request.speed_grade.as_deref()));
-    // An RTL design has no estimate under any model (see
-    // `Design::hides_delay_estimate`), so skip the recompute entirely; the
-    // resolved base model is still echoed for the coefficient editor.
-    let estimate = if design.hides_delay_estimate() {
+    // The resolved base model is still echoed for the coefficient editor even
+    // when this mode/profile pair withholds an absolute estimate.
+    let estimate = if design.hides_delay_estimate(profile) {
         TimingEstimate {
             delay_ns: None,
             breakdown: None,
@@ -1356,6 +1359,7 @@ async fn design_timing(
 struct PathsQuery {
     limit: Option<usize>,
     to: Option<u32>,
+    sort: Option<String>,
     // Optional timing model so per-path delays track the client's retune
     // settings (same resolution as `/timing`). `model` is a JSON-encoded
     // DelayModel; an unparseable value falls back to the profile/default.
@@ -1382,12 +1386,18 @@ async fn paths(
         query.profile.as_deref(),
     );
     let effective = base.scaled(profile.speed_grade_factor(query.speed_grade.as_deref()));
-    let mut response = design
-        .analysis
-        .paths_with_model(&design.graph, &effective, limit, query.to);
-    if design.hides_delay_estimate() {
+    let hides_delay = design.hides_delay_estimate(profile);
+    let sort = match query.sort.as_deref() {
+        Some("delay") if !hides_delay => PathSort::Delay,
+        _ => PathSort::Depth,
+    };
+    let mut response =
+        design
+            .analysis
+            .paths_with_model(&design.graph, &effective, limit, query.to, sort);
+    if hides_delay {
         // Per-path delays are the same absolute estimate the overview hides
-        // for RTL designs; structure, depth, and ranking stay.
+        // for this mode/profile; structure and depth ranking stay.
         for path in &mut response.paths {
             path.estimated_delay_ns = None;
         }
@@ -2117,6 +2127,95 @@ mod tests {
         })
     }
 
+    fn timing_test_design(design_id: &str, mode: &str) -> Arc<Design> {
+        let netlist = parse_value(
+            serde_json::from_str(include_str!("../tests/fixtures/and_chain_rtl.json")).unwrap(),
+        )
+        .unwrap();
+        let (top, module) = select_top(&netlist, Some("top")).unwrap();
+        let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+        let delay_profile = DelayProfile::Generic;
+        let delay_model = delay_profile.model();
+        let analysis =
+            Analysis::with_delay_model(&graph, vec!["fixture.sv".to_owned()], &delay_model);
+        let source_index = SourceLineIndex::from_module(module, vec!["fixture.sv".to_owned()]);
+        let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
+        let mut stats = analysis.stats();
+        stats.estimated_delay_ns = None;
+        stats.estimated_delay_breakdown = None;
+        Arc::new(Design {
+            response: SynthesizeResponse {
+                design_id: design_id.to_owned(),
+                top: top.to_owned(),
+                tool: "yosys".to_owned(),
+                mode: mode.to_owned(),
+                target: None,
+                stats,
+                warnings: analysis.warnings(),
+                log: String::new(),
+                memories_abstracted: false,
+                vivado_timing: None,
+            },
+            graph,
+            analysis,
+            source_index,
+            grouping,
+            delay_model,
+            delay_profile,
+        })
+    }
+
+    fn stored_timing_test_design(mode: SynthMode, profile: DelayProfile) -> StoredDesign {
+        let netlist = parse_value(
+            serde_json::from_str(include_str!("../tests/fixtures/and_chain_rtl.json")).unwrap(),
+        )
+        .unwrap();
+        StoredDesign {
+            format_version: DESIGN_STORE_FORMAT_VERSION,
+            design_id: "stored".to_owned(),
+            producer_version: "test".to_owned(),
+            resolved_top: "top".to_owned(),
+            tool: SynthTool::Yosys,
+            mode,
+            target: None,
+            log: String::new(),
+            memories_abstracted: false,
+            vivado_timing: None,
+            files: vec![SourceFile {
+                name: "fixture.sv".to_owned(),
+                content: String::new(),
+            }],
+            source_netlist: netlist.clone(),
+            netlist,
+            delay_profile: stored_delay_profile(profile).to_owned(),
+        }
+    }
+
+    #[test]
+    fn synth_stats_withhold_notional_generic_mode_timing() {
+        for mode in [SynthMode::Gates, SynthMode::Lut4, SynthMode::Lut6] {
+            let design = build_design(&stored_timing_test_design(mode, DelayProfile::Generic))
+                .expect("fixture design builds");
+            assert!(design.response.stats.estimated_delay_ns.is_none());
+            assert!(design.response.stats.estimated_delay_breakdown.is_none());
+            assert!(design.response.stats.max_depth > 0);
+        }
+
+        let targeted = build_design(&stored_timing_test_design(
+            SynthMode::Gates,
+            DelayProfile::Series7,
+        ))
+        .expect("targeted fixture design builds");
+        assert!(targeted.response.stats.estimated_delay_ns.is_some());
+
+        let rtl = build_design(&stored_timing_test_design(
+            SynthMode::Rtl,
+            DelayProfile::Series7,
+        ))
+        .expect("RTL fixture design builds");
+        assert!(rtl.response.stats.estimated_delay_ns.is_none());
+    }
+
     #[test]
     fn weighted_cache_evicts_fifo_entries_to_stay_within_budget() {
         let unit = DESIGN_CACHE_MIN_ENTRY_BYTES;
@@ -2751,6 +2850,78 @@ mod tests {
         // Unknown design → 404.
         let missing = post_timing(&state, "nope", serde_json::json!({})).await;
         assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn generic_modes_require_a_real_profile_for_absolute_timing() {
+        for mode in ["gates", "lut4", "lut6"] {
+            let state = AppState::default();
+            state.cache.write().await.insert(
+                "d".to_owned(),
+                timing_test_design("d", mode),
+                DESIGN_CACHE_MIN_ENTRY_BYTES,
+            );
+
+            for body in [
+                serde_json::json!({}),
+                serde_json::json!({"profile": "generic"}),
+                serde_json::json!({"model": DelayModel::series7()}),
+            ] {
+                let response = post_timing(&state, "d", body).await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = response.into_body().collect().await.unwrap().to_bytes();
+                let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(response["estimated_delay_ns"], serde_json::Value::Null);
+                assert!(response.get("estimated_delay_breakdown").is_none());
+            }
+
+            let response =
+                post_timing(&state, "d", serde_json::json!({"profile": "series7"})).await;
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let response: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(response["estimated_delay_ns"].as_f64().unwrap() > 0.0);
+            assert!(response.get("estimated_delay_breakdown").is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn generic_mode_paths_restore_delays_under_a_real_profile() {
+        let state = AppState::default();
+        state.cache.write().await.insert(
+            "d".to_owned(),
+            timing_test_design("d", "lut6"),
+            DESIGN_CACHE_MIN_ENTRY_BYTES,
+        );
+        let get = |suffix: &'static str| {
+            app(state.clone()).oneshot(
+                Request::builder()
+                    .uri(format!("/api/design/d/paths{suffix}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+
+        let response = get("?sort=delay").await.unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let hidden: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            hidden["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|path| path.get("estimated_delay_ns").is_none())
+        );
+
+        let response = get("?sort=delay&profile=series7").await.unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let visible: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            visible["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|path| path["estimated_delay_ns"].as_f64().is_some())
+        );
     }
 
     #[tokio::test]
