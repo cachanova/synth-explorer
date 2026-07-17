@@ -402,7 +402,7 @@ test('graph viewport follows browser and pane resizing without resetting user zo
   await expect(schematicTab).toHaveAttribute('aria-selected', 'true')
 })
 
-test('non-focus selections preserve the full layout and Focus renders the subset', async ({
+test('Focus defaults on and non-focus selections preserve the full layout', async ({
   page,
 }) => {
   await page.goto('/')
@@ -442,7 +442,7 @@ test('non-focus selections preserve the full layout and Focus renders the subset
   expect(new URL(resolvedFullResponse.url()).searchParams.get('around')).toBeNull()
 
   const focus = page.getByLabel('Focus')
-  await expect(focus).not.toBeChecked()
+  await expect(focus).toBeChecked()
   await expect(focus).toBeDisabled()
   await expect(page.locator('.graph-count')).toBeVisible()
   const fullNodes = page.locator('.g-node-body')
@@ -453,16 +453,7 @@ test('non-focus selections preserve the full layout and Focus renders the subset
   expect(lineConeRequests).toBe(0)
   expect(netlistRequests).toBe(1)
 
-  const stage = page.locator('.graph-stage')
-  const viewport = stage.locator('svg > g').first()
-  const retainedNode = fullNodes.first()
-  await page.getByTitle('Zoom in').click()
-  const fullTransform = await viewport.getAttribute('transform')
-  const retainedNodeTransform = await retainedNode.getAttribute('transform')
-  expect(retainedNodeTransform).toMatch(/^translate\(/)
-
-  // A source selection fetches relevance, but the full graph and its viewport
-  // remain byte-for-byte stable while Focus is off.
+  // The first selection uses the default Focus-on mode and renders its subset.
   const firstSelectionResponse = page.waitForResponse((response) =>
     response.url().includes('/line-cone?'),
   )
@@ -471,24 +462,32 @@ test('non-focus selections preserve the full layout and Focus renders the subset
     .click()
   expect((await firstSelectionResponse).ok()).toBe(true)
   await expect(focus).toBeEnabled()
-  await expect(focus).not.toBeChecked()
-  await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
-  expect(
-    await fullNodes.evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute('data-graph-node-id')),
-    ),
-  ).toEqual(fullNodeIds)
-  await expect(viewport).toHaveAttribute('transform', fullTransform ?? '')
-  await expect(retainedNode).toHaveAttribute('transform', retainedNodeTransform ?? '')
+  await expect(focus).toBeChecked()
+  await expect
+    .poll(async () => page.locator('.g-node-body').count())
+    .toBeLessThan(fullNodeIds.length)
+  expect(await page.locator('.g-node-body').count()).toBeGreaterThan(0)
   expect(lineConeRequests).toBe(1)
   expect(netlistRequests).toBe(1)
 
-  // A different selection changes only the relevance/highlight overlay.
+  // Focus off restores the full projection. A different selection then changes
+  // only its relevance/highlight overlay, not its geometry or viewport.
+  await focus.uncheck()
+  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
+  const stage = page.locator('.graph-stage')
+  const viewport = stage.locator('svg > g').first()
+  const retainedNode = fullNodes.first()
+  await page.getByTitle('Zoom in').click()
+  const fullTransform = await viewport.getAttribute('transform')
+  const retainedNodeTransform = await retainedNode.getAttribute('transform')
+  expect(retainedNodeTransform).toMatch(/^translate\(/)
+
   const secondSelectionResponse = page.waitForResponse((response) =>
     response.url().includes('/line-cone?'),
   )
   await page.locator('.cm-line', { hasText: "request_valid = 1'b1;" }).click()
   expect((await secondSelectionResponse).ok()).toBe(true)
+  await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(
     await fullNodes.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute('data-graph-node-id')),
@@ -499,7 +498,7 @@ test('non-focus selections preserve the full layout and Focus renders the subset
   expect(lineConeRequests).toBe(2)
   expect(netlistRequests).toBe(1)
 
-  // Turning Focus on after a selection re-lays out only the relevant subset.
+  // Turning Focus back on re-lays out only the current selection's subset.
   await focus.check()
   await expect
     .poll(async () => page.locator('.g-node-body').count())
