@@ -174,7 +174,10 @@ function armSynthesisStart(page) {
   return page.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const button = document.querySelector('button.primary')
+        const button = document.querySelector(
+          'button[title="Synthesize (Ctrl+Enter)"], ' +
+            'button[title="Synthesize in this browser (Ctrl+Enter)"]',
+        )
         if (!button) {
           reject(new Error('synthesis button is missing'))
           return
@@ -229,6 +232,14 @@ async function runFlow(page, metrics, url, warmth) {
   await page.getByLabel('Example').selectOption('reg_mux')
   phases.push(
     await measure('synthesize_to_overview', metrics, async () => {
+      const running = armSynthesisStart(page)
+      await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+      await waitForSynthesis(page, running)
+    }),
+  )
+
+  phases.push(
+    await measure('repeat_synthesize_to_overview', metrics, async () => {
       const running = armSynthesisStart(page)
       await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
       await waitForSynthesis(page, running)

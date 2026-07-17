@@ -40,5 +40,7 @@ npm run benchmark:migration -- \
 Each trial creates a fresh browser context for its cold pass and reloads the
 same context for its warm pass. The result includes raw samples and median,
 p95, min, and max duration, HTTP traffic, failed requests, and renderer heap.
-The phases cover page readiness, synthesis-to-Overview, endpoints, endpoint
-cone rendering, paths, and fanout.
+The phases cover page readiness, first synthesis-to-Overview, an identical
+same-page synthesis cache hit, endpoints, endpoint cone rendering, paths, and
+fanout. Full-flow comparisons exclude the repeat synthesis phase; report that
+phase separately as the user-visible cache-hit latency.
