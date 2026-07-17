@@ -6,7 +6,7 @@ use crate::graph::{
 use crate::grouping::{GroupId, GroupKind, GroupPartition};
 use crate::netlist::{PortDirection, YosysModule, YosysNetlist};
 use deepsize::DeepSizeOf;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -249,7 +249,7 @@ pub struct SourceMapResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, DeepSizeOf)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, DeepSizeOf)]
 pub struct SourceRangeMapping {
     pub file: String,
     pub start_line: usize,
@@ -258,14 +258,18 @@ pub struct SourceRangeMapping {
     pub mapping_incomplete: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, DeepSizeOf)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, DeepSizeOf,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceProbeDirection {
     Fanin,
     Fanout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, DeepSizeOf)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, DeepSizeOf,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceProbeHintKind {
     Block,
@@ -274,7 +278,7 @@ pub enum SourceProbeHintKind {
     Signal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, DeepSizeOf)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, DeepSizeOf)]
 pub struct SourceProbeHint {
     pub file: String,
     pub start_line: usize,
@@ -378,6 +382,20 @@ pub struct SourceLineIndex {
 }
 
 impl SourceLineIndex {
+    pub fn from_snapshot(
+        files: Vec<String>,
+        lines: Vec<String>,
+        ranges: &[SourceRangeMapping],
+    ) -> Self {
+        let mut index = Self {
+            files: files.into_iter().collect(),
+            lines: lines.into_iter().collect(),
+            recovered_ranges: BTreeMap::new(),
+        };
+        index.extend_ranges(ranges);
+        index
+    }
+
     pub fn from_module(module: &YosysModule, files: Vec<String>) -> Self {
         Self::from_modules([module], files)
     }
@@ -450,6 +468,12 @@ impl SourceLineIndex {
         for index in self.recovered_ranges.values_mut() {
             index.rebuild();
         }
+    }
+
+    pub fn snapshot_lines(&self) -> Vec<String> {
+        let mut lines = self.lines.iter().cloned().collect::<Vec<_>>();
+        lines.sort();
+        lines
     }
 }
 

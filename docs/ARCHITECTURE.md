@@ -40,12 +40,14 @@ needs nextpnr/OpenSTA/Vivado/Quartus reports (future: import + overlay them).
   target, args). A 512 MiB, 30-minute in-memory FIFO cache serves active
   exploration, backed by an 8 GiB local file store with a 4-hour sliding TTL
   and least-recently-used eviction; one entry is capped at 512 MiB. Cold hits
-  rebuild the graph and analysis state from the stored netlists without running
-  synthesis again. Cold rebuilds are serialized to bound transient memory on
-  the single host. Writes use an atomic rename, and incompatible, corrupt,
-  expired, or evicted entries are discarded. The file store survives
-  application restarts and deployments but is local to one host; horizontal
-  replicas would require shared storage or request affinity. It is a
+  rebuild the graph and analysis state from a minimized final-netlist and
+  derived-provenance snapshot without running synthesis again. Submitted source
+  contents, the pre-analysis source netlist, and synthesis logs are not
+  persisted. Cold rebuilds are serialized to bound transient memory on the
+  single host. Writes use an atomic rename, and incompatible, corrupt, expired,
+  or evicted entries are discarded. The file store survives application
+  restarts and deployments but is local to one host; horizontal replicas would
+  require shared storage or request affinity. It is a
   single-writer store for the deployment's one application process. Disk-write
   failures degrade to hot-cache-only retention instead of failing synthesis.
 - Hot-cache hits share a read lock; only expired-entry cleanup and insertion

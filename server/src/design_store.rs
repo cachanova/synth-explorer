@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime};
 
 const FILE_EXTENSION: &str = "json";
 const MAX_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+const FORMAT_VERSION_MARKER: &str = ".format-version";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DesignStoreError {
@@ -58,6 +59,19 @@ impl DesignStore {
         store.scan()?;
         store.prune(SystemTime::now())?;
         Ok(store)
+    }
+
+    pub fn open_versioned(
+        directory: impl Into<PathBuf>,
+        budget_bytes: u64,
+        ttl: Duration,
+        format_version: u32,
+    ) -> Result<Self, DesignStoreError> {
+        let directory = directory.into();
+        fs::create_dir_all(&directory)?;
+        set_private_directory_permissions(&directory)?;
+        ensure_format_version(&directory, format_version)?;
+        Self::open(directory, budget_bytes, ttl)
     }
 
     pub fn read<T: DeserializeOwned>(
@@ -177,6 +191,9 @@ impl DesignStore {
             if !entry.file_type()?.is_file() {
                 continue;
             }
+            if entry.file_name() == FORMAT_VERSION_MARKER {
+                continue;
+            }
             let Some(design_id) = design_id_from_path(&path) else {
                 tracing::warn!(path = %path.display(), "stored_design_stray_file_removed");
                 let _ = fs::remove_file(path);
@@ -245,6 +262,37 @@ impl DesignStore {
     fn path_for(&self, design_id: &str) -> PathBuf {
         self.directory.join(format!("{design_id}.{FILE_EXTENSION}"))
     }
+}
+
+fn ensure_format_version(directory: &Path, format_version: u32) -> Result<(), DesignStoreError> {
+    let marker_path = directory.join(FORMAT_VERSION_MARKER);
+    let expected = format_version.to_string();
+    let current = match fs::read_to_string(&marker_path) {
+        Ok(value) => Some(value),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
+    if current
+        .as_deref()
+        .is_some_and(|value| value.trim() == expected)
+    {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() && design_id_from_path(&entry.path()).is_some() {
+            fs::remove_file(entry.path())?;
+        }
+    }
+
+    let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
+    temporary.write_all(expected.as_bytes())?;
+    temporary.write_all(b"\n")?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker_path).map_err(|err| err.error)?;
+    sync_directory(directory)?;
+    Ok(())
 }
 
 fn valid_design_id(design_id: &str) -> bool {
@@ -388,5 +436,62 @@ mod tests {
             ),
             Err(DesignStoreError::EntryTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn versioned_open_purges_unversioned_entries_and_writes_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join(format!("{A}.{FILE_EXTENSION}")),
+            br#"{"body":"legacy raw source"}"#,
+        )
+        .unwrap();
+
+        let mut store =
+            DesignStore::open_versioned(directory.path(), 1024, Duration::from_secs(60), 2)
+                .unwrap();
+
+        assert!(store.read::<TestValue>(A).unwrap().is_none());
+        assert_eq!(
+            fs::read_to_string(directory.path().join(FORMAT_VERSION_MARKER)).unwrap(),
+            "2\n"
+        );
+    }
+
+    #[test]
+    fn versioned_open_retains_entries_only_for_matching_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut store =
+            DesignStore::open_versioned(directory.path(), 1024, Duration::from_secs(60), 2)
+                .unwrap();
+        store
+            .write(
+                A,
+                &TestValue {
+                    body: "saved".into(),
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        let mut reopened =
+            DesignStore::open_versioned(directory.path(), 1024, Duration::from_secs(60), 2)
+                .unwrap();
+        assert_eq!(
+            reopened.read::<TestValue>(A).unwrap(),
+            Some(TestValue {
+                body: "saved".into()
+            })
+        );
+        drop(reopened);
+
+        let mut upgraded =
+            DesignStore::open_versioned(directory.path(), 1024, Duration::from_secs(60), 3)
+                .unwrap();
+        assert!(upgraded.read::<TestValue>(A).unwrap().is_none());
+        assert_eq!(
+            fs::read_to_string(directory.path().join(FORMAT_VERSION_MARKER)).unwrap(),
+            "3\n"
+        );
     }
 }

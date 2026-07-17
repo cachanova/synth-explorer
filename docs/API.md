@@ -318,15 +318,17 @@ owned collection/string capacities plus cache key/entry overhead, not exact
 RSS.
 
 The memory cache is backed by an 8 GiB local file store with a 4-hour sliding
-TTL, a 512 MiB per-entry cap, and least-recently-used eviction. It stores the
-submitted sources and both normalized netlists needed to reconstruct every
-exploration endpoint. A cold hit rebuilds the parsed graph without rerunning
-Yosys or Vivado; cold rebuilds are serialized to cap transient memory. Writes
-are atomic. Corrupt entries, entries from different synthesis-tool versions,
-expired entries, and entries evicted by the byte budget are deleted. The store
-survives process and container restarts on the same deployment host, but it is
-not shared between multiple backend hosts and must have only one server process
-writing to it.
+TTL, a 512 MiB per-entry cap, and least-recently-used eviction. It stores one
+normalized final netlist, bare source-coordinate names and derived provenance
+indexes, and the small synthesis metadata needed to reconstruct every
+exploration endpoint. It does not store submitted source contents, the
+pre-analysis source netlist, or synthesis logs. A cold hit rebuilds the parsed
+graph without rerunning Yosys or Vivado; cold rebuilds are serialized to cap
+transient memory. Writes are atomic. Corrupt entries, entries from different
+synthesis-tool versions, expired entries, and entries evicted by the byte budget
+are deleted. The store survives process and container restarts on the same
+deployment host, but it is not shared between multiple backend hosts and must
+have only one server process writing to it.
 
 A synthesized design whose in-memory charge exceeds the hot-cache budget
 returns `507` rather than an id that subsequent analysis routes could not
@@ -731,8 +733,9 @@ At most 200 ids per request (`422` above that).
 
 ## GET `/api/design/:id`
 
-Returns the same body as the original `/api/synthesize` response (for reloads).
-`404` if the id is unknown. Designs normally survive process and container
-restarts on the same host, but expire after 4 hours without a cold access, may
-be evicted by the 8 GiB disk budget, and are invalidated when the producing
-synthesis-tool version changes.
+Returns the same analysis metadata as the original `/api/synthesize` response
+(for reloads). A response rebuilt from the disk store has an empty `log` because
+synthesis logs are not persisted. `404` if the id is unknown. Designs normally
+survive process and container restarts on the same host, but expire after 4
+hours without a cold access, may be evicted by the 8 GiB disk budget, and are
+invalidated when the producing synthesis-tool version changes.

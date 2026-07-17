@@ -1,7 +1,8 @@
 use crate::analysis::{
     Analysis, ConeDir, ConeOptions, DelayBreakdown, EndpointsResponse, ExplorationSnapshot,
     FanoutResponse, FullNetlistOptions, MAX_PATH_RESULTS, NodeRef, PathSort, PathsResponse,
-    SourceLineIndex, SourceMapResponse, SourceRangeMapping, Stats, Subgraph, TimingEstimate,
+    SourceLineIndex, SourceMapResponse, SourceProbeHint, SourceRangeMapping, Stats, Subgraph,
+    TimingEstimate,
 };
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::design_store::{DesignStore, DesignStoreError};
@@ -24,7 +25,7 @@ use axum::{Json, Router};
 use deepsize::DeepSizeOf;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::env;
 use std::io::{self, Write};
 use std::mem::size_of;
@@ -41,7 +42,7 @@ const DESIGN_CACHE_TTL: Duration = Duration::from_secs(30 * 60);
 const DESIGN_CACHE_MIN_ENTRY_BYTES: usize = 64 * 1024;
 const DESIGN_STORE_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 const DESIGN_STORE_TTL: Duration = Duration::from_secs(4 * 60 * 60);
-const DESIGN_STORE_FORMAT_VERSION: u32 = 1;
+const DESIGN_STORE_FORMAT_VERSION: u32 = 2;
 const MAX_IN_FLIGHT_DESIGNS: usize = 16;
 const MAX_RUNNING_SYNTHESES: usize = 1;
 const SYNTHESIS_RETRY_AFTER_SECONDS: u64 = 5;
@@ -95,8 +96,12 @@ impl AppState {
         vivado_access: Option<VivadoAccess>,
         store_directory: impl Into<PathBuf>,
     ) -> Result<Self, DesignStoreError> {
-        let store =
-            DesignStore::open(store_directory, DESIGN_STORE_BUDGET_BYTES, DESIGN_STORE_TTL)?;
+        let store = DesignStore::open_versioned(
+            store_directory,
+            DESIGN_STORE_BUDGET_BYTES,
+            DESIGN_STORE_TTL,
+            DESIGN_STORE_FORMAT_VERSION,
+        )?;
         Ok(Self::with_cache_config(
             yosys_version,
             vivado_backend,
@@ -433,14 +438,17 @@ async fn lookup_design(state: &AppState, id: &str) -> Result<Option<Arc<Design>>
         return Ok(None);
     }
 
-    let built = tokio::task::spawn_blocking(move || build_design(&stored))
-        .await
-        .map_err(|err| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("stored design rebuild task failed: {err}"),
-            )
-        })?;
+    let built = tokio::task::spawn_blocking(move || {
+        let mut stored = stored;
+        build_design(&mut stored, None)
+    })
+    .await
+    .map_err(|err| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("stored design rebuild task failed: {err}"),
+        )
+    })?;
     let design = match built {
         Ok(design) => Arc::new(design),
         Err(err) => {
@@ -650,57 +658,143 @@ struct StoredDesign {
     format_version: u32,
     design_id: String,
     producer_version: String,
-    resolved_top: String,
     tool: SynthTool,
     mode: SynthMode,
     target: Option<String>,
-    log: String,
     memories_abstracted: bool,
     vivado_timing: Option<VivadoTiming>,
-    files: Vec<SourceFile>,
     netlist: YosysNetlist,
-    source_netlist: YosysNetlist,
+    source: StoredSourceAnalysis,
     delay_profile: String,
 }
 
-fn build_design(stored: &StoredDesign) -> Result<Design, String> {
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct StoredSourceAnalysis {
+    files: Vec<String>,
+    seen_lines: Vec<String>,
+    ranges: Vec<SourceRangeMapping>,
+    probe_hints: Vec<SourceProbeHint>,
+    procedural_targets: BTreeMap<String, BTreeMap<usize, Vec<u32>>>,
+}
+
+impl StoredSourceAnalysis {
+    fn capture(
+        files: Vec<String>,
+        source_index: &SourceLineIndex,
+        mut ranges: Vec<SourceRangeMapping>,
+        mut probe_hints: Vec<SourceProbeHint>,
+        procedural_targets: &HashMap<(String, usize), Vec<u32>>,
+    ) -> Self {
+        ranges.sort();
+        ranges.dedup();
+        probe_hints.sort();
+        probe_hints.dedup();
+        let mut stored_targets = BTreeMap::<String, BTreeMap<usize, Vec<u32>>>::new();
+        for ((file, line), node_ids) in procedural_targets {
+            stored_targets
+                .entry(file.clone())
+                .or_default()
+                .insert(*line, node_ids.clone());
+        }
+        Self {
+            files,
+            seen_lines: source_index.snapshot_lines(),
+            ranges,
+            probe_hints,
+            procedural_targets: stored_targets,
+        }
+    }
+
+    fn runtime_procedural_targets(&self) -> HashMap<(String, usize), Vec<u32>> {
+        self.procedural_targets
+            .iter()
+            .flat_map(|(file, lines)| {
+                lines
+                    .iter()
+                    .map(|(line, node_ids)| ((file.clone(), *line), node_ids.clone()))
+            })
+            .collect()
+    }
+}
+
+struct TransientSourceInput {
+    files: Vec<SourceFile>,
+    source_netlist: YosysNetlist,
+    log: String,
+}
+
+fn build_design(
+    stored: &mut StoredDesign,
+    transient: Option<TransientSourceInput>,
+) -> Result<Design, String> {
     let (top, module) = select_top(&stored.netlist, None)
         .map_err(|err| format!("failed to resolve top module: {err}"))?;
+    let resolved_top = top.to_owned();
     let graph = Graph::from_netlist(&stored.netlist, top, module)
         .map_err(|err| format!("failed to build analysis graph: {err}"))?;
-    let (source_top, _) = select_top(&stored.source_netlist, None)
-        .map_err(|err| format!("failed to resolve source-provenance top module: {err}"))?;
-    let SourceProvenance {
-        mut ranges,
-        truncated: source_ranges_truncated,
-        procedural_targets,
-        probe_hints,
-    } = recover_source_provenance(
-        &graph,
-        &stored.source_netlist,
-        stored
+    let log = if let Some(transient) = transient {
+        let (source_top, _) = select_top(&transient.source_netlist, None)
+            .map_err(|err| format!("failed to resolve source-provenance top module: {err}"))?;
+        let SourceProvenance {
+            mut ranges,
+            truncated: ranges_truncated,
+            procedural_targets,
+            probe_hints,
+        } = recover_source_provenance(
+            &graph,
+            &transient.source_netlist,
+            transient
+                .files
+                .iter()
+                .map(|file| (file.name.clone(), file.content.clone())),
+        );
+        if stored.tool == SynthTool::Vivado {
+            ranges.extend(vivado_procedural_ranges(&procedural_targets));
+        }
+        debug_assert_eq!(
+            ranges_truncated,
+            ranges.iter().any(|range| range.mapping_incomplete)
+        );
+        let file_names = transient
             .files
             .iter()
-            .map(|file| (file.name.clone(), file.content.clone())),
-    );
-    if stored.tool == SynthTool::Vivado {
-        ranges.extend(vivado_procedural_ranges(&procedural_targets));
-    }
+            .map(|file| file.name.clone())
+            .collect::<Vec<_>>();
+        let mut source_index = SourceLineIndex::from_netlist(
+            &transient.source_netlist,
+            source_top,
+            file_names.clone(),
+        );
+        source_index.extend_ranges(&ranges);
+        stored.source = StoredSourceAnalysis::capture(
+            file_names,
+            &source_index,
+            ranges,
+            probe_hints,
+            &procedural_targets,
+        );
+        transient.log
+    } else {
+        String::new()
+    };
     let delay_profile = parse_stored_delay_profile(&stored.delay_profile)
         .ok_or_else(|| format!("unknown stored delay profile: {}", stored.delay_profile))?;
     let delay_model = delay_profile.model();
-    let file_names = stored
-        .files
-        .iter()
-        .map(|file| file.name.clone())
-        .collect::<Vec<_>>();
+    let file_names = stored.source.files.clone();
     let mut analysis = Analysis::with_delay_model(&graph, file_names.clone(), &delay_model);
-    let mut source_index =
-        SourceLineIndex::from_netlist(&stored.source_netlist, source_top, file_names);
-    source_index.extend_ranges(&ranges);
-    analysis.extend_source_ranges(ranges, source_ranges_truncated);
-    analysis.set_procedural_targets(procedural_targets);
-    analysis.set_source_probe_hints(probe_hints);
+    let source_index = SourceLineIndex::from_snapshot(
+        file_names,
+        stored.source.seen_lines.clone(),
+        &stored.source.ranges,
+    );
+    let source_ranges_truncated = stored
+        .source
+        .ranges
+        .iter()
+        .any(|range| range.mapping_incomplete);
+    analysis.extend_source_ranges(stored.source.ranges.clone(), source_ranges_truncated);
+    analysis.set_procedural_targets(stored.source.runtime_procedural_targets());
+    analysis.set_source_probe_hints(stored.source.probe_hints.clone());
     let mut stats = analysis.stats();
     if stored.mode == SynthMode::Rtl
         || (matches!(
@@ -716,14 +810,14 @@ fn build_design(stored: &StoredDesign) -> Result<Design, String> {
     }
     let response = SynthesizeResponse {
         design_id: stored.design_id.clone(),
-        top: stored.resolved_top.clone(),
+        top: resolved_top,
         tool: stored.tool.to_string(),
         mode: stored.mode.to_string(),
         delay_profile: stored_delay_profile(delay_profile).to_owned(),
         target: stored.target.clone(),
         stats,
         warnings: analysis.warnings(),
-        log: stored.log.clone(),
+        log,
         memories_abstracted: stored.memories_abstracted,
         vivado_timing: stored.vivado_timing.clone(),
     };
@@ -1142,25 +1236,28 @@ async fn synthesize_uncached(
     let delay_profile = default_delay_profile(validated, &mode, vivado_family);
     let producer_version = producer_version(state, validated.tool)
         .expect("validated synthesis requests require a configured backend");
-    let stored = StoredDesign {
+    let mut stored = StoredDesign {
         format_version: DESIGN_STORE_FORMAT_VERSION,
         design_id: design_id.to_owned(),
         producer_version,
-        resolved_top: output.resolved_top,
         tool: validated.tool,
         mode: validated.mode,
         target: validated.target.clone(),
-        log: output.log,
         memories_abstracted,
         vivado_timing: output.vivado_timing,
-        files: validated.files.clone(),
         netlist: parsed,
-        source_netlist: source_parsed,
+        source: StoredSourceAnalysis::default(),
         delay_profile: stored_delay_profile(delay_profile).to_owned(),
+    };
+    let transient = TransientSourceInput {
+        files: validated.files.clone(),
+        source_netlist: source_parsed,
+        log: output.log,
     };
     let retain_stored = state.store.is_some();
     let (design, stored) = tokio::task::spawn_blocking(move || {
-        build_design(&stored).map(|design| (Arc::new(design), retain_stored.then_some(stored)))
+        build_design(&mut stored, Some(transient))
+            .map(|design| (Arc::new(design), retain_stored.then_some(stored)))
     })
     .await
     .map_err(|err| {
@@ -2212,22 +2309,23 @@ mod tests {
             serde_json::from_str(include_str!("../tests/fixtures/and_chain_rtl.json")).unwrap(),
         )
         .unwrap();
+        let files = vec!["fixture.sv".to_owned()];
+        let seen_lines =
+            SourceLineIndex::from_netlist(&netlist, "top", files.clone()).snapshot_lines();
         StoredDesign {
             format_version: DESIGN_STORE_FORMAT_VERSION,
             design_id: "stored".to_owned(),
             producer_version: "test".to_owned(),
-            resolved_top: "top".to_owned(),
             tool: SynthTool::Yosys,
             mode,
             target: None,
-            log: String::new(),
             memories_abstracted: false,
             vivado_timing: None,
-            files: vec![SourceFile {
-                name: "fixture.sv".to_owned(),
-                content: String::new(),
-            }],
-            source_netlist: netlist.clone(),
+            source: StoredSourceAnalysis {
+                files,
+                seen_lines,
+                ..StoredSourceAnalysis::default()
+            },
             netlist,
             delay_profile: stored_delay_profile(profile).to_owned(),
         }
@@ -2236,27 +2334,21 @@ mod tests {
     #[test]
     fn synth_stats_withhold_notional_generic_mode_timing() {
         for mode in [SynthMode::Gates, SynthMode::Lut4, SynthMode::Lut6] {
-            let design = build_design(&stored_timing_test_design(mode, DelayProfile::Generic))
-                .expect("fixture design builds");
+            let mut stored = stored_timing_test_design(mode, DelayProfile::Generic);
+            let design = build_design(&mut stored, None).expect("fixture design builds");
             assert!(design.response.stats.estimated_delay_ns.is_none());
             assert!(design.response.stats.estimated_delay_breakdown.is_none());
             assert!(design.response.stats.max_depth > 0);
             assert_eq!(design.response.delay_profile, "generic");
         }
 
-        let targeted = build_design(&stored_timing_test_design(
-            SynthMode::Gates,
-            DelayProfile::Series7,
-        ))
-        .expect("targeted fixture design builds");
+        let mut stored = stored_timing_test_design(SynthMode::Gates, DelayProfile::Series7);
+        let targeted = build_design(&mut stored, None).expect("targeted fixture design builds");
         assert!(targeted.response.stats.estimated_delay_ns.is_some());
         assert_eq!(targeted.response.delay_profile, "series7");
 
-        let rtl = build_design(&stored_timing_test_design(
-            SynthMode::Rtl,
-            DelayProfile::Series7,
-        ))
-        .expect("RTL fixture design builds");
+        let mut stored = stored_timing_test_design(SynthMode::Rtl, DelayProfile::Series7);
+        let rtl = build_design(&mut stored, None).expect("RTL fixture design builds");
         assert!(rtl.response.stats.estimated_delay_ns.is_none());
     }
 
@@ -2704,7 +2796,19 @@ mod tests {
         let design_id = synthesized["design_id"].as_str().unwrap().to_owned();
         let (_, endpoints_before) =
             get_json(&state, format!("/api/design/{design_id}/endpoints")).await;
-        assert!(directory.path().join(format!("{design_id}.json")).is_file());
+        let (_, source_map_before) =
+            get_json(&state, format!("/api/design/{design_id}/source-map")).await;
+        let (_, exploration_before) =
+            get_json(&state, format!("/api/design/{design_id}/exploration")).await;
+        let stored_path = directory.path().join(format!("{design_id}.json"));
+        let stored_json = std::fs::read_to_string(&stored_path).unwrap();
+        let stored_value: serde_json::Value = serde_json::from_str(&stored_json).unwrap();
+        assert_eq!(stored_value["format_version"], DESIGN_STORE_FORMAT_VERSION);
+        assert!(stored_value.get("files").is_none());
+        assert!(stored_value.get("source_netlist").is_none());
+        assert!(stored_value.get("log").is_none());
+        assert!(!stored_json.contains("assign y = a & b"));
+        assert!(!stored_json.contains("module top(input logic"));
         drop(state);
 
         let restarted = persistent_test_state(directory.path(), "Yosys persistence-test");
@@ -2720,12 +2824,32 @@ mod tests {
         while let Some(result) = cold_requests.join_next().await {
             let (status, restored) = result.unwrap();
             assert_eq!(status, StatusCode::OK);
-            assert_eq!(restored, synthesized);
+            let mut expected = synthesized.clone();
+            expected["log"] = serde_json::Value::String(String::new());
+            assert_eq!(restored, expected);
         }
         let (status, endpoints_after) =
             get_json(&restarted, format!("/api/design/{design_id}/endpoints")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(endpoints_after, endpoints_before);
+        let (status, source_map_after) =
+            get_json(&restarted, format!("/api/design/{design_id}/source-map")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(source_map_after, source_map_before);
+        let (status, exploration_after) =
+            get_json(&restarted, format!("/api/design/{design_id}/exploration")).await;
+        assert_eq!(status, StatusCode::OK);
+        let normalize_exploration = |mut snapshot: serde_json::Value| {
+            snapshot["edges"]
+                .as_array_mut()
+                .unwrap()
+                .sort_by_key(|edge| serde_json::to_string(edge).unwrap());
+            snapshot
+        };
+        assert_eq!(
+            normalize_exploration(exploration_after),
+            normalize_exploration(exploration_before)
+        );
         assert!(
             restarted
                 .cache

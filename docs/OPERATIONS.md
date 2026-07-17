@@ -25,14 +25,20 @@ Cloudflare proxy, obtains and renews the TLS certificate.
 | Application | Synth Explorer container | Static UI, API, and Yosys |
 
 The production stack has no database. The server keeps active designs in a
-bounded memory cache and retains reconstruction data in the local
-`design_data` Docker volume. Stored designs have a 4-hour sliding TTL and an
-8 GiB byte budget, survive application deployments, and are not replicated off
-the host. The volume is single-writer and mounted only by the one application
-container. A `synthesis_persistence_degraded` log means new designs are being
-served from memory but will not survive cache eviction or restart; check volume
-ownership and free space. Atomic writes can temporarily require one additional
-512 MiB entry beyond the 8 GiB retention budget.
+bounded memory cache and retains a minimized reconstruction snapshot in the
+local `design_data` Docker volume. The snapshot excludes submitted source
+contents, the pre-analysis source netlist, and synthesis logs; it retains the
+final normalized netlist, bare source-coordinate names, derived provenance, and
+small synthesis metadata. Stored designs have a 4-hour sliding TTL and an 8 GiB
+byte budget, survive application deployments, and are not replicated off the
+host. A deployment that changes the snapshot format deletes all snapshots from
+the previous format at application startup; the format-2 deployment therefore
+removes legacy records that included submitted RTL. The volume is single-writer
+and mounted only by the one application container. A
+`synthesis_persistence_degraded` log means new designs are being served from
+memory but will not survive cache eviction or restart; check volume ownership
+and free space. Atomic writes can temporarily require one additional 512 MiB
+entry beyond the 8 GiB retention budget.
 
 ## One-time account setup
 
@@ -430,8 +436,9 @@ digest on disk.
 
 The project does not pay for VM backups at launch. GitHub stores the source and
 workflow history. GHCR stores release images. Cloudflare stores DNS. Do not back
-up the `design_data` volume: a backup would retain submitted RTL beyond the
-documented 4-hour service window.
+up the `design_data` volume: although it excludes submitted RTL text, its
+derived netlists and source-coordinate metadata remain user design data and
+must not outlive the documented 4-hour service window.
 
 Use a temporary Hetzner snapshot before an OS or Docker change that has a high
 recovery cost. Delete the snapshot after the service passes its smoke test.
