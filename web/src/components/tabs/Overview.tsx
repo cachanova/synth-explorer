@@ -1,4 +1,3 @@
-import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { displayCellType } from '../../lib/prettyType'
 import { useStore } from '../../useStore'
 import type { CellCategoryCounts } from '../../types'
@@ -49,10 +48,6 @@ export function Overview() {
 
   return (
     <div>
-      <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
-        {STRUCTURAL_DEPTH_CAVEAT}
-      </div>
-
       {design.memories_abstracted && (
         <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
           Memories kept abstract — flattening them to gates exceeded sandbox

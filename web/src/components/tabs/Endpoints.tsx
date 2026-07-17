@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
-import { STRUCTURAL_DEPTH_CAVEAT } from '../../lib/depth'
 import { formatBitRanges } from '../../lib/bitRanges'
 import { fuzzyFilter } from '../../lib/fuzzy'
 import {
@@ -96,11 +95,6 @@ export function Endpoints() {
   return (
     <div className="bounded-results-tab">
       <StaleResultsChip state={store.analysisState} />
-      <div className="caveat" style={{ marginTop: 0, marginBottom: 10 }}>
-        {STRUCTURAL_DEPTH_CAVEAT} Registered top-level outputs are aliases of their
-        driving register and are counted once.
-      </div>
-
       <div className="row" style={{ alignItems: 'stretch', marginBottom: 8 }}>
         <input
           className="filter-input"
