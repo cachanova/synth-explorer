@@ -49,58 +49,65 @@ const appHighlightStyle = HighlightStyle.define([
   { tag: tags.invalid, color: 'var(--red)', textDecoration: 'underline' },
 ])
 
-const editorTheme = (mode: 'light' | 'dark'): Extension => [
-  EditorView.theme(
-    {
-      '&': { color: 'var(--text)', backgroundColor: 'var(--bg)' },
-      '.cm-content': { caretColor: 'var(--accent)' },
-      '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
-      '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
-        { backgroundColor: 'color-mix(in srgb, var(--accent) 24%, transparent)' },
-      '.cm-panels': { backgroundColor: 'var(--bg-1)', color: 'var(--text)' },
-      '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--border)' },
-      '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--border)' },
-      '.cm-searchMatch': {
-        backgroundColor: 'color-mix(in srgb, var(--amber) 22%, transparent)',
-        outline: '1px solid color-mix(in srgb, var(--amber) 55%, transparent)',
+function createEditorTheme(dark: boolean): Extension {
+  return [
+    EditorView.theme(
+      {
+        '&': { color: 'var(--text)', backgroundColor: 'var(--bg)' },
+        '.cm-content': { caretColor: 'var(--accent)' },
+        '.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--accent)' },
+        '&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection':
+          { backgroundColor: 'color-mix(in srgb, var(--accent) 24%, transparent)' },
+        '.cm-panels': { backgroundColor: 'var(--bg-1)', color: 'var(--text)' },
+        '.cm-panels.cm-panels-top': { borderBottom: '1px solid var(--border)' },
+        '.cm-panels.cm-panels-bottom': { borderTop: '1px solid var(--border)' },
+        '.cm-searchMatch': {
+          backgroundColor: 'color-mix(in srgb, var(--amber) 22%, transparent)',
+          outline: '1px solid color-mix(in srgb, var(--amber) 55%, transparent)',
+        },
+        '.cm-searchMatch.cm-searchMatch-selected': {
+          backgroundColor: 'color-mix(in srgb, var(--accent) 28%, transparent)',
+        },
+        '.cm-selectionMatch': {
+          backgroundColor: 'color-mix(in srgb, var(--accent) 14%, transparent)',
+        },
+        '.cm-matchingBracket': {
+          backgroundColor: 'color-mix(in srgb, var(--blue) 22%, transparent)',
+          outline: '1px solid color-mix(in srgb, var(--blue) 55%, transparent)',
+        },
+        '.cm-gutters': {
+          backgroundColor: 'var(--bg)',
+          color: 'var(--text-faint)',
+          borderRight: 'none',
+        },
+        '.cm-activeLine, .cm-activeLineGutter': {
+          backgroundColor: 'color-mix(in srgb, var(--text) 5%, transparent)',
+        },
+        '.cm-foldPlaceholder': {
+          backgroundColor: 'var(--bg-2)',
+          border: '1px solid var(--border-strong)',
+          color: 'var(--text-dim)',
+        },
+        '.cm-tooltip': {
+          backgroundColor: 'var(--bg-1)',
+          border: '1px solid var(--border-strong)',
+          color: 'var(--text)',
+        },
+        '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
+          backgroundColor: 'var(--bg-3)',
+          color: 'var(--text)',
+        },
       },
-      '.cm-searchMatch.cm-searchMatch-selected': {
-        backgroundColor: 'color-mix(in srgb, var(--accent) 28%, transparent)',
-      },
-      '.cm-selectionMatch': {
-        backgroundColor: 'color-mix(in srgb, var(--accent) 14%, transparent)',
-      },
-      '.cm-matchingBracket': {
-        backgroundColor: 'color-mix(in srgb, var(--blue) 22%, transparent)',
-        outline: '1px solid color-mix(in srgb, var(--blue) 55%, transparent)',
-      },
-      '.cm-gutters': {
-        backgroundColor: 'var(--bg)',
-        color: 'var(--text-faint)',
-        borderRight: 'none',
-      },
-      '.cm-activeLine, .cm-activeLineGutter': {
-        backgroundColor: 'color-mix(in srgb, var(--text) 5%, transparent)',
-      },
-      '.cm-foldPlaceholder': {
-        backgroundColor: 'var(--bg-2)',
-        border: '1px solid var(--border-strong)',
-        color: 'var(--text-dim)',
-      },
-      '.cm-tooltip': {
-        backgroundColor: 'var(--bg-1)',
-        border: '1px solid var(--border-strong)',
-        color: 'var(--text)',
-      },
-      '.cm-tooltip-autocomplete > ul > li[aria-selected]': {
-        backgroundColor: 'var(--bg-3)',
-        color: 'var(--text)',
-      },
-    },
-    { dark: mode === 'dark' },
-  ),
-  syntaxHighlighting(appHighlightStyle),
-]
+      { dark },
+    ),
+    syntaxHighlighting(appHighlightStyle),
+  ]
+}
+
+const editorThemes: Record<'light' | 'dark', Extension> = {
+  light: createEditorTheme(false),
+  dark: createEditorTheme(true),
+}
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
@@ -225,6 +232,7 @@ export function Editor() {
   const themeCompartment = useRef(new Compartment())
   const resolvedModeRef = useRef(resolvedMode)
   resolvedModeRef.current = resolvedMode
+  const appliedModeRef = useRef(resolvedMode)
 
   // create the view once
   useEffect(() => {
@@ -274,7 +282,7 @@ export function Editor() {
       highlightActiveLineGutter(),
       history(),
       StreamLanguage.define(verilog),
-      themeCompartment.current.of(editorTheme(resolvedModeRef.current)),
+      themeCompartment.current.of(editorThemes[resolvedModeRef.current]),
       highlightField,
       synthKeymap,
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
@@ -296,10 +304,11 @@ export function Editor() {
   // swap the CodeMirror theme when the resolved appearance changes
   useEffect(() => {
     const view = viewRef.current
-    if (!view) return
+    if (!view || appliedModeRef.current === resolvedMode) return
     view.dispatch({
-      effects: themeCompartment.current.reconfigure(editorTheme(resolvedMode)),
+      effects: themeCompartment.current.reconfigure(editorThemes[resolvedMode]),
     })
+    appliedModeRef.current = resolvedMode
   }, [resolvedMode])
 
   // reset document when the active file identity changes or its content is

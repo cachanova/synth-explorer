@@ -59,4 +59,14 @@ test('keeps editor chrome and syntax on the selected color theme', async ({
   expect(gruvboxKeyword.actual).toBe(gruvboxKeyword.expected)
   expect(gruvboxChrome.actual).not.toBe(tidepoolChrome.actual)
   expect(gruvboxKeyword.actual).not.toBe(tidepoolKeyword.actual)
+
+  await page.getByRole('radio', { name: 'Light', exact: true }).click()
+  await expect(root).toHaveAttribute('data-theme', 'light')
+
+  const lightChrome = await computedBackground(editor, '--bg')
+  const lightKeyword = await computedColor(keyword, '--seq')
+  expect(lightChrome.actual).toBe(lightChrome.expected)
+  expect(lightKeyword.actual).toBe(lightKeyword.expected)
+  expect(lightChrome.actual).not.toBe(gruvboxChrome.actual)
+  expect(lightKeyword.actual).not.toBe(gruvboxKeyword.actual)
 })
