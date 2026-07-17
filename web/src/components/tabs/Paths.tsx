@@ -10,7 +10,7 @@ import {
   nodeSublabel,
   shortNetName,
 } from '../../lib/prettyType'
-import { loadTimingSettings, timingRequest } from '../../lib/timingSettings'
+import { effectiveProfile, loadTimingSettings, timingRequest } from '../../lib/timingSettings'
 import type {
   EndpointKind,
   NodeRef,
@@ -32,9 +32,17 @@ export function Paths() {
     shallowEqual,
   )
   const id = store.design?.design_id ?? null
+  const designMode = store.design?.mode
   // Cost per-path delays with the same retune settings as the timing panel,
-  // read from localStorage on mount (the tab remounts on switch).
-  const timingReq = useMemo(() => timingRequest(loadTimingSettings()), [])
+  // read from localStorage on mount (the tab remounts on switch). The stored
+  // profile is clamped to this design's mode, mirroring the timing panel.
+  const timingReq = useMemo(() => {
+    const settings = loadTimingSettings()
+    return timingRequest({
+      ...settings,
+      profile: effectiveProfile(settings.profile, designMode),
+    })
+  }, [designMode])
   const { data, loading, error } = useDesignData(
     id,
     (designId) => getPaths(designId, { limit: 25, ...timingReq }),

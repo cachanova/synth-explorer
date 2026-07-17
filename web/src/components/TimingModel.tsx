@@ -9,7 +9,8 @@ import {
 import {
   DELAY_FIELDS,
   PDK_PROFILES,
-  PROFILE_OPTIONS,
+  effectiveProfile,
+  profilesForMode,
   loadTimingSettings,
   saveTimingSettings,
   speedGradeOptions,
@@ -63,7 +64,13 @@ export function TimingModel({
 
   // Debounce so dragging a coefficient field doesn't spam the endpoint. Key on
   // the request only, so changing the (display-only) target clock never refetches.
-  const requestKey = JSON.stringify(timingRequest(settings))
+  // The stored profile is global across designs; clamp it to the profiles that
+  // make sense for THIS design's mode (no FPGA presets on gates netlists, no
+  // ASIC nodes on FPGA/LUT netlists) before it reaches the select or the wire.
+  const modeProfile = effectiveProfile(settings.profile, designMode)
+  const requestKey = JSON.stringify(
+    timingRequest({ ...settings, profile: modeProfile }),
+  )
   const [debouncedKey, setDebouncedKey] = useState(requestKey)
   useEffect(() => {
     const t = setTimeout(() => setDebouncedKey(requestKey), 250)
@@ -152,11 +159,11 @@ export function TimingModel({
         <label className="field">
           <span>Delay profile</span>
           <select
-            value={settings.profile}
-            title="Process-node delay preset. 'Auto' uses the model chosen from the synthesis target."
+            value={modeProfile}
+            title="Delay preset for this design's technology. 'Auto' uses the model chosen from the synthesis target."
             onChange={(e) => setProfile(e.target.value as ProfileChoice)}
           >
-            {PROFILE_OPTIONS.map((o) => (
+            {profilesForMode(designMode).map((o) => (
               <option key={o.value} value={o.value}>
                 {o.label}
               </option>

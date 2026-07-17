@@ -38,6 +38,57 @@ export const PROFILE_OPTIONS: { value: ProfileChoice; label: string }[] = [
   { value: 'generic', label: 'Generic (non-silicon)' },
 ]
 
+const FPGA_PROFILES: ProfileChoice[] = [
+  'auto',
+  'series7',
+  'ultrascale',
+  'ultrascale_plus',
+  'ice40',
+  'ecp5',
+  'generic',
+]
+const ASIC_PROFILES: ProfileChoice[] = [
+  'auto',
+  'sky130hd',
+  'gf180mcu',
+  'asap7',
+  'generic',
+]
+
+/** The profiles that make sense for a design's synthesis mode. A gates-mode
+ *  netlist is generic gates headed for standard cells — FPGA LUT/carry presets
+ *  don't describe it; an FPGA or LUT-mapped netlist is the reverse, so it gets
+ *  no ASIC process nodes. Unknown/absent mode falls back to the full list. */
+export function profilesForMode(
+  mode?: string,
+): { value: ProfileChoice; label: string }[] {
+  const allowed =
+    mode === 'gates'
+      ? ASIC_PROFILES
+      : mode === 'xilinx' ||
+          mode === 'ice40' ||
+          mode === 'ecp5' ||
+          mode === 'lut4' ||
+          mode === 'lut6'
+        ? FPGA_PROFILES
+        : null
+  if (!allowed) return PROFILE_OPTIONS
+  return PROFILE_OPTIONS.filter((o) => allowed.includes(o.value))
+}
+
+/** A stored profile can be invalid for the design being viewed (settings are
+ *  global; the user may have picked sky130hd on a gates design and then opened
+ *  a Xilinx one). Fall back to 'auto' rather than retuning an FPGA netlist
+ *  with standard-cell numbers or vice versa. */
+export function effectiveProfile(
+  profile: ProfileChoice,
+  mode?: string,
+): ProfileChoice {
+  return profilesForMode(mode).some((o) => o.value === profile)
+    ? profile
+    : 'auto'
+}
+
 // ASIC standard-cell profiles are characterized at a single corner (TT); there
 // is no speed-grade binning and the server applies no grade scaling to them.
 export const PDK_PROFILES: ReadonlySet<ProfileChoice> = new Set([
