@@ -14,7 +14,11 @@ import type {
 import type { ConeOptions, NetlistOptions } from '../api'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
 import { initializeAnalysis, queryAnalysis } from './analysisClient'
-import { getCachedSynthesis, putCachedSynthesis } from './designCache'
+import {
+  deleteCachedSynthesis,
+  getCachedSynthesis,
+  putCachedSynthesis,
+} from './designCache'
 import {
   YOSYS_CACHE_SCHEMA,
   YOSYS_VERSION,
@@ -86,14 +90,25 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
     profile = generated.profile
   }
 
-  const summary = await initializeAnalysis<AnalysisSummary>({
-    designId,
-    netlistJson: output.netlistJson,
-    sourceNetlistJson: output.sourceNetlistJson,
-    filesJson: JSON.stringify(input.files),
-    mode: input.mode,
-    profile,
-  })
+  let summary: AnalysisSummary
+  try {
+    summary = await initializeAnalysis<AnalysisSummary>({
+      designId,
+      netlistJson: output.netlistJson,
+      sourceNetlistJson: output.sourceNetlistJson,
+      filesJson: JSON.stringify(input.files),
+      mode: input.mode,
+      profile,
+    })
+  } catch (error) {
+    if (!cached) throw error
+    try {
+      await deleteCachedSynthesis(key)
+    } catch {
+      throw error
+    }
+    return synthesizeLocally(request)
+  }
   return {
     design_id: summary.design_id,
     top: summary.top,

@@ -99,6 +99,49 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
   const started = Date.now()
   await synthesize(page)
   expect(Date.now() - started).toBeLessThan(1_000)
+
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = database.transaction('syntheses', 'readwrite')
+    const store = transaction.objectStore('syntheses')
+    const read = store.getAll()
+    const records = await new Promise<Array<{ output: { netlistJson: string } }>>(
+      (resolve, reject) => {
+        read.onsuccess = () => resolve(read.result)
+        read.onerror = () => reject(read.error)
+      },
+    )
+    records[0].output.netlistJson = '{'
+    store.put(records[0])
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  })
+  await synthesize(page)
+  const repaired = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const read = database.transaction('syntheses').objectStore('syntheses').getAll()
+    const records = await new Promise<Array<{ output: { netlistJson: string } }>>(
+      (resolve, reject) => {
+        read.onsuccess = () => resolve(read.result)
+        read.onerror = () => reject(read.error)
+      },
+    )
+    JSON.parse(records[0].output.netlistJson)
+    return records.length
+  })
+  expect(repaired).toBe(1)
+
   await page.getByRole('button', { name: 'Theme settings' }).click()
   await page.getByRole('button', { name: 'Clear synthesis cache' }).click()
   await expect(page.getByRole('status')).toHaveText('Cleared from this browser.')

@@ -79,6 +79,11 @@ export async function clearLocalSynthesisCache(): Promise<void> {
   await complete(transaction)
 }
 
+export async function deleteCachedSynthesis(key: string): Promise<void> {
+  const database = await openDatabase()
+  await deleteRecord(database, key)
+}
+
 async function prune(database: IDBDatabase) {
   const records = await request<CachedSynthesis[]>(
     database.transaction(storeName).objectStore(storeName).getAll(),
