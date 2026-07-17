@@ -30,7 +30,8 @@ browser profile and can be cleared from the settings menu.
 
 ## Quick start
 
-Requirements are Node.js 24.11.1, npm 11.6.2, and a current Chromium browser.
+Requirements are Rust 1.97.1, Node.js 24.11.1, npm 11.6.2, and a current
+Chromium browser.
 
 ```bash
 git clone https://github.com/cachanova/synth-explorer.git

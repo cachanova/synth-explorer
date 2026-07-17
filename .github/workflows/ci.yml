@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
       - name: Install Rust toolchain
-        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt --target wasm32-unknown-unknown
 
       - name: Install wasm-bindgen CLI
         run: cargo install wasm-bindgen-cli --version 0.2.122 --locked
@@ -43,6 +43,14 @@ jobs:
 
       - name: Verify generated analysis WASM is current
         run: git diff --exit-code -- web/src/wasm/analysis
+
+      - name: Upload generated analysis WASM on mismatch
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: generated-analysis-wasm
+          path: web/src/wasm/analysis/analysis_bg.wasm
+          retention-days: 1
 
   static-web:
     name: Static browser application

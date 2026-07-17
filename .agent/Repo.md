@@ -102,7 +102,7 @@ git --git-dir=/home/leela/code/synth_explorer/repo.git worktree add \
 
 ## Local development
 
-Requirements: Rust stable, Node 24.11.1, npm 11.6.2, and a current Chromium.
+Requirements: Rust 1.97.1, Node 24.11.1, npm 11.6.2, and a current Chromium.
 Native Yosys is only required for calibration; Vivado is an optional licensed
 local calibration dependency.
 
