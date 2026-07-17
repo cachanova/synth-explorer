@@ -58,12 +58,12 @@ neither tool has a path through it to compare.
 a local artifact, not checked in — regenerate it (below) before using them:
 
 ```bash
-cd server
-cargo run --example calibrate -- gen ../examples /home/leela/tmp/cal-cases
-cargo run --example calibrate -- estimate /home/leela/tmp/cal-cases /home/leela/tmp/est.json
-cargo run --example calibrate -- estimate-lattice /home/leela/tmp/cal-cases /home/leela/tmp/lattice-est.json
-cargo run --example calibrate -- report /home/leela/tmp/est.json ../calibration/vivado-2026.1.json
-cargo run --example calibrate -- fit    ../calibration/vivado-2026.1.json
+cd web && npm install && cd ..
+cargo run -p synth-explorer-calibration -- gen web/src/data/examples /home/leela/tmp/cal-cases
+cargo run -p synth-explorer-calibration -- estimate /home/leela/tmp/cal-cases /home/leela/tmp/est.json
+cargo run -p synth-explorer-calibration -- estimate-lattice /home/leela/tmp/cal-cases /home/leela/tmp/lattice-est.json
+cargo run -p synth-explorer-calibration -- report /home/leela/tmp/est.json calibration/vivado-2026.1.json
+cargo run -p synth-explorer-calibration -- fit calibration/vivado-2026.1.json
 ```
 
 `estimate` runs the three Xilinx families. `estimate-lattice` runs iCE40 and
@@ -130,10 +130,9 @@ the Yosys netlist itself into Vivado over EDIF and running the same
 
 Export one EDIF per case/family with the app's exact baseline synthesis
 script — the flags must match what `calibrate estimate` runs (`estimate_case`
-in `server/examples/calibrate.rs` is the source of truth), and the script
-shape must match `build_script` in `server/src/yosys.rs`, or the two sides are
-different netlists again and the comparison is back to being ill-posed. The
-app's Xilinx pipeline splits `synth_xilinx` at `fine` to soft-map narrow
+in `calibration/src/main.rs`), while the script itself is rendered by the
+canonical `web/src/lib/yosysScript.ts` builder. The app's Xilinx pipeline
+splits `synth_xilinx` at `fine` to soft-map narrow
 (<= 8-bit result) `$alu`/`$lcu` arithmetic away from carry chains, so the
 export must replay the same split:
 

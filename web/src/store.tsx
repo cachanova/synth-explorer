@@ -31,10 +31,8 @@ import type {
   DesignFile,
   Example,
   Mode,
-  SynthTool,
   SynthesizeResponse,
   TimingPath,
-  VivadoPart,
 } from './types'
 
 export type TabId =
@@ -156,14 +154,8 @@ export interface Store {
   /** Bumped when file content is replaced outside the editor (example load). */
   docRevision: number
   top: string
-  synthTool: SynthTool
   mode: Mode
   extraArgs: string
-  vivadoTarget: string
-  vivadoTargets: VivadoPart[]
-  vivadoExtraArgs: string
-  vivadoAvailable: boolean
-  vivadoUnlocked: boolean
   examples: Example[]
 
   setActiveFileName: (name: string) => void
@@ -172,12 +164,8 @@ export interface Store {
   renameFile: (oldName: string, newName: string) => void
   deleteFile: (name: string) => void
   setTop: (t: string) => void
-  setSynthTool: (tool: SynthTool) => void
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
-  setVivadoTarget: (target: string) => void
-  setVivadoExtraArgs: (args: string) => void
-  unlockVivado: (accessKey: string) => Promise<boolean>
   loadExample: (ex: Example) => void
 
   // synthesis
@@ -248,14 +236,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [activeFileName, setActiveFileNameState] = useState(DEFAULT_FILE.name)
   const [docRevision, setDocRevision] = useState(0)
   const [top, setTopState] = useState('')
-  const [synthTool, setSynthToolState] = useState<SynthTool>('yosys')
   const [mode, setModeState] = useState<Mode>('gates')
   const [extraArgs, setExtraArgsState] = useState('')
-  const [vivadoTarget, setVivadoTargetState] = useState('xc7a35tcpg236-1')
-  const [vivadoTargets, setVivadoTargets] = useState<VivadoPart[]>([])
-  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState('')
-  const [vivadoAvailable, setVivadoAvailable] = useState(false)
-  const [vivadoUnlocked, setVivadoUnlocked] = useState(false)
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -296,8 +278,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   filesRef.current = files
   const topRef = useRef(top)
   topRef.current = top
-  const synthToolRef = useRef(synthTool)
-  synthToolRef.current = synthTool
   const modeRef = useRef(mode)
   modeRef.current = mode
   const extraArgsRef = useRef(extraArgs)
@@ -306,18 +286,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // store. Each mode still retains exact user edits for the lifetime of this
   // store provider.
   const modeFlagMemoryRef = useRef<ModeFlagMemory>({})
-  const vivadoTargetRef = useRef(vivadoTarget)
-  vivadoTargetRef.current = vivadoTarget
-  const vivadoExtraArgsRef = useRef(vivadoExtraArgs)
-  vivadoExtraArgsRef.current = vivadoExtraArgs
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
   const resolvedInputRef = useRef<SynthesisInput | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
-  const vivadoAccessKeyRef = useRef('')
-
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
     const cached = resolvedInputRef.current
@@ -326,13 +300,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const resolved = synthesisInput(
       filesRef.current,
       topRef.current,
-      synthToolRef.current === 'vivado' ? 'gates' : modeRef.current,
-      synthToolRef.current === 'vivado'
-        ? vivadoExtraArgsRef.current
-        : extraArgsRef.current,
+      modeRef.current,
+      extraArgsRef.current,
       revision,
-      synthToolRef.current,
-      synthToolRef.current === 'vivado' ? vivadoTargetRef.current : '',
     )
     resolvedInputRef.current = resolved
     setResolvedInputIdentity((current) =>
@@ -407,13 +377,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .getExamples()
       .then((r) => setExamples(r.examples))
       .catch(() => {
-        /* backend may be down; examples optional */
-      })
-    api
-      .getHealth()
-      .then((health) => setVivadoAvailable(Boolean(health.vivado_version)))
-      .catch(() => {
-        /* backend may be down; optional modes stay hidden */
+        /* bundled examples are optional; keep the editor usable if they fail to load */
       })
   }
 
@@ -538,78 +502,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [markInputChanged],
   )
 
-  const setSynthTool = useCallback(
-    (value: SynthTool) => {
-      if (value === 'vivado' && !vivadoAccessKeyRef.current) return
-      if (synthToolRef.current === value) return
-      synthToolRef.current = value
-      markInputChanged()
-      setSynthToolState(value)
-    },
-    [markInputChanged],
-  )
-
-  const unlockVivado = useCallback(async (accessKey: string) => {
-    const normalized = accessKey.trim()
-    if (!/^[0-9a-fA-F]{64}$/.test(normalized)) {
-      setError({ message: 'Vivado owner key must be exactly 64 hexadecimal characters' })
-      return false
-    }
-    try {
-      const response = await api.unlockVivado(normalized)
-      if (response.parts.length === 0) {
-        throw new api.ApiRequestError(
-          'Vivado did not report any installed target devices',
-          503,
-        )
-      }
-      setVivadoTargets(response.parts)
-      if (!response.parts.some((part) => part.name === vivadoTargetRef.current)) {
-        const target =
-          response.parts.find((part) => part.name === 'xc7a35tcpg236-1')?.name ??
-          response.parts[0].name
-        vivadoTargetRef.current = target
-        setVivadoTargetState(target)
-      }
-      vivadoAccessKeyRef.current = normalized
-      setVivadoUnlocked(true)
-      setError(null)
-      return true
-    } catch (e) {
-      const err = e as api.ApiRequestError
-      vivadoAccessKeyRef.current = ''
-      setVivadoUnlocked(false)
-      setError({ message: err.message, log: err.log, status: err.status })
-      return false
-    }
-  }, [])
-
   const setExtraArgs = useCallback(
     (value: string) => {
       if (extraArgsRef.current === value) return
       extraArgsRef.current = value
       markInputChanged()
       setExtraArgsState(value)
-    },
-    [markInputChanged],
-  )
-
-  const setVivadoTarget = useCallback(
-    (value: string) => {
-      if (vivadoTargetRef.current === value) return
-      vivadoTargetRef.current = value
-      markInputChanged()
-      setVivadoTargetState(value)
-    },
-    [markInputChanged],
-  )
-
-  const setVivadoExtraArgs = useCallback(
-    (value: string) => {
-      if (vivadoExtraArgsRef.current === value) return
-      vivadoExtraArgsRef.current = value
-      markInputChanged()
-      setVivadoExtraArgsState(value)
     },
     [markInputChanged],
   )
@@ -663,12 +561,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         synthesisKeyRef.current = running.key
         setError(null)
         try {
-          const res = await api.synthesize(
-            running.request,
-            running.request.tool === 'vivado'
-              ? vivadoAccessKeyRef.current
-              : undefined,
-          )
+          const res = await api.synthesize(running.request)
           setDesign(res)
           setDesignInputKey(running.key)
           // A source graph tracks the selected lines across synthesis. Other
@@ -680,14 +573,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           )
         } catch (e) {
           const err = e as api.ApiRequestError
-          if (running.request.tool === 'vivado' && err.status === 401) {
-            vivadoAccessKeyRef.current = ''
-            setVivadoUnlocked(false)
-            synthToolRef.current = 'yosys'
-            setSynthToolState('yosys')
-            queuedInputRef.current = null
-            markInputChanged()
-          }
           setError({ message: err.message, log: err.log, status: err.status })
           // Preserve the last valid design and graph. Their input key remains
           // unchanged, so source cross-probing stays disabled while stale.
@@ -707,7 +592,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [markInputChanged, materializeCurrentInput, nextNonce])
+  }, [materializeCurrentInput, nextNonce])
 
   const synthesize = useCallback(
     () => requestSynthesis(),
@@ -881,14 +766,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       activeFileName,
       docRevision,
       top,
-      synthTool,
       mode,
       extraArgs,
-      vivadoTarget,
-      vivadoTargets,
-      vivadoExtraArgs,
-      vivadoAvailable,
-      vivadoUnlocked,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -896,12 +775,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameFile,
       deleteFile,
       setTop,
-      setSynthTool,
       setMode,
       setExtraArgs,
-      setVivadoTarget,
-      setVivadoExtraArgs,
-      unlockVivado,
       loadExample,
       synthesizing,
       design,
@@ -928,14 +803,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       activeFileName,
       docRevision,
       top,
-      synthTool,
       mode,
       extraArgs,
-      vivadoTarget,
-      vivadoTargets,
-      vivadoExtraArgs,
-      vivadoAvailable,
-      vivadoUnlocked,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -943,12 +812,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       renameFile,
       deleteFile,
       setTop,
-      setSynthTool,
       setMode,
       setExtraArgs,
-      setVivadoTarget,
-      setVivadoExtraArgs,
-      unlockVivado,
       loadExample,
       synthesizing,
       design,

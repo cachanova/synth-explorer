@@ -42,12 +42,11 @@ function view(
 }
 
 describe('resolved TimingView', () => {
-  it('locks concrete FPGA and Vivado designs to the server profile', () => {
+  it('locks concrete FPGA designs to their resolved profile', () => {
     for (const [mode, profile] of [
       ['xilinx', 'ultrascale_plus'],
       ['ecp5', 'ecp5'],
       ['ice40', 'ice40'],
-      ['vivado', 'series7'],
     ] as const) {
       const resolved = view(mode, profile, { profile: 'sky130hd' })
       expect(resolved.profileLocked).toBe(true)

@@ -8,18 +8,15 @@ analysis implementation and compiles to WebAssembly. Yosys runs in a dedicated
 browser worker. The browser stores synthesis artifacts in IndexedDB for the
 current browser profile.
 
-The static application will move to Vercel. Vivado, if AMD authorizes its use,
-will remain on Hetzner behind `api.synthexplorer.dev`. The browser will call that
-origin directly because a Vivado run can exceed Vercel's proxy timeout. The
-Vivado service will return one normalized artifact and will not retain the
-submitted design for exploration.
+The static application will move to Vercel and production will have no HTTP
+application server. Hosted Vivado, the Rust HTTP server, the Hetzner deployment,
+its secrets, DNS records, and persistent volume will be removed after the static
+deployment passes production verification.
 
-Before the production cutover, the project owner will record whether AMD has
-authorized the public hosted Vivado use in writing. An authorization keeps the
-narrow Vivado service. Missing, ambiguous, or narrower authorization counts as
-no authorization and removes Vivado, the Rust HTTP server, the Hetzner
-deployment, its secrets, and its persistent volume. The repository will not
-keep a disabled Vivado implementation.
+Vivado remains a developer-only calibration dependency. Calibration is run
+manually on a licensed local workstation and may update checked-in timing-model
+fixtures or reports. There is no public Vivado route, UI control, access token,
+container image, or disabled production implementation.
 
 ## End state
 
@@ -34,24 +31,15 @@ The browser owns:
 - examples and build metadata shipped as static assets.
 
 Vercel owns static delivery, preview deployments, TLS, and the production
-domain. The deployment uses no Vercel Functions.
+domain. The deployment uses no Vercel Functions, rewrites to an API, server
+runtime, database, or persistent volume.
 
-If Vivado remains, Hetzner owns:
-
-- owner authentication and the installed-part catalog;
-- Vivado synthesis and `report_timing`;
-- native Yosys normalization of Vivado structural Verilog;
-- process limits, concurrency control, cleanup, and service health.
-
-The retained service will expose a versioned Vivado artifact endpoint and
-`/healthz`. It will not expose public Yosys synthesis or `/api/design/:id/*`
-exploration routes.
+Developer workstations may own a licensed Vivado installation and a local-only
+calibration command. Calibration output is data consumed by the static build;
+it is not a runtime dependency.
 
 ## External constraints
 
-- [Vercel limits](https://vercel.com/docs/limits) cap proxied external requests
-  at 120 seconds. The current five-minute Vivado allowance therefore requires
-  a direct browser request to the Hetzner API origin.
 - The [YoWASP Yosys repository](https://github.com/YoWASP/yosys) was archived
   on March 11, 2026 and describes its packages as unofficial. Use it only as a
   build seed. Before browser Yosys ships, create a project-owned fork, pin the
@@ -73,9 +61,7 @@ Production code will contain one implementation for each behavior.
 - Browser Yosys will replace public server Yosys. The public server path will
   disappear in that change. Native Yosys may remain only inside the Vivado
   normalizer.
-- IndexedDB will become the only completed-design cache. The backend will keep
-  no completed-design cache. A short-lived Vivado concurrency guard does not
-  retain completed work.
+- IndexedDB will become the only completed-design cache.
 
 The migration will not add a runtime flag, fallback transport, alternate
 endpoint, or local-versus-remote Yosys selector. Intermediate commits may move
@@ -175,7 +161,8 @@ the 0.67 artifact through the project-owned packaging fork before continuing;
 an archived upstream package is not a production dependency.
 
 Delete public server Yosys handling after the worker passes the parity and
-resource tests. Keep native Yosys only if the Vivado normalizer still needs it.
+resource tests. Native Yosys and Vivado may remain in local calibration tooling
+only.
 
 ### 5. Add IndexedDB retention
 
@@ -199,20 +186,12 @@ for hashed assets, and a short cache lifetime for `index.html` and build
 metadata. A scheduled Playwright job will load the production URL and complete
 a browser-local synthesis.
 
-If Vivado remains, point `api.synthexplorer.dev` at Hetzner and restrict CORS to
-the production frontend origin. Vercel previews will not receive Vivado access.
-The frontend will call the API origin directly rather than through a Vercel
-rewrite.
+### 7. Retire the hosted stack
 
-### 7. Apply the AMD authorization decision
-
-Record the authorization evidence before production cutover.
-
-- Authorization received: retain and deploy the narrow Vivado service, then
-  remove public Yosys and completed-design retention from its image.
-- Authorization absent: delete the Vivado UI, server crate, deploy directory,
-  backend workflows, secrets, DNS record, and Hetzner instance. Keep the static
-  Vercel deployment and browser-synthesis monitor.
+After the exact static candidate passes the production monitor, delete the
+Vivado UI and hosted-server code, backend workflows, container deployment,
+server secrets, backend DNS record, persistent volume, and Hetzner instance.
+Keep the browser-synthesis monitor and the explicitly local calibration tools.
 
 ## Benchmark method
 

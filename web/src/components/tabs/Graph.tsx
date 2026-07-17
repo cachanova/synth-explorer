@@ -137,7 +137,7 @@ export function Graph({ active }: { active: boolean }) {
   }, [active, analysisState, design])
 
   // Every option changes a graph projection. Source projections are local;
-  // full and node-cone projections still come from the server.
+  // full and node-cone projections still come from the analysis worker.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}`
   const fullGraphKey = design
     ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.groupVectors}|${graphOptions.hideControl}|${graphOptions.hideConst}`
@@ -149,7 +149,7 @@ export function Graph({ active }: { active: boolean }) {
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
 
-  // The full projection changes only with the design or server-side options.
+  // The full projection changes only with the design or analysis options.
   useEffect(() => {
     const cached = fullGraphCache.current
     if (cached && cached.key !== fullGraphKey) {
@@ -494,7 +494,7 @@ export function Graph({ active }: { active: boolean }) {
       if (!designId || !graphInteractive || !displayedGraph?.projectionKey) return
       setError(null)
       // Group projections expose a stable synthetic id. The grouped API
-      // contract resolves that id server-side, avoiding unbounded query strings
+      // contract resolves that id in the worker, avoiding unbounded messages
       // and the public 200-root limit for wide vectors.
       const ids = [node.id]
       const ownerKey = displayedGraph.projectionKey

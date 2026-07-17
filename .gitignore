@@ -1,7 +1,8 @@
 target/
+.cache/
 node_modules/
 dist/
-data/
+/data/
 *.log
 .env*
 .DS_Store

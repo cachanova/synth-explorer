@@ -1,116 +1,60 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getNetlist, synthesize, unlockVivado } from './api'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-afterEach(() => {
-  vi.unstubAllGlobals()
-})
+const engine = vi.hoisted(() => ({
+  localCone: vi.fn(),
+  localEndpoints: vi.fn(),
+  localFanout: vi.fn(),
+  localNetlist: vi.fn().mockResolvedValue({ nodes: [], edges: [], truncated: false }),
+  localNodes: vi.fn(),
+  localPaths: vi.fn(),
+  localSourceMap: vi.fn(),
+  localTiming: vi.fn(),
+  synthesizeLocally: vi.fn(),
+}))
 
-describe('getNetlist', () => {
-  it('requests the shared 400-node default', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ nodes: [], edges: [], truncated: false }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
+vi.mock('./lib/localEngine', () => ({
+  ...engine,
+  LocalSynthesisError: class LocalSynthesisError extends Error {},
+}))
+
+import { getNetlist, synthesize } from './api'
+
+beforeEach(() => vi.clearAllMocks())
+
+describe('browser-local API facade', () => {
+  it('uses the shared 400-node graph default without fetching', async () => {
+    const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
     await getNetlist('design')
 
-    const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
-    expect(url.searchParams.get('max_nodes')).toBe('400')
-    expect(url.searchParams.get('hide_control')).toBe('true')
-    expect(url.searchParams.get('hide_const')).toBe('false')
-  })
-
-  it('prioritizes context around the relevant graph roots', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ nodes: [], edges: [], truncated: false }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await getNetlist('design', { max_nodes: 800, around: [12, 34] })
-
-    const url = new URL(fetchMock.mock.calls[0][0], 'http://localhost')
-    expect(url.searchParams.get('max_nodes')).toBe('800')
-    expect(url.searchParams.get('around')).toBe('12,34')
-  })
-})
-
-describe('Vivado owner access', () => {
-  const accessKey =
-    '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
-
-  it('verifies the owner key without putting it in the URL or body', async () => {
-    const catalog = {
-      parts: [
-        { name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' },
-        { name: 'xcku025-ffva1156-2-e', family: 'kintexu', speed: '-2' },
-      ],
-    }
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(catalog), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(unlockVivado(accessKey)).resolves.toEqual(catalog)
-
-    expect(fetchMock).toHaveBeenCalledWith('/api/vivado/access', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessKey}` },
-    })
-  })
-
-  it('sends the key only for Vivado synthesis', async () => {
-    const response = {
-      design_id: '0123456789ab',
-      top: 'top',
-      tool: 'vivado',
-      mode: 'gates',
-      delay_profile: 'series7',
-      stats: {},
-      warnings: [],
-      log: '',
-      memories_abstracted: false,
-    }
-    const fetchMock = vi.fn().mockImplementation(() =>
-      Promise.resolve(
-        new Response(JSON.stringify(response), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }),
-      ),
-    )
-    vi.stubGlobal('fetch', fetchMock)
-
-    await synthesize(
+    expect(engine.localNetlist).toHaveBeenCalledWith(
+      'design',
       {
-        files: [{ name: 'top.sv', content: 'module top; endmodule' }],
-        top: 'top',
-        tool: 'vivado',
-        mode: 'gates',
-        target: 'xc7a35tcpg236-1',
+        max_nodes: 400,
+        show_infrastructure: false,
+        group_vectors: false,
+        hide_control: true,
+        hide_const: false,
+        around: undefined,
       },
-      accessKey,
+      undefined,
     )
-    expect(fetchMock.mock.calls[0][1].headers).toEqual({
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${accessKey}`,
-    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 
-    await synthesize({
+  it('routes synthesis to the local engine without an HTTP request', async () => {
+    const request = {
       files: [{ name: 'top.sv', content: 'module top; endmodule' }],
-      mode: 'gates',
-      tool: 'yosys',
-    })
-    expect(fetchMock.mock.calls[1][1].headers).toEqual({
-      'Content-Type': 'application/json',
-    })
+      mode: 'gates' as const,
+    }
+    engine.synthesizeLocally.mockResolvedValue({ design_id: '0123456789ab' })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await synthesize(request)
+
+    expect(engine.synthesizeLocally).toHaveBeenCalledWith(request)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

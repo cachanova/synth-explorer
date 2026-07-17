@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ExplorationWorkerRequest, ExplorationWorkerResponse } from '../workers/exploration.worker'
+
+const { localExploration } = vi.hoisted(() => ({ localExploration: vi.fn() }))
+vi.mock('./localEngine', () => ({ localExploration }))
+
 import { initializeExploration, resetExploration } from './explorationClient'
 
 class FakeWorker {
@@ -32,6 +36,9 @@ describe('exploration worker lifecycle', () => {
     resetExploration()
     FakeWorker.instances = []
     vi.stubGlobal('Worker', FakeWorker)
+    localExploration.mockImplementation((id: string) =>
+      Promise.resolve({ design_id: id } as never),
+    )
   })
 
   afterEach(() => {
@@ -42,18 +49,20 @@ describe('exploration worker lifecycle', () => {
   it('replaces stale design initialization without reusing its worker', async () => {
     const first = initializeExploration('first/design')
     const firstWorker = FakeWorker.instances[0]
+    await vi.waitFor(() => expect(firstWorker.messages).toHaveLength(1))
     expect(firstWorker.messages[0]).toMatchObject({
       kind: 'initialize',
-      designId: 'first/design',
+      snapshot: { design_id: 'first/design' },
     })
 
     const second = initializeExploration('second/design')
     const secondWorker = FakeWorker.instances[1]
     expect(firstWorker.terminated).toBe(true)
     await expect(first).rejects.toThrow('exploration worker reset')
+    await vi.waitFor(() => expect(secondWorker.messages).toHaveLength(1))
     expect(secondWorker.messages[0]).toMatchObject({
       kind: 'initialize',
-      designId: 'second/design',
+      snapshot: { design_id: 'second/design' },
     })
 
     const request = secondWorker.messages[0]

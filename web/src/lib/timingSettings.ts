@@ -7,7 +7,7 @@ import type {
 } from '../types'
 import { estimatedTimingCaveat } from './timing'
 
-// 'auto' resolves, server-side, to the model chosen from the design's synthesis
+// 'auto' resolves in the analysis worker to the model chosen from synthesis
 // target — so a fresh design shows the same estimate as the synthesis panel.
 export type ProfileChoice = 'auto' | DelayProfile
 
@@ -83,7 +83,7 @@ function profilesForMode(
 }
 
 // ASIC standard-cell profiles are characterized at a single corner (TT); there
-// is no speed-grade binning and the server applies no grade scaling to them.
+// is no speed-grade binning and analysis applies no grade scaling to them.
 export const PDK_PROFILES: ReadonlySet<ProfileChoice> = new Set([
   'sky130hd',
   'gf180mcu',
@@ -131,7 +131,7 @@ function gradeOptionsForProfile(
 }
 
 function lockedTimingMode(mode?: string): boolean {
-  return mode === 'xilinx' || mode === 'ice40' || mode === 'ecp5' || mode === 'vivado'
+  return mode === 'xilinx' || mode === 'ice40' || mode === 'ecp5'
 }
 
 /** Resolve global persisted preferences into the one effective timing view for

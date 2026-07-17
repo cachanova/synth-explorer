@@ -1,5 +1,6 @@
 import type { SourceSelectionResult } from '../types'
 import type { SelectionOptions } from './exploration'
+import { localExploration } from './localEngine'
 import type {
   ExplorationWorkerRequest,
   ExplorationWorkerResponse,
@@ -21,7 +22,13 @@ export function initializeExploration(id: string): Promise<void> {
   resetWorker()
   designId = id
   const instance = getWorker()
-  initialization = send(instance, { id: nextId(), kind: 'initialize', designId: id })
+  initialization = localExploration(id)
+    .then((snapshot) => {
+      if (snapshot.design_id !== id) {
+        throw new Error('exploration snapshot does not match the requested design')
+      }
+      return send(instance, { id: nextId(), kind: 'initialize', snapshot })
+    })
     .then(() => undefined)
     .catch((error) => {
       if (designId === id) resetExploration()

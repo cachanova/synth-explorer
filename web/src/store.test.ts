@@ -34,45 +34,6 @@ describe('synthesis input identity', () => {
     expect(
       synthesisInput(base.request.files, 'top', 'gates', '-flatten').key,
     ).not.toBe(base.key)
-    expect(
-      synthesisInput(
-        base.request.files,
-        'top',
-        'gates',
-        '',
-        0,
-        'vivado',
-        'xc7a35tcpg236-1',
-      ).key,
-    ).not.toBe(base.key)
-  })
-
-  it('keeps Vivado target and flags in its independent request identity', () => {
-    const files = [{ name: 'top.sv', content: 'module top; endmodule' }]
-    const plain = synthesisInput(
-      files,
-      'top',
-      'gates',
-      '',
-      0,
-      'vivado',
-      'xc7a35tcpg236-1',
-    )
-    const retimed = synthesisInput(
-      files,
-      'top',
-      'gates',
-      '-retiming',
-      0,
-      'vivado',
-      'xc7a35tcpg236-1',
-    )
-    expect(plain.request).toMatchObject({
-      tool: 'vivado',
-      mode: 'gates',
-      target: 'xc7a35tcpg236-1',
-    })
-    expect(retimed.key).not.toBe(plain.key)
   })
 
   it('uses the normalized request as the identity', () => {

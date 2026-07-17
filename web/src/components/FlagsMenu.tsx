@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { flagsForTool, type FlagDef } from '../lib/flagRegistry'
+import { flagsForMode, type FlagDef } from '../lib/flagRegistry'
 import { getFlagValue, hasFlag, setFlagValue, toggleFlag } from '../lib/synthFlags'
-import type { Mode, SynthTool } from '../types'
+import type { Mode } from '../types'
 
-/** Inline editor for a value-taking flag. Fixed Vivado choices use a select;
- * integer flags keep a local draft so the user can clear and retype without
+/** Inline editor for a value-taking flag. Fixed choices use a select; integer
+ * flags keep a local draft so the user can clear and retype without
  * temporarily removing the flag. Editing never toggles the containing row. */
 function ValueField({
   definition,
@@ -75,12 +75,10 @@ function isActive(flags: string, def: FlagDef): boolean {
  * truth and reflects everything selected here.
  */
 export function FlagsMenu({
-  tool,
   mode,
   flags,
   onChange,
 }: {
-  tool: SynthTool
   mode: Mode
   flags: string
   onChange: (flags: string) => void
@@ -89,7 +87,7 @@ export function FlagsMenu({
   const [query, setQuery] = useState('')
   const ref = useRef<HTMLDivElement | null>(null)
 
-  const defs = flagsForTool(tool, mode)
+  const defs = flagsForMode(mode)
   const activeCount = useMemo(
     () => defs.filter((d) => isActive(flags, d)).length,
     [defs, flags],

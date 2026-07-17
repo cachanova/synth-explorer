@@ -3,7 +3,6 @@ import {
   flagsForMode,
   flagsForModeChange,
   flagsForModeTransition,
-  flagsForTool,
   stripInvalidFlags,
 } from './flagRegistry'
 
@@ -14,31 +13,6 @@ describe('flagRegistry', () => {
     // ecp5 uses -noccu2, not -nocarry
     expect(flagsForMode('ecp5').some((d) => d.flag === '-nocarry')).toBe(false)
     expect(flagsForMode('rtl')).toEqual([])
-  })
-
-  it('exposes curated Vivado synth_design flags independently of Yosys mode', () => {
-    const definitions = flagsForTool('vivado', 'gates')
-    expect(definitions.map((d) => d.flag)).toContain(
-      '-no_srlextract',
-    )
-    expect(definitions.map((d) => d.flag)).toContain('-global_retiming')
-    expect(definitions.map((d) => d.flag)).not.toContain('-retiming')
-
-    const directive = definitions.find((d) => d.flag === '-directive')
-    expect(directive).toMatchObject({
-      value: 'select',
-      defaultValue: 'default',
-    })
-    expect(directive?.value === 'select' && directive.choices).toContain(
-      'PerformanceOptimized',
-    )
-
-    expect(definitions.find((d) => d.flag === '-max_dsp')).toMatchObject({
-      value: 'int',
-      defaultValue: '0',
-      min: -1,
-    })
-    expect(flagsForTool('yosys', 'gates')).toEqual(flagsForMode('gates'))
   })
 
   it('strips flags invalid for the new mode, keeping shared and free-form ones', () => {
@@ -58,7 +32,7 @@ describe('flagRegistry', () => {
 
   it('applies each registry defaultOn flag on mode change, visibly', () => {
     // Defaults are ordinary flags in the visible string, never injected
-    // server-side — the user can see and remove them.
+    // out of band — the user can see and remove them.
     expect(flagsForModeChange('', 'xilinx')).toBe(
       '-narrowcarry 8 -nowidelut -noiopad',
     )

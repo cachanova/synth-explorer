@@ -36,11 +36,7 @@ export function Paths() {
     shallowEqual,
   )
   const id = store.design?.design_id ?? null
-  const designMode = store.design
-    ? store.design.tool === 'vivado'
-      ? 'vivado'
-      : store.design.mode
-    : undefined
+  const designMode = store.design?.mode
   const resolvedProfile = store.design?.delay_profile
   const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
   // Cost per-path delays from the same per-design resolved view as the timing

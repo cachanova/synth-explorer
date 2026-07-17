@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { retuneTiming } from '../api'
-import { VIVADO_TIMING_CAVEAT, fmaxMhz } from '../lib/timing'
+import { fmaxMhz } from '../lib/timing'
 import {
   ASIC_GATE_FIELDS,
   ASIC_SHARED_FIELDS,
@@ -23,20 +23,14 @@ import type {
   DelayProfile,
   GateDelays,
   SpeedGrade,
-  VivadoTiming,
 } from '../types'
 import { Card } from './Card'
 
 /**
  * Interactive timing panel: shows the estimated critical-path delay / Fmax and
  * lets the user retune it (delay profile, speed grade, or hand-edited
- * coefficients) via `POST /api/design/:id/timing` — no re-synthesis. Settings
- * persist in localStorage. Keyed by design id so it remounts per design.
- *
- * When the design came from the Vivado backend, `vivadoTiming` carries Vivado's
- * own report_timing for the same design and is shown beside the estimate. It is
- * a per-design constant, so it is a prop rather than part of the retune
- * response — a retune changes only the estimate.
+ * coefficients) in the browser — no re-synthesis. Settings persist in
+ * localStorage. Keyed by design id so it remounts per design.
  */
 export function TimingModel({
   designId,
@@ -44,18 +38,15 @@ export function TimingModel({
   resolvedProfile,
   fallbackDelayNs,
   fallbackBreakdown,
-  vivadoTiming,
 }: {
   designId: string
   // The design's synthesis mode (e.g. 'ecp5'), so the speed-grade select can
   // label ECP5's real grade names even when the profile is 'auto'.
   designMode?: string
-  // Server-resolved synth-time family. Concrete FPGA and Vivado designs lock
-  // their timing view to this value.
+  // Synthesis-resolved family. Concrete FPGA designs lock to this value.
   resolvedProfile: DelayProfile
   fallbackDelayNs: number | null
   fallbackBreakdown?: DelayBreakdown
-  vivadoTiming?: VivadoTiming
 }) {
   const [settings, setSettings] = useState<TimingSettings>(loadTimingSettings)
   const [result, setResult] = useState<{
@@ -151,13 +142,7 @@ export function TimingModel({
     <>
       {view.showTiming && (
         <>
-          {/* The tag appears only when Vivado's measured tier is alongside it. */}
-          <div className="section-title">
-            Estimated timing{' '}
-            {vivadoTiming && (
-              <span className="tier-tag tier-estimated">estimated</span>
-            )}
-          </div>
+          <div className="section-title">Estimated timing</div>
           <div className="cards">
             <Card
               k="Critical-path delay"
@@ -174,10 +159,6 @@ export function TimingModel({
             <BreakdownBar breakdown={breakdown} total={delayNs} />
           )}
         </>
-      )}
-
-      {view.showTiming && vivadoTiming && (
-        <VivadoTimingPanel timing={vivadoTiming} />
       )}
 
       <div className="timing-controls">
@@ -280,41 +261,6 @@ export function TimingModel({
           {view.caveat}
         </div>
       )}
-    </>
-  )
-}
-
-/**
- * Vivado's measured report_timing beside our estimate.
- *
- * The two figures are shown as neighbours, not as a comparison: they do not
- * describe the same path (see VIVADO_TIMING_CAVEAT). Everything here is tagged
- * `measured` so no figure can be read as coming from the delay model.
- */
-function VivadoTimingPanel({ timing }: { timing: VivadoTiming }) {
-  return (
-    <>
-      <div className="section-title">
-        Vivado timing <span className="tier-tag tier-measured">measured</span>
-      </div>
-      <div className="cards">
-        <Card
-          k="Vivado data-path delay"
-          v={`${timing.data_path_delay_ns.toFixed(2)} ns`}
-          accent
-        />
-        <Card k="Logic" v={`${timing.logic_ns.toFixed(2)} ns`} />
-        <Card k="Route" v={`${timing.route_ns.toFixed(2)} ns`} />
-        <Card k="Logic levels" v={timing.logic_levels} />
-      </div>
-
-      <div className="faint vivado-path" title="Vivado's worst-path endpoints">
-        Worst register-to-register path: {timing.source} → {timing.destination}
-      </div>
-
-      <div className="caveat" style={{ marginTop: 8 }}>
-        {VIVADO_TIMING_CAVEAT}
-      </div>
     </>
   )
 }
