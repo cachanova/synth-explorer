@@ -1,6 +1,7 @@
 import type {
   DelayModel,
   DelayProfile,
+  GateDelays,
   SpeedGrade,
   TimingRequest,
 } from '../types'
@@ -125,8 +126,10 @@ export function speedGradeOptions(
   return isEcp5 ? ECP5_SPEED_GRADE_OPTIONS : SPEED_GRADE_OPTIONS
 }
 
-// The eight editable coefficients, in display order, with short labels.
-export const DELAY_FIELDS: { key: keyof DelayModel; label: string }[] = [
+type FlatDelayKey = Exclude<keyof DelayModel, 'gate_ps'>
+
+// The legacy FPGA/generic coefficients, in display order, with short labels.
+export const DELAY_FIELDS: { key: FlatDelayKey; label: string }[] = [
   { key: 'lut_ps', label: 'LUT / gate' },
   { key: 'carry_ps', label: 'Carry stage' },
   { key: 'wide_mux_ps', label: 'Wide mux' },
@@ -136,6 +139,49 @@ export const DELAY_FIELDS: { key: keyof DelayModel; label: string }[] = [
   { key: 'net_base_ps', label: 'Net base' },
   { key: 'net_per_fanout_ps', label: 'Net /fanout' },
 ]
+
+export const ASIC_GATE_FIELDS: { key: keyof GateDelays; label: string }[] = [
+  { key: 'and', label: 'AND' },
+  { key: 'or', label: 'OR' },
+  { key: 'xor', label: 'XOR' },
+  { key: 'nand', label: 'NAND' },
+  { key: 'nor', label: 'NOR' },
+  { key: 'xnor', label: 'XNOR' },
+  { key: 'mux', label: 'MUX' },
+  { key: 'not', label: 'NOT' },
+]
+
+// Register and interconnect terms are shared with the flat model, but the ASIC
+// editor names registers as DFFs and deliberately omits FPGA-only vocabulary.
+export const ASIC_SHARED_FIELDS: { key: FlatDelayKey; label: string }[] = [
+  { key: 'cell_ps', label: 'Other gate' },
+  { key: 'ff_clk_to_q_ps', label: 'DFF clk→Q' },
+  { key: 'ff_setup_ps', label: 'DFF setup' },
+  { key: 'net_base_ps', label: 'Net base' },
+  { key: 'net_per_fanout_ps', label: 'Net /fanout' },
+]
+
+/** Effective standard-cell gate price. Sparse/uncharacterized categories use
+ * the profile's documented `cell_ps` blend. */
+export function gateDelayValue(
+  model: DelayModel,
+  key: keyof GateDelays,
+): number {
+  return model.gate_ps?.[key] ?? model.cell_ps
+}
+
+/** Return a full override with one gate category edited, preserving the sparse
+ * table and every flat/shared coefficient. */
+export function withGateDelay(
+  model: DelayModel,
+  key: keyof GateDelays,
+  value: number,
+): DelayModel {
+  return {
+    ...model,
+    gate_ps: { ...model.gate_ps, [key]: value },
+  }
+}
 
 const STORAGE_KEY = 'synthexplorer.timing.v1'
 
@@ -154,17 +200,75 @@ export function timingRequest(s: TimingSettings): TimingRequest {
   return req
 }
 
+/** Global settings may carry an override created for a different technology
+ * class; suppress it rather than
+ * applying standard-cell gate coefficients to an FPGA netlist (or a legacy
+ * flat override to a named PDK profile). */
+export function compatibleTimingOverrides(
+  settings: TimingSettings,
+  mode?: string,
+): DelayModel | null {
+  if (!settings.overrides) return null
+  const profile = effectiveProfile(settings.profile, mode)
+  const pdkActive = PDK_PROFILES.has(profile)
+  const overrideIsPdk = settings.overrides.gate_ps !== undefined
+  return pdkActive === overrideIsPdk ? settings.overrides : null
+}
+
+/** Select the model that may seed the coefficient editor. A compatible active
+ * override wins; otherwise a server response is usable only when it belongs to
+ * the current request, never to the profile that was selected previously. */
+export function editorModelForRequest(
+  activeOverrides: DelayModel | null,
+  result: { model: DelayModel; requestKey: string } | null,
+  requestKey: string,
+): DelayModel | null {
+  if (activeOverrides) return activeOverrides
+  return result?.requestKey === requestKey ? result.model : null
+}
+
+/** Build a timing request using the profile and compatible override for one
+ * design mode. */
+export function timingRequestForMode(
+  settings: TimingSettings,
+  mode?: string,
+): TimingRequest {
+  const profile = effectiveProfile(settings.profile, mode)
+  const overrides = compatibleTimingOverrides(settings, mode)
+  return timingRequest({ ...settings, profile, overrides })
+}
+
 /** True when the settings reproduce the design's synth-time estimate exactly. */
 export function isDefaultTiming(s: TimingSettings): boolean {
   return s.profile === 'auto' && s.speedGrade === '-1' && !s.overrides
 }
 
-const DELAY_KEYS: (keyof DelayModel)[] = DELAY_FIELDS.map((f) => f.key)
+const DELAY_KEYS: FlatDelayKey[] = DELAY_FIELDS.map((f) => f.key)
+const GATE_DELAY_KEYS: (keyof GateDelays)[] = ASIC_GATE_FIELDS.map(
+  (f) => f.key,
+)
+
+function isGateDelays(value: unknown): value is GateDelays {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const v = value as Record<string, unknown>
+  const allowed = new Set<string>(GATE_DELAY_KEYS)
+  return Object.entries(v).every(
+    ([key, entry]) =>
+      allowed.has(key) &&
+      typeof entry === 'number' &&
+      isFinite(entry as number),
+  )
+}
 
 function isDelayModel(value: unknown): value is DelayModel {
   if (!value || typeof value !== 'object') return false
   const v = value as Record<string, unknown>
-  return DELAY_KEYS.every((k) => typeof v[k] === 'number' && isFinite(v[k] as number))
+  return (
+    DELAY_KEYS.every(
+      (k) => typeof v[k] === 'number' && isFinite(v[k] as number),
+    ) &&
+    (v.gate_ps === undefined || isGateDelays(v.gate_ps))
+  )
 }
 
 export function loadTimingSettings(): TimingSettings {

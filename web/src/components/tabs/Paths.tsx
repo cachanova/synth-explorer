@@ -10,7 +10,10 @@ import {
   nodeSublabel,
   shortNetName,
 } from '../../lib/prettyType'
-import { effectiveProfile, loadTimingSettings, timingRequest } from '../../lib/timingSettings'
+import {
+  loadTimingSettings,
+  timingRequestForMode,
+} from '../../lib/timingSettings'
 import type {
   EndpointKind,
   NodeRef,
@@ -38,10 +41,7 @@ export function Paths() {
   // profile is clamped to this design's mode, mirroring the timing panel.
   const timingReq = useMemo(() => {
     const settings = loadTimingSettings()
-    return timingRequest({
-      ...settings,
-      profile: effectiveProfile(settings.profile, designMode),
-    })
+    return timingRequestForMode(settings, designMode)
   }, [designMode])
   const { data, loading, error } = useDesignData(
     id,

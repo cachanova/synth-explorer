@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { VIVADO_TIMING_CAVEAT } from '../lib/timing'
 import type { DelayBreakdown, VivadoTiming } from '../types'
 import { TimingModel } from './TimingModel'
@@ -119,5 +119,136 @@ describe('TimingModel Vivado tier', () => {
     const markup = render({ timing: vivadoTiming, estimate: 2.69 })
     expect(markup).toContain('Vivado data-path delay')
     expect(markup).toContain('2.62 ns')
+  })
+})
+
+describe('TimingModel coefficient vocabulary', () => {
+  const sparseAsicModel = {
+    lut_ps: 30,
+    carry_ps: 67.9,
+    wide_mux_ps: 30,
+    cell_ps: 30,
+    ff_clk_to_q_ps: 64.7,
+    ff_setup_ps: 10,
+    net_base_ps: 4,
+    net_per_fanout_ps: 4,
+    gate_ps: { and: 25.4, xor: 42.5, not: 21.2 },
+  }
+
+  it('shows standard-cell gate categories for an active PDK profile', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () =>
+        JSON.stringify({
+          profile: 'sky130hd',
+          speedGrade: '-1',
+          overrides: null,
+          targetMhz: null,
+        }),
+      setItem: () => undefined,
+    })
+    try {
+      const markup = renderToStaticMarkup(
+        <TimingModel
+          designId="d"
+          designMode="gates"
+          fallbackDelayNs={2.69}
+        />,
+      )
+      expect(markup).toContain('>AND<')
+      expect(markup).toContain('XOR')
+      expect(markup).toContain('Other gate')
+      expect(markup).toContain('DFF clk→Q')
+      expect(markup).not.toContain('LUT / gate')
+      expect(markup).not.toContain('Carry stage')
+      expect(markup).not.toContain('Wide mux')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('keeps the existing FPGA categories for a non-PDK profile', () => {
+    const markup = render({ estimate: 2.69 })
+    expect(markup).toContain('LUT / gate')
+    expect(markup).toContain('Carry stage')
+    expect(markup).toContain('Wide mux')
+    expect(markup).not.toContain('>AND<')
+  })
+
+  it('shows cell_ps as the effective value of a sparse gate override', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () =>
+        JSON.stringify({
+          profile: 'asap7',
+          speedGrade: '-1',
+          overrides: sparseAsicModel,
+          targetMhz: null,
+        }),
+      setItem: () => undefined,
+    })
+    try {
+      const markup = renderToStaticMarkup(
+        <TimingModel
+          designId="d"
+          designMode="gates"
+          fallbackDelayNs={2.69}
+        />,
+      )
+      expect(markup).toContain('Advanced: edit coefficients (ps) — custom')
+      expect(markup).toMatch(/<span>MUX<\/span><input[^>]*value="30"/)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('does not display a stored PDK override as active on an FPGA design', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () =>
+        JSON.stringify({
+          profile: 'sky130hd',
+          speedGrade: '-1',
+          overrides: sparseAsicModel,
+          targetMhz: null,
+        }),
+      setItem: () => undefined,
+    })
+    try {
+      const markup = renderToStaticMarkup(
+        <TimingModel
+          designId="d"
+          designMode="xilinx"
+          fallbackDelayNs={2.69}
+        />,
+      )
+      expect(markup).not.toContain('— custom')
+      expect(markup).not.toContain('Reset to profile preset')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('clamps stored FPGA grade labels when viewing a gates design', () => {
+    vi.stubGlobal('localStorage', {
+      getItem: () =>
+        JSON.stringify({
+          profile: 'ecp5',
+          speedGrade: '-1',
+          overrides: null,
+          targetMhz: null,
+        }),
+      setItem: () => undefined,
+    })
+    try {
+      const markup = renderToStaticMarkup(
+        <TimingModel
+          designId="d"
+          designMode="gates"
+          fallbackDelayNs={2.69}
+        />,
+      )
+      expect(markup).toContain('-1 (slowest)')
+      expect(markup).not.toContain('6 (slowest)')
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
