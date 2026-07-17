@@ -1338,6 +1338,8 @@ async fn design_timing(
         TimingEstimate {
             delay_ns: None,
             breakdown: None,
+            starts_at_register: None,
+            endpoint_kind: None,
         }
     } else {
         design.analysis.estimate_timing(&design.graph, &effective)

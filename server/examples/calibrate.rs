@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use synth_explorer_server::analysis::Analysis;
+use synth_explorer_server::analysis::{Analysis, EndpointKind};
 use synth_explorer_server::delay_model::DelayModel;
 use synth_explorer_server::graph::Graph;
 use synth_explorer_server::netlist::{parse_value, select_top};
@@ -79,6 +79,15 @@ struct Estimate {
     depth_register_to_output: Option<u32>,
     #[serde(default)]
     depth_input_to_output: Option<u32>,
+    /// Start/end class of the delay-critical path. This lets a post-route tool
+    /// comparison select the matching domain pair instead of accidentally
+    /// pairing (for example) our register path with an inserted I/O path.
+    #[serde(default)]
+    critical_path_class: Option<String>,
+    /// Endpoint kind is retained separately so report tooling need not reverse
+    /// map the combined class label (and can reject unsupported blackboxes).
+    #[serde(default)]
+    critical_endpoint_kind: Option<String>,
 }
 
 /// Vivado's `report_timing` for one case (produced by `calibration/vivado.tcl`).
@@ -100,6 +109,7 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("gen") => cmd_gen(&args[1..]),
         Some("estimate") => cmd_estimate(&args[1..]),
+        Some("estimate-lattice") => cmd_estimate_lattice(&args[1..]),
         Some("report") => cmd_report(&args[1..]),
         Some("fit") => cmd_fit(&args[1..]),
         _ => {
@@ -107,6 +117,7 @@ fn main() -> ExitCode {
                 "usage:\n  \
                  calibrate gen <examples-dir> <out-dir>\n  \
                  calibrate estimate <cases-dir> <out.json> [extra-synth-flags...]\n  \
+                 calibrate estimate-lattice <cases-dir> <out.json>\n  \
                  calibrate report <est.json> <vivado.json>\n  \
                  calibrate fit <vivado.json>"
             );
@@ -231,6 +242,48 @@ fn family_arg(family: &str) -> anyhow::Result<&'static str> {
     })
 }
 
+/// Production synthesis mode, visible default flags, and delay-model target for
+/// one calibration family. Keeping this mapping beside `estimate_case` makes
+/// the harness exercise the same request shape as the app instead of growing a
+/// parallel Yosys script.
+fn estimate_family(
+    family: &str,
+) -> anyhow::Result<(SynthMode, String, &'static str, Option<&'static str>)> {
+    Ok(match family {
+        "ice40" => (SynthMode::Ice40, String::new(), "ice40", None),
+        // ECP5's explorer default is visible and removable in the flags menu;
+        // include it here so calibration measures the shipped default netlist.
+        "ecp5" => (SynthMode::Ecp5, "-noiopad".to_owned(), "ecp5", None),
+        _ => {
+            let arg = family_arg(family)?;
+            (
+                SynthMode::Xilinx,
+                format!("-family {arg} -noiopad -noclkbuf"),
+                "xilinx",
+                Some(arg),
+            )
+        }
+    })
+}
+
+fn path_class_name(starts_at_register: bool, endpoint_kind: EndpointKind) -> &'static str {
+    match (starts_at_register, endpoint_kind) {
+        (false, EndpointKind::Register) => "input_to_register",
+        (true, EndpointKind::Register) => "register_to_register",
+        (true, EndpointKind::Output) => "register_to_output",
+        (false, EndpointKind::Output) => "input_to_output",
+        (_, EndpointKind::Blackbox) => "other",
+    }
+}
+
+fn endpoint_kind_name(kind: EndpointKind) -> &'static str {
+    match kind {
+        EndpointKind::Register => "register",
+        EndpointKind::Output => "output",
+        EndpointKind::Blackbox => "blackbox",
+    }
+}
+
 async fn estimate_case(
     dir: &Path,
     case: &Case,
@@ -249,9 +302,11 @@ async fn estimate_case(
     // additional `synth_xilinx` options. They go through the same
     // `SynthRequest::validate` as the app, so a flag the app would reject is
     // rejected here too.
-    let mut extra_args = format!("-family {} -noiopad -noclkbuf", family_arg(family)?);
+    let (mode, mut extra_args, model_target, model_family) = estimate_family(family)?;
     for flag in extra_flags {
-        extra_args.push(' ');
+        if !extra_args.is_empty() {
+            extra_args.push(' ');
+        }
         extra_args.push_str(flag);
     }
     let request = SynthRequest {
@@ -261,9 +316,9 @@ async fn estimate_case(
         }],
         top: Some(case.top.clone()),
         tool: SynthTool::Yosys,
-        mode: SynthMode::Xilinx,
+        mode,
         target: None,
-        extra_args: Some(extra_args),
+        extra_args: (!extra_args.is_empty()).then_some(extra_args),
     };
     let validated = request
         .validate()
@@ -277,7 +332,7 @@ async fn estimate_case(
 
     // Exactly the model the server would pick for this target, so the harness
     // measures the shipped default rather than a parallel copy of it.
-    let model = DelayModel::for_target("xilinx", Some(family_arg(family)?));
+    let model = DelayModel::for_target(model_target, model_family);
     let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
     let estimate = analysis.estimate_timing(&graph, &model);
     let delay_ns = estimate
@@ -287,6 +342,14 @@ async fn estimate_case(
         .breakdown
         .ok_or_else(|| anyhow::anyhow!("case {} has no breakdown", case.name))?;
     let stats = analysis.stats();
+    let starts_at_register = estimate
+        .starts_at_register
+        .ok_or_else(|| anyhow::anyhow!("case {} has no path start metadata", case.name))?;
+    let endpoint_kind = estimate
+        .endpoint_kind
+        .ok_or_else(|| anyhow::anyhow!("case {} has no endpoint metadata", case.name))?;
+    let critical_path_class = Some(path_class_name(starts_at_register, endpoint_kind).to_owned());
+    let critical_endpoint_kind = Some(endpoint_kind_name(endpoint_kind).to_owned());
     let luts = stats
         .cells_by_type
         .iter()
@@ -307,6 +370,8 @@ async fn estimate_case(
         depth_register_to_register: stats.depths.register_to_register,
         depth_register_to_output: stats.depths.register_to_output,
         depth_input_to_output: stats.depths.input_to_output,
+        critical_path_class,
+        critical_endpoint_kind,
     })
 }
 
@@ -321,11 +386,31 @@ fn cmd_estimate(args: &[String]) -> anyhow::Result<()> {
         println!("extra synth flags: {}", extra_flags.join(" "));
     }
     let spec = read_spec(&dir)?;
+    let families: Vec<&str> = spec.parts.keys().map(String::as_str).collect();
+    estimate_families(&dir, &out, &spec, &families, &extra_flags)
+}
+
+fn cmd_estimate_lattice(args: &[String]) -> anyhow::Result<()> {
+    let (dir, out) = match args {
+        [a, b] => (PathBuf::from(a), PathBuf::from(b)),
+        _ => anyhow::bail!("usage: calibrate estimate-lattice <cases-dir> <out.json>"),
+    };
+    let spec = read_spec(&dir)?;
+    estimate_families(&dir, &out, &spec, &["ice40", "ecp5"], &[])
+}
+
+fn estimate_families(
+    dir: &Path,
+    out: &Path,
+    spec: &Spec,
+    families: &[&str],
+    extra_flags: &[String],
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let mut estimates = Vec::new();
-    for family in spec.parts.keys() {
+    for family in families {
         for case in &spec.cases {
-            match runtime.block_on(estimate_case(&dir, case, family, &extra_flags)) {
+            match runtime.block_on(estimate_case(dir, case, family, extra_flags)) {
                 Ok(est) => {
                     println!(
                         "{:<18} {:<16} {:>7.3} ns",
@@ -339,7 +424,7 @@ fn cmd_estimate(args: &[String]) -> anyhow::Result<()> {
             }
         }
     }
-    std::fs::write(&out, serde_json::to_string_pretty(&estimates)?)?;
+    std::fs::write(out, serde_json::to_string_pretty(&estimates)?)?;
     println!("wrote {} estimates to {}", estimates.len(), out.display());
     Ok(())
 }
@@ -542,6 +627,33 @@ mod tests {
         // `WIDTH` must not match `WIDTH_X`, nor `SUM_WIDTH` match `WIDTH`.
         let src = "    parameter int unsigned WIDTH_X = 3,\n";
         assert!(pin_param(src, "WIDTH", 9).is_err());
+    }
+
+    #[test]
+    fn lattice_estimates_use_the_shipped_synthesis_shapes() {
+        let (mode, flags, target, family) = estimate_family("ice40").unwrap();
+        assert_eq!(mode, SynthMode::Ice40);
+        assert!(flags.is_empty());
+        assert_eq!((target, family), ("ice40", None));
+
+        let (mode, flags, target, family) = estimate_family("ecp5").unwrap();
+        assert_eq!(mode, SynthMode::Ecp5);
+        assert_eq!(flags, "-noiopad");
+        assert_eq!((target, family), ("ecp5", None));
+    }
+
+    #[test]
+    fn path_classes_have_stable_artifact_names() {
+        assert_eq!(
+            path_class_name(true, EndpointKind::Register),
+            "register_to_register"
+        );
+        assert_eq!(
+            path_class_name(false, EndpointKind::Output),
+            "input_to_output"
+        );
+        assert_eq!(endpoint_kind_name(EndpointKind::Register), "register");
+        assert_eq!(endpoint_kind_name(EndpointKind::Output), "output");
     }
 }
 
