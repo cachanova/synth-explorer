@@ -141,6 +141,7 @@ describe('Vivado owner access', () => {
       top: 'top',
       tool: 'vivado',
       mode: 'gates',
+      delay_profile: 'series7',
       stats: {},
       warnings: [],
       log: '',

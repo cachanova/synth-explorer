@@ -78,11 +78,10 @@ use serde::{Deserialize, Serialize};
 /// silicon those numbers describe. Speed-grade scaling is a property of the
 /// silicon — Series-7 gains far more from a -3 grade than UltraScale+ does — so
 /// it has to key on this rather than on the coefficient values.
-// Deliberately NOT Serialize/Deserialize. Nothing serializes a profile — the
-// wire format is the `profile` *name* parsed by `from_name` — and serde's
-// snake_case would render `UltraScalePlus` as "ultra_scale_plus", disagreeing
-// with both `from_name` and the client's union type. Add explicit renames if a
-// response ever needs to carry one.
+// Deliberately NOT Serialize/Deserialize. API and persisted-design responses
+// use the explicit profile-name mapping in `api.rs`; serde's snake_case would
+// render `UltraScalePlus` as "ultra_scale_plus", disagreeing with `from_name`
+// and the client's union type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, DeepSizeOf)]
 pub enum DelayProfile {
     Series7,
@@ -156,7 +155,8 @@ impl DelayProfile {
     }
 
     /// Multiplier applied to every coefficient for a speed grade, relative to
-    /// the "-1" the presets are characterized at.
+    /// the profile's characterized baseline (`-1`/grade 6 for numeric-grade
+    /// families, HX for iCE40).
     ///
     /// Measured, per family, from Vivado 2026.1's own -1-vs-N `report_timing` on
     /// identical designs (regenerate via `calibration/`; see its README). The spread is real:
@@ -180,10 +180,16 @@ impl DelayProfile {
     /// speed-grade binning to model — so they return 1.0 regardless of the
     /// selection.
     ///
-    /// iCE40 and generic have no grade measurement and keep the old
-    /// hand-picked factors.
+    /// iCE40 uses the measured HX/LP family axis. Project IceStorm's
+    /// `timings_lp8k` arcs are a constant 1.4739x the corresponding
+    /// `timings_hx8k` arcs, so HX is the baseline and LP scales every term by
+    /// that exact ratio. Legacy numeric grades deliberately fall back to the
+    /// HX baseline rather than borrowing the generic FPGA factors.
     pub fn speed_grade_factor(self, grade: Option<&str>) -> f64 {
         match (self, grade) {
+            // IceStorm timings_hx8k vs timings_lp8k: constant ratio 1.4739.
+            (Self::Ice40, Some("lp")) => 1.4739,
+            (Self::Ice40, _) => 1.0,
             (Self::Series7, Some("-2")) => 0.799,
             (Self::Series7, Some("-3")) => 0.715,
             (Self::UltraScale, Some("-2")) => 0.838,
@@ -196,7 +202,7 @@ impl DelayProfile {
             // A standard-cell library has no speed grades: one corner, no
             // binning. The selection is deliberately ignored.
             (Self::Sky130Hd | Self::Gf180Mcu | Self::Asap7, _) => 1.0,
-            // Not vendor-measured.
+            // Generic/notional only; real families are handled above.
             (_, Some("-2")) => 0.87,
             (_, Some("-3")) => 0.78,
             // "-1" or unspecified: the baseline the presets are characterized at.
@@ -978,6 +984,13 @@ mod tests {
             "series7 should gain more from -3 than ultrascale+ ({s7} vs {usp})"
         );
 
+        // iCE40's actual axis is HX/LP. Numeric grades must not reach the old
+        // generic catch-all; legacy values fall back cleanly to HX.
+        assert_eq!(DelayProfile::Ice40.speed_grade_factor(Some("hx")), 1.0);
+        assert_eq!(DelayProfile::Ice40.speed_grade_factor(Some("lp")), 1.4739);
+        assert_eq!(DelayProfile::Ice40.speed_grade_factor(Some("-2")), 1.0);
+        assert_eq!(DelayProfile::Ice40.speed_grade_factor(Some("-3")), 1.0);
+
         // ECP5's factors are prjtrellis-measured per-arc ratios; the generic
         // "-2"/"-3" knob maps to its real grades 7/8 (6 is the baseline).
         assert_eq!(DelayProfile::Ecp5.speed_grade_factor(Some("-2")), 0.875);
@@ -989,7 +1002,6 @@ mod tests {
             DelayProfile::Series7,
             DelayProfile::UltraScale,
             DelayProfile::UltraScalePlus,
-            DelayProfile::Ice40,
             DelayProfile::Ecp5,
             DelayProfile::Generic,
         ] {

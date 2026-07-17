@@ -145,6 +145,10 @@ Response `200`:
   top: string;           // resolved top module
   tool: "yosys" | "vivado";
   mode: string;
+  delay_profile: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' |
+                 'ecp5' | 'sky130hd' | 'gf180mcu' | 'asap7' | 'generic';
+                    // resolved per-design timing family; the UI locks to this
+                    // for concrete FPGA and Vivado targets
   target?: string;
   stats: {
     num_cells: number;
@@ -396,7 +400,8 @@ Request body (all fields optional):
 {
   profile?: 'series7' | 'ultrascale' | 'ultrascale_plus' | 'ice40' | 'ecp5' |
             'sky130hd' | 'gf180mcu' | 'asap7' | 'generic';
-  speed_grade?: '-1' | '-2' | '-3';   // -1 slowest (default); scales all delays
+  speed_grade?: '-1' | '-2' | '-3' | 'hx' | 'lp';
+                 // FPGA-family grade selector; family-specific rules below
   model?: DelayModel;                 // full coefficient override; wins over profile
 }
 ```
@@ -405,7 +410,7 @@ Base-model precedence: `model` (full override) > `profile` > the design's own
 synth-time model. With none supplied, a retune reproduces the estimate from the
 synthesis panel (the preset `for_target` chose from the design's mode/family).
 Unknown `profile` or `speed_grade` values fall back leniently (to the design
-model and `-1` respectively) rather than erroring.
+model and that family's baseline grade) rather than erroring.
 
 `DelayModel` keeps the original eight required picosecond coefficients:
 `lut_ps`, `carry_ps`, `wide_mux_ps`, `cell_ps`, `ff_clk_to_q_ps`,
@@ -432,7 +437,7 @@ gate's measured value is substituted. DFFs remain outside `gate_ps`:
 
 The Xilinx presets are calibrated against Vivado 2026.1 at the `-1` grade
 (Series-7 = xc7a35t, UltraScale = xcku025, UltraScale+ = xcku5p), with
-per-family Vivado-measured `speed_grade` factors. The Lattice presets are
+per-family Vivado-measured `speed_grade` factors.
 
 For `gates`, `lut4`, and `lut6` designs, an omitted profile (`auto`) or explicit
 `profile: 'generic'` returns no absolute timing. A full coefficient override by
@@ -441,14 +446,20 @@ explicit real profile. Gates mode accepts the process-node profiles
 `sky130hd`/`gf180mcu`/`asap7`; LUT modes accept the FPGA presets. The web profile
 menus omit `generic` for these modes because `auto` already represents the
 notional state. `generic` remains available for real FPGA synthesis modes.
-derived from measured open timing databases (Project IceStorm for `ice40`, the
-HX grade; prjtrellis-db for `ecp5` at speed grade 6); for `ecp5`, `-2`/`-3` map
-to its real grades 7/8 with prjtrellis-measured factors 0.875/0.755. The ASIC
+
+The Lattice presets are derived from measured open timing databases (Project
+IceStorm for `ice40`, the HX grade; prjtrellis-db for `ecp5` at speed grade 6).
+iCE40 accepts `hx` (the
+1.0 baseline) and `lp` (1.4739x HX), from IceStorm `timings_hx8k` versus
+`timings_lp8k`; the ratio is constant across that timing database. Legacy or
+unknown iCE40 values, including `-2` and `-3`, fall back to HX rather than using
+generic FPGA scaling. For `ecp5`, `-1`/`-2`/`-3` map to its real grades 6/7/8
+with prjtrellis-measured factors 1.0/0.875/0.755. The ASIC
 profiles (`sky130hd`, `gf180mcu`, `asap7` — for gates-mode netlists) come from
 those PDKs' open Liberty files at the TT corner and **ignore `speed_grade`**: a
 standard-cell library has no grade binning, so the multiplier is always 1.
 `generic` keeps notional values and hand-picked grade factors (`-2`≈0.87,
-`-3`≈0.78), as does `ice40` (iCE40 has no speed-grade binning of its own).
+`-3`≈0.78).
 
 ASIC `gate_ps` values use the same extraction convention: the worst rise/fall
 Liberty arc at a self-consistent smallest-inverter FO4 slew and a load nearest
