@@ -137,8 +137,10 @@ describe('schematic layout sizing', () => {
         node(3, '$_DFFSR_PPP_', {
           seq: true,
           controls: [
-            { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 1, fanout: 1 },
-            { role: 'reset', pin: 'R', net_name: 'rst', driver_id: 2, fanout: 1 },
+            // Routing follows the actual edge pin even if optional display
+            // metadata is stale or malformed.
+            { role: 'reset', pin: 'C', net_name: 'clk', driver_id: 1, fanout: 1 },
+            { role: 'clock', pin: 'R', net_name: 'rst', driver_id: 2, fanout: 1 },
           ],
         }),
       ],

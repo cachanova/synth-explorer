@@ -249,11 +249,7 @@ export function registerControlYFraction(role: ControlRole): number {
   }
 }
 
-function controlRoleForPin(node: GraphNode, pin: string): ControlRole {
-  const metadata = controlsFor(node).find(
-    (control) => control.pin.toUpperCase() === pin.toUpperCase(),
-  )
-  if (metadata) return metadata.role
+export function controlRoleForPin(pin: string): ControlRole {
   switch (pin.toUpperCase()) {
     case 'CLK':
     case 'C':
@@ -331,7 +327,7 @@ export function toElkGraph(
       pins = new Map()
       controlPins.set(edge.to, pins)
     }
-    pins.set(edge.to_port, controlRoleForPin(node, edge.to_port))
+    pins.set(edge.to_port, controlRoleForPin(edge.to_port))
   }
 
   const regIds = new Set<number>()
@@ -491,7 +487,7 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
     const registerYFraction = output
       ? REG_DATA_OUT_Y_FRAC
       : edge.control
-        ? registerControlYFraction(controlRoleForPin(laidOut.node, edge.to_port))
+        ? registerControlYFraction(controlRoleForPin(edge.to_port))
         : REG_DATA_IN_Y_FRAC
     return {
       x: laidOut.x + (output ? laidOut.width : 0),
