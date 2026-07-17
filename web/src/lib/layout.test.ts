@@ -129,6 +129,68 @@ describe('schematic layout sizing', () => {
     expect(graph.edges?.[1].targets).toEqual(['3#i:A'])
   })
 
+  it('routes visible clock and reset edges to their flip-flop pins', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', { kind: 'port' }),
+        node(2, 'port', { kind: 'port' }),
+        node(3, '$_DFFSR_PPP_', {
+          seq: true,
+          controls: [
+            { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 1, fanout: 1 },
+            { role: 'reset', pin: 'R', net_name: 'rst', driver_id: 2, fanout: 1 },
+          ],
+        }),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 3,
+          from_port: 'clk',
+          to_port: 'C',
+          net_name: 'clk',
+          bits: [0],
+          control: true,
+        },
+        {
+          from: 2,
+          to: 3,
+          from_port: 'rst',
+          to_port: 'R',
+          net_name: 'rst',
+          bits: [0],
+          control: true,
+        },
+      ],
+      truncated: false,
+    }
+
+    const graph = toElkGraph(sub)
+    const reg = graph.children?.find((child) => child.id === '3')
+    const ports = new Map(reg?.ports?.map((port) => [port.id, port]))
+
+    expect(graph.edges?.map((edge) => edge.targets)).toEqual([
+      ['3#control:C'],
+      ['3#control:R'],
+    ])
+    expect(ports.get('3#control:C')?.y).toBeCloseTo(58 * 0.72)
+    expect(ports.get('3#control:R')?.y).toBeCloseTo(58 * 0.5)
+
+    const laidOut = interpretResult(sub, {
+      id: 'root',
+      width: 260,
+      height: 140,
+      children: [
+        { id: '1', x: 10, y: 10, width: 74, height: 34 },
+        { id: '2', x: 10, y: 90, width: 74, height: 34 },
+        { id: '3', x: 160, y: 40, width: 92, height: 84 },
+      ],
+      edges: [],
+    })
+    expect(laidOut.edges[0].points[1]).toEqual({ x: 160, y: 40 + 58 * 0.72 })
+    expect(laidOut.edges[1].points[1]).toEqual({ x: 160, y: 40 + 58 * 0.5 })
+  })
+
   it('preserves register connectivity when ELK reorders or omits routed edges', () => {
     const sub: Subgraph = {
       nodes: [
