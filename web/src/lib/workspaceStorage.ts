@@ -29,6 +29,8 @@ interface StoredWorkspace extends WorkspaceState {
   schema: typeof WORKSPACE_SCHEMA
 }
 
+let workspaceSaveQueue: Promise<void> = Promise.resolve()
+
 export function parseStoredWorkspace(value: unknown): WorkspaceState | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Record<string, unknown>
@@ -78,12 +80,21 @@ export async function loadWorkspace(): Promise<WorkspaceState | null> {
   let database: IDBDatabase | null = null
   try {
     database = await openDatabase()
-    if (workspaceResetPending()) {
+    const pendingReset = readPendingWorkspaceReset()
+    if (pendingReset.present) {
       const transaction = database.transaction(STORE_NAME, 'readwrite')
-      transaction.objectStore(STORE_NAME).delete(CURRENT_WORKSPACE_KEY)
+      if (pendingReset.workspace) {
+        const stored: StoredWorkspace = {
+          schema: WORKSPACE_SCHEMA,
+          ...pendingReset.workspace,
+        }
+        transaction.objectStore(STORE_NAME).put(stored, CURRENT_WORKSPACE_KEY)
+      } else {
+        transaction.objectStore(STORE_NAME).delete(CURRENT_WORKSPACE_KEY)
+      }
       await complete(transaction)
       clearWorkspaceResetPending()
-      return null
+      return pendingReset.workspace
     }
     const value = await request<unknown>(
       database.transaction(STORE_NAME).objectStore(STORE_NAME).get(CURRENT_WORKSPACE_KEY),
@@ -102,13 +113,24 @@ export async function loadWorkspace(): Promise<WorkspaceState | null> {
   }
 }
 
-export async function saveWorkspace(
+export function saveWorkspace(
   workspace: WorkspaceState,
   completesReset = false,
 ): Promise<void> {
+  const operation = workspaceSaveQueue.then(() =>
+    writeWorkspace(workspace, completesReset),
+  )
+  workspaceSaveQueue = operation.catch(() => {})
+  return operation
+}
+
+async function writeWorkspace(
+  workspace: WorkspaceState,
+  completesReset: boolean,
+): Promise<void> {
   let database: IDBDatabase | null = null
   try {
-    if (workspaceResetPending() && !completesReset) return
+    if (readPendingWorkspaceReset().present && !completesReset) return
     database = await openDatabase()
     const transaction = database.transaction(STORE_NAME, 'readwrite')
     const stored: StoredWorkspace = { schema: WORKSPACE_SCHEMA, ...workspace }
@@ -123,9 +145,10 @@ export async function saveWorkspace(
   }
 }
 
-export function markWorkspaceResetPending(): void {
+export function markWorkspaceResetPending(workspace: WorkspaceState): void {
   try {
-    localStorage.setItem(RESET_PENDING_KEY, 'true')
+    const stored: StoredWorkspace = { schema: WORKSPACE_SCHEMA, ...workspace }
+    localStorage.setItem(RESET_PENDING_KEY, JSON.stringify(stored))
   } catch {
     // The immediate IndexedDB write remains the fallback when storage is blocked.
   }
@@ -147,11 +170,16 @@ export function saveResetConfirmationPreference(enabled: boolean): void {
   }
 }
 
-function workspaceResetPending(): boolean {
+function readPendingWorkspaceReset(): {
+  present: boolean
+  workspace: WorkspaceState | null
+} {
   try {
-    return localStorage.getItem(RESET_PENDING_KEY) === 'true'
+    const raw = localStorage.getItem(RESET_PENDING_KEY)
+    if (raw == null) return { present: false, workspace: null }
+    return { present: true, workspace: parseStoredWorkspace(JSON.parse(raw)) }
   } catch {
-    return false
+    return { present: false, workspace: null }
   }
 }
 
