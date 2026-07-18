@@ -27,7 +27,7 @@
     "@vercel/analytics": "2.0.1",
     "@vercel/speed-insights": "2.0.0",
     "codemirror": "^6.0.2",
-    "elkjs": "^0.11.1",
+    "elkjs": "^0.12.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
