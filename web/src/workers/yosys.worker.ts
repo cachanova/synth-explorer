@@ -43,37 +43,63 @@ self.onmessage = (event: MessageEvent<Request>) => {
   )
 }
 
-const modulePromise = fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
-  .then(async (response) => {
-    if (!response.ok) throw new Error(`failed to load Yosys: ${response.status}`)
-    const contentType = response.headers.get('Content-Type') ?? ''
-    if (!contentType.includes('application/wasm')) {
-      throw new Error(
-        `failed to load Yosys: expected application/wasm, got ${contentType || 'no content type'}`,
-      )
-    }
-    if (typeof WebAssembly.compileStreaming === 'function') {
-      return WebAssembly.compileStreaming(response)
-    }
-    return WebAssembly.compile(await response.arrayBuffer())
-  })
+// Load results are cached per worker, but never as rejections: a dropped
+// connection mid-download must not poison every later synthesis in this
+// worker, so a failed load clears the cache and the next run refetches.
+let modulePromise: Promise<WebAssembly.Module> | null = null
+let sharePromise: Promise<Directory> | null = null
 
-const sharePromise = fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
-  .then((response) => {
-    if (!response.ok) throw new Error(`failed to load Yosys resources: ${response.status}`)
-    // Some static hosts (including Vite preview) serve .gz files with
-    // Content-Encoding: gzip. Fetch has already decoded those response bytes;
-    // only decompress hosts that serve the archive as an opaque gzip file.
-    if (response.headers.get('Content-Encoding')?.includes('gzip')) {
-      return response.arrayBuffer()
-    }
-    if (!response.body) throw new Error('Yosys resource response has no body')
-    return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
-  })
-  .then((buffer) => unpackTar(new Uint8Array(buffer)))
+function loadModule(): Promise<WebAssembly.Module> {
+  modulePromise ??= fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
+    .then(async (response) => {
+      if (!response.ok) throw new Error(`status ${response.status}`)
+      const contentType = response.headers.get('Content-Type') ?? ''
+      if (!contentType.includes('application/wasm')) {
+        throw new Error(`expected application/wasm, got ${contentType || 'no content type'}`)
+      }
+      if (typeof WebAssembly.compileStreaming === 'function') {
+        return WebAssembly.compileStreaming(response)
+      }
+      return WebAssembly.compile(await response.arrayBuffer())
+    })
+    .catch((error: unknown) => {
+      modulePromise = null
+      throw loadFailure('failed to load Yosys', error)
+    })
+  return modulePromise
+}
+
+function loadShare(): Promise<Directory> {
+  sharePromise ??= fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
+    .then((response) => {
+      if (!response.ok) throw new Error(`status ${response.status}`)
+      // Some static hosts (including Vite preview) serve .gz files with
+      // Content-Encoding: gzip. Fetch has already decoded those response bytes;
+      // only decompress hosts that serve the archive as an opaque gzip file.
+      if (response.headers.get('Content-Encoding')?.includes('gzip')) {
+        return response.arrayBuffer()
+      }
+      if (!response.body) throw new Error('response has no body')
+      return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
+    })
+    .then((buffer) => unpackTar(new Uint8Array(buffer)))
+    .catch((error: unknown) => {
+      sharePromise = null
+      throw loadFailure('failed to load Yosys resources', error)
+    })
+  return sharePromise
+}
+
+function loadFailure(context: string, error: unknown): Error {
+  return new Error(`${context}: ${error instanceof Error ? error.message : String(error)}`)
+}
+
+// Warm the caches as soon as the worker starts; failures surface on first use.
+void loadModule().catch(() => {})
+void loadShare().catch(() => {})
 
 async function run(request: Request): Promise<YosysWorkerResult> {
-  const [module, share] = await Promise.all([modulePromise, sharePromise])
+  const [module, share] = await Promise.all([loadModule(), loadShare()])
   const root = new Map<string, Directory | File>([
     ['share', share],
     ['tmp', new Directory([['yosys-abc-000000', new Directory([])]])],

@@ -53,10 +53,23 @@ export async function synthesize(
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     if (error instanceof ApiRequestError) throw error
     if (error instanceof LocalSynthesisError) {
-      throw new ApiRequestError(error.message, error.message.includes('timed out') ? 504 : 400, error.log)
+      throw new ApiRequestError(error.message, statusForSynthesisFailure(error.message), error.log)
     }
-    throw new ApiRequestError(error instanceof Error ? error.message : String(error), 422)
+    const message = error instanceof Error ? error.message : String(error)
+    throw new ApiRequestError(message, isEngineLoadFailure(message) ? 503 : 422)
   }
+}
+
+function statusForSynthesisFailure(message: string): number {
+  if (message.includes('timed out')) return 504
+  if (isEngineLoadFailure(message)) return 503
+  return 400
+}
+
+// The workers tag WASM/asset download failures with this prefix so they can
+// be told apart from design errors and surfaced as "engine failed to load".
+function isEngineLoadFailure(message: string): boolean {
+  return message.startsWith('failed to load')
 }
 
 export async function retuneTiming(

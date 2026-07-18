@@ -8,11 +8,13 @@ export function ErrorStrip() {
   const kind =
     err.status === 422
       ? 'Validation error'
-      : err.status === 504
-        ? 'Timeout'
-        : err.status === 400
-          ? 'Synthesis failed'
-          : 'Error'
+      : err.status === 503
+        ? 'Engine failed to load'
+        : err.status === 504
+          ? 'Timeout'
+          : err.status === 400
+            ? 'Synthesis failed'
+            : 'Error'
   const summary = `${kind}${err.status ? ` (${err.status})` : ''}: ${err.message}`
 
   return (

@@ -17,7 +17,8 @@ vi.mock('./lib/localEngine', () => ({
   LocalSynthesisError: class LocalSynthesisError extends Error {},
 }))
 
-import { getNetlist, synthesize } from './api'
+import { ApiRequestError, getNetlist, synthesize } from './api'
+import { LocalSynthesisError } from './lib/localEngine'
 
 beforeEach(() => vi.clearAllMocks())
 
@@ -56,5 +57,36 @@ describe('browser-local API facade', () => {
 
     expect(engine.synthesizeLocally).toHaveBeenCalledWith(request, undefined)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  const request = {
+    files: [{ name: 'top.sv', content: 'module top; endmodule' }],
+    mode: 'gates' as const,
+  }
+
+  async function synthesisFailure(error: unknown): Promise<ApiRequestError> {
+    engine.synthesizeLocally.mockRejectedValue(error)
+    return synthesize(request).then(
+      () => Promise.reject(new Error('expected synthesize to reject')),
+      (raised: ApiRequestError) => raised,
+    )
+  }
+
+  it('reports an engine download failure as 503, not a validation error', async () => {
+    const raised = await synthesisFailure(
+      new Error('failed to load the analysis engine: WebAssembly compilation aborted'),
+    )
+    expect(raised.status).toBe(503)
+  })
+
+  it('reports a Yosys download failure as 503', async () => {
+    const raised = await synthesisFailure(new LocalSynthesisError('failed to load Yosys: status 404', ''))
+    expect(raised.status).toBe(503)
+  })
+
+  it('keeps timeouts, synthesis failures, and unexpected errors distinct', async () => {
+    expect((await synthesisFailure(new LocalSynthesisError('yosys timed out', ''))).status).toBe(504)
+    expect((await synthesisFailure(new LocalSynthesisError('yosys failed', 'log'))).status).toBe(400)
+    expect((await synthesisFailure(new Error('unexpected'))).status).toBe(422)
   })
 })

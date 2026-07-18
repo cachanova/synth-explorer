@@ -31,7 +31,22 @@ export type AnalysisWorkerResponse =
   | { id: number; ok: false; error: string }
 
 let session: AnalysisSession | null = null
-const initialized = init()
+// Never cache a failed engine load: a transient network drop while fetching
+// the WASM module would otherwise reject every later request in this worker,
+// so a failure clears the cache and the next request retries the load.
+let initialized: Promise<unknown> | null = null
+
+function ensureEngine(): Promise<unknown> {
+  initialized ??= init().catch((error: unknown) => {
+    initialized = null
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`failed to load the analysis engine: ${detail}`)
+  })
+  return initialized
+}
+
+// Warm the engine as soon as the worker starts; failures surface on first use.
+void ensureEngine().catch(() => {})
 
 self.onmessage = (event: MessageEvent<AnalysisWorkerRequest>) => {
   void handle(event.data)
@@ -39,7 +54,7 @@ self.onmessage = (event: MessageEvent<AnalysisWorkerRequest>) => {
 
 async function handle(request: AnalysisWorkerRequest) {
   try {
-    await initialized
+    await ensureEngine()
     if (request.kind === 'initialize') {
       session?.free()
       const payload = request.payload
