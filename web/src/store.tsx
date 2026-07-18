@@ -552,23 +552,18 @@ export function StoreProvider({
       files: [{ ...DEFAULT_FILE }],
       activeFileName: DEFAULT_FILE.name,
       top: '',
-      mode: 'gates',
-      extraArgs: '',
+      mode: modeRef.current,
+      extraArgs: extraArgsRef.current,
     }
     filesRef.current = next.files
     topRef.current = next.top
-    modeRef.current = next.mode
-    extraArgsRef.current = next.extraArgs
     workspaceSnapshotRef.current = next
-    markWorkspaceResetPending()
-    modeFlagMemoryRef.current = {}
+    markWorkspaceResetPending(next)
     markInputChanged()
     setFiles(next.files)
     setActiveFileNameState(next.activeFileName)
     setDocRevision((revision) => revision + 1)
     setTopState(next.top)
-    setModeState(next.mode)
-    setExtraArgsState(next.extraArgs)
     const selection = { file: DEFAULT_FILE.name, startLine: 1, endLine: 1 }
     sourceSelectionRef.current = selection
     sourceSelectionActiveRef.current = false
