@@ -1,0 +1,39 @@
+{
+  "modules": {
+    "leaf": {
+      "cells": {
+        "logic": {
+          "type": "$buf",
+          "attributes": { "src": "children.sv:2.1-2.10" }
+        }
+      }
+    },
+    "other": {
+      "cells": {
+        "logic": { "type": "$not", "attributes": { "src": "children.sv:6.1-6.10" } }
+      }
+    },
+    "$paramod\\parameter_leaf\\INVERT=1": {
+      "attributes": { "hdlname": "parameter_leaf" }
+    },
+    "unused": {
+      "cells": {
+        "logic": { "type": "$buf", "attributes": { "src": "children.sv:10.1-10.10" } }
+      }
+    },
+    "wrapper": {
+      "cells": {
+        "inner_leaf": { "type": "leaf" }
+      }
+    },
+    "scoped_children": {
+      "attributes": { "top": "1" },
+      "cells": {
+        "u_leaf": { "type": "leaf" },
+        "u_other": { "type": "other" },
+        "u_parameter": { "type": "$paramod\\parameter_leaf\\INVERT=1" },
+        "u_wrapper": { "type": "wrapper" }
+      }
+    }
+  }
+}

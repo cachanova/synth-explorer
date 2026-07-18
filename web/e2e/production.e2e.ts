@@ -1,143 +1,66 @@
-import { expect, test, type Locator, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
-async function dragDividerBy(page: Page, divider: Locator, deltaX: number) {
-  const box = await divider.boundingBox()
-  if (!box) throw new Error('divider is not visible')
-  const startX = box.x + box.width / 2
-  const y = box.y + 30
-  await page.mouse.move(startX, y)
-  await page.mouse.down()
-  await page.mouse.move(startX + deltaX, y)
-  await page.mouse.up()
-  return box
+function recordApiRequests(page: Page): string[] {
+  const requests: string[] = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
+      requests.push(`${request.method()} ${url.pathname}`)
+    }
+  })
+  return requests
 }
 
-async function expectActiveFlagValueFieldsSeparated(page: Page) {
-  const activeRows = page.locator('.flags-menu-row.active', {
-    has: page.locator('.flags-menu-value'),
-  })
-  const count = await activeRows.count()
-  expect(count).toBeGreaterThan(0)
-  for (let index = 0; index < count; index += 1) {
-    const row = activeRows.nth(index)
-    const [textBox, valueBox] = await Promise.all([
-      row.locator('.flags-menu-text').boundingBox(),
-      row.locator('.flags-menu-value').boundingBox(),
-    ])
-    expect(textBox).not.toBeNull()
-    expect(valueBox).not.toBeNull()
-    expect(textBox!.x + textBox!.width).toBeLessThanOrEqual(valueBox!.x)
-  }
+async function synthesize(page: Page) {
+  const ready = page.getByRole('button', { name: 'Synthesize', exact: true })
+  const completed = page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const button = document.querySelector<HTMLButtonElement>(
+          'button[title="Synthesize in this browser (Ctrl+Enter)"]',
+        )
+        if (!button) {
+          reject(new Error('synthesis button is missing'))
+          return
+        }
+        let started = false
+        const timer = window.setTimeout(() => {
+          observer.disconnect()
+          reject(new Error('synthesis did not complete'))
+        }, 120_000)
+        const observer = new MutationObserver(() => {
+          if (button.disabled) {
+            started = true
+            return
+          }
+          if (!started) return
+          window.clearTimeout(timer)
+          observer.disconnect()
+          resolve()
+        })
+        observer.observe(button, { attributes: true, attributeFilter: ['disabled'] })
+      }),
+  )
+  await ready.click()
+  await completed
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  await expect(page.getByText('Structural logic depth', { exact: true })).toBeVisible()
 }
 
-test('unlocks Vivado family and speed presets through a password-manager form', async ({
-  page,
-}) => {
-  const accessKey = 'a'.repeat(64)
-  await page.route('**/healthz', async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        status: 'ok',
-        commit: 'test',
-        version: 'test',
-        yosys_version: 'Yosys test',
-        vivado_version: 'Vivado v2026.1',
-        vivado_access_protected: true,
-      }),
+async function cacheEntryCount(page: Page): Promise<number> {
+  return page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const request = database.transaction('syntheses').objectStore('syntheses').count()
+    return await new Promise<number>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
     })
   })
-  await page.route('**/api/vivado/access', async (route) => {
-    expect(route.request().headers().authorization).toBe(`Bearer ${accessKey}`)
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        parts: [
-          { name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' },
-          { name: 'xcku025-ffva1156-1-e', family: 'kintexu', speed: '-1' },
-          { name: 'xcku040-ffva1156-2-e', family: 'kintexu', speed: '-2' },
-          { name: 'xczu3eg-sbva484-1-e', family: 'zynquplus', speed: '-1' },
-        ],
-      }),
-    })
-  })
-
-  await page.goto('/')
-  await page.getByLabel('Synth tool').selectOption('vivado')
-
-  const password = page.getByLabel('API key', { exact: true })
-  await expect(password).toHaveAttribute('type', 'password')
-  await expect(password).toHaveAttribute('name', 'password')
-  await expect(password).toHaveAttribute('autocomplete', 'current-password')
-  await expect(page.locator('input[name="username"]')).toHaveCount(0)
-  await expect(page.locator('form[autocomplete="on"]')).toBeVisible()
-  await password.fill(accessKey)
-  await page.getByRole('button', { name: 'Unlock', exact: true }).click()
-
-  await expect(page.getByLabel('Synth tool')).toHaveValue('vivado')
-  await expect(page.getByLabel('Mode')).toHaveCount(0)
-  await expect(page.getByLabel('Family')).toHaveValue('series7')
-  await expect(page.getByLabel('Family').locator('option')).toHaveCount(3)
-  await expect(page.getByLabel('Family')).toContainText('Series 7')
-  await expect(page.getByLabel('Family')).toContainText('UltraScale')
-  await expect(page.getByLabel('Family')).toContainText('UltraScale+')
-  await expect(page.getByLabel('Speed grade')).toHaveValue('-1')
-  await expect(page.getByLabel('Speed grade')).toHaveAttribute(
-    'title',
-    'Resolved Vivado part: xc7a35tcpg236-1',
-  )
-
-  await page.getByLabel('Family').selectOption('ultrascale')
-  await expect(page.getByLabel('Speed grade')).toHaveValue('-1')
-  await expect(page.getByLabel('Speed grade').locator('option')).toHaveCount(2)
-  await expect(page.getByLabel('Speed grade')).toHaveAttribute(
-    'title',
-    'Resolved Vivado part: xcku025-ffva1156-1-e',
-  )
-  await page.getByLabel('Speed grade').selectOption('-2')
-  await expect(page.getByLabel('Speed grade')).toHaveAttribute(
-    'title',
-    'Resolved Vivado part: xcku040-ffva1156-2-e',
-  )
-
-  await expect(page.getByText('Flags', { exact: true })).toBeVisible()
-  await page.getByTitle('Add or remove synthesis flags for this mode').click()
-  await page.getByRole('checkbox', { name: 'Enable -directive' }).check()
-  await expect(page.getByLabel('-directive value')).toHaveValue('default')
-  await page.getByLabel('-directive value').selectOption('PerformanceOptimized')
-  await expect(page.getByLabel('Synthesis flags')).toHaveValue(
-    '-directive PerformanceOptimized',
-  )
-  const fsmExtraction = page.getByRole('checkbox', { name: 'Enable -fsm_extraction' })
-  const resourceSharing = page.getByRole('checkbox', { name: 'Enable -resource_sharing' })
-  const cascadeDsp = page.getByRole('checkbox', { name: 'Enable -cascade_dsp' })
-  await fsmExtraction.check()
-  await resourceSharing.check()
-  await cascadeDsp.check()
-  await expectActiveFlagValueFieldsSeparated(page)
-  await fsmExtraction.uncheck()
-  await resourceSharing.uncheck()
-  await cascadeDsp.uncheck()
-
-  const dspLimit = page.getByRole('checkbox', { name: 'Enable -max_dsp' })
-  await dspLimit.check()
-  await expect(
-    page.locator('.flags-menu-row.active').filter({ hasText: '-max_dsp' }),
-  ).toContainText(
-    /max_dsp[\s\S]*DSP limit/,
-  )
-  await expect(page.getByLabel('-max_dsp value')).toHaveValue('0')
-  await page.getByLabel('-max_dsp value').fill('24')
-  await expect(page.getByLabel('Synthesis flags')).toHaveValue(
-    '-directive PerformanceOptimized -max_dsp 24',
-  )
-  await dspLimit.uncheck()
-  await expect(page.getByLabel('Synthesis flags')).toHaveValue(
-    '-directive PerformanceOptimized',
-  )
-})
+}
 
 test('file tabs expose roving keyboard navigation', async ({ page }) => {
   await page.goto('/')
@@ -159,463 +82,141 @@ test('file tabs expose roving keyboard navigation', async ({ page }) => {
   await expect(file1Tab).toHaveAttribute('aria-selected', 'true')
 })
 
-test('synthesizes from the webpage with the default Yosys flags', async ({
-  page,
-}) => {
+test('synthesizes and analyzes locally, then reuses the per-browser cache', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
   await page.goto('/')
 
   await expect(page.getByText('Synth Explorer', { exact: true })).toBeVisible()
-  const repositoryLink = page.getByRole('link', {
-    name: 'View source on GitHub (opens in a new tab)',
-  })
-  await expect(repositoryLink).toBeVisible()
-  await expect(repositoryLink).toHaveAttribute(
-    'href',
-    'https://github.com/cachanova/synth-explorer',
-  )
-  await expect(repositoryLink).toHaveAttribute('target', '_blank')
-  await expect(repositoryLink).toHaveAttribute('rel', 'noopener noreferrer')
+  await page.getByLabel('Example').selectOption('reg_mux')
   const flags = page.getByLabel('Synthesis flags')
-  await expect(flags).toBeVisible()
-  await page
-    .getByText('Mode')
-    .locator('..')
-    .locator('select')
-    .selectOption('xilinx')
+  await page.getByLabel('Mode').selectOption('xilinx')
   await expect(flags).toHaveValue('-narrowcarry 8 -nowidelut -noiopad')
 
-  // Each mode owns its exact flags string. A tuned value and a removed default
-  // survive a family round-trip, while a fresh ECP5 visit gets no Xilinx-only
-  // -nowidelut leak.
-  await flags.fill('-narrowcarry 4 -noiopad')
-  await page.getByLabel('Mode').selectOption('ecp5')
-  await expect(flags).toHaveValue('-noiopad')
-  await page.getByLabel('Mode').selectOption('xilinx')
-  await expect(flags).toHaveValue('-narrowcarry 4 -noiopad')
-  await flags.fill('-narrowcarry 8 -nowidelut -noiopad')
+  await synthesize(page)
+  await expect(page.locator('.card').filter({ hasText: 'Cells' }).locator('.v')).toHaveText(/^\d+$/)
+  expect(await cacheEntryCount(page)).toBe(1)
 
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response.url().endsWith('/api/synthesize') &&
-      response.request().method() === 'POST',
-  )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+  const started = Date.now()
+  await synthesize(page)
+  expect(Date.now() - started).toBeLessThan(1_000)
 
-  const response = await responsePromise
-  expect(response.ok()).toBe(true)
-  expect(response.request().postDataJSON()).toMatchObject({
-    tool: 'yosys',
-    mode: 'xilinx',
-    extra_args: '-narrowcarry 8 -nowidelut -noiopad',
-  })
-  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
-  await expect(
-    page.locator('.card').filter({ hasText: 'Cells' }).locator('.v'),
-  ).toHaveText(/^\d+$/)
-})
-
-test('scrolls every endpoint and path without mounting the full result set', async ({
-  page,
-}) => {
-  const endpoints = Array.from({ length: 500 }, (_, index) => ({
-    name: `endpoint-${String(index + 1).padStart(3, '0')}`,
-    width: 1,
-    worst_depth: 500 - index,
-    bits: [{ bit: 0, node_id: index + 1, depth: 500 - index }],
-  }))
-  const paths = Array.from({ length: 500 }, (_, index) => {
-    const number = index + 1
-    const startpoint = {
-      id: number * 2,
-      kind: 'port',
-      name: `input-${number}`,
-    }
-    const endpoint = {
-      id: number * 2 + 1,
-      kind: 'port',
-      name: `path-endpoint-${String(number).padStart(3, '0')}`,
-    }
-    return {
-      depth: 501 - number,
-      class: 'input_to_output',
-      endpoint_group: endpoint.name,
-      endpoint_kind: 'output',
-      bits: [0],
-      output_aliases: [],
-      startpoint,
-      endpoint,
-      endpoint_port: 'Y',
-      nodes: [startpoint, endpoint],
-    }
-  })
-  await page.route('**/api/design/*/endpoints', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ registers: [], outputs: endpoints, inputs: [] }),
-    }),
-  )
-  let pathsUrl = ''
-  await page.route('**/api/design/*/paths*', (route) => {
-    pathsUrl = route.request().url()
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ paths, comb_loops: [], truncated: false }),
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = database.transaction('syntheses', 'readwrite')
+    const store = transaction.objectStore('syntheses')
+    const read = store.getAll()
+    const records = await new Promise<Array<{ output: { netlistJson: string } }>>(
+      (resolve, reject) => {
+        read.onsuccess = () => resolve(read.result)
+        read.onerror = () => reject(read.error)
+      },
+    )
+    records[0].output.netlistJson = '{'
+    store.put(records[0])
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
     })
   })
-
-  await page.goto('/')
-  await page.getByLabel('Example').selectOption('reg_mux')
-  const synthResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith('/api/synthesize') &&
-      response.request().method() === 'POST',
-  )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
-  expect((await synthResponse).ok()).toBe(true)
-
-  await page.getByRole('tab', { name: 'Endpoints', exact: true }).click()
-  await expect(page.getByText('Logical endpoints (500 matched / 500)')).toBeVisible()
-  const endpointScroller = page.locator('.virtual-table-scroll')
-  expect(await endpointScroller.locator('tr.clickable').count()).toBeLessThan(100)
-  await endpointScroller.evaluate((element) => {
-    element.scrollTop = element.scrollHeight
+  await synthesize(page)
+  const repaired = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const read = database.transaction('syntheses').objectStore('syntheses').getAll()
+    const records = await new Promise<Array<{ output: { netlistJson: string } }>>(
+      (resolve, reject) => {
+        read.onsuccess = () => resolve(read.result)
+        read.onerror = () => reject(read.error)
+      },
+    )
+    JSON.parse(records[0].output.netlistJson)
+    return records.length
   })
-  await expect(page.getByText('endpoint-500', { exact: true })).toBeVisible()
+  expect(repaired).toBe(1)
 
-  await page.getByRole('tab', { name: 'Paths', exact: true }).click()
-  await expect(page.getByText('Longest logical path variants (500)')).toBeVisible()
-  await expect(page.getByRole('columnheader', { name: /Est\. delay/ })).toHaveCount(0)
-  expect(new URL(pathsUrl).searchParams.get('limit')).toBeNull()
-  const pathScroller = page.locator('.virtual-table-scroll')
-  expect(await pathScroller.locator('tr.clickable').count()).toBeLessThan(100)
-  await pathScroller.evaluate((element) => {
-    element.scrollTop = element.scrollHeight
-  })
-  await expect(page.getByText('path-endpoint-500', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Theme settings' }).click()
+  await page.getByRole('button', { name: 'Clear synthesis cache' }).click()
+  await expect(page.getByRole('status')).toHaveText('Cleared from this browser.')
+  expect(await cacheEntryCount(page)).toBe(0)
+  expect(apiRequests).toEqual([])
 })
 
-test('graph viewport follows browser and pane resizing without resetting user zoom', async ({
-  page,
-}) => {
+test('renders and resizes the browser-produced graph without resetting user zoom', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
+  const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await page.getByLabel('Example').selectOption({ label: 'Reg Mux' })
-
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response.url().endsWith('/api/synthesize') &&
-      response.request().method() === 'POST',
-  )
-  const netlistResponse = page.waitForResponse((response) =>
-    response.url().includes('/netlist?'),
-  )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
-  expect((await responsePromise).ok()).toBe(true)
-
-  const netlistParams = new URL((await netlistResponse).url()).searchParams
-  expect(netlistParams.get('hide_control')).toBe('true')
-  expect(netlistParams.get('hide_const')).toBe('true')
-  expect(netlistParams.get('show_infrastructure')).toBe('false')
-  await expect(page.getByRole('button', { name: 'Full netlist' })).toHaveCount(0)
-  await expect(page.getByLabel('infrastructure')).toHaveCount(0)
-  await expect(page.getByLabel('Focus')).toBeDisabled()
+  await page.getByLabel('Example').selectOption('reg_mux')
+  await synthesize(page)
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
 
   const stage = page.locator('.graph-stage')
   const svg = stage.locator('svg')
   const viewport = svg.locator(':scope > g').first()
   await expect(svg).toBeVisible()
   await expect(page.locator('.g-node-body').first()).toBeVisible()
-  await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
-  await expect(page.locator('.g-edge.hl')).toHaveCount(0)
-  await expect
-    .poll(async () => page.locator('.graph-toolbar').innerText())
-    .toMatch(/^max nodes[\s\S]*hide control[\s\S]*hide const[\s\S]*group buses[\s\S]*Focus/)
+  await expect(page.getByLabel('Focus')).toBeDisabled()
 
   const rovingNode = page.locator('.g-node-body[tabindex="0"]')
   await expect(rovingNode).toHaveCount(1)
-  const initialFocusedNode = await rovingNode.getAttribute('data-graph-node-id')
+  const initialNode = await rovingNode.getAttribute('data-graph-node-id')
   await rovingNode.focus()
   await rovingNode.press('ArrowRight')
-  await expect(page.locator('.g-node-body[tabindex="0"]')).toHaveCount(1)
   await expect
-    .poll(async () =>
-      page.locator('.g-node-body[tabindex="0"]').getAttribute('data-graph-node-id'),
-    )
-    .not.toBe(initialFocusedNode)
-  await expect
-    .poll(async () =>
-      page.locator('.g-node-body:focus').getAttribute('data-graph-node-id'),
-    )
-    .not.toBe(initialFocusedNode)
-
-  const beforeKeyboardPan = await viewport.getAttribute('transform')
-  await svg.focus()
-  await svg.press('ArrowRight')
-  await expect
-    .poll(async () => viewport.getAttribute('transform'))
-    .not.toBe(beforeKeyboardPan)
-  const beforeKeyboardZoom = await viewport.getAttribute('transform')
-  await svg.press('=')
-  await expect
-    .poll(async () => viewport.getAttribute('transform'))
-    .not.toBe(beforeKeyboardZoom)
-
-  const initialStage = await stage.boundingBox()
-  expect(initialStage).not.toBeNull()
-  await page.setViewportSize({ width: 1000, height: 650 })
-  await expect
-    .poll(async () => (await stage.boundingBox())?.width ?? 0)
-    .toBeLessThan(initialStage!.width - 80)
-  await expect
-    .poll(async () => {
-      const [stageBox, svgBox] = await Promise.all([
-        stage.boundingBox(),
-        svg.boundingBox(),
-      ])
-      return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
-    })
-    .toBeLessThan(1)
-
-  const divider = page.locator('.divider')
-  const beforeDividerStage = (await stage.boundingBox())!.width
-  const beforeDividerSvg = (await svg.boundingBox())!.width
-  const paneResize = 64
-  const meaningfulResize = paneResize / 2
-  const dividerBox = await dragDividerBy(page, divider, -paneResize)
-  await expect
-    .poll(
-      async () =>
-        dividerBox.x - ((await divider.boundingBox())?.x ?? dividerBox.x),
-    )
-    .toBeGreaterThan(meaningfulResize)
-  await expect
-    .poll(async () => (await stage.boundingBox())?.width ?? 0)
-    .toBeGreaterThan(beforeDividerStage + meaningfulResize)
-  await expect
-    .poll(async () => (await svg.boundingBox())?.width ?? 0)
-    .toBeGreaterThan(beforeDividerSvg + meaningfulResize)
-  await expect
-    .poll(async () => {
-      const [stageBox, svgBox] = await Promise.all([
-        stage.boundingBox(),
-        svg.boundingBox(),
-      ])
-      return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
-    })
-    .toBeLessThan(1)
+    .poll(() => page.locator('.g-node-body[tabindex="0"]').getAttribute('data-graph-node-id'))
+    .not.toBe(initialNode)
 
   const beforeZoom = await viewport.getAttribute('transform')
   await page.getByTitle('Zoom in').click()
-  await expect
-    .poll(async () => await viewport.getAttribute('transform'))
-    .not.toBe(beforeZoom)
+  await expect.poll(() => viewport.getAttribute('transform')).not.toBe(beforeZoom)
   const userTransform = await viewport.getAttribute('transform')
 
-  const beforeSecondStage = (await stage.boundingBox())!.width
-  const beforeSecondSvg = (await svg.boundingBox())!.width
-  const secondDividerBox = await dragDividerBy(page, divider, paneResize)
-  await expect
-    .poll(
-      async () =>
-        ((await divider.boundingBox())?.x ?? secondDividerBox.x) -
-        secondDividerBox.x,
-    )
-    .toBeGreaterThan(meaningfulResize)
-  await expect
-    .poll(
-      async () =>
-        beforeSecondStage -
-        ((await stage.boundingBox())?.width ?? beforeSecondStage),
-    )
-    .toBeGreaterThan(meaningfulResize)
-  await expect
-    .poll(
-      async () =>
-        beforeSecondSvg - ((await svg.boundingBox())?.width ?? beforeSecondSvg),
-    )
-    .toBeGreaterThan(meaningfulResize)
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      ),
-  )
-  await expect
-    .poll(async () => await viewport.getAttribute('transform'))
-    .toBe(userTransform)
-
-  await page.getByTitle('Fit to view').click()
-  const beforeTabSwitch = await viewport.getAttribute('transform')
-  const beforeInactiveResize = await stage.boundingBox()
-  if (!beforeInactiveResize) throw new Error('graph stage is not visible')
-  const browserViewport = page.viewportSize()
-  if (!browserViewport) throw new Error('browser viewport size is unavailable')
-  const inactiveResize = { width: 120, height: 60 }
-  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
-  await page.setViewportSize({
-    width: browserViewport.width + inactiveResize.width,
-    height: browserViewport.height + inactiveResize.height,
-  })
-  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
-  await expect(svg).toBeVisible()
+  const initialWidth = (await stage.boundingBox())?.width ?? 0
+  await page.setViewportSize({ width: 1050, height: 680 })
+  await expect.poll(async () => (await stage.boundingBox())?.width ?? 0).toBeLessThan(initialWidth - 100)
+  await expect.poll(() => viewport.getAttribute('transform')).toBe(userTransform)
   await expect
     .poll(async () => {
-      const afterInactiveResize = await stage.boundingBox()
-      if (!afterInactiveResize) return 0
-      return (
-        Math.abs(afterInactiveResize.width - beforeInactiveResize.width) +
-        Math.abs(afterInactiveResize.height - beforeInactiveResize.height)
-      )
-    })
-    .toBeGreaterThan(Math.min(inactiveResize.width, inactiveResize.height) / 2)
-  await expect
-    .poll(async () => {
-      const [stageBox, svgBox] = await Promise.all([
-        stage.boundingBox(),
-        svg.boundingBox(),
-      ])
+      const [stageBox, svgBox] = await Promise.all([stage.boundingBox(), svg.boundingBox()])
       return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
     })
     .toBeLessThan(1)
-  await expect
-    .poll(async () => await viewport.getAttribute('transform'))
-    .not.toBe(beforeTabSwitch)
-
-  const schematicTab = page.getByRole('tab', { name: 'Schematic', exact: true })
-  await schematicTab.focus()
-  await schematicTab.press('ArrowLeft')
-  const overviewTab = page.getByRole('tab', { name: 'Overview', exact: true })
-  await expect(overviewTab).toBeFocused()
-  await expect(overviewTab).toHaveAttribute('aria-selected', 'true')
-  await overviewTab.press('ArrowRight')
-  await expect(schematicTab).toBeFocused()
-  await expect(schematicTab).toHaveAttribute('aria-selected', 'true')
+  expect(apiRequests).toEqual([])
 })
 
-test('a stale exploration preload cannot report an error on the next design', async ({ page }) => {
-  let explorationRequests = 0
-  await page.route('**/api/design/*/exploration', async (route) => {
-    explorationRequests += 1
-    if (explorationRequests === 1) {
-      const response = await route.fetch()
-      await new Promise((resolve) => setTimeout(resolve, 1_000))
-      await route.fulfill({ response })
-      return
-    }
-    await route.continue()
-  })
+test('source selections and Focus use the in-browser exploration worker', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await page.getByLabel('Example').selectOption('reg_mux')
-
-  const firstSynthesis = page.waitForResponse(
-    (response) => response.url().endsWith('/api/synthesize') && response.request().method() === 'POST',
-  )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
-  expect((await firstSynthesis).ok()).toBe(true)
-  await expect.poll(() => explorationRequests).toBe(1)
-
   await page.getByLabel('Example').selectOption('handshake_controller')
-  const secondSynthesis = page.waitForResponse(
-    (response) => response.url().endsWith('/api/synthesize') && response.request().method() === 'POST',
-  )
-  const currentExploration = page.waitForResponse(
-    (response) => new URL(response.url()).pathname.endsWith('/exploration') && response.ok(),
-  )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
-  expect((await secondSynthesis).ok()).toBe(true)
-  await currentExploration
-
-  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
-  await expect(page.locator('.g-node-body').first()).toBeVisible()
-  expect(explorationRequests).toBe(2)
-})
-
-test('Focus defaults on and non-focus selections preserve the full layout', async ({
-  page,
-}) => {
-  await page.goto('/')
-  await page
-    .getByText('Example')
-    .locator('..')
-    .locator('select')
-    .selectOption('handshake_controller')
-  await page
-    .getByText('Mode')
-    .locator('..')
-    .locator('select')
-    .selectOption('xilinx')
-  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
-
-  let explorationRequests = 0
-  let lineConeRequests = 0
-  let netlistRequests = 0
-  page.on('request', (request) => {
-    if (new URL(request.url()).pathname.endsWith('/exploration')) explorationRequests += 1
-    if (request.url().includes('/line-cone')) lineConeRequests += 1
-    if (request.url().includes('/netlist?')) netlistRequests += 1
-  })
-  const synthResponse = page.waitForResponse(
-    (response) =>
-      response.url().endsWith('/api/synthesize') &&
-      response.request().method() === 'POST',
-  )
-  const explorationResponse = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.endsWith('/exploration'),
-  )
-  await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
-  expect((await synthResponse).ok()).toBe(true)
-  expect(explorationRequests).toBe(0)
-
-  const fullResponse = page.waitForResponse((response) =>
-    response.url().includes('/netlist?'),
-  )
+  await page.getByLabel('Mode').selectOption('xilinx')
+  await synthesize(page)
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
-  expect((await explorationResponse).ok()).toBe(true)
-  const resolvedFullResponse = await fullResponse
-  expect(resolvedFullResponse.ok()).toBe(true)
-  expect(new URL(resolvedFullResponse.url()).searchParams.get('around')).toBeNull()
 
   const focus = page.getByLabel('Focus')
   await expect(focus).toBeChecked()
   await expect(focus).toBeDisabled()
-  await expect(page.locator('.graph-count')).toBeVisible()
   const fullNodes = page.locator('.g-node-body')
+  await expect(fullNodes.first()).toBeVisible()
   const fullNodeIds = await fullNodes.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')),
   )
   expect(fullNodeIds.length).toBeGreaterThan(0)
-  expect(lineConeRequests).toBe(0)
-  expect(explorationRequests).toBe(1)
-  expect(netlistRequests).toBe(1)
 
-  // The first selection uses the default Focus-on mode and renders its subset.
-  await page
-    .locator('.cm-line', { hasText: 'wait_count <= wait_count + 1\'b1;' })
-    .click()
+  await page.locator('.cm-line', { hasText: "wait_count <= wait_count + 1'b1;" }).click()
   await expect(focus).toBeEnabled()
   await expect(focus).toBeChecked()
-  await expect
-    .poll(async () => page.locator('.g-node-body').count())
-    .toBeLessThan(fullNodeIds.length)
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThan(fullNodeIds.length)
   expect(await page.locator('.g-node-body').count()).toBeGreaterThan(0)
-  expect(lineConeRequests).toBe(0)
-  expect(explorationRequests).toBe(1)
-  expect(netlistRequests).toBe(1)
 
-  // Focus off restores the full projection. A different selection then changes
-  // only its relevance/highlight overlay, not its geometry or viewport.
   await focus.uncheck()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
-  const stage = page.locator('.graph-stage')
-  const viewport = stage.locator('svg > g').first()
-  const retainedNode = fullNodes.first()
-  await page.getByTitle('Zoom in').click()
-  const fullTransform = await viewport.getAttribute('transform')
-  const retainedNodeTransform = await retainedNode.getAttribute('transform')
-  expect(retainedNodeTransform).toMatch(/^translate\(/)
-
   await page.locator('.cm-line', { hasText: "request_valid = 1'b1;" }).click()
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(
@@ -623,40 +224,10 @@ test('Focus defaults on and non-focus selections preserve the full layout', asyn
       nodes.map((node) => node.getAttribute('data-graph-node-id')),
     ),
   ).toEqual(fullNodeIds)
-  await expect(viewport).toHaveAttribute('transform', fullTransform ?? '')
-  await expect(retainedNode).toHaveAttribute('transform', retainedNodeTransform ?? '')
-  expect(lineConeRequests).toBe(0)
-  expect(explorationRequests).toBe(1)
-  expect(netlistRequests).toBe(1)
 
-  // Turning Focus back on re-lays out only the current selection's subset.
-  await focus.check()
-  await expect
-    .poll(async () => page.locator('.g-node-body').count())
-    .toBeLessThan(fullNodeIds.length)
-  const focusedNodeCount = await page.locator('.g-node-body').count()
-  expect(focusedNodeCount).toBeGreaterThan(0)
-  expect(lineConeRequests).toBe(0)
-  expect(netlistRequests).toBe(1)
-
-  // Focus off restores the already-loaded full projection without refetching.
-  await focus.uncheck()
-  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
-  expect(
-    await fullNodes.evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute('data-graph-node-id')),
-    ),
-  ).toEqual(fullNodeIds)
-  expect(lineConeRequests).toBe(0)
-  expect(netlistRequests).toBe(1)
-
-  // Escape clears the relevant source selection from outside CodeMirror. The
-  // full diagram remains without retaining a relevance highlight.
   await page.getByRole('tab', { name: 'Schematic', exact: true }).press('Escape')
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
-  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
-  expect(lineConeRequests).toBe(0)
-  expect(netlistRequests).toBe(1)
+  expect(apiRequests).toEqual([])
 })

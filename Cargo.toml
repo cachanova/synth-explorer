@@ -1,0 +1,3 @@
+[workspace]
+members = ["analysis-core", "analysis-wasm", "calibration"]
+resolver = "3"

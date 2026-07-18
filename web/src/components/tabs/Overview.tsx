@@ -57,9 +57,8 @@ export function Overview() {
 
       <div className="cards">
         <Card k="Top" v={design.top} small />
-        <Card k="Synth tool" v={design.tool === 'vivado' ? 'Vivado' : 'Yosys'} small />
+        <Card k="Synth tool" v="Yosys (browser)" small />
         <Card k="Mode" v={displayMode(design.mode)} small />
-        {design.target && <Card k="Target" v={design.target} small />}
         <Card k="Cells" v={stats.num_cells} />
         <Card k="Reg bits" v={stats.num_register_bits} />
         <Card k="Reg groups" v={stats.num_register_groups} />
@@ -89,11 +88,10 @@ export function Overview() {
         <TimingModel
           key={design.design_id}
           designId={design.design_id}
-          designMode={design.tool === 'vivado' ? 'vivado' : design.mode}
+          designMode={design.mode}
           resolvedProfile={design.delay_profile}
           fallbackDelayNs={stats.estimated_delay_ns ?? null}
           fallbackBreakdown={stats.estimated_delay_breakdown}
-          vivadoTiming={design.vivado_timing}
         />
       )}
 
@@ -144,9 +142,7 @@ export function Overview() {
         </>
       )}
 
-      <div className="section-title">
-        {design.tool === 'vivado' ? 'Vivado / normalization diagnostics' : 'Yosys diagnostics'}
-      </div>
+      <div className="section-title">Yosys diagnostics</div>
       <details className="collapsible">
         <summary>Show synthesis log ({design.log.split('\n').length} lines)</summary>
         <pre>{design.log}</pre>

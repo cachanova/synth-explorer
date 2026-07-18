@@ -1,23 +1,34 @@
-// Typed API client mirroring docs/API.md. All calls go through the /api proxy.
+// Browser-local analysis facade. No function in this module performs an HTTP
+// API request; the only network reads are versioned static WASM/CDN assets.
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
+import { bundledExamples } from './lib/examples'
+import {
+  LocalSynthesisError,
+  localCone,
+  localEndpoints,
+  localFanout,
+  localNetlist,
+  localNodes,
+  localPaths,
+  localSourceMap,
+  localTiming,
+  synthesizeLocally,
+} from './lib/localEngine'
 import type {
   DelayModel,
   EndpointsResponse,
   ExamplesResponse,
   FanoutResponse,
-  HealthResponse,
   Mode,
   NodesResponse,
   PathsResponse,
   SourceMapResponse,
   Subgraph,
-  SynthTool,
   SynthesizeRequest,
   SynthesizeResponse,
   TimingRequest,
   TimingResponse,
-  VivadoAccessResponse,
   XilinxFamily,
 } from './types'
 
@@ -32,74 +43,29 @@ export class ApiRequestError extends Error {
   }
 }
 
-async function parseError(res: Response): Promise<ApiRequestError> {
-  let message = `${res.status} ${res.statusText}`
-  let log: string | undefined
-  try {
-    const body = await res.json()
-    if (body && typeof body === 'object') {
-      if (typeof body.error === 'string') message = body.error
-      if (typeof body.log === 'string') log = body.log
-    }
-  } catch {
-    // non-JSON error body; keep status text
-  }
-  return new ApiRequestError(message, res.status, log)
-}
-
-async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
-  const res = signal ? await fetch(url, { signal }) : await fetch(url)
-  if (!res.ok) throw await parseError(res)
-  return (await res.json()) as T
-}
-
 export async function synthesize(
   req: SynthesizeRequest,
-  vivadoAccessKey?: string,
 ): Promise<SynthesizeResponse> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (req.tool === 'vivado' && vivadoAccessKey) {
-    headers.Authorization = `Bearer ${vivadoAccessKey}`
+  try {
+    return await synthesizeLocally(req)
+  } catch (error) {
+    if (error instanceof ApiRequestError) throw error
+    if (error instanceof LocalSynthesisError) {
+      throw new ApiRequestError(error.message, error.message.includes('timed out') ? 504 : 400, error.log)
+    }
+    throw new ApiRequestError(error instanceof Error ? error.message : String(error), 422)
   }
-  const res = await fetch('/api/synthesize', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) throw await parseError(res)
-  return (await res.json()) as SynthesizeResponse
-}
-
-export async function unlockVivado(
-  accessKey: string,
-): Promise<VivadoAccessResponse> {
-  const res = await fetch('/api/vivado/access', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${accessKey}` },
-  })
-  if (!res.ok) throw await parseError(res)
-  return (await res.json()) as VivadoAccessResponse
-}
-
-export function getDesign(id: string): Promise<SynthesizeResponse> {
-  return getJson<SynthesizeResponse>(`/api/design/${encodeURIComponent(id)}`)
 }
 
 export async function retuneTiming(
   id: string,
   req: TimingRequest,
 ): Promise<TimingResponse> {
-  const res = await fetch(`/api/design/${encodeURIComponent(id)}/timing`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) throw await parseError(res)
-  return (await res.json()) as TimingResponse
+  return localTiming(id, req)
 }
 
 export function getEndpoints(id: string): Promise<EndpointsResponse> {
-  return getJson<EndpointsResponse>(`/api/design/${encodeURIComponent(id)}/endpoints`)
+  return localEndpoints(id)
 }
 
 export function getPaths(
@@ -114,17 +80,7 @@ export function getPaths(
     model?: DelayModel
   } = {},
 ): Promise<PathsResponse> {
-  const p = new URLSearchParams()
-  if (opts.limit != null) p.set('limit', String(opts.limit))
-  if (opts.to != null) p.set('to', String(opts.to))
-  if (opts.sort != null) p.set('sort', opts.sort)
-  if (opts.profile != null) p.set('profile', opts.profile)
-  if (opts.speed_grade != null) p.set('speed_grade', opts.speed_grade)
-  if (opts.model != null) p.set('model', JSON.stringify(opts.model))
-  const qs = p.toString()
-  return getJson<PathsResponse>(
-    `/api/design/${encodeURIComponent(id)}/paths${qs ? `?${qs}` : ''}`,
-  )
+  return localPaths(id, opts)
 }
 
 export interface ConeOptions {
@@ -146,31 +102,11 @@ export function getCone(
   opts: ConeOptions,
   signal?: AbortSignal,
 ): Promise<Subgraph> {
-  const p = new URLSearchParams()
-  if (opts.nodes && opts.nodes.length > 0) {
-    p.set('nodes', opts.nodes.join(','))
-  } else {
-    p.set('node', String(opts.node))
-  }
-  p.set('dir', opts.dir)
-  if (opts.max_depth != null) p.set('max_depth', String(opts.max_depth))
-  if (opts.max_nodes != null) p.set('max_nodes', String(opts.max_nodes))
-  if (opts.hide_control != null) p.set('hide_control', String(opts.hide_control))
-  if (opts.hide_const != null) p.set('hide_const', String(opts.hide_const))
-  if (opts.show_infrastructure != null) {
-    p.set('show_infrastructure', String(opts.show_infrastructure))
-  }
-  if (opts.group_vectors != null) p.set('group_vectors', String(opts.group_vectors))
-  return getJson<Subgraph>(
-    `/api/design/${encodeURIComponent(id)}/cone?${p.toString()}`,
-    signal,
-  )
+  return localCone(id, opts, signal)
 }
 
 export function getFanout(id: string, limit = 50): Promise<FanoutResponse> {
-  return getJson<FanoutResponse>(
-    `/api/design/${encodeURIComponent(id)}/fanout?limit=${limit}`,
-  )
+  return localFanout(id, limit)
 }
 
 export interface NetlistOptions {
@@ -187,37 +123,31 @@ export function getNetlist(
   opts: NetlistOptions = {},
   signal?: AbortSignal,
 ): Promise<Subgraph> {
-  const p = new URLSearchParams()
-  p.set('max_nodes', String(opts.max_nodes ?? DEFAULT_GRAPH_MAX_NODES))
-  p.set('show_infrastructure', String(opts.show_infrastructure ?? false))
-  p.set('group_vectors', String(opts.group_vectors ?? false))
-  p.set('hide_control', String(opts.hide_control ?? true))
-  p.set('hide_const', String(opts.hide_const ?? false))
-  if (opts.around && opts.around.length > 0) p.set('around', opts.around.join(','))
-  return getJson<Subgraph>(
-    `/api/design/${encodeURIComponent(id)}/netlist?${p.toString()}`,
+  return localNetlist(
+    id,
+    {
+      max_nodes: opts.max_nodes ?? DEFAULT_GRAPH_MAX_NODES,
+      show_infrastructure: opts.show_infrastructure ?? false,
+      group_vectors: opts.group_vectors ?? false,
+      hide_control: opts.hide_control ?? true,
+      hide_const: opts.hide_const ?? false,
+      around: opts.around,
+    },
     signal,
   )
 }
 
 export function getSourceMap(id: string): Promise<SourceMapResponse> {
-  return getJson<SourceMapResponse>(`/api/design/${encodeURIComponent(id)}/source-map`)
+  return localSourceMap(id)
 }
 
 /** Resolve node ids to display metadata. Caps at the contract's 200-id limit. */
 export function getNodes(id: string, ids: number[]): Promise<NodesResponse> {
-  const capped = ids.slice(0, 200)
-  return getJson<NodesResponse>(
-    `/api/design/${encodeURIComponent(id)}/nodes?ids=${capped.join(',')}`,
-  )
+  return localNodes(id, ids)
 }
 
 export function getExamples(): Promise<ExamplesResponse> {
-  return getJson<ExamplesResponse>('/api/examples')
-}
-
-export function getHealth(): Promise<HealthResponse> {
-  return getJson<HealthResponse>('/healthz')
+  return Promise.resolve(bundledExamples())
 }
 
 export const MODE_LABELS: { value: Mode; label: string }[] = [
@@ -228,11 +158,6 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
   { value: 'xilinx', label: 'Xilinx' },
-]
-
-export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
-  { value: 'yosys', label: 'Yosys' },
-  { value: 'vivado', label: 'Vivado (API key)' },
 ]
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs

@@ -1,52 +1,9 @@
-import { useMemo, useState } from 'react'
-import { MODE_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
+import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
-import type { Mode, SynthTool, XilinxFamily } from '../types'
+import type { Mode, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 import { BubbleLoader } from './BubbleLoader'
 import { FlagsMenu } from './FlagsMenu'
-import { VivadoUnlockDialog } from './VivadoUnlockDialog'
-
-interface VivadoFamilyBucket {
-  key: string
-  label: string
-  rank: number
-}
-
-function fallbackVivadoFamilyLabel(family: string): string {
-  return family
-    .replace(/uplus$/i, ' UltraScale+')
-    .replace(/u$/i, ' UltraScale')
-    .replace(/([A-Za-z])(\d+)/g, '$1 $2')
-    .replace(/[_-]+/g, ' ')
-    .trim()
-    .replace(/\b[a-z]/g, (char) => char.toUpperCase())
-}
-
-function vivadoFamilyBucket(family: string): VivadoFamilyBucket {
-  const normalized = family.toLowerCase()
-  if (normalized.includes('uplus')) {
-    return { key: 'ultrascale_plus', label: 'UltraScale+', rank: 30 }
-  }
-  if (normalized.endsWith('u')) {
-    return { key: 'ultrascale', label: 'UltraScale', rank: 20 }
-  }
-  if (
-    normalized.endsWith('7') ||
-    normalized.endsWith('7l') ||
-    normalized === 'zynq'
-  ) {
-    return { key: 'series7', label: 'Series 7', rank: 10 }
-  }
-  if (normalized.endsWith('6')) {
-    return { key: 'series6', label: 'Series 6', rank: 40 }
-  }
-  return {
-    key: normalized,
-    label: fallbackVivadoFamilyLabel(family),
-    rank: 100,
-  }
-}
 
 export function Toolbar() {
   const store = useStore(
@@ -55,94 +12,26 @@ export function Toolbar() {
       loadExample,
       top,
       setTop,
-      synthTool,
-      setSynthTool,
-      vivadoUnlocked,
-      vivadoAvailable,
       mode,
       setMode,
       extraArgs,
       setExtraArgs,
-      vivadoTargets,
-      vivadoTarget,
-      setVivadoTarget,
-      vivadoExtraArgs,
-      setVivadoExtraArgs,
       synthesizing,
       synthesize,
-      unlockVivado,
     }) => ({
       examples,
       loadExample,
       top,
       setTop,
-      synthTool,
-      setSynthTool,
-      vivadoUnlocked,
-      vivadoAvailable,
       mode,
       setMode,
       extraArgs,
       setExtraArgs,
-      vivadoTargets,
-      vivadoTarget,
-      setVivadoTarget,
-      vivadoExtraArgs,
-      setVivadoExtraArgs,
       synthesizing,
       synthesize,
-      unlockVivado,
     }),
     shallowEqual,
   )
-  const [unlockOpen, setUnlockOpen] = useState(false)
-  const targetGroups = useMemo(() => {
-    const groups = new Map<
-      string,
-      VivadoFamilyBucket & { targets: typeof store.vivadoTargets }
-    >()
-    for (const part of store.vivadoTargets) {
-      const bucket = vivadoFamilyBucket(part.family)
-      const existing = groups.get(bucket.key)
-      if (existing) existing.targets.push(part)
-      else groups.set(bucket.key, { ...bucket, targets: [part] })
-    }
-    return [...groups.values()].map((group) => ({
-      ...group,
-      targets: [...group.targets].sort((left, right) =>
-        left.name.localeCompare(right.name, undefined, { numeric: true }),
-      ),
-    }))
-  }, [store.vivadoTargets])
-  const familyOptions = useMemo(
-    () =>
-      targetGroups
-        .sort((left, right) =>
-          left.rank - right.rank ||
-          left.label.localeCompare(right.label, undefined, { numeric: true }),
-        ),
-    [targetGroups],
-  )
-  const selectedTarget = store.vivadoTargets.find(
-    (part) => part.name === store.vivadoTarget,
-  )
-  const selectedFamily = selectedTarget
-    ? vivadoFamilyBucket(selectedTarget.family).key
-    : (familyOptions[0]?.key ?? '')
-  const familyTargets =
-    familyOptions.find((option) => option.key === selectedFamily)?.targets ?? []
-  const selectedSpeed = selectedTarget?.speed ?? familyTargets[0]?.speed ?? ''
-  const speedGrades = [...new Set(familyTargets.map((part) => part.speed))].sort(
-    (left, right) => left.localeCompare(right, undefined, { numeric: true }),
-  )
-
-  const selectVivadoFamily = (family: string) => {
-    const option = familyOptions.find((candidate) => candidate.key === family)
-    const target =
-      option?.targets.find((part) => part.speed === selectedSpeed) ??
-      option?.targets[0]
-    if (target) store.setVivadoTarget(target.name)
-  }
 
   return (
     <div className="toolbar">
@@ -150,17 +39,15 @@ export function Toolbar() {
         <span>Example</span>
         <select
           value=""
-          onChange={(e) => {
-            const ex = store.examples.find((x) => x.name === e.target.value)
-            if (ex) store.loadExample(ex)
+          onChange={(event) => {
+            const example = store.examples.find((entry) => entry.name === event.target.value)
+            if (example) store.loadExample(example)
           }}
         >
-          <option value="">
-            {store.examples.length ? 'Load example…' : '(no examples)'}
-          </option>
-          {store.examples.map((ex) => (
-            <option key={ex.name} value={ex.name}>
-              {ex.title || ex.name}
+          <option value="">{store.examples.length ? 'Load example…' : '(no examples)'}</option>
+          {store.examples.map((example) => (
+            <option key={example.name} value={example.name}>
+              {example.title || example.name}
             </option>
           ))}
         </select>
@@ -171,156 +58,64 @@ export function Toolbar() {
         <input
           style={{ width: 110 }}
           placeholder="auto-detect"
-          title="Leave blank to auto-detect the top module (yosys hierarchy -auto-top), or name it explicitly."
+          title="Leave blank to auto-detect the top module, or name it explicitly."
           value={store.top}
-          onChange={(e) => store.setTop(e.target.value)}
+          onChange={(event) => store.setTop(event.target.value)}
         />
       </label>
 
       <label className="field">
-        <span>Synth tool</span>
-        <select
-          value={store.synthTool}
-          onChange={(e) => {
-            const tool = e.target.value as SynthTool
-            if (tool !== 'vivado' || store.vivadoUnlocked) {
-              store.setSynthTool(tool)
-              return
-            }
-            setUnlockOpen(true)
-          }}
-        >
-          {SYNTH_TOOL_LABELS.filter(
-            (tool) => tool.value !== 'vivado' || store.vivadoAvailable,
-          ).map((tool) => (
-            <option key={tool.value} value={tool.value}>
-              {tool.label}
+        <span>Mode</span>
+        <select value={store.mode} onChange={(event) => store.setMode(event.target.value as Mode)}>
+          {MODE_LABELS.map((mode) => (
+            <option key={mode.value} value={mode.value}>
+              {mode.label}
             </option>
           ))}
         </select>
       </label>
 
-      {store.synthTool === 'yosys' && (
-        <label className="field">
-          <span>Mode</span>
-          <select
-            value={store.mode}
-            onChange={(e) => store.setMode(e.target.value as Mode)}
-          >
-            {MODE_LABELS.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {store.synthTool === 'yosys' && store.mode === 'xilinx' && (
+      {store.mode === 'xilinx' && (
         <label className="field">
           <span>Target</span>
           <select
             value={parseFamily(store.extraArgs)}
-            title="Xilinx device family (synth_xilinx -family) — sets the carry/BRAM/DSP primitives to match Vivado for that part. Writes -family into the synthesis flags."
-            onChange={(e) =>
+            title="Xilinx device family; writes -family into the visible synthesis flags."
+            onChange={(event) =>
               store.setExtraArgs(
-                setFamily(store.extraArgs, e.target.value as XilinxFamily),
+                setFamily(store.extraArgs, event.target.value as XilinxFamily),
               )
             }
           >
-            {XILINX_FAMILY_LABELS.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
+            {XILINX_FAMILY_LABELS.map((family) => (
+              <option key={family.value} value={family.value}>
+                {family.label}
               </option>
             ))}
           </select>
         </label>
       )}
 
-      {store.synthTool === 'vivado' && (
-        <label className="field">
-          <span>Family</span>
-          <select
-            value={selectedFamily}
-            title="Filter the installed Vivado part catalog by architecture family."
-            onChange={(event) => {
-              selectVivadoFamily(event.target.value)
-            }}
-          >
-            {familyOptions.map((option) => (
-              <option key={option.key} value={option.key}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {store.synthTool === 'vivado' && (
-        <label className="field">
-          <span>Speed grade</span>
-          <select
-            value={selectedSpeed}
-            title={`Resolved Vivado part: ${store.vivadoTarget}`}
-            onChange={(event) => {
-              const target = familyTargets.find(
-                (part) => part.speed === event.target.value,
-              )
-              if (target) store.setVivadoTarget(target.name)
-            }}
-          >
-            {speedGrades.map((speed) => (
-              <option key={speed} value={speed}>
-                {speed}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {store.synthTool === 'yosys' ? (
-        <>
-          <FlagsMenu
-            tool="yosys"
-            mode={store.mode}
-            flags={store.extraArgs}
-            onChange={(flags) => store.setExtraArgs(flags)}
-          />
-          <label className="field grow">
-            <span>Synthesis flags</span>
-            <input
-              placeholder="mode-specific, e.g. -noabc"
-              title="The exact flags passed to the selected Yosys synthesis command. The Target dropdown and Flags menu edit this string; you can also type flags directly."
-              value={store.extraArgs}
-              onChange={(e) => store.setExtraArgs(e.target.value)}
-            />
-          </label>
-        </>
-      ) : (
-        <>
-          <FlagsMenu
-            tool="vivado"
-            mode="gates"
-            flags={store.vivadoExtraArgs}
-            onChange={(flags) => store.setVivadoExtraArgs(flags)}
-          />
-          <label className="field grow">
-            <span>Synthesis flags</span>
-            <input
-              placeholder="Vivado synth_design flags, e.g. -global_retiming on"
-              title="Validated whitespace-separated flags appended to Vivado synth_design. The Flags menu edits this string; you can also type advanced flags directly."
-              value={store.vivadoExtraArgs}
-              onChange={(e) => store.setVivadoExtraArgs(e.target.value)}
-            />
-          </label>
-        </>
-      )}
+      <FlagsMenu
+        mode={store.mode}
+        flags={store.extraArgs}
+        onChange={(flags) => store.setExtraArgs(flags)}
+      />
+      <label className="field grow">
+        <span>Synthesis flags</span>
+        <input
+          placeholder="mode-specific, e.g. -noabc"
+          title="The exact flags passed to the selected Yosys synthesis command."
+          value={store.extraArgs}
+          onChange={(event) => store.setExtraArgs(event.target.value)}
+        />
+      </label>
 
       <button
         className="primary"
         disabled={store.synthesizing}
         onClick={() => void store.synthesize()}
-        title="Synthesize (Ctrl+Enter)"
+        title="Synthesize in this browser (Ctrl+Enter)"
       >
         {store.synthesizing ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -330,15 +125,6 @@ export function Toolbar() {
           'Synthesize'
         )}
       </button>
-      <VivadoUnlockDialog
-        open={unlockOpen}
-        onClose={() => setUnlockOpen(false)}
-        onUnlock={async (accessKey) => {
-          const unlocked = await store.unlockVivado(accessKey)
-          if (unlocked) store.setSynthTool('vivado')
-          return unlocked
-        }}
-      />
     </div>
   )
 }

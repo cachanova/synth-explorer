@@ -128,19 +128,9 @@ if (!explorationFile) {
   process.exit(1)
 }
 const explorationMessages = []
-const explorationFetches = []
 const explorationSandbox = {
   console,
   postMessage: (message) => explorationMessages.push(message),
-  fetch: async (url) => {
-    explorationFetches.push(url)
-    return {
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => JSON.parse(JSON.stringify(snapshot)),
-    }
-  },
 }
 explorationSandbox.self = explorationSandbox
 explorationSandbox.globalThis = explorationSandbox
@@ -191,13 +181,13 @@ function sendExplorationRequest(request) {
     explorationSandbox,
   )
 }
-sendExplorationRequest({ id: 1, kind: 'initialize', designId: 'verify' })
+sendExplorationRequest({ id: 1, kind: 'initialize', snapshot })
 const explorationDeadline = Date.now() + 10000
 while (!explorationMessages.some((message) => message.id === 1) && Date.now() < explorationDeadline) {
   await new Promise((resolve) => setTimeout(resolve, 25))
 }
 const initializationResult = explorationMessages.find((message) => message.id === 1)
-if (!initializationResult?.ok || explorationFetches[0] !== '/api/design/verify/exploration') {
+if (!initializationResult?.ok) {
   console.error('FAIL: exploration worker initialization malformed:', initializationResult)
   process.exit(1)
 }
@@ -222,5 +212,5 @@ if (
   process.exit(1)
 }
 console.log(
-  `PASS: ${explorationFile} fetched a prepared design and resolved a source cone locally`,
+  `PASS: ${explorationFile} accepted a browser-local snapshot and resolved a source cone locally`,
 )

@@ -1,19 +1,13 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: /server
+    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
 
   - package-ecosystem: npm
     directory: /web
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-
-  - package-ecosystem: docker
-    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

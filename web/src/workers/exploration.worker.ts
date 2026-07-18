@@ -5,7 +5,7 @@ import type { SelectionOptions } from '../lib/exploration'
 import type { ExplorationSnapshot, SourceSelectionResult } from '../types'
 
 export type ExplorationWorkerRequest =
-  | { id: number; kind: 'initialize'; designId: string }
+  | { id: number; kind: 'initialize'; snapshot: ExplorationSnapshot }
   | {
       id: number
       kind: 'source'
@@ -28,8 +28,7 @@ self.onmessage = (event: MessageEvent<ExplorationWorkerRequest>) => {
 async function handleRequest(request: ExplorationWorkerRequest) {
   try {
     if (request.kind === 'initialize') {
-      const snapshot = await loadExploration(request.designId)
-      prepared = prepareExploration(snapshot)
+      prepared = prepareExploration(request.snapshot)
       respond({ id: request.id, ok: true, result: null })
       return
     }
@@ -48,25 +47,6 @@ async function handleRequest(request: ExplorationWorkerRequest) {
   } catch (error) {
     respond({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) })
   }
-}
-
-async function loadExploration(designId: string): Promise<ExplorationSnapshot> {
-  const response = await fetch(`/api/design/${encodeURIComponent(designId)}/exploration`)
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`
-    try {
-      const body = await response.json() as { error?: unknown }
-      if (typeof body.error === 'string') message = body.error
-    } catch {
-      // Keep the HTTP status when the error body is not JSON.
-    }
-    throw new Error(message)
-  }
-  const snapshot = await response.json() as ExplorationSnapshot
-  if (snapshot.design_id !== designId) {
-    throw new Error('exploration snapshot does not match the requested design')
-  }
-  return snapshot
 }
 
 function respond(response: ExplorationWorkerResponse) {

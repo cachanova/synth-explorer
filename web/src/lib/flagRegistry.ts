@@ -1,4 +1,4 @@
-import type { Mode, SynthTool } from '../types'
+import type { Mode } from '../types'
 import { hasFlag, setFlagValue, stripFlags, toggleFlag } from './synthFlags'
 
 interface BaseFlagDef {
@@ -121,137 +121,6 @@ const ECP5: FlagDef[] = [
   { flag: '-asyncprld', label: 'Async PRLD ALDFF', description: 'Async PRLD mode for ALDFF (experimental).' },
 ]
 
-const VIVADO: FlagDef[] = [
-  {
-    flag: '-directive',
-    label: 'Synthesis directive',
-    description: 'Select a built-in optimization strategy.',
-    value: 'select',
-    defaultValue: 'default',
-    choices: [
-      'default',
-      'RuntimeOptimized',
-      'AreaOptimized_high',
-      'AreaOptimized_medium',
-      'AlternateRoutability',
-      'AreaMapLargeShiftRegToBRAM',
-      'AreaMultThresholdDSP',
-      'FewerCarryChains',
-      'PerformanceOptimized',
-      'LogicCompaction',
-      'PowerOptimized_high',
-      'PowerOptimized_medium',
-    ],
-  },
-  {
-    flag: '-fsm_extraction',
-    label: 'FSM extraction',
-    description: 'Choose finite-state-machine extraction and encoding.',
-    value: 'select',
-    defaultValue: 'auto',
-    choices: ['auto', 'off', 'one_hot', 'sequential', 'johnson', 'gray', 'user_encoding'],
-  },
-  {
-    flag: '-resource_sharing',
-    label: 'Resource sharing',
-    description: 'Control sharing of compatible arithmetic operators.',
-    value: 'select',
-    defaultValue: 'auto',
-    choices: ['auto', 'on', 'off'],
-  },
-  {
-    flag: '-cascade_dsp',
-    label: 'DSP cascading',
-    description: 'Control DSP cascade inference for arithmetic structures.',
-    value: 'select',
-    defaultValue: 'auto',
-    choices: ['auto', 'tree', 'force'],
-  },
-  {
-    flag: '-global_retiming',
-    label: 'Global retiming',
-    description: 'Move registers across combinational logic to improve timing.',
-    value: 'select',
-    defaultValue: 'auto',
-    choices: ['auto', 'on', 'off'],
-  },
-  {
-    flag: '-gated_clock_conversion',
-    label: 'Gated-clock conversion',
-    description: 'Convert supported gated clocks to clock-enable logic.',
-    value: 'select',
-    defaultValue: 'off',
-    choices: ['off', 'on', 'auto'],
-    warn: 'Effective conversion can depend on clock constraints and HDL attributes.',
-  },
-  {
-    flag: '-srl_style',
-    label: 'SRL style',
-    description: 'Choose how registers surround inferred shift-register LUTs.',
-    value: 'select',
-    defaultValue: 'srl',
-    choices: ['register', 'srl', 'srl_reg', 'reg_srl', 'reg_srl_reg'],
-  },
-  {
-    flag: '-shreg_min_size',
-    label: 'Minimum SRL length',
-    description: 'Minimum shift-register length eligible for SRL inference.',
-    value: 'int',
-    defaultValue: '3',
-    min: 1,
-  },
-  {
-    flag: '-max_bram',
-    label: 'BRAM limit',
-    description: 'Limit block RAM use; 0 keeps inferred memories out of BRAM.',
-    value: 'int',
-    defaultValue: '0',
-    min: -1,
-  },
-  {
-    flag: '-max_uram',
-    label: 'UltraRAM limit',
-    description: 'Limit UltraRAM use; 0 keeps inferred memories out of UltraRAM.',
-    value: 'int',
-    defaultValue: '0',
-    min: -1,
-  },
-  {
-    flag: '-max_dsp',
-    label: 'DSP limit',
-    description: 'Limit DSP use; 0 maps arithmetic without DSP blocks.',
-    value: 'int',
-    defaultValue: '0',
-    min: -1,
-  },
-  {
-    flag: '-no_lc',
-    label: 'No LUT combining',
-    description: 'Disable LUT combining during synthesis.',
-  },
-  {
-    flag: '-lut_cascade',
-    label: 'LUT cascading',
-    description: 'Allow LUT cascade optimization.',
-  },
-  {
-    flag: '-keep_equivalent_registers',
-    label: 'Keep equivalent registers',
-    description: 'Preserve registers with equivalent behavior instead of merging them.',
-  },
-  {
-    flag: '-no_srlextract',
-    label: 'No SRL extraction',
-    description: 'Keep shift registers as flip-flops instead of SRL primitives.',
-  },
-  {
-    flag: '-no_timing_driven',
-    label: 'No timing-driven synthesis',
-    description: 'Disable timing-driven optimizations.',
-    warn: 'Usually produces worse timing results.',
-  },
-]
-
 export const FLAG_REGISTRY: Partial<Record<Mode, FlagDef[]>> = {
   gates: GENERIC,
   lut4: GENERIC,
@@ -264,10 +133,6 @@ export const FLAG_REGISTRY: Partial<Record<Mode, FlagDef[]>> = {
 
 export function flagsForMode(mode: Mode): FlagDef[] {
   return FLAG_REGISTRY[mode] ?? []
-}
-
-export function flagsForTool(tool: SynthTool, mode: Mode): FlagDef[] {
-  return tool === 'vivado' ? VIVADO : flagsForMode(mode)
 }
 
 /** `-family` is value-taking and Xilinx-only; the menu never lists it (the Target
@@ -304,7 +169,7 @@ export function stripInvalidFlags(flags: string, mode: Mode): string {
 /** Apply the destination mode's defaults after removing incompatible flags.
  *  Defaults are ordinary registry flags marked `defaultOn` — they land in the
  *  visible flags string, so the user can see and remove them (nothing is
- *  injected server-side). */
+ *  injected out of band). */
 export function flagsForModeChange(flags: string, mode: Mode): string {
   let next = stripInvalidFlags(flags, mode)
   for (const definition of flagsForMode(mode)) {

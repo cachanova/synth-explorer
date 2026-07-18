@@ -1,4 +1,4 @@
-// Types mirroring docs/API.md verbatim. Do NOT diverge from the contract.
+// Shared contracts between the browser UI and its local workers.
 
 export type NodeKind = 'cell' | 'port' | 'const'
 
@@ -134,7 +134,7 @@ export interface ExplorationSnapshot {
   groups: ExplorationGroup[]
 }
 
-// --- POST /api/synthesize ---
+// --- Browser-local synthesis ---
 
 export type Mode =
   | 'rtl'
@@ -144,8 +144,6 @@ export type Mode =
   | 'ice40'
   | 'ecp5'
   | 'xilinx'
-
-export type SynthTool = 'yosys' | 'vivado'
 
 // synth_xilinx -family target; selects carry/BRAM/DSP primitives.
 export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
@@ -158,29 +156,8 @@ export interface DesignFile {
 export interface SynthesizeRequest {
   files: DesignFile[]
   top?: string // omitted -> yosys -auto-top
-  tool?: SynthTool // omitted -> yosys (backward-compatible API default)
   mode: Mode
-  target?: string // currently required for vivado; omitted for yosys
-  extra_args?: string // tool/mode-specific synthesis-pass flags; safe whitespace-separated tokens
-}
-
-export interface HealthResponse {
-  status: string
-  commit: string
-  version: string
-  yosys_version: string
-  vivado_version?: string
-  vivado_access_protected?: boolean
-}
-
-export interface VivadoPart {
-  name: string
-  family: string
-  speed: string
-}
-
-export interface VivadoAccessResponse {
-  parts: VivadoPart[]
+  extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
 }
 
 export interface Stats {
@@ -215,7 +192,7 @@ export interface CellCategoryCounts {
   infrastructure: number
 }
 
-// --- POST /api/design/:id/timing ---
+// --- Browser-local timing analysis ---
 
 export interface GateDelays {
   and?: number
@@ -276,43 +253,21 @@ export interface TimingResponse {
   model: DelayModel // base coefficients used (pre speed-grade)
 }
 
-// Vivado's own post-synthesis report_timing for the worst register-to-register
-// path — the measured counterpart to the estimated_delay_ns model. Only ever
-// present on the (owner-key gated) Vivado synthesis path.
-export interface VivadoTiming {
-  // clk-to-Q + logic + route. Excludes FF setup, which Vivado folds into slack;
-  // compare against an estimate with its setup_ns term removed, not against
-  // estimated_delay_ns directly.
-  data_path_delay_ns: number
-  logic_ns: number // logic (cell) share of data_path_delay_ns
-  route_ns: number // route (net) share of data_path_delay_ns
-  logic_levels: number
-  slack_ns: number // against reference_period_ns, not any user target
-  slack_met: boolean
-  reference_period_ns: number // synthetic analysis-only clock; see docs/API.md
-  source: string // launching pin, e.g. "ra_reg[1]/C"
-  destination: string // capturing pin, e.g. "q_reg[13]/D"
-}
-
 export interface SynthesizeResponse {
   design_id: string // content hash; identical input returns the same id
   top: string // resolved top module
-  tool: SynthTool
+  tool: 'yosys'
   mode: string
   delay_profile: DelayProfile // resolved per-design timing family
-  target?: string
   stats: Stats
   warnings: string[]
   log: string // yosys log (tail, capped)
   // true when a generic mode hit the sandbox memory limit and succeeded on a
   // retry that keeps inferred memories abstract ($mem_v2) instead of gates
   memories_abstracted?: boolean
-  // Vivado's own report_timing; absent on the Yosys path and whenever Vivado
-  // found no constrained register-to-register path.
-  vivado_timing?: VivadoTiming
 }
 
-// --- GET /api/design/:id/endpoints ---
+// --- Endpoint analysis ---
 
 export interface EndpointBit {
   bit: number
@@ -361,7 +316,7 @@ export interface EndpointsResponse {
   inputs: InputEndpoint[]
 }
 
-// --- GET /api/design/:id/paths ---
+// --- Path analysis ---
 
 export type EndpointKind = 'register' | 'output' | 'blackbox'
 
@@ -392,7 +347,7 @@ export interface PathsResponse {
   truncated: boolean // explicit response limit or bounded route-analysis work was hit
 }
 
-// --- GET /api/design/:id/fanout ---
+// --- Fanout analysis ---
 
 export interface FanoutDriver {
   driver: NodeRef // FF cell, input port bit, or comb cell
@@ -407,7 +362,7 @@ export interface FanoutResponse {
   drivers: FanoutDriver[]
 }
 
-// --- GET /api/design/:id/nodes?ids=1,2,3 ---
+// --- Node metadata ---
 // Resolve node ids to display metadata. Returned in request order; unknown
 // ids omitted. At most 200 ids per request (422 above that).
 
@@ -415,7 +370,7 @@ export interface NodesResponse {
   nodes: NodeRef[]
 }
 
-// --- GET /api/design/:id/source-map ---
+// --- Source mapping ---
 
 export interface SourceRangeMapping {
   file: string
@@ -432,7 +387,7 @@ export interface SourceMapResponse {
   truncated: boolean
 }
 
-// --- GET /api/examples ---
+// --- Bundled examples ---
 
 export interface Example {
   name: string // "adder_chain"
