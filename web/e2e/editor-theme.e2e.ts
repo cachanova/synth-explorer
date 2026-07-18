@@ -49,7 +49,7 @@ test('keeps editor chrome and syntax on the selected color theme', async ({
   expect(tidepoolChrome.actual).toBe(tidepoolChrome.expected)
   expect(tidepoolKeyword.actual).toBe(tidepoolKeyword.expected)
 
-  await page.getByRole('button', { name: 'Theme settings' }).click()
+  await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('radio', { name: /Gruvbox/ }).click()
   await expect(root).toHaveAttribute('data-palette', 'gruvbox')
 

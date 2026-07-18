@@ -1,4 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
+import { Analytics } from '@vercel/analytics/react'
+import { SpeedInsights } from '@vercel/speed-insights/react'
 import { BrandMark } from './components/BrandMark'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
@@ -79,6 +81,8 @@ function App() {
         <div className="divider" onMouseDown={onDown} title="Drag to resize" />
         <RightPane />
       </div>
+      <Analytics />
+      <SpeedInsights />
     </div>
   )
 }

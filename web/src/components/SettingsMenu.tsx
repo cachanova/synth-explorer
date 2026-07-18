@@ -82,15 +82,15 @@ export function SettingsMenu() {
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
-        aria-label="Theme settings"
-        title="Theme settings"
+        aria-label="Settings"
+        title="Settings"
         onClick={() => setOpen((v) => !v)}
       >
         <GearIcon />
       </button>
 
       {open && (
-        <div className="settings-popover" id={menuId} role="dialog" aria-label="Theme settings">
+        <div className="settings-popover" id={menuId} role="dialog" aria-label="Settings">
           <div className="settings-section">
             <div className="settings-head">Appearance</div>
             <div className="seg" role="radiogroup" aria-label="Appearance mode">

@@ -2,7 +2,6 @@ import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import type { Mode, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
-import { BubbleLoader } from './BubbleLoader'
 import { FlagsMenu } from './FlagsMenu'
 
 export function Toolbar() {
@@ -16,8 +15,6 @@ export function Toolbar() {
       setMode,
       extraArgs,
       setExtraArgs,
-      synthesizing,
-      synthesize,
     }) => ({
       examples,
       loadExample,
@@ -27,8 +24,6 @@ export function Toolbar() {
       setMode,
       extraArgs,
       setExtraArgs,
-      synthesizing,
-      synthesize,
     }),
     shallowEqual,
   )
@@ -110,21 +105,6 @@ export function Toolbar() {
           onChange={(event) => store.setExtraArgs(event.target.value)}
         />
       </label>
-
-      <button
-        className="primary"
-        disabled={store.synthesizing}
-        onClick={() => void store.synthesize()}
-        title="Synthesize in this browser (Ctrl+Enter)"
-      >
-        {store.synthesizing ? (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <BubbleLoader size={16} tone="mono" /> Synthesizing…
-          </span>
-        ) : (
-          'Synthesize'
-        )}
-      </button>
     </div>
   )
 }

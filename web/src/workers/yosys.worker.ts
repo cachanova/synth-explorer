@@ -44,11 +44,19 @@ self.onmessage = (event: MessageEvent<Request>) => {
 }
 
 const modulePromise = fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
-  .then((response) => {
+  .then(async (response) => {
     if (!response.ok) throw new Error(`failed to load Yosys: ${response.status}`)
-    return response.arrayBuffer()
+    const contentType = response.headers.get('Content-Type') ?? ''
+    if (!contentType.includes('application/wasm')) {
+      throw new Error(
+        `failed to load Yosys: expected application/wasm, got ${contentType || 'no content type'}`,
+      )
+    }
+    if (typeof WebAssembly.compileStreaming === 'function') {
+      return WebAssembly.compileStreaming(response)
+    }
+    return WebAssembly.compile(await response.arrayBuffer())
   })
-  .then(WebAssembly.compile)
 
 const sharePromise = fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
   .then((response) => {

@@ -16,7 +16,8 @@ browser profile and can be cleared from the settings menu.
 ## Features
 
 - Synthesize generic gates, LUT4/LUT6 mappings, and iCE40, ECP5, or Xilinx
-  target flows with a project-pinned Yosys WebAssembly build.
+  target flows automatically after 250 ms without an edit, using a
+  project-pinned Yosys WebAssembly build.
 - Rank logical paths and endpoints by combinational depth.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and jump from synthesized cells to source.

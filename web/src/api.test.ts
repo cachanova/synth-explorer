@@ -54,7 +54,7 @@ describe('browser-local API facade', () => {
 
     await synthesize(request)
 
-    expect(engine.synthesizeLocally).toHaveBeenCalledWith(request)
+    expect(engine.synthesizeLocally).toHaveBeenCalledWith(request, undefined)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })

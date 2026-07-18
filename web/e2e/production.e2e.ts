@@ -11,40 +11,47 @@ function recordApiRequests(page: Page): string[] {
   return requests
 }
 
-async function synthesize(page: Page) {
-  const ready = page.getByRole('button', { name: 'Synthesize', exact: true })
+async function waitForAutomaticSynthesis(
+  page: Page,
+  changeInput: () => Promise<void>,
+) {
   const completed = page.evaluate(
     () =>
       new Promise<void>((resolve, reject) => {
-        const button = document.querySelector<HTMLButtonElement>(
-          'button[title="Synthesize in this browser (Ctrl+Enter)"]',
-        )
-        if (!button) {
-          reject(new Error('synthesis button is missing'))
+        const status = document.querySelector<HTMLElement>('.pane-left .tag')
+        if (!status) {
+          reject(new Error('synthesis status is missing'))
           return
         }
-        let started = false
+        let started = status.textContent?.trim() === 'refreshing'
         const timer = window.setTimeout(() => {
           observer.disconnect()
-          reject(new Error('synthesis did not complete'))
+          reject(new Error('automatic synthesis did not complete'))
         }, 120_000)
         const observer = new MutationObserver(() => {
-          if (button.disabled) {
+          const text = status.textContent?.trim()
+          if (text === 'refreshing') {
             started = true
             return
           }
-          if (!started) return
+          if (!started || text !== 'mapping live') return
           window.clearTimeout(timer)
           observer.disconnect()
           resolve()
         })
-        observer.observe(button, { attributes: true, attributeFilter: ['disabled'] })
+        observer.observe(status, { childList: true, subtree: true })
       }),
   )
-  await ready.click()
+  await changeInput()
   await completed
-  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
-  await expect(page.getByText('Structural logic depth', { exact: true })).toBeVisible()
+}
+
+async function retriggerCurrentInput(page: Page) {
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await editor.press('Control+End')
+  await editor.type(' ')
+  await editor.press('Backspace')
 }
 
 async function cacheEntryCount(page: Page): Promise<number> {
@@ -82,22 +89,111 @@ test('file tabs expose roving keyboard navigation', async ({ page }) => {
   await expect(file1Tab).toHaveAttribute('aria-selected', 'true')
 })
 
+test('auto-synthesizes an edited design locally after the debounce', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Example').selectOption('reg_mux'),
+  )
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+
+  await expect(page.getByText('Structural logic depth', { exact: true })).toBeVisible()
+  expect(await cacheEntryCount(page)).toBeGreaterThanOrEqual(1)
+  await expect(page.getByRole('button', { name: 'Synthesize', exact: true })).toHaveCount(0)
+  expect(apiRequests).toEqual([])
+})
+
+test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
+    timeout: 120_000,
+  })
+  await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const transaction = database.transaction('syntheses', 'readwrite')
+    transaction.objectStore('syntheses').clear()
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve()
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+    })
+  })
+
+  await waitForAutomaticSynthesis(page, async () => {
+    const editor = page.locator('.cm-content')
+    await editor.click()
+    await editor.press('Control+End')
+    await editor.type('\n// burst')
+    await page.waitForTimeout(100)
+    await editor.type('-one')
+    await page.waitForTimeout(100)
+    await editor.type('-result')
+  })
+
+  expect(await cacheEntryCount(page)).toBe(1)
+  expect(apiRequests).toEqual([])
+})
+
+test('cancels obsolete Yosys work and commits only the newest edit', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
+    timeout: 120_000,
+  })
+
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Example').selectOption('handshake_controller')
+    await page.getByLabel('Mode').selectOption('xilinx')
+    await expect(page.locator('.pane-left .tag')).toHaveText('refreshing')
+    const editor = page.locator('.cm-content')
+    await editor.click()
+    await editor.press('Control+End')
+    await editor.type('\n// newest input')
+  })
+
+  const xilinxEntries = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('synth-explorer')
+      request.onsuccess = () => resolve(request.result)
+      request.onerror = () => reject(request.error)
+    })
+    const read = database.transaction('syntheses').objectStore('syntheses').getAll()
+    const records = await new Promise<Array<{ input: { mode: string } }>>(
+      (resolve, reject) => {
+        read.onsuccess = () => resolve(read.result)
+        read.onerror = () => reject(read.error)
+      },
+    )
+    return records.filter((record) => record.input.mode === 'xilinx').length
+  })
+  expect(xilinxEntries).toBe(1)
+  expect(apiRequests).toEqual([])
+})
+
 test('synthesizes and analyzes locally, then reuses the per-browser cache', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
 
   await expect(page.getByText('Synth Explorer', { exact: true })).toBeVisible()
-  await page.getByLabel('Example').selectOption('reg_mux')
   const flags = page.getByLabel('Synthesis flags')
-  await page.getByLabel('Mode').selectOption('xilinx')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Example').selectOption('reg_mux')
+    await page.getByLabel('Mode').selectOption('xilinx')
+  })
   await expect(flags).toHaveValue('-narrowcarry 8 -nowidelut -noiopad')
 
-  await synthesize(page)
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await expect(page.locator('.card').filter({ hasText: 'Cells' }).locator('.v')).toHaveText(/^\d+$/)
-  expect(await cacheEntryCount(page)).toBe(1)
+  expect(await cacheEntryCount(page)).toBeGreaterThanOrEqual(1)
 
   const started = Date.now()
-  await synthesize(page)
+  await waitForAutomaticSynthesis(page, () => retriggerCurrentInput(page))
   expect(Date.now() - started).toBeLessThan(1_000)
 
   await page.evaluate(async () => {
@@ -109,21 +205,26 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
     const transaction = database.transaction('syntheses', 'readwrite')
     const store = transaction.objectStore('syntheses')
     const read = store.getAll()
-    const records = await new Promise<Array<{ output: { netlistJson: string } }>>(
+    const records = await new Promise<Array<{
+      input: { mode: string }
+      output: { netlistJson: string }
+    }>>(
       (resolve, reject) => {
         read.onsuccess = () => resolve(read.result)
         read.onerror = () => reject(read.error)
       },
     )
-    records[0].output.netlistJson = '{'
-    store.put(records[0])
+    const xilinx = records.find((record) => record.input.mode === 'xilinx')
+    if (!xilinx) throw new Error('xilinx cache entry is missing')
+    xilinx.output.netlistJson = '{'
+    store.put(xilinx)
     await new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => resolve()
       transaction.onerror = () => reject(transaction.error)
       transaction.onabort = () => reject(transaction.error)
     })
   })
-  await synthesize(page)
+  await waitForAutomaticSynthesis(page, () => retriggerCurrentInput(page))
   const repaired = await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open('synth-explorer')
@@ -131,18 +232,23 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
       request.onerror = () => reject(request.error)
     })
     const read = database.transaction('syntheses').objectStore('syntheses').getAll()
-    const records = await new Promise<Array<{ output: { netlistJson: string } }>>(
+    const records = await new Promise<Array<{
+      input: { mode: string }
+      output: { netlistJson: string }
+    }>>(
       (resolve, reject) => {
         read.onsuccess = () => resolve(read.result)
         read.onerror = () => reject(read.error)
       },
     )
-    JSON.parse(records[0].output.netlistJson)
+    const xilinx = records.find((record) => record.input.mode === 'xilinx')
+    if (!xilinx) throw new Error('xilinx cache entry is missing')
+    JSON.parse(xilinx.output.netlistJson)
     return records.length
   })
-  expect(repaired).toBe(1)
+  expect(repaired).toBeGreaterThanOrEqual(1)
 
-  await page.getByRole('button', { name: 'Theme settings' }).click()
+  await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('button', { name: 'Clear synthesis cache' }).click()
   await expect(page.getByRole('status')).toHaveText('Cleared from this browser.')
   expect(await cacheEntryCount(page)).toBe(0)
@@ -153,8 +259,9 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await page.setViewportSize({ width: 1280, height: 720 })
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await page.getByLabel('Example').selectOption('reg_mux')
-  await synthesize(page)
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Example').selectOption('reg_mux'),
+  )
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
 
   const stage = page.locator('.graph-stage')
@@ -194,9 +301,10 @@ test('renders and resizes the browser-produced graph without resetting user zoom
 test('source selections and Focus use the in-browser exploration worker', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await page.getByLabel('Example').selectOption('handshake_controller')
-  await page.getByLabel('Mode').selectOption('xilinx')
-  await synthesize(page)
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Example').selectOption('handshake_controller')
+    await page.getByLabel('Mode').selectOption('xilinx')
+  })
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
 
   const focus = page.getByLabel('Focus')

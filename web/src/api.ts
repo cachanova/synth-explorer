@@ -45,10 +45,12 @@ export class ApiRequestError extends Error {
 
 export async function synthesize(
   req: SynthesizeRequest,
+  signal?: AbortSignal,
 ): Promise<SynthesizeResponse> {
   try {
-    return await synthesizeLocally(req)
+    return await synthesizeLocally(req, signal)
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error
     if (error instanceof ApiRequestError) throw error
     if (error instanceof LocalSynthesisError) {
       throw new ApiRequestError(error.message, error.message.includes('timed out') ? 504 : 400, error.log)

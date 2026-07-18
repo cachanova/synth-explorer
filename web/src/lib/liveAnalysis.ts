@@ -1,6 +1,8 @@
 import type { DesignFile, Mode, SynthesizeRequest } from '../types'
 import { buildSynthesizeRequest } from './synthesize'
 
+export const AUTO_SYNTHESIS_DELAY_MS = 250
+
 export interface SourceSelection {
   file: string
   startLine: number
@@ -44,7 +46,7 @@ export interface SynthesisInput {
 export type QueuedSynthesis = SynthesisInput
 
 // This identity is exact but O(total source bytes). Callers deliberately
-// materialize it only for a manual synthesis, never per edit.
+// materialize it only when synthesis is requested, never per keystroke.
 export function synthesisInput(
   files: DesignFile[],
   top: string,

@@ -178,30 +178,26 @@ function armSynthesisStart(page) {
           'button[title="Synthesize (Ctrl+Enter)"], ' +
             'button[title="Synthesize in this browser (Ctrl+Enter)"]',
         )
-        if (!button) {
-          reject(new Error('synthesis button is missing'))
+        const status = document.querySelector('.pane-left .tag')
+        if (!button && !status) {
+          reject(new Error('synthesis control and status are missing'))
           return
         }
         const timer = window.setTimeout(() => {
           observer.disconnect()
           reject(new Error('synthesis did not start'))
         }, 5_000)
-        const observer = new MutationObserver((records) => {
-          const disabledWasAdded = records.some(
-            (record) =>
-              record.type === 'attributes' &&
-              record.attributeName === 'disabled' &&
-              record.oldValue === null,
-          )
-          if (!disabledWasAdded) return
+        const observer = new MutationObserver(() => {
+          const started = button
+            ? button.hasAttribute('disabled')
+            : status.textContent?.trim() === 'refreshing'
+          if (!started) return
           window.clearTimeout(timer)
           observer.disconnect()
           resolve()
         })
-        observer.observe(button, {
-          attributes: true,
-          attributeOldValue: true,
-        })
+        if (button) observer.observe(button, { attributes: true })
+        else observer.observe(status, { childList: true, subtree: true })
       }),
   )
 }
@@ -209,10 +205,25 @@ function armSynthesisStart(page) {
 async function waitForSynthesis(page, running) {
   await running
   const ready = page.getByRole('button', { name: 'Synthesize', exact: true })
-  await ready.waitFor()
-  if (!(await ready.isEnabled())) throw new Error('synthesis button did not become enabled')
+  if (await ready.count()) {
+    const element = await ready.elementHandle()
+    if (!element) throw new Error('synthesis button disappeared')
+    await page.waitForFunction((candidate) => !candidate.disabled, element)
+  } else {
+    await page.waitForFunction(
+      () => document.querySelector('.pane-left .tag')?.textContent?.trim() === 'mapping live',
+    )
+  }
   await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await page.getByText('Structural logic depth', { exact: true }).waitFor()
+}
+
+async function retriggerCurrentInput(page) {
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await editor.press('Control+End')
+  await editor.type(' ')
+  await editor.press('Backspace')
 }
 
 async function runFlow(page, metrics, url, warmth) {
@@ -225,15 +236,23 @@ async function runFlow(page, metrics, url, warmth) {
         await page.reload({ waitUntil: 'networkidle' })
       }
       await page.getByLabel('Example').waitFor()
-      await page.getByRole('button', { name: 'Synthesize', exact: true }).waitFor()
+      const button = page.getByRole('button', { name: 'Synthesize', exact: true })
+      if (!(await button.count())) {
+        await page.waitForFunction(
+          () => document.querySelector('.pane-left .tag')?.textContent?.trim() === 'mapping live',
+        )
+      }
     }),
   )
 
-  await page.getByLabel('Example').selectOption('reg_mux')
+  const button = page.getByRole('button', { name: 'Synthesize', exact: true })
+  const manual = (await button.count()) > 0
+  if (manual) await page.getByLabel('Example').selectOption('reg_mux')
   phases.push(
     await measure('synthesize_to_overview', metrics, async () => {
       const running = armSynthesisStart(page)
-      await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+      if (manual) await button.click()
+      else await page.getByLabel('Example').selectOption('reg_mux')
       await waitForSynthesis(page, running)
     }),
   )
@@ -241,7 +260,8 @@ async function runFlow(page, metrics, url, warmth) {
   phases.push(
     await measure('repeat_synthesize_to_overview', metrics, async () => {
       const running = armSynthesisStart(page)
-      await page.getByRole('button', { name: 'Synthesize', exact: true }).click()
+      if (manual) await button.click()
+      else await retriggerCurrentInput(page)
       await waitForSynthesis(page, running)
     }),
   )

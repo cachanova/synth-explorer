@@ -44,8 +44,13 @@ interface YosysWorkerResponse {
 }
 
 const encoder = new TextEncoder()
+let idleYosysWorker = typeof Worker === 'undefined' ? null : createYosysWorker()
 
-export async function synthesizeLocally(request: SynthesizeRequest): Promise<SynthesizeResponse> {
+export async function synthesizeLocally(
+  request: SynthesizeRequest,
+  signal?: AbortSignal,
+): Promise<SynthesizeResponse> {
+  signal?.throwIfAborted()
   const input = validateSynthesisRequest(request)
   const key = await synthesisKey(input)
   const designId = key.slice(0, 12)
@@ -60,18 +65,21 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
     profile = cached.profile
   } else {
     const generated = await withSynthesisLock(key, async () => {
+      signal?.throwIfAborted()
       const coordinated = await getCachedSynthesis(key, input)
       if (coordinated) return coordinated
       const generatedProfile = defaultDelayProfile(input)
       let generatedOutput: YosysWorkerResult
       let generatedMemoriesAbstracted = false
       try {
-        generatedOutput = await runYosys(input, 'map')
+        generatedOutput = await runYosys(input, 'map', signal)
       } catch (error) {
+        if (isAbortError(error)) throw error
         if (!isResourceFailure(error) || !isGeneric(input.mode)) throw error
-        generatedOutput = await runYosys(input, 'abstract')
+        generatedOutput = await runYosys(input, 'abstract', signal)
         generatedMemoriesAbstracted = true
       }
+      signal?.throwIfAborted()
       await putCachedSynthesis({
         key,
         input,
@@ -84,7 +92,7 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
         memoriesAbstracted: generatedMemoriesAbstracted,
         output: generatedOutput,
       }
-    })
+    }, signal)
     output = generated.output
     memoriesAbstracted = generated.memoriesAbstracted
     profile = generated.profile
@@ -92,6 +100,7 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
 
   let summary: AnalysisSummary
   try {
+    signal?.throwIfAborted()
     summary = await initializeAnalysis<AnalysisSummary>({
       designId,
       netlistJson: output.netlistJson,
@@ -100,14 +109,16 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
       mode: input.mode,
       profile,
     })
+    signal?.throwIfAborted()
   } catch (error) {
+    if (isAbortError(error)) throw error
     if (!cached) throw error
     try {
       await deleteCachedSynthesis(key)
     } catch {
       throw error
     }
-    return synthesizeLocally(request)
+    return synthesizeLocally(request, signal)
   }
   return {
     design_id: summary.design_id,
@@ -122,9 +133,16 @@ export async function synthesizeLocally(request: SynthesizeRequest): Promise<Syn
   }
 }
 
-function withSynthesisLock<T>(key: string, action: () => Promise<T>): Promise<T> {
+function withSynthesisLock<T>(
+  key: string,
+  action: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted()
   if (!navigator.locks) return action()
-  return navigator.locks.request(`synth-explorer:${key}`, action)
+  return signal
+    ? navigator.locks.request(`synth-explorer:${key}`, { signal }, action)
+    : navigator.locks.request(`synth-explorer:${key}`, action)
 }
 
 export function localEndpoints(_id: string): Promise<EndpointsResponse> {
@@ -191,29 +209,72 @@ async function synthesisKey(input: ValidatedSynthesis): Promise<string> {
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-function runYosys(input: ValidatedSynthesis, memory: MemoryHandling): Promise<YosysWorkerResult> {
-  const worker = new Worker(new URL('../workers/yosys.worker.ts', import.meta.url), {
-    type: 'module',
-  })
+function runYosys(
+  input: ValidatedSynthesis,
+  memory: MemoryHandling,
+  signal?: AbortSignal,
+): Promise<YosysWorkerResult> {
+  const worker = acquireYosysWorker()
   return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (action: () => void, reusable: boolean) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      signal?.removeEventListener('abort', onAbort)
+      if (reusable) releaseYosysWorker(worker)
+      else discardYosysWorker(worker)
+      action()
+    }
+    const onAbort = () => finish(() => reject(abortError()), false)
     const timeout = setTimeout(() => {
-      worker.terminate()
-      reject(new LocalSynthesisError('yosys timed out', ''))
+      finish(() => reject(new LocalSynthesisError('yosys timed out', '')), false)
     }, 60_000)
     worker.onmessage = (event: MessageEvent<YosysWorkerResponse>) => {
-      clearTimeout(timeout)
-      worker.terminate()
       const response = event.data
-      if (response.ok && response.result) resolve(response.result)
-      else reject(new LocalSynthesisError(response.error ?? 'yosys failed', response.log ?? ''))
+      finish(() => {
+        if (response.ok && response.result) resolve(response.result)
+        else reject(new LocalSynthesisError(response.error ?? 'yosys failed', response.log ?? ''))
+      }, true)
     }
     worker.onerror = (event) => {
-      clearTimeout(timeout)
-      worker.terminate()
-      reject(new LocalSynthesisError(event.message || 'yosys worker failed', ''))
+      finish(
+        () => reject(new LocalSynthesisError(event.message || 'yosys worker failed', '')),
+        false,
+      )
     }
-    worker.postMessage({ input, memory })
+    if (signal?.aborted) return onAbort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      worker.postMessage({ input, memory })
+    } catch (error) {
+      finish(() => reject(error), false)
+    }
   })
+}
+
+function createYosysWorker(): Worker {
+  return new Worker(new URL('../workers/yosys.worker.ts', import.meta.url), {
+    type: 'module',
+  })
+}
+
+function acquireYosysWorker(): Worker {
+  const worker = idleYosysWorker ?? createYosysWorker()
+  idleYosysWorker = null
+  return worker
+}
+
+function releaseYosysWorker(worker: Worker): void {
+  idleYosysWorker?.terminate()
+  worker.onmessage = null
+  worker.onerror = null
+  idleYosysWorker = worker
+}
+
+function discardYosysWorker(worker: Worker): void {
+  worker.terminate()
+  if (!idleYosysWorker) idleYosysWorker = createYosysWorker()
 }
 
 function isGeneric(mode: ValidatedSynthesis['mode']): boolean {
@@ -224,6 +285,10 @@ function isResourceFailure(error: unknown): boolean {
   if (!(error instanceof LocalSynthesisError)) return false
   const detail = `${error.message}\n${error.log}`
   return /timed out|bad_alloc|out of memory|memory access out of bounds/i.test(detail)
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
 }
 
 export class LocalSynthesisError extends Error {
