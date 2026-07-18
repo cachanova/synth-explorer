@@ -385,10 +385,9 @@ export function Graph({ active }: { active: boolean }) {
     if (ownerDesignId == null) return
     const toLayout = combinedSubgraph
     const previousDisplay = displayedGraphRef.current
-    const additive =
+    const sameProjection =
       previousDisplay?.designId === ownerDesignId &&
       previousDisplay.projectionKey === projectionKey
-    const previousLayout = additive ? previousDisplay.graph : undefined
     const cachedLayout = layoutCache.current.get(toLayout)
     if (cachedLayout) {
       const nextDisplay = {
@@ -400,13 +399,17 @@ export function Graph({ active }: { active: boolean }) {
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
       laidOutSubgraph.current = toLayout
-      if (!additive) setFitNonce((n) => n + 1)
+      if (!sameProjection) setFitNonce((n) => n + 1)
       return
     }
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    layoutSubgraph(toLayout, controller.signal, previousLayout)
+    // Every expanded projection gets a fresh optimal ELK layout. Reusing the
+    // previous coordinates makes a focused subset inherit the full schematic's
+    // spacing and leaves large, awkward gaps. GraphView separately preserves a
+    // retained node's viewport position so the relayout does not feel like a jump.
+    layoutSubgraph(toLayout, controller.signal)
       .then((g) => {
         if (cancelled) return
         const nextDisplay = {
@@ -420,7 +423,7 @@ export function Graph({ active }: { active: boolean }) {
         setDisplayedGraph(nextDisplay)
         laidOutSubgraph.current = toLayout
         setLayingOut(false)
-        if (!additive) setFitNonce((n) => n + 1)
+        if (!sameProjection) setFitNonce((n) => n + 1)
       })
       .catch((e) => {
         if (cancelled || controller.signal.aborted) return
@@ -601,6 +604,7 @@ export function Graph({ active }: { active: boolean }) {
         : 'off'
       : undefined
   const loading = fetchingFull || fetchingRelevant || layingOut
+  const showLoading = loading || analysisState === 'refreshing'
 
   if (!design) return <div className="empty-state">No design yet.</div>
 
@@ -631,7 +635,7 @@ export function Graph({ active }: { active: boolean }) {
           <div className="graph-stage">
             <div className="empty-state">
               {loading
-                ? 'Loading schematic…'
+                ? ''
                 : error
                   ? ''
                   : sub && sub.nodes.length === 0
@@ -642,35 +646,14 @@ export function Graph({ active }: { active: boolean }) {
         )}
 
         <div className="graph-banner">
-          {loading && (
-            <span
-              className="msg"
-              style={{
-                background: 'var(--bg-2)',
-                borderColor: 'var(--border-strong)',
-                color: 'var(--text-dim)',
-                display: 'inline-flex',
-                alignItems: 'center',
-              }}
-            >
-              <BubbleLoader size={18} label="Loading" />
+          {showLoading && (
+            <span className="graph-loading-indicator">
+              <BubbleLoader size={32} label="Loading schematic" />
             </span>
           )}
           {error && <span className="msg err">{error}</span>}
           {analysisState === 'stale' && (
             <span className="msg">source changed — synthesize to refresh mapping</span>
-          )}
-          {analysisState === 'refreshing' && (
-            <span
-              className="msg"
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            >
-              <BubbleLoader size={16} /> refreshing analysis… showing the last valid
-              schematic
-            </span>
-          )}
-          {analysisState === 'error' && (
-            <span className="msg err">analysis is stale; the last synthesis failed</span>
           )}
           {displayedDesignMismatch && (
             <span className="msg">
@@ -823,13 +806,15 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
             ? graphOptions.focus
               ? 'Show only the logic relevant to this selection'
               : 'Show the full schematic and highlight the relevant logic'
-            : 'Focus applies to source selections and cones'
+            : graphOptions.focus
+              ? 'Turn Focus off before choosing a source selection or cone'
+              : 'Focus applies to source selections and cones'
         }
       >
         <input
           type="checkbox"
           checked={graphOptions.focus}
-          disabled={!focusAvailable}
+          disabled={!focusAvailable && !graphOptions.focus}
           onChange={(event) => setOpt({ focus: event.target.checked })}
         />
         Focus

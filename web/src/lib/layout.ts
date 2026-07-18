@@ -219,7 +219,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 // the stack on very deep DAGs (e.g. a wide adder tree). BRANDES_KOEPF is the
 // robust fallback: slightly looser, never overflows. layoutSubgraph retries
 // with it when the premium strategy fails.
-export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF' | 'INTERACTIVE'
+export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
 
 // A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
 // triangle lower-west, and the data output (Q) at the east. These fractions of
@@ -285,16 +285,8 @@ function isRegKind(node: GraphNode): boolean {
 export function toElkGraph(
   sub: Subgraph,
   nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
-  previous?: LaidOutGraph,
 ): ElkNode {
   assertRenderableSubgraph(sub)
-  const previousById = new Map(
-    previous?.nodes.map((node) => [node.id, node] as const) ?? [],
-  )
-  const retainedPosition = (id: number) => {
-    const retained = previousById.get(id)
-    return retained ? { x: retained.x, y: retained.y } : {}
-  }
 
   // Distinct input/output pin names per node, so every component's edges route
   // to spread-out pins on the west/east sides instead of collapsing to the box
@@ -347,7 +339,6 @@ export function toElkGraph(
         id: String(n.id),
         width,
         height,
-        ...retainedPosition(n.id),
         layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
         ports: [
           {
@@ -374,7 +365,7 @@ export function toElkGraph(
     const ins = inPins.get(n.id) ?? []
     const outs = outPins.get(n.id) ?? []
     if (ins.length === 0 && outs.length === 0) {
-      return { id: String(n.id), width, height, ...retainedPosition(n.id) }
+      return { id: String(n.id), width, height }
     }
     const ports = [
       ...ins.map((pin, i) => ({
@@ -394,7 +385,6 @@ export function toElkGraph(
       id: String(n.id),
       width,
       height,
-      ...retainedPosition(n.id),
       layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
       ports,
     }
@@ -430,12 +420,6 @@ export function toElkGraph(
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
       'elk.layered.nodePlacement.strategy': nodePlacement,
-      ...(previous
-        ? {
-            'elk.interactive': 'true',
-            'elk.interactiveLayout': 'true',
-          }
-        : {}),
     },
     children,
     edges,
@@ -639,23 +623,10 @@ export function placementForLayout(sub: Subgraph): NodePlacement {
     : 'NETWORK_SIMPLEX'
 }
 
-/** Interactive placement is bounded to the graph sizes where it is reliable. */
-export function placementForIncrementalLayout(sub: Subgraph): NodePlacement {
-  return placementForLayout(sub) === 'BRANDES_KOEPF'
-    ? 'BRANDES_KOEPF'
-    : 'INTERACTIVE'
-}
-
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
-  previous?: LaidOutGraph,
 ): Promise<LaidOutGraph> {
-  if (previous) {
-    const placement = placementForIncrementalLayout(sub)
-    const result = await runLayout(toElkGraph(sub, placement, previous), signal)
-    return interpretResult(sub, result)
-  }
   const placement = placementForLayout(sub)
   let result: ElkNode
   if (placement === 'BRANDES_KOEPF') {

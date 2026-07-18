@@ -612,6 +612,44 @@ a:hover {
   border-color: transparent;
   color: var(--text);
 }
+.file-action-menu {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 4px 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  flex: 0 0 auto;
+}
+.file-action-menu label,
+.file-action-menu > span:first-child {
+  color: var(--text);
+  white-space: nowrap;
+}
+.file-action-menu input {
+  width: min(220px, 35vw);
+  padding: 4px 6px;
+}
+.file-action-menu button {
+  padding: 4px 8px;
+  font-size: 11px;
+}
+.file-action-menu .danger {
+  border-color: var(--red);
+  color: var(--red);
+}
+.file-action-menu .danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 12%, var(--bg));
+}
+.file-action-error {
+  color: var(--red);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---- editor ---- */
 .editor-wrap {
@@ -640,19 +678,55 @@ a:hover {
   flex: 0 0 auto;
   border-top: 1px solid var(--red);
   background: color-mix(in srgb, var(--red) 8%, transparent);
-  padding: 8px 10px;
   max-height: 40%;
   overflow: auto;
 }
-.error-strip .err-title {
+.error-details > summary {
+  list-style: none;
+}
+.error-details > summary::-webkit-details-marker {
+  display: none;
+}
+.error-summary {
+  min-height: 30px;
+  padding: 4px 10px;
   color: var(--red);
   font-weight: 600;
-  margin-bottom: 4px;
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.error-details > .error-summary {
+  cursor: pointer;
+}
+.error-details > .error-summary:hover {
+  background: color-mix(in srgb, var(--red) 6%, transparent);
+}
+.error-summary-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.error-log-label {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+}
+.error-log-label::after {
+  content: ' ▸';
+}
+.error-details[open] .error-log-label::after {
+  content: ' ▾';
 }
 .error-strip pre {
-  margin: 6px 0 0;
+  margin: 0;
+  padding: 7px 10px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--red) 28%, transparent);
   font-family: var(--mono);
   font-size: 11px;
   color: var(--text-dim);
@@ -1196,6 +1270,11 @@ th.sortable:hover {
   pointer-events: none;
   flex-wrap: wrap;
 }
+.graph-loading-indicator {
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-dim);
+}
 .graph-banner .msg,
 .stale-chip {
   pointer-events: auto;
@@ -1457,12 +1536,14 @@ th.sortable:hover {
 
 /* Bubble-trail loader — the mark with bubbles streaming off the snout while
    work is in flight. Shown in the "refreshing" status tag (see LeftPane). */
-.bubble-loader {
+.bubble-loader,
+.synth-icon {
   display: inline-flex;
   align-items: center;
   line-height: 0;
 }
-.bubble-loader svg {
+.bubble-loader svg,
+.synth-icon svg {
   display: block;
   overflow: visible;
 }
