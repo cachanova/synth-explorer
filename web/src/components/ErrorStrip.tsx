@@ -1,4 +1,5 @@
 import { useStore } from '../useStore'
+import { SynthIcon } from './BubbleLoader'
 
 export function ErrorStrip() {
   const err = useStore((store) => store.error)
@@ -19,9 +20,7 @@ export function ErrorStrip() {
       {err.log ? (
         <details className="error-details">
           <summary className="error-summary" title={summary}>
-            <span className="error-mark" aria-hidden="true">
-              !
-            </span>
+            <SynthIcon size={18} tone="mono" />
             <span className="error-summary-text">{summary}</span>
             <span className="error-log-label">log</span>
           </summary>
@@ -29,9 +28,7 @@ export function ErrorStrip() {
         </details>
       ) : (
         <div className="error-summary" title={summary}>
-          <span className="error-mark" aria-hidden="true">
-            !
-          </span>
+          <SynthIcon size={18} tone="mono" />
           <span className="error-summary-text">{summary}</span>
         </div>
       )}

@@ -173,11 +173,23 @@ test('cancels obsolete Yosys work and commits only the newest edit', async ({ pa
   await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
     timeout: 120_000,
   })
+  const readyIcon = page.locator('.pane-left .tag .synth-icon')
+  await expect(readyIcon.locator('.bub')).toHaveCount(3)
+  expect(
+    await readyIcon.locator('.bub').first().evaluate((element) =>
+      getComputedStyle(element).animationName,
+    ),
+  ).toBe('none')
 
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Example').selectOption('handshake_controller')
     await page.getByLabel('Mode').selectOption('xilinx')
     await expect(page.locator('.pane-left .tag')).toHaveText('refreshing')
+    expect(
+      await page.locator('.pane-left .tag .bubble-loader .bub').first().evaluate(
+        (element) => getComputedStyle(element).animationName,
+      ),
+    ).toBe('se-bubble')
     await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
     const graphLoader = page.locator('.graph-loading-indicator')
     await expect(graphLoader).toHaveCount(1)
@@ -411,9 +423,12 @@ test('keeps synthesis failures compact until the full log is requested', async (
   await expect(page.locator('.pane-left .tag')).toHaveText('synthesis failed', {
     timeout: 120_000,
   })
+  await expect(page.getByText(/analysis is stale/i)).toHaveCount(0)
   const banner = page.locator('.error-strip')
   const details = banner.locator('details')
   await expect(banner).toBeVisible()
+  await expect(banner.locator('.synth-icon')).toBeVisible()
+  await expect(banner.locator('.bub')).toHaveCount(0)
   await expect(details).not.toHaveAttribute('open', '')
   await expect(banner.locator('pre')).toBeHidden()
   await expect

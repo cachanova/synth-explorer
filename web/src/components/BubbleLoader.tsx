@@ -10,6 +10,59 @@ interface BubbleLoaderProps {
   tone?: 'brand' | 'mono'
 }
 
+interface SynthIconProps {
+  size?: number
+  tone?: 'brand' | 'mono'
+  bubbles?: boolean
+}
+
+function SynthMarkGraphic({
+  size,
+  tone,
+  bubbles,
+}: Required<SynthIconProps> & { bubbles: boolean }) {
+  const body = tone === 'mono' ? 'currentColor' : 'var(--accent)'
+  const eye = tone === 'mono' ? 'currentColor' : 'var(--text)'
+  return (
+    <svg
+      viewBox="20 16 184 162"
+      height={size}
+      width={size * 1.14}
+      fill="none"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <g stroke={body}>
+        <path strokeWidth="6" d="M60 40 Q136 44 170 100 Q136 156 60 160 Q100 100 60 40 Z" />
+        <path strokeWidth="6" d="M46 40 Q86 100 46 160" />
+      </g>
+      <circle stroke={eye} strokeWidth="4" cx="122" cy="100" r="30" />
+      <circle fill={eye} cx="122" cy="100" r="13" />
+      {bubbles && (
+        <g stroke={body} fill="none">
+          <circle className="bub b1" strokeWidth="6" cx="181" cy="100" r="8" />
+          <circle className="bub b2" strokeWidth="3.4" cx="181" cy="100" r="5" />
+          <circle className="bub b3" strokeWidth="2.6" cx="181" cy="100" r="3.4" />
+        </g>
+      )}
+    </svg>
+  )
+}
+
+/** Static Synth Explorer mark for non-loading states. */
+export function SynthIcon({
+  size = 16,
+  tone = 'brand',
+  bubbles = false,
+}: SynthIconProps) {
+  return (
+    <span className="synth-icon" aria-hidden="true">
+      <SynthMarkGraphic size={size} tone={tone} bubbles={bubbles} />
+    </span>
+  )
+}
+
 /**
  * The Synth Explorer mark (XNOR gate / fish) with its bubble trail animated:
  * bubbles stream up off the snout while work is in flight. Static, on-brand
@@ -23,34 +76,9 @@ export function BubbleLoader({
   label = 'Synthesizing',
   tone = 'brand',
 }: BubbleLoaderProps) {
-  const body = tone === 'mono' ? 'currentColor' : 'var(--accent)'
-  const eye = tone === 'mono' ? 'currentColor' : 'var(--text)'
   return (
     <span className="bubble-loader" role="status" aria-label={label}>
-      <svg
-        viewBox="20 16 184 162"
-        height={size}
-        width={size * 1.14}
-        fill="none"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        {/* static fish body */}
-        <g stroke={body}>
-          <path strokeWidth="6" d="M60 40 Q136 44 170 100 Q136 156 60 160 Q100 100 60 40 Z" />
-          <path strokeWidth="6" d="M46 40 Q86 100 46 160" />
-        </g>
-        {/* eye */}
-        <circle stroke={eye} strokeWidth="4" cx="122" cy="100" r="30" />
-        <circle fill={eye} cx="122" cy="100" r="13" />
-        {/* bubbles streaming from the snout */}
-        <g stroke={body} fill="none">
-          <circle className="bub b1" strokeWidth="6" cx="181" cy="100" r="8" />
-          <circle className="bub b2" strokeWidth="3.4" cx="181" cy="100" r="5" />
-          <circle className="bub b3" strokeWidth="2.6" cx="181" cy="100" r="3.4" />
-        </g>
-      </svg>
+      <SynthMarkGraphic size={size} tone={tone} bubbles />
     </span>
   )
 }
