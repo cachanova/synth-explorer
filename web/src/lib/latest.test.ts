@@ -29,7 +29,7 @@ describe('createLatestGuard', () => {
     let design: string | null = null
     let synthesizing = false
 
-    // mirrors store.synthesize(): commit + spinner guarded by the token
+    // Mirrors an async commit plus spinner guarded by the token.
     async function synthesize(task: Promise<string>) {
       const token = g.begin()
       synthesizing = true

@@ -11,6 +11,7 @@ import * as api from './api'
 import { StoreContext } from './storeContext'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
+  AUTO_SYNTHESIS_DELAY_MS,
   createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
@@ -173,7 +174,6 @@ export interface Store {
   design: SynthesizeResponse | null
   analysisState: AnalysisState
   error: { message: string; log?: string; status?: number } | null
-  synthesize: () => Promise<void>
 
   // tabs
   activeTab: TabId
@@ -292,6 +292,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
+  const synthesisAbortRef = useRef<AbortController | null>(null)
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
     const cached = resolvedInputRef.current
@@ -317,6 +318,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const revision = inputRevisionRef.current + 1
     inputRevisionRef.current = revision
     queuedInputRef.current = null
+    synthesisAbortRef.current?.abort()
     setInputRevision(revision)
   }, [])
 
@@ -538,7 +540,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const requestSynthesis = useCallback(async () => {
     // Materializing the full request (and JSON-keying source content) happens
-    // only on manual synthesis, never per keystroke.
+    // only after the auto-synthesis debounce, never per keystroke.
     const requested = materializeCurrentInput()
     if (synthesisRunningRef.current) {
       // One bounded slot, always replaced by the newest complete input. A
@@ -556,12 +558,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     try {
       while (next) {
         const running: QueuedSynthesis = next
+        const controller = new AbortController()
         next = null
         queuedInputRef.current = null
         synthesisKeyRef.current = running.key
+        synthesisAbortRef.current = controller
         setError(null)
         try {
-          const res = await api.synthesize(running.request)
+          const res = await api.synthesize(running.request, controller.signal)
           setDesign(res)
           setDesignInputKey(running.key)
           // A source graph tracks the selected lines across synthesis. Other
@@ -572,10 +576,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               : request,
           )
         } catch (e) {
-          const err = e as api.ApiRequestError
-          setError({ message: err.message, log: err.log, status: err.status })
-          // Preserve the last valid design and graph. Their input key remains
-          // unchanged, so source cross-probing stays disabled while stale.
+          if (!(e instanceof DOMException && e.name === 'AbortError')) {
+            const err = e as api.ApiRequestError
+            setError({ message: err.message, log: err.log, status: err.status })
+            // Preserve the last valid design and graph. Their input key remains
+            // unchanged, so source cross-probing stays disabled while stale.
+          }
+        } finally {
+          if (synthesisAbortRef.current === controller) {
+            synthesisAbortRef.current = null
+          }
         }
 
         // The ref may be replaced by another invocation while the request is
@@ -594,9 +604,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [materializeCurrentInput, nextNonce])
 
-  const synthesize = useCallback(
-    () => requestSynthesis(),
-    [requestSynthesis],
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void requestSynthesis()
+    }, AUTO_SYNTHESIS_DELAY_MS)
+    return () => window.clearTimeout(timer)
+  }, [inputRevision, requestSynthesis])
+
+  useEffect(
+    () => () => synthesisAbortRef.current?.abort(),
+    [],
   )
 
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
@@ -782,7 +799,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       design,
       analysisState,
       error,
-      synthesize,
       activeTab,
       setActiveTab: setActiveTabForUser,
       coneReq,
@@ -819,7 +835,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       design,
       analysisState,
       error,
-      synthesize,
       activeTab,
       setActiveTabForUser,
       coneReq,

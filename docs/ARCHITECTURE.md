@@ -6,8 +6,9 @@ analysis, caching, and graph interaction require no server requests.
 
 ## Runtime flow
 
-1. React validates the files, top, synthesis mode, and visible mode-specific
-   flags.
+1. React waits for 250 ms without an input change, then validates the files,
+   top, synthesis mode, and visible mode-specific flags. A newer edit cancels
+   obsolete work instead of allowing a stale result to land.
 2. A SHA-256 key covers the cache schema, pinned Yosys version, validated input,
    and exact source text.
 3. IndexedDB returns a matching local artifact or a Web Lock coordinates a
@@ -48,9 +49,12 @@ last access. Browser storage eviction, private browsing, clearing site data, or
 changing devices removes or hides entries.
 
 Yosys has a 60-second wall timeout and 128 MiB combined netlist-output limit.
-The application runs only one requested synthesis at a time. Terminating the
-Yosys worker discards its WASI filesystem. Analysis and layout remain in
-separate workers so expensive work does not block the React thread.
+The application runs only one requested synthesis at a time. A completed
+worker is reused so its streamed, compiled Yosys module and unpacked resources
+stay warm; cancellation or a worker failure terminates it and immediately
+starts a clean replacement. Each run still creates a new WebAssembly instance
+and WASI filesystem. Analysis and layout remain in separate workers so
+expensive work does not block the React thread.
 
 ## Timing model
 
@@ -66,3 +70,6 @@ Vivado installation, but vendor tools and reports are not runtime dependencies.
 immutable caching to versioned assets. CI verifies Rust, regenerates and checks
 the analysis WASM package, verifies pinned Yosys hashes, builds the static app,
 and runs browser-local synthesis E2Es that assert zero `/api` traffic.
+Vercel Web Analytics and Speed Insights collect page-level usage and browser
+performance metrics; they are not part of the synthesis path and receive no RTL
+or synthesized netlist content.

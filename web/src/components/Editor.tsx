@@ -205,7 +205,6 @@ export function Editor() {
       updateFileContent,
       setSourceSelection,
       clearGraphSelection,
-      synthesize,
     }) => ({
       files,
       activeFileName,
@@ -214,7 +213,6 @@ export function Editor() {
       updateFileContent,
       setSourceSelection,
       clearGraphSelection,
-      synthesize,
     }),
     shallowEqual,
   )
@@ -257,20 +255,12 @@ export function Editor() {
       }
     })
 
-    const synthKeymap = keymap.of([
+    const editorKeymap = keymap.of([
       {
         key: 'Escape',
         preventDefault: true,
         run: () => {
           storeRef.current.clearGraphSelection()
-          return true
-        },
-      },
-      {
-        key: 'Mod-Enter',
-        preventDefault: true,
-        run: () => {
-          void storeRef.current.synthesize()
           return true
         },
       },
@@ -284,7 +274,7 @@ export function Editor() {
       StreamLanguage.define(verilog),
       themeCompartment.current.of(editorThemes[resolvedModeRef.current]),
       highlightField,
-      synthKeymap,
+      editorKeymap,
       keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       updateListener,
       EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),

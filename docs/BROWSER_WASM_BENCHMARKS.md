@@ -76,3 +76,62 @@ candidate's HTTP counts above are static document, asset, and worker fetches;
 they are not application API calls. Vite preview sends `Cache-Control: no-cache`,
 so these local warm figures are conservative relative to the immutable asset
 headers configured for Vercel.
+
+## Live synthesis and reusable Yosys worker
+
+- Date: 2026-07-18
+- Control: live-auto-synthesis working tree immediately before worker reuse
+- Candidate: the same working tree with streamed WASM compilation and reuse of
+  completed workers
+- Browser: Chromium `149.0.7827.55`, headless
+- Design: the default generic-gates design followed by five source-comment edits
+- Server: one production Vite build on localhost, with a fresh browser process
+- Auto-synthesis idle window: 250 ms
+
+The control and candidate were measured sequentially with the same script and
+browser installation. Each source edit changed the cache key, so the five warm
+runs exercised Yosys rather than IndexedDB. `Run` measures the UI's refreshing
+state through the new current analysis; `edit to live` also includes the idle
+window, editor event handling, and polling overhead.
+
+| Phase | Disposable worker | Reused worker | Change |
+| --- | ---: | ---: | ---: |
+| Initial page to live analysis | 1241 ms | 1145 ms | -7.7% |
+| Warm Yosys + analysis, median of five | 601 ms | 84 ms | -86.0% |
+| Edit to live analysis, median of five | 978 ms | 381 ms | -61.0% |
+
+The shipped comparison used for calibration, [HDL Studio](https://yosys-web-ide-development-9djj9k52c.vercel.app/),
+waits 400 ms and keeps one worker alive. Its bundled adder measured 414 ms from
+edit to synthesis start and 16 ms from start through render on this machine.
+That is not an equivalent synthesis workload: its script stops after RTL
+process cleanup and emits one netlist, while Synth Explorer emits source and
+mapped netlists, supports seven modes, and initializes the Rust analysis engine.
+Its Yosys resources total about 54 MiB; Synth Explorer's pinned Yosys WASM plus
+resources total about 31 MiB.
+
+The reusable-worker design retains stricter cancellation semantics than the
+comparison: a completed worker stays warm, but an edit during synchronous Yosys
+execution terminates it and starts a clean replacement. No stale run can block
+the newest input from becoming canonical.
+
+### Main versus live-auto branch
+
+The migration harness was extended to drive both the permanent-button UI on
+main and the automatic UI on this branch. Five fresh contexts with a warm reload
+were run against local production builds of main and the branch. Main does no
+initial synthesis; the branch deliberately includes an initial live result in
+`page_ready`, so its full-flow totals include one additional synthesis.
+
+| Request latency | Browser state | Main full flow | Live-auto full flow | Change |
+| --- | --- | ---: | ---: | ---: |
+| 0 ms | cold | 1535.90 ms | 1503.93 ms | -2.1% |
+| 0 ms | warm | 898.69 ms | 1414.71 ms | +57.4% |
+| 150 ms | cold | 2371.81 ms | 2512.09 ms | +5.9% |
+| 150 ms | warm | 1450.10 ms | 1897.00 ms | +30.8% |
+
+The warm full-flow regression is expected from that accounting: main reuses the
+browser cache and waits for a click, whereas live-auto has already synthesized
+the default design and then waits 250 ms before automatically processing the
+selected example. For the interaction the feature is intended to improve,
+main has unbounded edit-to-result latency until the user clicks; live-auto's
+measured median is 381 ms with no click or synthesis request round trip.

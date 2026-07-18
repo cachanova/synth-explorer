@@ -34,8 +34,8 @@ export function Overview() {
   if (!design) {
     return (
       <div className="empty-state">
-        Paste Verilog on the left and hit <b>Synthesize</b> (Ctrl+Enter) to explore
-        the synthesized logic.
+        Paste or edit Verilog on the left. Synth Explorer automatically refreshes
+        the synthesized logic after 250 ms without input.
       </div>
     )
   }
