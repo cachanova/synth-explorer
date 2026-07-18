@@ -4,8 +4,12 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_dir=$(cd -- "$script_dir/.." && pwd)
 output_dir=${ANALYSIS_WASM_OUTPUT_DIR:-"$repo_dir/web/src/wasm/analysis"}
+remap_flags="--remap-path-prefix=$repo_dir=/workspace"
+if [[ -n ${HOME:-} ]]; then
+  remap_flags+=" --remap-path-prefix=$HOME=/build-home"
+fi
 
-cargo build \
+RUSTFLAGS="${RUSTFLAGS:-} $remap_flags" cargo build \
   --manifest-path "$script_dir/Cargo.toml" \
   --target wasm32-unknown-unknown \
   --release
