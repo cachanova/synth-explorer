@@ -237,6 +237,9 @@ a:hover {
   color: var(--text);
   font-size: 12px;
 }
+.settings-toggle {
+  margin: 0 2px 9px;
+}
 .cache-status {
   display: block;
   margin: 6px 2px 0;
@@ -554,14 +557,21 @@ a:hover {
 }
 
 /* ---- file tabs ---- */
+.file-tabs-bar {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
 .file-tabs {
   display: flex;
   align-items: stretch;
   gap: 2px;
   padding: 0 8px;
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
 }
 .file-tab {
@@ -649,6 +659,91 @@ a:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.workspace-reset {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  flex: 0 0 34px;
+  width: 34px;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--bg-1);
+  color: var(--text-faint);
+}
+.workspace-reset:hover:not(:disabled) {
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--red) 10%, var(--bg-1));
+  color: var(--red);
+}
+.workspace-reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.workspace-reset svg {
+  width: 15px;
+  height: 15px;
+}
+.reset-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(0 0 0 / 48%);
+}
+.reset-dialog {
+  width: min(360px, 100%);
+  padding: 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--bg-1);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 48%);
+}
+.reset-dialog-title {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+}
+.reset-dialog p {
+  margin: 8px 0 14px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.reset-dialog-choice,
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.reset-dialog-choice input,
+.settings-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.reset-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.reset-dialog-actions button {
+  padding: 6px 11px;
+}
+.reset-dialog-actions .danger {
+  border-color: var(--red);
+  background: color-mix(in srgb, var(--red) 15%, var(--bg-2));
+  color: var(--red);
+}
+.reset-dialog-actions .danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--red) 23%, var(--bg-2));
 }
 
 /* ---- editor ---- */

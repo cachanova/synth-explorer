@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { PALETTES, type Mode } from '../lib/palettes'
 import { useTheme } from '../lib/themeContext'
 import { clearLocalSynthesisCache } from '../lib/designCache'
+import { shallowEqual, useStore } from '../useStore'
 
 function GearIcon() {
   return (
@@ -46,6 +47,13 @@ const MODE_META: { id: Mode; label: string; icon: ReactNode }[] = [
 
 export function SettingsMenu() {
   const { palette, mode, resolvedMode, setPalette, setMode } = useTheme()
+  const store = useStore(
+    ({ confirmWorkspaceReset, setConfirmWorkspaceReset }) => ({
+      confirmWorkspaceReset,
+      setConfirmWorkspaceReset,
+    }),
+    shallowEqual,
+  )
   const [open, setOpen] = useState(false)
   const [cacheStatus, setCacheStatus] = useState<'idle' | 'clearing' | 'cleared' | 'failed'>('idle')
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -152,6 +160,14 @@ export function SettingsMenu() {
 
           <div className="settings-section">
             <div className="settings-head">Local data</div>
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={store.confirmWorkspaceReset}
+                onChange={(event) => store.setConfirmWorkspaceReset(event.target.checked)}
+              />
+              Confirm before resetting editor
+            </label>
             <button
               type="button"
               className="cache-clear"

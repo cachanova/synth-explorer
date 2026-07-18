@@ -36,9 +36,15 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
 - `src/data/examples/` is the canonical bundled example catalog.
 
-The browser cache is keyed by the exact validated RTL, top, mode, flags, Yosys
-version, and artifact schema. It is local to one browser profile, is not synced
-to an account, and can be removed from the settings menu.
+The editor workspace (open source files, active file, top, mode, and flags) is
+saved in IndexedDB and restored after a refresh. The trash button resets that
+workspace to the default `design.sv`; its confirmation can be disabled in the
+warning and re-enabled from Settings.
+
+Completed synthesis results use a separate browser cache keyed by the exact
+validated RTL, top, mode, flags, Yosys version, and artifact schema. Both stores
+are local to one browser profile and are not synced to an account. The synthesis
+cache can be removed independently from the settings menu.
 
 See the [architecture](../docs/ARCHITECTURE.md) and
 [migration record](../docs/BROWSER_WASM_MIGRATION.md).

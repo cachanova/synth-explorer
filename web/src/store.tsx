@@ -25,6 +25,13 @@ import { displayNodeName } from './lib/prettyType'
 import { createLatestGuard } from './lib/latest'
 import { designSrcSpans, type SrcSpan } from './lib/src'
 import {
+  loadResetConfirmationPreference,
+  markWorkspaceResetPending,
+  saveResetConfirmationPreference,
+  saveWorkspace,
+  type WorkspaceState,
+} from './lib/workspaceStorage'
+import {
   flagsForModeTransition,
   type ModeFlagMemory,
 } from './lib/flagRegistry'
@@ -164,10 +171,13 @@ export interface Store {
   addFile: () => void
   renameFile: (oldName: string, newName: string) => void
   deleteFile: (name: string) => void
+  resetWorkspace: () => void
   setTop: (t: string) => void
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
   loadExample: (ex: Example) => void
+  confirmWorkspaceReset: boolean
+  setConfirmWorkspaceReset: (enabled: boolean) => void
 
   // synthesis
   synthesizing: boolean
@@ -231,13 +241,29 @@ function createStoreApi(initial: Store): StoreApi {
   }
 }
 
-export function StoreProvider({ children }: { children: ReactNode }) {
-  const [files, setFiles] = useState<DesignFile[]>([DEFAULT_FILE])
-  const [activeFileName, setActiveFileNameState] = useState(DEFAULT_FILE.name)
+export function StoreProvider({
+  children,
+  initialWorkspace,
+}: {
+  children: ReactNode
+  initialWorkspace?: WorkspaceState | null
+}) {
+  const initial = initialWorkspace ?? {
+    files: [{ ...DEFAULT_FILE }],
+    activeFileName: DEFAULT_FILE.name,
+    top: '',
+    mode: 'gates' as Mode,
+    extraArgs: '',
+  }
+  const [files, setFiles] = useState<DesignFile[]>(initial.files)
+  const [activeFileName, setActiveFileNameState] = useState(initial.activeFileName)
   const [docRevision, setDocRevision] = useState(0)
-  const [top, setTopState] = useState('')
-  const [mode, setModeState] = useState<Mode>('gates')
-  const [extraArgs, setExtraArgsState] = useState('')
+  const [top, setTopState] = useState(initial.top)
+  const [mode, setModeState] = useState<Mode>(initial.mode)
+  const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
+  const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
+    loadResetConfirmationPreference,
+  )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -259,7 +285,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     null,
   )
   const [sourceSelection, setSourceSelectionState] = useState<SourceSelection>({
-    file: DEFAULT_FILE.name,
+    file: initial.activeFileName,
     startLine: 1,
     endLine: 1,
   })
@@ -282,9 +308,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   modeRef.current = mode
   const extraArgsRef = useRef(extraArgs)
   extraArgsRef.current = extraArgs
-  // Session-local by design: the app has no persisted editor/input-state
-  // store. Each mode still retains exact user edits for the lifetime of this
-  // store provider.
+  // Historical flags for inactive modes stay session-local. The active mode
+  // and its exact flags are part of the persisted workspace.
   const modeFlagMemoryRef = useRef<ModeFlagMemory>({})
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
@@ -293,6 +318,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
   const synthesisAbortRef = useRef<AbortController | null>(null)
+  const workspaceSaveTimerRef = useRef<number | null>(null)
+  const workspaceSnapshotRef = useRef<WorkspaceState>(initial)
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
     const cached = resolvedInputRef.current
@@ -321,6 +348,52 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     synthesisAbortRef.current?.abort()
     setInputRevision(revision)
   }, [])
+
+  workspaceSnapshotRef.current = {
+    files,
+    activeFileName,
+    top,
+    mode,
+    extraArgs,
+  }
+
+  const cancelScheduledWorkspaceSave = useCallback(() => {
+    if (workspaceSaveTimerRef.current == null) return
+    window.clearTimeout(workspaceSaveTimerRef.current)
+    workspaceSaveTimerRef.current = null
+  }, [])
+
+  useEffect(() => {
+    cancelScheduledWorkspaceSave()
+    workspaceSaveTimerRef.current = window.setTimeout(() => {
+      workspaceSaveTimerRef.current = null
+      void saveWorkspace(workspaceSnapshotRef.current)
+    }, 250)
+    return cancelScheduledWorkspaceSave
+  }, [
+    activeFileName,
+    cancelScheduledWorkspaceSave,
+    extraArgs,
+    files,
+    mode,
+    top,
+  ])
+
+  useEffect(() => {
+    const flush = () => {
+      cancelScheduledWorkspaceSave()
+      void saveWorkspace(workspaceSnapshotRef.current)
+    }
+    const flushWhenHidden = () => {
+      if (document.visibilityState === 'hidden') flush()
+    }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', flushWhenHidden)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', flushWhenHidden)
+    }
+  }, [cancelScheduledWorkspaceSave])
 
   const resolvedCurrentInput =
     resolvedInputIdentity?.revision === inputRevision
@@ -471,6 +544,49 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [cancelSourceProbe, markInputChanged],
   )
+
+  const resetWorkspace = useCallback(() => {
+    cancelSourceProbe()
+    cancelScheduledWorkspaceSave()
+    const next: WorkspaceState = {
+      files: [{ ...DEFAULT_FILE }],
+      activeFileName: DEFAULT_FILE.name,
+      top: '',
+      mode: 'gates',
+      extraArgs: '',
+    }
+    filesRef.current = next.files
+    topRef.current = next.top
+    modeRef.current = next.mode
+    extraArgsRef.current = next.extraArgs
+    workspaceSnapshotRef.current = next
+    markWorkspaceResetPending()
+    modeFlagMemoryRef.current = {}
+    markInputChanged()
+    setFiles(next.files)
+    setActiveFileNameState(next.activeFileName)
+    setDocRevision((revision) => revision + 1)
+    setTopState(next.top)
+    setModeState(next.mode)
+    setExtraArgsState(next.extraArgs)
+    const selection = { file: DEFAULT_FILE.name, startLine: 1, endLine: 1 }
+    sourceSelectionRef.current = selection
+    sourceSelectionActiveRef.current = false
+    setSourceSelectionState(selection)
+    designRef.current = null
+    setDesign(null)
+    setDesignInputKey(null)
+    setResolvedInputIdentity(null)
+    setError(null)
+    setConeReq(null)
+    setEditorHighlight(null)
+    void saveWorkspace(next, true)
+  }, [cancelScheduledWorkspaceSave, cancelSourceProbe, markInputChanged])
+
+  const setConfirmWorkspaceReset = useCallback((enabled: boolean) => {
+    setConfirmWorkspaceResetState(enabled)
+    saveResetConfirmationPreference(enabled)
+  }, [])
 
   const setTop = useCallback(
     (value: string) => {
@@ -791,10 +907,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       addFile,
       renameFile,
       deleteFile,
+      resetWorkspace,
       setTop,
       setMode,
       setExtraArgs,
       loadExample,
+      confirmWorkspaceReset,
+      setConfirmWorkspaceReset,
       synthesizing,
       design,
       analysisState,
@@ -827,10 +946,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       addFile,
       renameFile,
       deleteFile,
+      resetWorkspace,
       setTop,
       setMode,
       setExtraArgs,
       loadExample,
+      confirmWorkspaceReset,
+      setConfirmWorkspaceReset,
       synthesizing,
       design,
       analysisState,

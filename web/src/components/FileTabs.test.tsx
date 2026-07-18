@@ -14,6 +14,9 @@ vi.mock('../useStore', () => ({
     renameFile: vi.fn(),
     deleteFile: vi.fn(),
     addFile: vi.fn(),
+    resetWorkspace: vi.fn(),
+    confirmWorkspaceReset: true,
+    setConfirmWorkspaceReset: vi.fn(),
   }),
 }))
 
@@ -29,5 +32,6 @@ describe('FileTabs', () => {
     expect(tabs.filter((tab) => tab.includes('tabindex="0"'))).toHaveLength(1)
     expect(tabs.filter((tab) => tab.includes('tabindex="-1"'))).toHaveLength(2)
     expect(tabs.every((tab) => tab.includes('aria-controls="source-editor-panel"'))).toBe(true)
+    expect(markup).toContain('aria-label="Reset editor"')
   })
 })

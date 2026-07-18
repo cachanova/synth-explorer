@@ -34,7 +34,8 @@ a display prefix of the full local cache digest.
 - `analysis-core/` is the only netlist/graph analysis implementation.
 - `web/src/lib/exploration.ts` is the only source-selection projection
   implementation and runs in `exploration.worker.ts`.
-- IndexedDB is the only completed-design cache.
+- IndexedDB stores the current editor workspace and is the only completed-design
+  cache. Those records live in separate databases and have separate reset controls.
 
 No remote fallback, shadow Yosys runner, disabled backend, or hosted Vivado path
 exists in production.
@@ -47,6 +48,9 @@ Corrupt or expired records are deleted. Retention is bounded to 24 entries,
 128 MiB estimated total size, a 128 MiB per-entry ceiling, and 30 days since
 last access. Browser storage eviction, private browsing, clearing site data, or
 changing devices removes or hides entries.
+
+The editor workspace is a single versioned record containing only editable
+synthesis inputs. Derived analysis state is not restored across page loads.
 
 Yosys has a 60-second wall timeout and 128 MiB combined netlist-output limit.
 The application runs only one requested synthesis at a time. A completed
