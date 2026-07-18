@@ -9,7 +9,6 @@ import {
   NETWORK_SIMPLEX_NODE_LIMIT,
   nodeDimensions,
   panViewport,
-  placementForIncrementalLayout,
   placementForLayout,
   preserveViewportAnchor,
   toElkGraph,
@@ -303,7 +302,6 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
     expect(placementForLayout(manyNodes)).toBe('BRANDES_KOEPF')
-    expect(placementForIncrementalLayout(manyNodes)).toBe('BRANDES_KOEPF')
 
     const denseEdges: Subgraph = {
       nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
@@ -318,8 +316,6 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
     expect(placementForLayout(denseEdges)).toBe('BRANDES_KOEPF')
-    expect(placementForIncrementalLayout(denseEdges)).toBe('BRANDES_KOEPF')
-    expect(placementForIncrementalLayout(small)).toBe('INTERACTIVE')
   })
 
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
@@ -332,54 +328,9 @@ describe('schematic layout sizing', () => {
         'elk.layered.nodePlacement.strategy'
       ],
     ).toBe('BRANDES_KOEPF')
-  })
-
-  it('seeds interactive layout with retained node coordinates', () => {
-    const sub: Subgraph = {
-      nodes: [node(1, '$_AND_'), node(2, '$_OR_'), node(3, '$_XOR_')],
-      edges: [],
-      truncated: false,
-    }
-    const previous = {
-      nodes: [
-        {
-          id: 1,
-          x: 42,
-          y: 84,
-          width: 76,
-          height: 52,
-          node: sub.nodes[0],
-        },
-        {
-          id: 2,
-          x: 180,
-          y: 84,
-          width: 76,
-          height: 52,
-          node: sub.nodes[1],
-        },
-      ],
-      edges: [],
-      width: 256,
-      height: 136,
-    }
-
-    const graph = toElkGraph(sub, 'INTERACTIVE', previous)
-
-    expect(graph.layoutOptions?.['elk.interactive']).toBe('true')
-    expect(graph.layoutOptions?.['elk.interactiveLayout']).toBe('true')
-    expect(graph.layoutOptions?.['elk.layered.nodePlacement.strategy']).toBe(
-      'INTERACTIVE',
-    )
-    expect(graph.children?.find(({ id }) => id === '1')).toMatchObject({
-      x: 42,
-      y: 84,
-    })
-    expect(graph.children?.find(({ id }) => id === '2')).toMatchObject({
-      x: 180,
-      y: 84,
-    })
-    expect(graph.children?.find(({ id }) => id === '3')).not.toHaveProperty('x')
+    expect(toElkGraph(sub).layoutOptions).not.toHaveProperty('elk.interactive')
+    expect(toElkGraph(sub).children?.[0]).not.toHaveProperty('x')
+    expect(toElkGraph(sub).children?.[0]).not.toHaveProperty('y')
   })
 
   it('enforces the 2000-node renderer cap before starting ELK', async () => {

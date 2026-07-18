@@ -89,6 +89,33 @@ test('file tabs expose roving keyboard navigation', async ({ page }) => {
   await expect(file1Tab).toHaveAttribute('aria-selected', 'true')
 })
 
+test('renames and deletes source files with in-page menus', async ({ page }) => {
+  const browserDialogs: string[] = []
+  page.on('dialog', async (dialog) => {
+    browserDialogs.push(dialog.type())
+    await dialog.dismiss()
+  })
+  await page.goto('/')
+  await page.getByTitle('Add file').click()
+
+  const fileTab = page.getByRole('tab', { name: /file1\.sv/ })
+  await fileTab.dblclick()
+  const renameMenu = page.getByRole('dialog', { name: 'Rename file1.sv' })
+  await expect(renameMenu).toBeVisible()
+  await renameMenu.getByLabel('Rename file1.sv').fill('control.sv')
+  await renameMenu.getByRole('button', { name: 'Rename', exact: true }).click()
+
+  const renamedTab = page.getByRole('tab', { name: /control\.sv/ })
+  await expect(renamedTab).toBeVisible()
+  await renamedTab.focus()
+  await renamedTab.press('Delete')
+  const deleteMenu = page.getByRole('dialog', { name: 'Delete control.sv' })
+  await expect(deleteMenu).toBeVisible()
+  await deleteMenu.getByRole('button', { name: 'Delete', exact: true }).click()
+  await expect(renamedTab).toHaveCount(0)
+  expect(browserDialogs).toEqual([])
+})
+
 test('auto-synthesizes an edited design locally after the debounce', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
@@ -151,6 +178,20 @@ test('cancels obsolete Yosys work and commits only the newest edit', async ({ pa
     await page.getByLabel('Example').selectOption('handshake_controller')
     await page.getByLabel('Mode').selectOption('xilinx')
     await expect(page.locator('.pane-left .tag')).toHaveText('refreshing')
+    await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+    const graphLoader = page.locator('.graph-loading-indicator')
+    await expect(graphLoader).toHaveCount(1)
+    await expect(graphLoader.getByRole('status', { name: 'Loading schematic' })).toBeVisible()
+    await expect(page.getByText(/refreshing analysis|Loading schematic…/)).toHaveCount(0)
+    await expect
+      .poll(async () => {
+        const box = await graphLoader.boundingBox()
+        return Math.round(box?.height ?? 0)
+      })
+      .toBeGreaterThanOrEqual(32)
+    expect(
+      await graphLoader.evaluate((element) => getComputedStyle(element).backgroundColor),
+    ).toBe('rgba(0, 0, 0, 0)')
     const editor = page.locator('.cm-content')
     await editor.click()
     await editor.press('Control+End')
@@ -269,7 +310,8 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const viewport = svg.locator(':scope > g').first()
   await expect(svg).toBeVisible()
   await expect(page.locator('.g-node-body').first()).toBeVisible()
-  await expect(page.getByLabel('Focus')).toBeDisabled()
+  await expect(page.getByLabel('Focus')).toBeChecked()
+  await expect(page.getByLabel('Focus')).toBeEnabled()
 
   const rovingNode = page.locator('.g-node-body[tabindex="0"]')
   await expect(rovingNode).toHaveCount(1)
@@ -309,6 +351,9 @@ test('source selections and Focus use the in-browser exploration worker', async 
 
   const focus = page.getByLabel('Focus')
   await expect(focus).toBeChecked()
+  await expect(focus).toBeEnabled()
+  await focus.uncheck()
+  await expect(focus).not.toBeChecked()
   await expect(focus).toBeDisabled()
   const fullNodes = page.locator('.g-node-body')
   await expect(fullNodes.first()).toBeVisible()
@@ -319,9 +364,20 @@ test('source selections and Focus use the in-browser exploration worker', async 
 
   await page.locator('.cm-line', { hasText: "wait_count <= wait_count + 1'b1;" }).click()
   await expect(focus).toBeEnabled()
+  await expect(focus).not.toBeChecked()
+  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
+  await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+
+  await focus.check()
   await expect(focus).toBeChecked()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThan(fullNodeIds.length)
-  expect(await page.locator('.g-node-body').count()).toBeGreaterThan(0)
+  const focusedNodeCount = await page.locator('.g-node-body').count()
+  expect(focusedNodeCount).toBeGreaterThan(0)
+
+  const boundaryNode = page.locator('.g-node-body[data-boundary="true"]').first()
+  await expect(boundaryNode).toBeVisible()
+  await boundaryNode.dblclick()
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(focusedNodeCount)
 
   await focus.uncheck()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
@@ -337,5 +393,36 @@ test('source selections and Focus use the in-browser exploration worker', async 
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  expect(apiRequests).toEqual([])
+})
+
+test('keeps synthesis failures compact until the full log is requested', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
+    timeout: 120_000,
+  })
+
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await editor.press('Control+A')
+  await page.keyboard.insertText('module broken(')
+
+  await expect(page.locator('.pane-left .tag')).toHaveText('synthesis failed', {
+    timeout: 120_000,
+  })
+  const banner = page.locator('.error-strip')
+  const details = banner.locator('details')
+  await expect(banner).toBeVisible()
+  await expect(details).not.toHaveAttribute('open', '')
+  await expect(banner.locator('pre')).toBeHidden()
+  await expect
+    .poll(async () => Math.round((await banner.boundingBox())?.height ?? 0))
+    .toBeLessThanOrEqual(32)
+
+  await banner.locator('summary').click()
+  await expect(details).toHaveAttribute('open', '')
+  await expect(banner.locator('pre')).toBeVisible()
+  await expect(banner.locator('pre')).not.toBeEmpty()
   expect(apiRequests).toEqual([])
 })
