@@ -21,10 +21,10 @@ const jsonLdMatch = html.match(
 )
 assert(jsonLdMatch, 'index.html must contain JSON-LD')
 const jsonLd = JSON.parse(jsonLdMatch[1])
-assert.equal(jsonLd['@type'], 'WebApplication')
+assert.equal(jsonLd['@type'], 'WebSite')
 assert.equal(jsonLd.name, 'Synth Explorer')
+assert.equal(jsonLd.alternateName, 'synthexplorer.dev')
 assert.equal(jsonLd.url, canonicalUrl)
-assert.equal(jsonLd.offers.price, '0')
 
 const robots = await readFile(new URL('robots.txt', distUrl), 'utf8')
 assert.match(robots, /^User-agent: \*$/m)
