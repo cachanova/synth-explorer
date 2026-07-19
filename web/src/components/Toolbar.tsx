@@ -1,10 +1,13 @@
+import { useState } from 'react'
 import { MODE_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
-import type { Mode, XilinxFamily } from '../types'
+import type { ExampleLanguage, Mode, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 import { FlagsMenu } from './FlagsMenu'
 
 export function Toolbar() {
+  const [exampleLanguage, setExampleLanguage] = useState<ExampleLanguage>('verilog')
+  const [selectedExample, setSelectedExample] = useState('')
   const store = useStore(
     ({
       examples,
@@ -31,12 +34,31 @@ export function Toolbar() {
   return (
     <div className="toolbar">
       <label className="field">
+        <span>Language</span>
+        <select
+          aria-label="Language"
+          value={exampleLanguage}
+          onChange={(event) => {
+            const language = event.target.value as ExampleLanguage
+            setExampleLanguage(language)
+            const example = store.examples.find((entry) => entry.name === selectedExample)
+            if (example) store.loadExample(example.variants[language])
+          }}
+        >
+          <option value="verilog">Verilog</option>
+          <option value="vhdl">VHDL</option>
+        </select>
+      </label>
+
+      <label className="field">
         <span>Example</span>
         <select
-          value=""
+          aria-label="Bundled example"
+          value={selectedExample}
           onChange={(event) => {
+            setSelectedExample(event.target.value)
             const example = store.examples.find((entry) => entry.name === event.target.value)
-            if (example) store.loadExample(example)
+            if (example) store.loadExample(example.variants[exampleLanguage])
           }}
         >
           <option value="">{store.examples.length ? 'Load example…' : '(no examples)'}</option>
@@ -49,11 +71,11 @@ export function Toolbar() {
       </label>
 
       <label className="field">
-        <span>Top module</span>
+        <span>Top module/entity</span>
         <input
           style={{ width: 110 }}
           placeholder="auto-detect"
-          title="Leave blank to auto-detect the top module, or name it explicitly."
+          title="Name the top module or entity. Verilog can auto-detect when blank; VHDL requires an explicit entity."
           value={store.top}
           onChange={(event) => store.setTop(event.target.value)}
         />

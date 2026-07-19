@@ -1,5 +1,9 @@
 import type { ValidatedSynthesis } from './yosysScript'
-import { YOSYS_CACHE_SCHEMA, YOSYS_VERSION } from './yosysScript'
+import {
+  GHDL_VERSION,
+  YOSYS_CACHE_SCHEMA,
+  YOSYS_VERSION,
+} from './yosysScript'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
 
 const databaseName = 'synth-explorer'
@@ -31,6 +35,7 @@ export async function synthesisKey(input: ValidatedSynthesis): Promise<string> {
   const canonical = JSON.stringify({
     schema: YOSYS_CACHE_SCHEMA,
     yosys: YOSYS_VERSION,
+    ghdl: input.language === 'vhdl' ? GHDL_VERSION : null,
     mode: input.mode,
     top: input.top ?? null,
     extraArgs: input.extraArgs,
@@ -75,7 +80,7 @@ export async function putCachedSynthesis(
     const completeRecord: CachedSynthesis = {
       ...record,
       schema: YOSYS_CACHE_SCHEMA,
-      producer: YOSYS_VERSION,
+      producer: synthesisProducer(record.input),
       createdAt: now,
       lastAccessedAt: now,
       estimatedBytes: estimateBytes(record),
@@ -159,9 +164,15 @@ export function isValidSynthesisArtifact(
     isStructurallyValidArtifact(record) &&
     record.key === key &&
     record.schema === YOSYS_CACHE_SCHEMA &&
-    record.producer === YOSYS_VERSION &&
+    record.producer === synthesisProducer(expectedInput) &&
     JSON.stringify(record.input) === JSON.stringify(expectedInput)
   )
+}
+
+export function synthesisProducer(input: ValidatedSynthesis): string {
+  return input.language === 'vhdl'
+    ? `${YOSYS_VERSION}+ghdl-${GHDL_VERSION}`
+    : YOSYS_VERSION
 }
 
 function isStructurallyValid(record: unknown): record is CachedSynthesis {

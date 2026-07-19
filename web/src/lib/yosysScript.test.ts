@@ -83,6 +83,35 @@ describe('browser Yosys script', () => {
     )
   })
 
+  it('accepts ordered VHDL-2008 sources and requires an explicit top entity', () => {
+    const vhdl: SynthesizeRequest = {
+      files: [
+        { name: 'types.vhd', content: 'package types is end package;' },
+        { name: 'top.vhdl', content: 'entity top is end entity;' },
+      ],
+      top: 'top',
+      mode: 'gates',
+    }
+    const input = validateSynthesisRequest(vhdl)
+    expect(input.language).toBe('vhdl')
+    expect(input.files.map((file) => file.name)).toEqual(['types.vhd', 'top.vhdl'])
+    expect(() => validateSynthesisRequest({ ...vhdl, top: '' })).toThrow(
+      'explicit top entity',
+    )
+  })
+
+  it('rejects mixed-language workspaces', () => {
+    expect(() =>
+      validateSynthesisRequest({
+        ...request('gates'),
+        files: [
+          { name: 'top.sv', content: 'module top; endmodule' },
+          { name: 'helper.vhdl', content: 'entity helper is end entity;' },
+        ],
+      }),
+    ).toThrow('mixed Verilog and VHDL')
+  })
+
   it('selects the delay family from the visible Xilinx flag', () => {
     expect(defaultDelayProfile(validateSynthesisRequest(request('xilinx', '-family xcup')))).toBe(
       'ultrascale_plus',

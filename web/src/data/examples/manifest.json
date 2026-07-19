@@ -3,91 +3,126 @@
     "name": "reg_mux",
     "title": "Reg Mux",
     "description": "A width-parameterized register that selects between two inputs, with a configurable reset value.",
-    "top": "reg_mux",
-    "files": ["reg_mux.sv"]
+    "variants": {
+      "verilog": { "top": "reg_mux", "files": ["reg_mux.sv"] },
+      "vhdl": { "top": "reg_mux", "files": ["reg_mux.vhdl"] }
+    }
   },
   {
     "name": "priority_encoder_case",
     "title": "Priority Encoder Case",
     "description": "A parameterized, lowest-request-first encoder implemented as an explicit case statement for widths up to 32.",
-    "top": "priority_encoder_case",
-    "files": ["priority_encoder_case.sv"]
+    "variants": {
+      "verilog": { "top": "priority_encoder_case", "files": ["priority_encoder_case.sv"] },
+      "vhdl": { "top": "priority_encoder_case", "files": ["example_math_pkg.vhdl", "priority_encoder_case.vhdl"] }
+    }
   },
   {
     "name": "priority_encoder_for",
     "title": "Priority Encoder For",
-    "description": "A width-parameterized, lowest-request-first encoder implemented with a procedural for loop.",
-    "top": "priority_encoder_for",
-    "files": ["priority_encoder_for.sv"]
+    "description": "A width-parameterized, lowest-request-first encoder implemented with a procedural loop.",
+    "variants": {
+      "verilog": { "top": "priority_encoder_for", "files": ["priority_encoder_for.sv"] },
+      "vhdl": { "top": "priority_encoder_for", "files": ["example_math_pkg.vhdl", "priority_encoder_for.vhdl"] }
+    }
   },
   {
     "name": "priority_encoder_carry",
     "title": "Priority Encoder Carry",
-    "description": "A width-parameterized encoder that isolates the lowest request with x & (~x + 'd1), allowing FPGA synthesis to use carry-chain resources.",
-    "top": "priority_encoder_carry",
-    "files": ["priority_encoder_carry.sv"]
+    "description": "A width-parameterized encoder that isolates the lowest request with a carry-chain-friendly arithmetic expression.",
+    "variants": {
+      "verilog": { "top": "priority_encoder_carry", "files": ["priority_encoder_carry.sv"] },
+      "vhdl": { "top": "priority_encoder_carry", "files": ["example_math_pkg.vhdl", "priority_encoder_carry.vhdl"] }
+    }
   },
   {
     "name": "adder_chain",
     "title": "Adder Chain",
     "description": "A width- and input-count-parameterized combinational sum over N packed input values.",
-    "top": "adder_chain",
-    "files": ["adder_chain.sv"]
+    "variants": {
+      "verilog": { "top": "adder_chain", "files": ["adder_chain.sv"] },
+      "vhdl": { "top": "adder_chain", "files": ["example_math_pkg.vhdl", "adder_chain.vhdl"] }
+    }
   },
   {
     "name": "barrel_shifter",
     "title": "Barrel Shifter",
     "description": "A width-parameterized bidirectional barrel shifter with logical and arithmetic right-shift modes.",
-    "top": "barrel_shifter",
-    "files": ["barrel_shifter.sv"]
+    "variants": {
+      "verilog": { "top": "barrel_shifter", "files": ["barrel_shifter.sv"] },
+      "vhdl": { "top": "barrel_shifter", "files": ["example_math_pkg.vhdl", "barrel_shifter.vhdl"] }
+    }
   },
   {
     "name": "round_robin_arbiter",
     "title": "Round-Robin Arbiter",
     "description": "A requester-count-parameterized arbiter that rotates priority after each accepted grant.",
-    "top": "round_robin_arbiter",
-    "files": ["round_robin_arbiter.sv"]
+    "variants": {
+      "verilog": { "top": "round_robin_arbiter", "files": ["round_robin_arbiter.sv"] },
+      "vhdl": { "top": "round_robin_arbiter", "files": ["example_math_pkg.vhdl", "round_robin_arbiter.vhdl"] }
+    }
   },
   {
     "name": "pipe",
     "title": "Register Pipe",
     "description": "A width- and stage-count-parameterized register pipeline with clock enable, configurable reset value, and zero-stage bypass.",
-    "top": "pipe",
-    "files": ["pipe.sv"]
+    "variants": {
+      "verilog": { "top": "pipe", "files": ["pipe.sv"] },
+      "vhdl": { "top": "pipe", "files": ["pipe.vhdl"] }
+    }
   },
   {
     "name": "srl_pipe",
     "title": "SRL Pipe",
-    "description": "A width- and stage-count-parameterized enabled pipeline written to infer FPGA shift-register LUT resources, with zero-stage bypass.",
-    "top": "srl_pipe",
-    "files": ["srl_pipe.sv"]
+    "description": "A width- and stage-count-parameterized enabled pipeline written to infer FPGA shift-register resources, with zero-stage bypass.",
+    "variants": {
+      "verilog": { "top": "srl_pipe", "files": ["srl_pipe.sv"] },
+      "vhdl": { "top": "srl_pipe", "files": ["srl_pipe.vhdl"] }
+    }
   },
   {
     "name": "fifo_pipe",
     "title": "FIFO Pipe",
     "description": "A width- and stage-count-parameterized ready/valid elastic pipeline with backpressure and zero-stage pass-through.",
-    "top": "fifo_pipe",
-    "files": ["fifo_pipe.sv"]
+    "variants": {
+      "verilog": { "top": "fifo_pipe", "files": ["fifo_pipe.sv"] },
+      "vhdl": { "top": "fifo_pipe", "files": ["fifo_pipe.vhdl"] }
+    }
   },
   {
     "name": "inferred_fifo",
     "title": "Inferred FIFO",
     "description": "A data-width- and depth-parameterized single-clock FIFO backed by an inferred memory array and read/write pointers.",
-    "top": "inferred_fifo",
-    "files": ["inferred_fifo.sv"]
+    "variants": {
+      "verilog": { "top": "inferred_fifo", "files": ["inferred_fifo.sv"] },
+      "vhdl": { "top": "inferred_fifo", "files": ["example_math_pkg.vhdl", "inferred_fifo.vhdl"] }
+    }
   },
   {
     "name": "async_fifo_blackbox",
     "title": "Async FIFO IP Wrapper",
     "description": "A parameterized ready/valid wrapper around a blackboxed dual-clock FIFO, representative of vendor-generated CDC IP.",
-    "top": "async_fifo_wrapper",
-    "files": ["async_fifo_blackbox.sv"]
+    "variants": {
+      "verilog": { "top": "async_fifo_wrapper", "files": ["async_fifo_blackbox.sv"] },
+      "vhdl": { "top": "async_fifo_wrapper", "files": ["example_math_pkg.vhdl", "async_fifo_blackbox.vhdl"] }
+    }
   },
   {
     "name": "handshake_controller",
     "title": "Handshake Controller",
     "description": "A timeout-parameterized request/response controller with ready/valid handshakes and explicit completion status.",
-    "top": "handshake_controller",
-    "files": ["handshake_controller.sv"]
+    "variants": {
+      "verilog": { "top": "handshake_controller", "files": ["handshake_controller.sv"] },
+      "vhdl": { "top": "handshake_controller", "files": ["example_math_pkg.vhdl", "handshake_controller.vhdl"] }
+    }
+  },
+  {
+    "name": "counter",
+    "title": "Counter",
+    "description": "A width-parameterized enabled counter using a shared increment helper.",
+    "variants": {
+      "verilog": { "top": "counter", "files": ["counter.sv"] },
+      "vhdl": { "top": "counter", "files": ["counter_pkg.vhdl", "counter.vhdl"] }
+    }
   }
 ]

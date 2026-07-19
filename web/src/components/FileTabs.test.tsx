@@ -35,8 +35,10 @@ describe('FileTabs', () => {
     expect(tabs.every((tab) => tab.includes('aria-controls="source-editor-panel"'))).toBe(true)
     expect(markup).toContain('aria-label="Reset editor"')
     expect(markup).toContain('aria-label="Load files from computer"')
-    expect(markup).toContain('accept=".v,.sv,.svh"')
-    expect(markup).toContain('title="Load .v, .sv, or .svh files from computer"')
+    expect(markup).toContain('accept=".v,.sv,.svh,.vhd,.vhdl"')
+    expect(markup).toContain(
+      'title="Load .v, .sv, .svh, .vhd, or .vhdl files from computer"',
+    )
     expect(markup).toContain('aria-label="Save alu.sv to computer"')
     expect(markup).toContain('aria-label="Save all files to computer"')
   })

@@ -3,9 +3,10 @@
 [![CI](https://github.com/cachanova/synth-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/cachanova/synth-explorer/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-**Compiler Explorer for RTL.** Paste Verilog or SystemVerilog, synthesize it
-with [Yosys](https://yosyshq.net/yosys/), and inspect the resulting circuit by
-path, endpoint, fanin, fanout, or source location.
+**Compiler Explorer for RTL.** Paste Verilog, SystemVerilog, or VHDL-2008,
+synthesize it with [Yosys](https://yosyshq.net/yosys/) and
+[GHDL](https://github.com/ghdl/ghdl), and inspect the resulting circuit by path,
+endpoint, fanin, fanout, or source location.
 
 [Try Synth Explorer in your browser](https://www.synthexplorer.dev/)
 
@@ -18,6 +19,10 @@ browser profile and can be cleared from the settings menu.
 - Synthesize generic gates, LUT4/LUT6 mappings, and iCE40, ECP5, or Xilinx
   target flows automatically after 250 ms without an edit, using a
   project-pinned Yosys WebAssembly build.
+- Analyze and elaborate VHDL-2008 locally with a project-pinned GHDL
+  WebAssembly frontend while preserving original file/line provenance.
+- Load every bundled design in either Verilog/SystemVerilog or VHDL from the
+  toolbar's language toggle.
 - Rank logical paths and endpoints by combinational depth.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and jump from synthesized cells to source.
@@ -52,6 +57,7 @@ installation is required for the application.
 | [`analysis-wasm/`](analysis-wasm/) | WebAssembly bindings for the Rust analysis engine |
 | [`web/`](web/) | Static React application, browser workers, bundled examples, and pinned WASM artifacts |
 | [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
+| [`tools/ghdl-wasm/`](tools/ghdl-wasm/) | Reproducible project-owned GHDL synthesis WebAssembly build |
 | [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
 | [`docs/`](docs/) | Architecture, migration record, and benchmarks |
 
@@ -77,12 +83,14 @@ npm run test:e2e
 
 Rebuild the Rust analysis WebAssembly package with `./analysis-wasm/build.sh`.
 See [`tools/yosys-wasm/README.md`](tools/yosys-wasm/README.md) before rebuilding
-the much larger Yosys artifact.
+the much larger Yosys artifact, and [`tools/ghdl-wasm/README.md`](tools/ghdl-wasm/README.md)
+before rebuilding the VHDL frontend and standard libraries.
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Browser-local migration record](docs/BROWSER_WASM_MIGRATION.md)
+- [VHDL WebAssembly architecture](docs/VHDL_GHDL_FEASIBILITY.md)
 - [Migration benchmark results](docs/BROWSER_WASM_BENCHMARKS.md)
 - [Web client](web/README.md)
 - [Local calibration](calibration/README.md)

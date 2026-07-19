@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test'
 import examples from '../src/data/examples/manifest.json' with { type: 'json' }
 
-test('opens the default and example designs without downloading Yosys', async ({ page }) => {
-  test.setTimeout(60_000)
-  const yosysAssets: string[] = []
-  await page.route('**/yosys/**', (route) => {
-    yosysAssets.push(route.request().url())
+test('opens every language variant without downloading synthesis engines', async ({ page }) => {
+  test.setTimeout(120_000)
+  const synthesisAssets: string[] = []
+  await page.route(/\/(yosys|ghdl)\//, (route) => {
+    synthesisAssets.push(route.request().url())
     return route.abort()
   })
 
@@ -22,16 +22,30 @@ test('opens the default and example designs without downloading Yosys', async ({
     .locator('.v')
   await expect(topValue).toHaveText('top')
 
-  const exampleSelect = page.getByLabel('Example')
-  for (const example of examples) {
-    await exampleSelect.selectOption(example.name)
-    await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
-    await expect(analysisPane).toHaveAttribute('data-analysis-state', 'current', {
-      timeout: 10_000,
-    })
-    await expect(topValue).toHaveText(example.top)
+  const exampleSelect = page.getByLabel('Bundled example')
+  const languageSelect = page.getByLabel('Language')
+  for (const language of ['verilog', 'vhdl'] as const) {
+    await languageSelect.selectOption(language)
+    for (const example of examples) {
+      await exampleSelect.selectOption(example.name)
+      await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
+      await expect(analysisPane).toHaveAttribute('data-analysis-state', 'current', {
+        timeout: 10_000,
+      })
+      await expect(topValue).toHaveText(example.variants[language].top)
+      const sourceTabs = page.getByRole('tablist', { name: 'Source files' }).getByRole('tab')
+      const names = await sourceTabs.evaluateAll((tabs) =>
+        tabs.map((tab) => tab.getAttribute('aria-label')?.split('. Press')[0] ?? ''),
+      )
+      expect(names).toHaveLength(example.variants[language].files.length)
+      expect(
+        names.every((name) =>
+          language === 'vhdl' ? /\.vhdl?$/.test(name) : /\.s?vh?$/.test(name),
+        ),
+      ).toBe(true)
+    }
   }
-  expect(yosysAssets).toEqual([])
+  expect(synthesisAssets).toEqual([])
 })
 
 test('falls back to local Yosys when a precomputed netlist is unusable', async ({ page }) => {

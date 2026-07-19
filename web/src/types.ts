@@ -149,7 +149,7 @@ export type Mode =
 export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
 
 export interface DesignFile {
-  name: string // bare filename, [A-Za-z0-9._-]+, .v/.sv/.svh
+  name: string // bare filename, [A-Za-z0-9._-]+, .v/.sv/.svh/.vhd/.vhdl
   content: string
 }
 
@@ -389,12 +389,18 @@ export interface SourceMapResponse {
 
 // --- Bundled examples ---
 
+export type ExampleLanguage = 'verilog' | 'vhdl'
+
+export interface ExampleVariant {
+  top: string
+  files: DesignFile[]
+}
+
 export interface Example {
   name: string // "adder_chain"
   title: string
   description: string
-  top: string
-  files: DesignFile[]
+  variants: Record<ExampleLanguage, ExampleVariant>
 }
 
 export interface ExamplesResponse {

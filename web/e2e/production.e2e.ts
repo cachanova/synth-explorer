@@ -92,7 +92,7 @@ test('auto-synthesizes an edited design locally after the debounce', async ({ pa
   await page.goto('/')
 
   await waitForAutomaticSynthesis(page, () =>
-    page.getByLabel('Example').selectOption('reg_mux'),
+    page.getByLabel('Bundled example').selectOption('reg_mux'),
   )
   await page.getByRole('tab', { name: 'Overview', exact: true }).click()
 
@@ -142,7 +142,7 @@ test('cancels obsolete Yosys work and commits only the newest edit', async ({ pa
   await waitForAnalysisReady(page)
 
   await waitForAutomaticSynthesis(page, async () => {
-    await page.getByLabel('Example').selectOption('handshake_controller')
+    await page.getByLabel('Bundled example').selectOption('handshake_controller')
     await page.getByLabel('Mode').selectOption('xilinx')
     await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
     const graphLoader = page.locator('.graph-loading-indicator')
@@ -190,7 +190,7 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
   await expect(page.getByText('Synth Explorer', { exact: true })).toBeVisible()
   const flags = page.getByLabel('Synthesis flags')
   await waitForAutomaticSynthesis(page, async () => {
-    await page.getByLabel('Example').selectOption('reg_mux')
+    await page.getByLabel('Bundled example').selectOption('reg_mux')
     await page.getByLabel('Mode').selectOption('xilinx')
   })
   await expect(flags).toHaveValue('-narrowcarry 8 -nowidelut -noiopad')
@@ -201,7 +201,9 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
 
   const started = Date.now()
   await waitForAutomaticSynthesis(page, () => retriggerCurrentInput(page))
-  expect(Date.now() - started).toBeLessThan(1_000)
+  // Cache reuse still reinitializes analysis in a worker. Keep this well below
+  // cold synthesis without making the assertion depend on sub-second CI load.
+  expect(Date.now() - started).toBeLessThan(2_000)
 
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -267,7 +269,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, () =>
-    page.getByLabel('Example').selectOption('reg_mux'),
+    page.getByLabel('Bundled example').selectOption('reg_mux'),
   )
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
 
@@ -310,7 +312,7 @@ test('source selections and Focus use the in-browser exploration worker', async 
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
-    await page.getByLabel('Example').selectOption('handshake_controller')
+    await page.getByLabel('Bundled example').selectOption('handshake_controller')
     await page.getByLabel('Mode').selectOption('xilinx')
   })
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()

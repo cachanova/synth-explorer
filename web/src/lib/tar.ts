@@ -8,6 +8,16 @@ interface Tree {
 const decoder = new TextDecoder()
 
 export function unpackTar(bytes: Uint8Array): Directory {
+  return materialize(parseTar(bytes))
+}
+
+export function unpackTarFiles(bytes: Uint8Array): Map<string, Uint8Array> {
+  const files = new Map<string, Uint8Array>()
+  flattenFiles(parseTar(bytes), '', files)
+  return files
+}
+
+function parseTar(bytes: Uint8Array): Tree {
   const root: Tree = { directories: new Map(), files: new Map() }
   for (let offset = 0; offset + 512 <= bytes.length; ) {
     const header = bytes.subarray(offset, offset + 512)
@@ -25,7 +35,7 @@ export function unpackTar(bytes: Uint8Array): Directory {
     }
     offset = dataOffset + Math.ceil(size / 512) * 512
   }
-  return materialize(root)
+  return root
 }
 
 function textField(bytes: Uint8Array, offset: number, length: number): string {
@@ -61,4 +71,17 @@ function materialize(tree: Tree): Directory {
     entries.set(name, new File(contents, { readonly: true }))
   }
   return new Directory(entries)
+}
+
+function flattenFiles(
+  tree: Tree,
+  prefix: string,
+  files: Map<string, Uint8Array>,
+): void {
+  for (const [name, contents] of tree.files) {
+    files.set(prefix ? `${prefix}/${name}` : name, contents)
+  }
+  for (const [name, directory] of tree.directories) {
+    flattenFiles(directory, prefix ? `${prefix}/${name}` : name, files)
+  }
 }

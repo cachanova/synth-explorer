@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
@@ -6,12 +7,15 @@ import {
   synthesisKey,
   type SynthesisArtifact,
 } from '../src/lib/designCache'
-import type { ValidatedSynthesis } from '../src/lib/yosysScript'
+import {
+  GHDL_VERSION,
+  validateSynthesisRequest,
+  type ValidatedSynthesis,
+} from '../src/lib/yosysScript'
 
 interface SourceManifestEntry {
   name: string
-  top: string
-  files: string[]
+  variants: Record<'verilog' | 'vhdl', { top: string; files: string[] }>
 }
 
 interface PrecomputedEntry {
@@ -37,11 +41,13 @@ const expectedStructuralFacts: Record<
   inferred_fifo: { top: 'inferred_fifo', inputs: 20, outputs: 23 },
   async_fifo_blackbox: { top: 'async_fifo_wrapper', inputs: 22, outputs: 18 },
   handshake_controller: { top: 'handshake_controller', inputs: 5, outputs: 5 },
+  counter: { top: 'counter', inputs: 3, outputs: 8 },
 }
 
 const root = process.cwd()
 const sourceDirectory = join(root, 'src', 'data', 'examples')
 const artifactDirectory = join(root, 'public', 'precomputed')
+verifyGhdlArtifactVersion()
 const sourceManifest = JSON.parse(
   readFileSync(join(sourceDirectory, 'manifest.json'), 'utf8'),
 ) as SourceManifestEntry[]
@@ -50,7 +56,7 @@ const precomputedManifest = JSON.parse(
 ) as { entries: PrecomputedEntry[] }
 
 const expected = new Map<string, ValidatedSynthesis>()
-expected.set('default', {
+expected.set('default', validateSynthesisRequest({
   files: [
     {
       name: 'design.sv',
@@ -58,20 +64,18 @@ expected.set('default', {
     },
   ],
   mode: 'gates',
-  extraArgs: [],
-})
+}))
 for (const entry of sourceManifest) {
-  expected.set(entry.name, {
-    files: entry.files
-      .map((name) => ({
+  for (const [language, variant] of Object.entries(entry.variants)) {
+    expected.set(`${entry.name}:${language}`, validateSynthesisRequest({
+      files: variant.files.map((name) => ({
         name,
         content: readFileSync(join(sourceDirectory, name), 'utf8'),
-      }))
-      .sort((left, right) => left.name.localeCompare(right.name)),
-    top: entry.top,
-    mode: 'gates',
-    extraArgs: [],
-  })
+      })),
+      top: variant.top,
+      mode: 'gates',
+    }))
+  }
 }
 
 if (precomputedManifest.entries.length !== expected.size) {
@@ -97,7 +101,8 @@ for (const entry of precomputedManifest.entries) {
   if (!isValidSynthesisArtifact(artifact, key, input)) {
     throw new Error(`Invalid precomputed artifact for ${entry.name}`)
   }
-  verifyStructuralFacts(entry.name, artifact)
+  const [concept, language] = entry.name.split(':')
+  verifyStructuralFacts(concept, artifact, language)
 }
 if (expected.size > 0) {
   throw new Error(`Missing precomputed entries: ${[...expected.keys()].join(', ')}`)
@@ -111,7 +116,26 @@ if (extraFiles.length > 0) {
 
 process.stdout.write(`Verified ${retainedFiles.size} precomputed gate-mode designs.\n`)
 
-function verifyStructuralFacts(name: string, artifact: SynthesisArtifact) {
+function verifyGhdlArtifactVersion() {
+  const artifactRoot = join(root, 'public', 'ghdl')
+  const prefixes = ['ghdl-synth.wasm', 'libraries.tar.gz'].map((name) =>
+    createHash('sha256')
+      .update(readFileSync(join(artifactRoot, name)))
+      .digest('hex')
+      .slice(0, 8),
+  )
+  if (!GHDL_VERSION.endsWith(prefixes.join('-'))) {
+    throw new Error(
+      `GHDL_VERSION must end with current artifact prefixes ${prefixes.join('-')}`,
+    )
+  }
+}
+
+function verifyStructuralFacts(
+  name: string,
+  artifact: SynthesisArtifact,
+  language?: string,
+) {
   const expectedFacts = expectedStructuralFacts[name]
   if (!expectedFacts) throw new Error(`Missing structural expectations for ${name}`)
   for (const [label, json] of [
@@ -148,6 +172,22 @@ function verifyStructuralFacts(name: string, artifact: SynthesisArtifact) {
     }
     if (label === 'mapped' && Object.keys(top.cells ?? {}).length === 0) {
       throw new Error(`${name} mapped netlist has no cells`)
+    }
+    if (label === 'source' && language === 'vhdl') {
+      const cells = Object.values(top.cells ?? {}) as Array<{
+        attributes?: { src?: unknown }
+      }>
+      if (cells.length === 0) {
+        throw new Error(`${name} VHDL source netlist has no cells to map to source`)
+      }
+      const missingLocations = cells.filter(
+        (cell) => !/\.vhdl?:\d+/.test(String(cell.attributes?.src ?? '')),
+      )
+      if (missingLocations.length > 0) {
+        throw new Error(
+          `${name} VHDL source netlist has ${missingLocations.length} cells without VHDL file/line provenance`,
+        )
+      }
     }
   }
 }

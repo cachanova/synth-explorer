@@ -1,0 +1,12 @@
+--- netlists-disp_verilog.adb
++++ netlists-disp_verilog.adb
+@@ -1474 +1474,8 @@
+-         return;
++         Wr ("(* blackbox *) module ");
++         Put_Name (Get_Module_Name (M));
++         Wr_Line;
++         Disp_Module_Parameters (M);
++         Disp_Module_Ports (M);
++         Wr_Line ("endmodule");
++         Wr_Line;
++         return;
