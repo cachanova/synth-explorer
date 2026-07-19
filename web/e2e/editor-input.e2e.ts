@@ -11,6 +11,10 @@ async function lineText(editor: Locator, index: number): Promise<string> {
   return editor.locator('.cm-line').nth(index).evaluate((line) => line.textContent ?? '')
 }
 
+async function editorText(editor: Locator): Promise<string> {
+  return (await editor.locator('.cm-line').allTextContents()).join('\n')
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
   await page.evaluate(() => {
@@ -53,9 +57,17 @@ test('enables and remembers Vim keybindings', async ({ page }) => {
   await editor.click()
   await editor.press('i')
   await expect(page.locator('.cm-vim-panel')).toContainText('--INSERT--')
+  await editor.press('Tab')
   await editor.type('vim_')
   await editor.press('Escape')
   await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')
+  const afterInsert = await editorText(editor)
+  expect(afterInsert).toContain('\tvim_')
+
+  await editor.press('Tab')
+  expect(await editorText(editor)).toBe(afterInsert)
+  await editor.press('x')
+  expect(await editorText(editor)).not.toBe(afterInsert)
 
   await page.reload()
   await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')

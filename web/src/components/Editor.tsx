@@ -120,6 +120,7 @@ const editorThemes: Record<'light' | 'dark', Extension> = {
   light: createEditorTheme(false),
   dark: createEditorTheme(true),
 }
+let vimKeysConfigured = false
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
@@ -218,6 +219,7 @@ export function Editor() {
       setSourceSelection,
       clearGraphSelection,
       editorKeymap,
+      setEditorKeymap,
     }) => ({
       files,
       activeFileName,
@@ -227,6 +229,7 @@ export function Editor() {
       setSourceSelection,
       clearGraphSelection,
       editorKeymap,
+      setEditorKeymap,
     }),
     shallowEqual,
   )
@@ -277,12 +280,18 @@ export function Editor() {
       {
         key: 'Escape',
         preventDefault: true,
-        run: () => {
-          storeRef.current.clearGraphSelection()
-          return editorKeymapRef.current !== 'vim'
-        },
+        run: () => true,
       },
     ])
+    const clearGraphSelectionOnEscape = EditorView.domEventHandlers({
+      keydown(event) {
+        if (event.key === 'Escape') storeRef.current.clearGraphSelection()
+        return false
+      },
+    })
+    const inVimCommandMode = (view: EditorView) =>
+      editorKeymapRef.current === 'vim' &&
+      view.scrollDOM.classList.contains('cm-vimMode')
 
     const extensions: Extension[] = [
       lineNumbers(),
@@ -294,10 +303,15 @@ export function Editor() {
       indentOnInput(),
       themeCompartment.current.of(editorThemes[resolvedModeRef.current]),
       highlightField,
+      clearGraphSelectionOnEscape,
       vimCompartment.current.of([]),
       editorKeymap,
       keymap.of([
-        { key: 'Tab', run: insertTab, shift: indentLess },
+        {
+          key: 'Tab',
+          run: (view) => (inVimCommandMode(view) ? true : insertTab(view)),
+          shift: (view) => (inVimCommandMode(view) ? true : indentLess(view)),
+        },
         ...defaultKeymap,
         ...historyKeymap,
       ]),
@@ -336,7 +350,7 @@ export function Editor() {
     }
 
     void import('@replit/codemirror-vim')
-      .then(({ vim }) => {
+      .then(({ vim, Vim }) => {
         if (
           load !== vimLoadRef.current ||
           editorKeymapRef.current !== 'vim' ||
@@ -344,12 +358,23 @@ export function Editor() {
         ) {
           return
         }
+        if (!vimKeysConfigured) {
+          Vim.map('<Tab>', '<C-i>', 'normal')
+          vimKeysConfigured = true
+        }
         view.dispatch({
           effects: vimCompartment.current.reconfigure(vim({ status: true })),
         })
       })
       .catch((error: unknown) => {
         console.error('Failed to load Vim keybindings', error)
+        if (
+          load === vimLoadRef.current &&
+          editorKeymapRef.current === 'vim' &&
+          viewRef.current === view
+        ) {
+          storeRef.current.setEditorKeymap('standard')
+        }
       })
   }, [store.editorKeymap])
 
