@@ -27,10 +27,13 @@ import { createLatestGuard } from './lib/latest'
 import { mergeComputerFiles } from './lib/computerFiles'
 import { designSrcSpans, type SrcSpan } from './lib/src'
 import {
+  loadEditorKeymapPreference,
   loadResetConfirmationPreference,
   markWorkspaceResetPending,
+  saveEditorKeymapPreference,
   saveResetConfirmationPreference,
   saveWorkspace,
+  type EditorKeymap,
   type WorkspaceState,
 } from './lib/workspaceStorage'
 import {
@@ -162,6 +165,8 @@ export interface Store {
   loadExample: (ex: Example) => void
   confirmWorkspaceReset: boolean
   setConfirmWorkspaceReset: (enabled: boolean) => void
+  editorKeymap: EditorKeymap
+  setEditorKeymap: (keymap: EditorKeymap) => void
 
   // synthesis
   synthesizing: boolean
@@ -241,6 +246,9 @@ export function StoreProvider({
   const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
   const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
     loadResetConfirmationPreference,
+  )
+  const [editorKeymap, setEditorKeymapState] = useState(
+    loadEditorKeymapPreference,
   )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
@@ -591,6 +599,11 @@ export function StoreProvider({
     saveResetConfirmationPreference(enabled)
   }, [])
 
+  const setEditorKeymap = useCallback((keymap: EditorKeymap) => {
+    setEditorKeymapState(keymap)
+    saveEditorKeymapPreference(keymap)
+  }, [])
+
   const setTop = useCallback(
     (value: string) => {
       if (topRef.current === value) return
@@ -918,6 +931,8 @@ export function StoreProvider({
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
+      editorKeymap,
+      setEditorKeymap,
       synthesizing,
       design,
       analysisState,
@@ -958,6 +973,8 @@ export function StoreProvider({
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
+      editorKeymap,
+      setEditorKeymap,
       synthesizing,
       design,
       analysisState,

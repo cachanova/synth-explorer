@@ -255,6 +255,9 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: 7px;
 }
+.editor-keymap-seg {
+  grid-template-columns: repeat(2, 1fr);
+}
 .seg-btn {
   display: inline-flex;
   align-items: center;
@@ -856,6 +859,13 @@ a:hover {
 }
 .cm-src-hl-fade {
   background: color-mix(in srgb, var(--accent) 0%, transparent);
+}
+.cm-vim-panel {
+  min-height: 20px;
+  padding: 2px 8px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
 }
 
 /* ---- error strip ---- */

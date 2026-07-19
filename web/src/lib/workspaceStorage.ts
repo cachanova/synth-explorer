@@ -6,6 +6,9 @@ const CURRENT_WORKSPACE_KEY = 'current'
 const WORKSPACE_SCHEMA = 1
 const RESET_CONFIRMATION_KEY = 'synthexplorer.confirmResetWorkspace.v1'
 const RESET_PENDING_KEY = 'synthexplorer.workspaceResetPending.v1'
+const EDITOR_KEYMAP_KEY = 'synthexplorer.editorKeymap.v1'
+
+export type EditorKeymap = 'standard' | 'vim'
 
 const MODES = new Set<Mode>([
   'rtl',
@@ -165,6 +168,22 @@ export function loadResetConfirmationPreference(): boolean {
 export function saveResetConfirmationPreference(enabled: boolean): void {
   try {
     localStorage.setItem(RESET_CONFIRMATION_KEY, String(enabled))
+  } catch {
+    // Keep the preference for this session when local storage is unavailable.
+  }
+}
+
+export function loadEditorKeymapPreference(): EditorKeymap {
+  try {
+    return localStorage.getItem(EDITOR_KEYMAP_KEY) === 'vim' ? 'vim' : 'standard'
+  } catch {
+    return 'standard'
+  }
+}
+
+export function saveEditorKeymapPreference(keymap: EditorKeymap): void {
+  try {
+    localStorage.setItem(EDITOR_KEYMAP_KEY, keymap)
   } catch {
     // Keep the preference for this session when local storage is unavailable.
   }

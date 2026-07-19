@@ -10,14 +10,26 @@ import {
 import {
   Decoration,
   EditorView,
+  drawSelection,
   keymap,
   lineNumbers,
   highlightActiveLine,
   highlightActiveLineGutter,
   type DecorationSet,
 } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentLess,
+  insertTab,
+} from '@codemirror/commands'
+import {
+  HighlightStyle,
+  StreamLanguage,
+  indentOnInput,
+  syntaxHighlighting,
+} from '@codemirror/language'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { tags } from '@lezer/highlight'
 import type { EditorHighlight } from '../store'
@@ -205,6 +217,7 @@ export function Editor() {
       updateFileContent,
       setSourceSelection,
       clearGraphSelection,
+      editorKeymap,
     }) => ({
       files,
       activeFileName,
@@ -213,6 +226,7 @@ export function Editor() {
       updateFileContent,
       setSourceSelection,
       clearGraphSelection,
+      editorKeymap,
     }),
     shallowEqual,
   )
@@ -231,6 +245,10 @@ export function Editor() {
   const resolvedModeRef = useRef(resolvedMode)
   resolvedModeRef.current = resolvedMode
   const appliedModeRef = useRef(resolvedMode)
+  const editorKeymapRef = useRef(store.editorKeymap)
+  editorKeymapRef.current = store.editorKeymap
+  const vimCompartment = useRef(new Compartment())
+  const vimLoadRef = useRef(0)
 
   // create the view once
   useEffect(() => {
@@ -261,7 +279,7 @@ export function Editor() {
         preventDefault: true,
         run: () => {
           storeRef.current.clearGraphSelection()
-          return true
+          return editorKeymapRef.current !== 'vim'
         },
       },
     ])
@@ -270,12 +288,19 @@ export function Editor() {
       lineNumbers(),
       highlightActiveLine(),
       highlightActiveLineGutter(),
+      drawSelection(),
       history(),
       StreamLanguage.define(verilog),
+      indentOnInput(),
       themeCompartment.current.of(editorThemes[resolvedModeRef.current]),
       highlightField,
+      vimCompartment.current.of([]),
       editorKeymap,
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+      keymap.of([
+        { key: 'Tab', run: insertTab, shift: indentLess },
+        ...defaultKeymap,
+        ...historyKeymap,
+      ]),
       updateListener,
       EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),
     ]
@@ -300,6 +325,33 @@ export function Editor() {
     })
     appliedModeRef.current = resolvedMode
   }, [resolvedMode])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const load = ++vimLoadRef.current
+    if (store.editorKeymap === 'standard') {
+      view.dispatch({ effects: vimCompartment.current.reconfigure([]) })
+      return
+    }
+
+    void import('@replit/codemirror-vim')
+      .then(({ vim }) => {
+        if (
+          load !== vimLoadRef.current ||
+          editorKeymapRef.current !== 'vim' ||
+          viewRef.current !== view
+        ) {
+          return
+        }
+        view.dispatch({
+          effects: vimCompartment.current.reconfigure(vim({ status: true })),
+        })
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load Vim keybindings', error)
+      })
+  }, [store.editorKeymap])
 
   // reset document when the active file identity changes or its content is
   // replaced outside the editor (docRevision covers reloading the same file)
