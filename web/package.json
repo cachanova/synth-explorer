@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && npm run verify:seo",
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
@@ -15,6 +15,7 @@
     "generate:precomputed": "node scripts/generate-precomputed.mjs",
     "test:watch": "vitest",
     "verify:precomputed": "tsx scripts/verify-precomputed.ts",
+    "verify:seo": "node scripts/verify-seo.mjs",
     "verify:worker": "node scripts/verify-worker.mjs"
   },
   "dependencies": {
