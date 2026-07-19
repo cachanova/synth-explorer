@@ -16,38 +16,13 @@ async function waitForAutomaticSynthesis(
   page: Page,
   changeInput: () => Promise<void>,
 ) {
-  const completed = page.evaluate(
-    () =>
-      new Promise<void>((resolve, reject) => {
-        const analysisPane = document.querySelector<HTMLElement>('.pane-right')
-        if (!analysisPane) {
-          reject(new Error('analysis pane is missing'))
-          return
-        }
-        let started = analysisPane.dataset.analysisState === 'refreshing'
-        const timer = window.setTimeout(() => {
-          observer.disconnect()
-          reject(new Error('automatic synthesis did not complete'))
-        }, 120_000)
-        const observer = new MutationObserver(() => {
-          const state = analysisPane.dataset.analysisState
-          if (state === 'refreshing') {
-            started = true
-            return
-          }
-          if (!started || state !== 'current') return
-          window.clearTimeout(timer)
-          observer.disconnect()
-          resolve()
-        })
-        observer.observe(analysisPane, {
-          attributes: true,
-          attributeFilter: ['data-analysis-state'],
-        })
-      }),
-  )
+  const analysisPane = page.locator('.pane-right')
+  await analysisPane.waitFor()
   await changeInput()
-  await completed
+  await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
+  await expect(analysisPane).toHaveAttribute('data-analysis-state', 'current', {
+    timeout: 120_000,
+  })
 }
 
 async function cacheEntryCount(page: Page): Promise<number> {
@@ -353,6 +328,9 @@ test('source selections and Focus use the in-browser exploration worker', async 
   )
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
+  const editor = page.locator('.cm-content')
+  await editor.click()
+  await editor.press('Control+End')
   await page.locator('.cm-line', { hasText: "wait_count <= wait_count + 1'b1;" }).click()
   await expect(focus).toBeEnabled()
   await expect(focus).not.toBeChecked()

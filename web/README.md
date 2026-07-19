@@ -23,6 +23,8 @@ there is no API proxy or backend process.
 | `npm run build` | Produce the static `dist/` deployment |
 | `npm run test:e2e` | Build-independent Playwright checks against `PLAYWRIGHT_BASE_URL` or local preview |
 | `npm run benchmark:migration` | Compare pinned control and candidate deployments |
+| `npm run generate:precomputed` | Regenerate gate-mode artifacts for the default design and every bundled example |
+| `npm run verify:precomputed` | Verify precomputed coverage, exact input keys, producer, schema, and artifact shape |
 
 Run `npm run build` before `npm run test:e2e`; Playwright starts a local Vite
 preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
@@ -34,6 +36,9 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 - `src/workers/exploration.worker.ts` owns the single source-selection
   projection implementation.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
+- `public/precomputed/` contains content-addressed gate-mode artifacts for the
+  default design and bundled examples; `src/data/precomputedManifest.json`
+  limits which exact input keys may use them.
 - `src/data/examples/` is the canonical bundled example catalog.
 
 The editor workspace (open source files, active file, top, mode, and flags) is
@@ -51,6 +56,12 @@ Completed synthesis results use a separate browser cache keyed by the exact
 validated RTL, top, mode, flags, Yosys version, and artifact schema. Both stores
 are local to one browser profile and are not synced to an account. The synthesis
 cache can be removed independently from the settings menu.
+
+On a cache miss, an exact default/example gate-mode input may use its immutable
+precomputed artifact from the Vercel edge. Any source, top, mode, flags, Yosys
+version, or schema change produces a different key and runs local Yosys as
+usual. The downloaded result is validated and then enters the same IndexedDB
+cache path as a locally generated result.
 
 See the [architecture](../docs/ARCHITECTURE.md) and
 [migration record](../docs/BROWSER_WASM_MIGRATION.md).

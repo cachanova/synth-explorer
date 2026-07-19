@@ -401,6 +401,42 @@ a:hover {
   background: var(--accent-dim);
 }
 
+/* The HTML boot shell paints before the application bundle has downloaded or
+   IndexedDB workspace restoration has completed. React replaces it on its
+   first commit, so keep this state structural and dependency-free. */
+.boot-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+.boot-pane-left {
+  width: 46%;
+  flex: 0 0 46%;
+  border-right: 1px solid var(--border);
+}
+.boot-pane-right {
+  flex: 1 1 auto;
+}
+.boot-toolbar {
+  height: 47px;
+  flex: 0 0 auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+.boot-file-bar,
+.boot-tabs {
+  height: 32px;
+  flex: 0 0 auto;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+}
+.boot-workspace-status {
+  margin: auto;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
 /* ---- toolbar ---- */
 .toolbar {
   display: flex;
@@ -806,6 +842,14 @@ a:hover {
   min-height: 0;
   position: relative;
   overflow: hidden;
+}
+.editor-loading {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 12px;
 }
 .cm-editor {
   height: 100%;

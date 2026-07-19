@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as api from './api'
+import { DEFAULT_FILE, defaultWorkspace } from './data/defaultWorkspace'
 import { StoreContext } from './storeContext'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
@@ -103,25 +104,6 @@ export type AnalysisState =
 type ResolvedInputIdentity = Pick<SynthesisInput, 'key' | 'revision'>
 
 const MAX_SOURCE_LINES = 200
-
-const DEFAULT_FILE: DesignFile = {
-  name: 'design.sv',
-  content: `module top (
-  input  wire       clk,
-  input  wire       rst,
-  input  wire [7:0] a,
-  input  wire [7:0] b,
-  input  wire       sel,
-  output reg  [7:0] q
-);
-  wire [7:0] sum = a + b;
-  always @(posedge clk) begin
-    if (rst) q <= 8'd0;
-    else     q <= sel ? sum : a;
-  end
-endmodule
-`,
-}
 
 const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   maxDepth: 64,
@@ -250,13 +232,7 @@ export function StoreProvider({
   children: ReactNode
   initialWorkspace?: WorkspaceState | null
 }) {
-  const initial = initialWorkspace ?? {
-    files: [{ ...DEFAULT_FILE }],
-    activeFileName: DEFAULT_FILE.name,
-    top: '',
-    mode: 'gates' as Mode,
-    extraArgs: '',
-  }
+  const initial = initialWorkspace ?? defaultWorkspace()
   const [files, setFiles] = useState<DesignFile[]>(initial.files)
   const [activeFileName, setActiveFileNameState] = useState(initial.activeFileName)
   const [docRevision, setDocRevision] = useState(0)

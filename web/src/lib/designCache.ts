@@ -7,18 +7,39 @@ const storeName = 'syntheses'
 const maxEntries = 24
 const maxEstimatedBytes = 128 * 1024 * 1024
 const maxAgeMs = 30 * 24 * 60 * 60 * 1_000
+const encoder = new TextEncoder()
 
-export interface CachedSynthesis {
+export interface SynthesisArtifact {
   schema: number
   producer: string
   key: string
-  createdAt: number
-  lastAccessedAt: number
-  estimatedBytes: number
   input: ValidatedSynthesis
   profile: string
   memoriesAbstracted: boolean
   output: YosysWorkerResult
+}
+
+export interface CachedSynthesis extends SynthesisArtifact {
+  createdAt: number
+  lastAccessedAt: number
+  estimatedBytes: number
+}
+
+type SynthesisArtifactInput = Omit<SynthesisArtifact, 'schema' | 'producer'>
+
+export async function synthesisKey(input: ValidatedSynthesis): Promise<string> {
+  const canonical = JSON.stringify({
+    schema: YOSYS_CACHE_SCHEMA,
+    yosys: YOSYS_VERSION,
+    mode: input.mode,
+    top: input.top ?? null,
+    extraArgs: input.extraArgs,
+    files: input.files,
+  })
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(canonical))
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
 }
 
 export async function getCachedSynthesis(
@@ -46,10 +67,7 @@ export async function getCachedSynthesis(
 }
 
 export async function putCachedSynthesis(
-  record: Omit<
-    CachedSynthesis,
-    'schema' | 'producer' | 'createdAt' | 'lastAccessedAt' | 'estimatedBytes'
-  >,
+  record: SynthesisArtifactInput,
 ) {
   try {
     const database = await openDatabase()
@@ -105,12 +123,7 @@ async function prune(database: IDBDatabase) {
   await complete(transaction)
 }
 
-function estimateBytes(
-  record: Omit<
-    CachedSynthesis,
-    'schema' | 'producer' | 'createdAt' | 'lastAccessedAt' | 'estimatedBytes'
-  >,
-) {
+function estimateBytes(record: SynthesisArtifactInput) {
   const sourceBytes = record.input.files.reduce(
     (total, file) => total + file.name.length + file.content.length,
     0,
@@ -131,25 +144,46 @@ function isValidRecord(
 ): record is CachedSynthesis {
   return (
     isStructurallyValid(record) &&
+    isValidSynthesisArtifact(record, key, expectedInput) &&
+    Date.now() - record.lastAccessedAt <= maxAgeMs &&
+    record.createdAt <= record.lastAccessedAt
+  )
+}
+
+export function isValidSynthesisArtifact(
+  record: unknown,
+  key: string,
+  expectedInput: ValidatedSynthesis,
+): record is SynthesisArtifact {
+  return (
+    isStructurallyValidArtifact(record) &&
     record.key === key &&
     record.schema === YOSYS_CACHE_SCHEMA &&
     record.producer === YOSYS_VERSION &&
-    Date.now() - record.lastAccessedAt <= maxAgeMs &&
     JSON.stringify(record.input) === JSON.stringify(expectedInput)
   )
 }
 
 function isStructurallyValid(record: unknown): record is CachedSynthesis {
-  if (typeof record !== 'object' || record === null) return false
+  if (!isStructurallyValidArtifact(record)) return false
   const candidate = record as Partial<CachedSynthesis>
+  return (
+    typeof candidate.createdAt === 'number' &&
+    typeof candidate.lastAccessedAt === 'number' &&
+    typeof candidate.estimatedBytes === 'number' &&
+    candidate.estimatedBytes >= 0
+  )
+}
+
+function isStructurallyValidArtifact(
+  record: unknown,
+): record is SynthesisArtifact {
+  if (typeof record !== 'object' || record === null) return false
+  const candidate = record as Partial<SynthesisArtifact>
   return (
     typeof candidate.key === 'string' &&
     typeof candidate.schema === 'number' &&
     typeof candidate.producer === 'string' &&
-    typeof candidate.createdAt === 'number' &&
-    typeof candidate.lastAccessedAt === 'number' &&
-    typeof candidate.estimatedBytes === 'number' &&
-    candidate.estimatedBytes >= 0 &&
     typeof candidate.profile === 'string' &&
     typeof candidate.memoriesAbstracted === 'boolean' &&
     typeof candidate.input === 'object' &&
