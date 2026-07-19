@@ -4,7 +4,82 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Synth Explorer</title>
+    <title>Synth Explorer — Online Verilog &amp; SystemVerilog Synthesis</title>
+    <meta
+      name="description"
+      content="Synthesize Verilog and SystemVerilog with Yosys in your browser. Explore logic paths, endpoints, fanin, fanout, and source locations. Your RTL stays local."
+    />
+    <meta name="robots" content="index, follow" />
+    <meta name="application-name" content="Synth Explorer" />
+    <meta name="theme-color" content="#202225" />
+    <link rel="canonical" href="https://www.synthexplorer.dev/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Synth Explorer" />
+    <meta
+      property="og:title"
+      content="Synth Explorer — Online Verilog &amp; SystemVerilog Synthesis"
+    />
+    <meta
+      property="og:description"
+      content="Synthesize RTL with Yosys and explore logic paths, endpoints, fanin, fanout, and source locations—all locally in your browser."
+    />
+    <meta property="og:url" content="https://www.synthexplorer.dev/" />
+    <meta
+      property="og:image"
+      content="https://www.synthexplorer.dev/og-image.png"
+    />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Synth Explorer, browser-based RTL synthesis and circuit analysis"
+    />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="Synth Explorer — Online Verilog &amp; SystemVerilog Synthesis"
+    />
+    <meta
+      name="twitter:description"
+      content="Synthesize RTL with Yosys and explore the resulting circuit locally in your browser."
+    />
+    <meta
+      name="twitter:image"
+      content="https://www.synthexplorer.dev/og-image.png"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="Synth Explorer, browser-based RTL synthesis and circuit analysis"
+    />
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Synth Explorer",
+        "url": "https://www.synthexplorer.dev/",
+        "description": "Browser-based Verilog and SystemVerilog synthesis with structural circuit analysis.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Any",
+        "browserRequirements": "Requires a modern browser with WebAssembly support",
+        "isAccessibleForFree": true,
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Verilog and SystemVerilog synthesis with Yosys",
+          "Logical path and endpoint analysis",
+          "Fanin and fanout exploration",
+          "Source location mapping",
+          "Browser-local RTL processing"
+        ],
+        "sameAs": "https://github.com/cachanova/synth-explorer"
+      }
+    </script>
     <script>
       // No-FOUC theme bootstrap: apply the saved palette/mode to <html> before
       // first paint. Keys + defaults mirror src/lib/theme.tsx & palettes.ts.

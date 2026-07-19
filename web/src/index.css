@@ -131,6 +131,8 @@ a:hover {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  margin: 0;
+  font-size: inherit;
   font-weight: 700;
   letter-spacing: 0.3px;
   white-space: nowrap;
@@ -144,6 +146,12 @@ a:hover {
 .app-header .logo .accent {
   color: var(--accent);
 }
+.app-header .tagline {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
 .repo-link {
   display: inline-flex;
   align-items: center;
@@ -154,6 +162,11 @@ a:hover {
   border-radius: 5px;
   color: var(--text-dim);
   font-weight: 600;
+}
+@media (max-width: 720px) {
+  .app-header .tagline {
+    display: none;
+  }
 }
 .repo-link:hover {
   color: var(--text);

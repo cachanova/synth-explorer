@@ -7,7 +7,7 @@
 with [Yosys](https://yosyshq.net/yosys/), and inspect the resulting circuit by
 path, endpoint, fanin, fanout, or source location.
 
-[Try Synth Explorer in your browser](https://synthexplorer.dev)
+[Try Synth Explorer in your browser](https://www.synthexplorer.dev/)
 
 Synthesis and analysis run locally in the browser. RTL is not uploaded to an
 application server. Successful synthesis artifacts are cached only in that

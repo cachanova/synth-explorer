@@ -46,12 +46,13 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <span className="logo">
+        <h1 className="logo" aria-label="Synth Explorer">
           <BrandMark className="brand-mark" />
           <span>
             Synth <span className="accent">Explorer</span>
           </span>
-        </span>
+        </h1>
+        <p className="tagline">Browser-based RTL synthesis &amp; circuit analysis</p>
         <a
           className="repo-link"
           href={REPOSITORY_URL}
@@ -64,7 +65,7 @@ function App() {
         </a>
         <SettingsMenu />
       </header>
-      <div className="split">
+      <main className="split">
         <div
           style={{
             width: `${leftWidth}%`,
@@ -80,7 +81,7 @@ function App() {
         </div>
         <div className="divider" onMouseDown={onDown} title="Drag to resize" />
         <RightPane />
-      </div>
+      </main>
       <Analytics />
       <SpeedInsights />
     </div>

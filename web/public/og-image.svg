@@ -1,0 +1,66 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="1200"
+  height="630"
+  viewBox="0 0 1200 630"
+  role="img"
+  aria-labelledby="title description"
+>
+  <title id="title">Synth Explorer</title>
+  <desc id="description">Browser-based RTL synthesis and circuit analysis</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#202225" />
+      <stop offset="1" stop-color="#151618" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0.76" cy="0.42" r="0.58">
+      <stop offset="0" stop-color="#2dd4bf" stop-opacity="0.18" />
+      <stop offset="1" stop-color="#2dd4bf" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#background)" />
+  <rect width="1200" height="630" fill="url(#glow)" />
+  <g transform="translate(765 155) scale(1.65)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#2dd4bf">
+      <path stroke-width="6" d="M60 40 Q136 44 170 100 Q136 156 60 160 Q100 100 60 40 Z" />
+      <path stroke-width="6" d="M46 40 Q86 100 46 160" />
+      <circle stroke-width="6" cx="181" cy="100" r="9" />
+      <circle stroke-width="3.2" cx="185" cy="80" r="5" />
+      <circle stroke-width="2.6" cx="194" cy="63" r="3.4" />
+    </g>
+    <circle stroke="#dde1e6" stroke-width="4" cx="122" cy="100" r="30" />
+    <circle fill="#dde1e6" cx="122" cy="100" r="13" />
+  </g>
+  <text
+    x="96"
+    y="270"
+    fill="#f3f4f6"
+    font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+    font-size="76"
+    font-weight="700"
+    letter-spacing="-2"
+  >Synth <tspan fill="#2dd4bf">Explorer</tspan></text>
+  <text
+    x="101"
+    y="344"
+    fill="#b2b7bf"
+    font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+    font-size="30"
+    font-weight="500"
+  >Online Verilog &amp; SystemVerilog synthesis</text>
+  <text
+    x="101"
+    y="394"
+    fill="#858b94"
+    font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
+    font-size="24"
+  >Explore paths, endpoints, fanin, and fanout — locally in your browser.</text>
+  <rect x="96" y="492" width="1008" height="1" fill="#3d4046" />
+  <text
+    x="101"
+    y="544"
+    fill="#858b94"
+    font-family="ui-monospace, 'SFMono-Regular', Consolas, monospace"
+    font-size="22"
+  >synthexplorer.dev</text>
+</svg>
