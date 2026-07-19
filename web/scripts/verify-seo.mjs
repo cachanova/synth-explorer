@@ -15,6 +15,8 @@ assert.match(
 )
 assert.match(html, /<meta\s+property="og:image"\s+content="https:\/\/www\.synthexplorer\.dev\/og-image\.png"\s*\/?>/)
 assert.match(html, /<meta\s+name="twitter:card"\s+content="summary_large_image"\s*\/?>/)
+assert.match(html, /<h1 class="logo" aria-label="Synth Explorer">/)
+assert.match(html, /Browser-based RTL synthesis &amp; circuit analysis/)
 
 const jsonLdMatch = html.match(
   /<script type="application\/ld\+json">\s*([\s\S]*?)\s*<\/script>/,

@@ -100,12 +100,13 @@
         aria-label="Loading Synth Explorer"
       >
         <header class="app-header">
-          <span class="logo">
+          <h1 class="logo" aria-label="Synth Explorer">
             <img class="brand-mark" src="/brand-mark.svg" alt="" />
             <span>Synth <span class="accent">Explorer</span></span>
-          </span>
+          </h1>
+          <p class="tagline">Browser-based RTL synthesis &amp; circuit analysis</p>
         </header>
-        <div class="split" aria-hidden="true">
+        <main class="split" aria-hidden="true">
           <div class="boot-pane boot-pane-left">
             <div class="boot-toolbar"></div>
             <div class="boot-file-bar"></div>
@@ -115,7 +116,7 @@
           <div class="boot-pane boot-pane-right">
             <div class="boot-tabs"></div>
           </div>
-        </div>
+        </main>
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
