@@ -903,6 +903,16 @@ a:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.error-location {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  border-radius: 3px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--red) 10%, transparent);
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 10px;
+}
 .error-log-label {
   flex: 0 0 auto;
   margin-left: auto;

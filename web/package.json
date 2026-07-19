@@ -19,9 +19,12 @@
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "0.4.2",
+    "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/commands": "^6.10.4",
     "@codemirror/language": "^6.12.4",
     "@codemirror/legacy-modes": "^6.5.3",
+    "@codemirror/lint": "^6.9.7",
+    "@codemirror/search": "^6.7.1",
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.6",
     "@lezer/highlight": "^1.2.3",
@@ -29,7 +32,6 @@
     "@tanstack/react-virtual": "^3.14.6",
     "@vercel/analytics": "2.0.1",
     "@vercel/speed-insights": "2.0.0",
-    "codemirror": "^6.0.2",
     "elkjs": "^0.11.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"

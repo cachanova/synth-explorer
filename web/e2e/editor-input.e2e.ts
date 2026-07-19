@@ -48,6 +48,67 @@ test('auto-indents begin blocks and aligns end while typing', async ({ page }) =
   expect(await lineText(editor, 3)).toBe('  end')
 })
 
+test('auto-aligns CodeMirror Verilog block closing keywords', async ({
+  page,
+}) => {
+  const editor = page.locator('.cm-content')
+  const pairs = [
+    ['module top;', 'endmodule'],
+    ['generate', 'endgenerate'],
+    ['function automatic logic f;', 'endfunction'],
+    ['task run;', 'endtask'],
+    ['case (sel)', 'endcase'],
+    ['casex (sel)', 'endcase'],
+    ['casez (sel)', 'endcase'],
+    ['class packet;', 'endclass'],
+    ['interface bus;', 'endinterface'],
+    ['package defs;', 'endpackage'],
+    ['program test;', 'endprogram'],
+    ['property p;', 'endproperty'],
+    ['sequence s;', 'endsequence'],
+    ['covergroup cg;', 'endgroup'],
+    ['checker c;', 'endchecker'],
+    ['clocking cb;', 'endclocking'],
+    ['config cfg;', 'endconfig'],
+    ['primitive p (o, i);', 'endprimitive'],
+    ['specify', 'endspecify'],
+    ['table', 'endtable'],
+    ['begin', 'end'],
+    ['do', 'while'],
+    ['fork', 'join'],
+    ['fork', 'join_any'],
+    ['fork', 'join_none'],
+  ] as const
+
+  for (const [opener, closer] of pairs) {
+    await replaceEditorText(page, `${opener}\n  `)
+    await editor.type(closer)
+    expect(await lineText(editor, 1), `${opener} should align ${closer}`).toBe(
+      closer,
+    )
+  }
+})
+
+test('provides standard close-bracket and in-editor search behavior', async ({
+  page,
+}) => {
+  const editor = page.locator('.cm-content')
+  await replaceEditorText(page, 'module top;\n  wire ready = ')
+  await editor.type('(')
+  expect(await lineText(editor, 1)).toBe('  wire ready = ()')
+
+  await editor.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f')
+  const search = page.locator('.cm-search')
+  await expect(search).toBeVisible()
+  await search
+    .getByRole('textbox', { name: 'Find', exact: true })
+    .pressSequentially('module')
+  await expect(page.locator('.cm-searchMatch')).toHaveCount(1)
+  await editor.focus()
+  await editor.press('Escape')
+  await expect(search).toHaveCount(0)
+})
+
 test('enables and remembers Vim keybindings', async ({ page }) => {
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('radio', { name: 'Vim', exact: true }).click()
@@ -66,6 +127,13 @@ test('enables and remembers Vim keybindings', async ({ page }) => {
 
   await editor.press('Tab')
   expect(await editorText(editor)).toBe(afterInsert)
+
+  await editor.press('v')
+  const beforeVisualTab = await editorText(editor)
+  await editor.press('Tab')
+  expect(await editorText(editor)).toBe(beforeVisualTab)
+  await editor.press('Escape')
+
   await editor.press('x')
   expect(await editorText(editor)).not.toBe(afterInsert)
 

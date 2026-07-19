@@ -27,6 +27,10 @@ import { createLatestGuard } from './lib/latest'
 import { mergeComputerFiles } from './lib/computerFiles'
 import { designSrcSpans, type SrcSpan } from './lib/src'
 import {
+  firstYosysSourceError,
+  type SynthesisDiagnostic,
+} from './lib/yosysDiagnostics'
+import {
   loadEditorKeymapPreference,
   loadResetConfirmationPreference,
   markWorkspaceResetPending,
@@ -172,7 +176,12 @@ export interface Store {
   synthesizing: boolean
   design: SynthesizeResponse | null
   analysisState: AnalysisState
-  error: { message: string; log?: string; status?: number } | null
+  error: {
+    message: string
+    log?: string
+    status?: number
+    diagnostic?: SynthesisDiagnostic
+  } | null
 
   // tabs
   activeTab: TabId
@@ -332,6 +341,7 @@ export function StoreProvider({
     inputRevisionRef.current = revision
     queuedInputRef.current = null
     synthesisAbortRef.current?.abort()
+    setError(null)
     setInputRevision(revision)
   }, [])
 
@@ -710,7 +720,15 @@ export function StoreProvider({
         } catch (e) {
           if (!(e instanceof DOMException && e.name === 'AbortError')) {
             const err = e as api.ApiRequestError
-            setError({ message: err.message, log: err.log, status: err.status })
+            setError({
+              message: err.message,
+              log: err.log,
+              status: err.status,
+              diagnostic: firstYosysSourceError(
+                err.log,
+                running.request.files.map((file) => file.name),
+              ),
+            })
             // Preserve the last valid design and graph. Their input key remains
             // unchanged, so source cross-probing stays disabled while stale.
           }

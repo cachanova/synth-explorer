@@ -358,7 +358,7 @@ test('source selections and Focus use the in-browser exploration worker', async 
     ),
   ).toEqual(fullNodeIds)
 
-  await page.getByRole('tab', { name: 'Schematic', exact: true }).press('Escape')
+  await page.locator('.cm-content').press('Escape')
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
@@ -380,6 +380,8 @@ test('keeps synthesis failures compact until the full log is requested', async (
   await expect(banner).toBeVisible({ timeout: 120_000 })
   const details = banner.locator('details')
   await expect(banner.locator('.synth-icon')).toBeVisible()
+  await expect(banner.locator('.error-location')).toHaveText('design.sv:1')
+  await expect(editor.locator('.cm-lintRange-error')).toBeVisible()
   await expect(banner.locator('.bub')).toHaveCount(0)
   await expect(details).not.toHaveAttribute('open', '')
   await expect(banner.locator('pre')).toBeHidden()
@@ -391,5 +393,13 @@ test('keeps synthesis failures compact until the full log is requested', async (
   await expect(details).toHaveAttribute('open', '')
   await expect(banner.locator('pre')).toBeVisible()
   await expect(banner.locator('pre')).not.toBeEmpty()
+
+  await editor.fill(
+    "module top(output logic y); assign y = 1'b0; endmodule",
+  )
+  await page.waitForTimeout(0)
+  expect(await banner.count()).toBe(0)
+  expect(await editor.locator('.cm-lintRange-error').count()).toBe(0)
+  await waitForAnalysisReady(page)
   expect(apiRequests).toEqual([])
 })

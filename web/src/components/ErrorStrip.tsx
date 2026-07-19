@@ -11,6 +11,7 @@ const KIND_BY_STATUS: Record<number, string> = {
 export function ErrorStrip() {
   const err = useStore((store) => store.error)
   if (!err) return null
+  const diagnostic = err.diagnostic
 
   const kind = (err.status && KIND_BY_STATUS[err.status]) || 'Error'
   const summary = `${kind}${err.status ? ` (${err.status})` : ''}: ${err.message}`
@@ -22,6 +23,11 @@ export function ErrorStrip() {
           <summary className="error-summary" title={summary}>
             <SynthIcon size={18} tone="mono" />
             <span className="error-summary-text">{summary}</span>
+            {diagnostic && (
+              <span className="error-location">
+                {diagnostic.file}:{diagnostic.line}
+              </span>
+            )}
             <span className="error-log-label">log</span>
           </summary>
           <pre>{err.log}</pre>
@@ -30,6 +36,11 @@ export function ErrorStrip() {
         <div className="error-summary" title={summary}>
           <SynthIcon size={18} tone="mono" />
           <span className="error-summary-text">{summary}</span>
+          {diagnostic && (
+            <span className="error-location">
+              {diagnostic.file}:{diagnostic.line}
+            </span>
+          )}
         </div>
       )}
     </div>
