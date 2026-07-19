@@ -70,13 +70,17 @@ test('enables and remembers Vim keybindings', async ({ page }) => {
   expect(await editorText(editor)).not.toBe(afterInsert)
 
   const beforeReplace = await editorText(editor)
-  const tabsBeforeReplace = beforeReplace.split('\t').length - 1
+  const replaceMarker = '\tvim'
+  const replaceAt = beforeReplace.lastIndexOf(replaceMarker) + replaceMarker.length - 1
+  expect(replaceAt).toBeGreaterThanOrEqual(replaceMarker.length - 1)
   await editor.press('R')
   await expect(page.locator('.cm-vim-panel')).toContainText('--REPLACE--')
   await editor.press('Tab')
   await editor.press('Escape')
   const afterReplace = await editorText(editor)
-  expect(afterReplace.split('\t').length - 1).toBe(tabsBeforeReplace + 1)
+  expect(afterReplace).toBe(
+    `${beforeReplace.slice(0, replaceAt)}\t${beforeReplace.slice(replaceAt)}`,
+  )
 
   await page.reload()
   await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')
