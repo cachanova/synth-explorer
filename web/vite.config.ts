@@ -12,7 +12,7 @@ export default defineConfig({
           groups: [
             {
               name: 'editor',
-              test: /node_modules[\\/](@codemirror|@lezer|@marijn|style-mod|w3c-keyname)[\\/]/,
+              test: /node_modules[\\/](?:@codemirror[\\/](?!lint[\\/])|@lezer[\\/]|@marijn[\\/]|style-mod[\\/]|w3c-keyname[\\/])/,
             },
           ],
         },

@@ -48,9 +48,16 @@ const MODE_META: { id: Mode; label: string; icon: ReactNode }[] = [
 export function SettingsMenu() {
   const { palette, mode, resolvedMode, setPalette, setMode } = useTheme()
   const store = useStore(
-    ({ confirmWorkspaceReset, setConfirmWorkspaceReset }) => ({
+    ({
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
+      editorKeymap,
+      setEditorKeymap,
+    }) => ({
+      confirmWorkspaceReset,
+      setConfirmWorkspaceReset,
+      editorKeymap,
+      setEditorKeymap,
     }),
     shallowEqual,
   )
@@ -115,6 +122,33 @@ export function SettingsMenu() {
                   {m.label}
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-head">Editor</div>
+            <div
+              className="seg editor-keymap-seg"
+              role="radiogroup"
+              aria-label="Editor keybindings"
+            >
+              {(['standard', 'vim'] as const).map((keymap) => {
+                const label = keymap === 'standard' ? 'Standard' : 'Vim'
+                return (
+                  <button
+                    key={keymap}
+                    type="button"
+                    role="radio"
+                    aria-checked={store.editorKeymap === keymap}
+                    className={`seg-btn${
+                      store.editorKeymap === keymap ? ' active' : ''
+                    }`}
+                    onClick={() => store.setEditorKeymap(keymap)}
+                  >
+                    {label}
+                  </button>
+                )
+              })}
             </div>
           </div>
 

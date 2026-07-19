@@ -10,14 +10,35 @@ import {
 import {
   Decoration,
   EditorView,
-  keymap,
-  lineNumbers,
+  drawSelection,
   highlightActiveLine,
   highlightActiveLineGutter,
+  keymap,
+  lineNumbers,
   type DecorationSet,
 } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
-import { HighlightStyle, StreamLanguage, syntaxHighlighting } from '@codemirror/language'
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentLess,
+  insertTab,
+} from '@codemirror/commands'
+import {
+  bracketMatching,
+  HighlightStyle,
+  StreamLanguage,
+  indentOnInput,
+  syntaxHighlighting,
+} from '@codemirror/language'
+import {
+  closeBrackets,
+  closeBracketsKeymap,
+} from '@codemirror/autocomplete'
+import {
+  highlightSelectionMatches,
+  searchKeymap,
+} from '@codemirror/search'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { tags } from '@lezer/highlight'
 import type { EditorHighlight } from '../store'
@@ -108,6 +129,7 @@ const editorThemes: Record<'light' | 'dark', Extension> = {
   light: createEditorTheme(false),
   dark: createEditorTheme(true),
 }
+let vimKeysConfigured = false
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
@@ -202,17 +224,23 @@ export function Editor() {
       activeFileName,
       docRevision,
       editorHighlight,
+      error,
       updateFileContent,
       setSourceSelection,
       clearGraphSelection,
+      editorKeymap,
+      setEditorKeymap,
     }) => ({
       files,
       activeFileName,
       docRevision,
       editorHighlight,
+      error,
       updateFileContent,
       setSourceSelection,
       clearGraphSelection,
+      editorKeymap,
+      setEditorKeymap,
     }),
     shallowEqual,
   )
@@ -231,6 +259,15 @@ export function Editor() {
   const resolvedModeRef = useRef(resolvedMode)
   resolvedModeRef.current = resolvedMode
   const appliedModeRef = useRef(resolvedMode)
+  const editorKeymapRef = useRef(store.editorKeymap)
+  editorKeymapRef.current = store.editorKeymap
+  const vimCompartment = useRef(new Compartment())
+  const vimLoadRef = useRef(0)
+  const vimTypingRef = useRef(false)
+  const diagnosticsLoadRef = useRef(0)
+  const setDiagnosticsRef = useRef<
+    typeof import('@codemirror/lint')['setDiagnostics'] | null
+  >(null)
 
   // create the view once
   useEffect(() => {
@@ -259,23 +296,45 @@ export function Editor() {
       {
         key: 'Escape',
         preventDefault: true,
-        run: () => {
-          storeRef.current.clearGraphSelection()
-          return true
-        },
+        run: () => true,
       },
     ])
+    const clearGraphSelectionOnEscape = EditorView.domEventHandlers({
+      keydown(event) {
+        if (event.key === 'Escape') storeRef.current.clearGraphSelection()
+        return false
+      },
+    })
+    const inVimCommandMode = () =>
+      editorKeymapRef.current === 'vim' && !vimTypingRef.current
 
     const extensions: Extension[] = [
+      clearGraphSelectionOnEscape,
+      vimCompartment.current.of([]),
       lineNumbers(),
       highlightActiveLine(),
       highlightActiveLineGutter(),
+      drawSelection(),
       history(),
       StreamLanguage.define(verilog),
+      indentOnInput(),
+      closeBrackets(),
+      bracketMatching(),
+      highlightSelectionMatches(),
       themeCompartment.current.of(editorThemes[resolvedModeRef.current]),
       highlightField,
+      keymap.of([
+        {
+          key: 'Tab',
+          run: (view) => (inVimCommandMode() ? true : insertTab(view)),
+          shift: (view) => (inVimCommandMode() ? true : indentLess(view)),
+        },
+        ...closeBracketsKeymap,
+        ...defaultKeymap,
+        ...searchKeymap,
+        ...historyKeymap,
+      ]),
       editorKeymap,
-      keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
       updateListener,
       EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),
     ]
@@ -301,6 +360,49 @@ export function Editor() {
     appliedModeRef.current = resolvedMode
   }, [resolvedMode])
 
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const load = ++vimLoadRef.current
+    if (store.editorKeymap === 'standard') {
+      vimTypingRef.current = false
+      view.dispatch({ effects: vimCompartment.current.reconfigure([]) })
+      return
+    }
+
+    void import('@replit/codemirror-vim')
+      .then(({ getCM, vim, Vim }) => {
+        if (
+          load !== vimLoadRef.current ||
+          editorKeymapRef.current !== 'vim' ||
+          viewRef.current !== view
+        ) {
+          return
+        }
+        if (!vimKeysConfigured) {
+          Vim.map('<Tab>', '<C-i>', 'normal')
+          vimKeysConfigured = true
+        }
+        view.dispatch({
+          effects: vimCompartment.current.reconfigure(vim({ status: true })),
+        })
+        getCM(view)?.on('vim-mode-change', ({ mode }: { mode: string }) => {
+          vimTypingRef.current = mode === 'insert' || mode === 'replace'
+        })
+      })
+      .catch((error: unknown) => {
+        console.error('Failed to load Vim keybindings', error)
+        vimTypingRef.current = false
+        if (
+          load === vimLoadRef.current &&
+          editorKeymapRef.current === 'vim' &&
+          viewRef.current === view
+        ) {
+          storeRef.current.setEditorKeymap('standard')
+        }
+      })
+  }, [store.editorKeymap])
+
   // reset document when the active file identity changes or its content is
   // replaced outside the editor (docRevision covers reloading the same file)
   useEffect(() => {
@@ -316,6 +418,62 @@ export function Editor() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store.activeFileName, store.docRevision])
+
+  // Yosys reports reliable source lines for frontend errors. Load CodeMirror's
+  // diagnostics UI only after such an error occurs so it stays off the normal
+  // editor startup path.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const load = ++diagnosticsLoadRef.current
+    const source = store.error?.diagnostic
+    const diagnostic =
+      source?.file === store.activeFileName
+        ? (() => {
+            const lineNumber = Math.min(
+              Math.max(source.line, 1),
+              view.state.doc.lines,
+            )
+            const line = view.state.doc.line(lineNumber)
+            const from =
+              source.column == null
+                ? line.from
+                : Math.min(line.from + source.column - 1, line.to)
+            return {
+              from,
+              to: source.column == null ? line.to : Math.min(from + 1, line.to),
+              severity: 'error' as const,
+              source: 'Yosys',
+              message: source.message,
+            }
+          })()
+        : null
+
+    const apply = (
+      setDiagnostics: typeof import('@codemirror/lint')['setDiagnostics'],
+    ) => {
+      if (load !== diagnosticsLoadRef.current || viewRef.current !== view) return
+      view.dispatch(setDiagnostics(view.state, diagnostic ? [diagnostic] : []))
+      if (diagnostic) {
+        view.dispatch({
+          effects: EditorView.scrollIntoView(diagnostic.from, { y: 'center' }),
+        })
+      }
+    }
+
+    if (setDiagnosticsRef.current) {
+      apply(setDiagnosticsRef.current)
+    } else if (diagnostic) {
+      void import('@codemirror/lint')
+        .then(({ setDiagnostics }) => {
+          setDiagnosticsRef.current = setDiagnostics
+          apply(setDiagnostics)
+        })
+        .catch((error: unknown) => {
+          console.error('Failed to load editor diagnostics', error)
+        })
+    }
+  }, [store.activeFileName, store.docRevision, store.error])
 
   // apply cross-probe highlight
   useEffect(() => {

@@ -27,10 +27,17 @@ import { createLatestGuard } from './lib/latest'
 import { mergeComputerFiles } from './lib/computerFiles'
 import { designSrcSpans, type SrcSpan } from './lib/src'
 import {
+  firstYosysSourceError,
+  type SynthesisDiagnostic,
+} from './lib/yosysDiagnostics'
+import {
+  loadEditorKeymapPreference,
   loadResetConfirmationPreference,
   markWorkspaceResetPending,
+  saveEditorKeymapPreference,
   saveResetConfirmationPreference,
   saveWorkspace,
+  type EditorKeymap,
   type WorkspaceState,
 } from './lib/workspaceStorage'
 import {
@@ -162,12 +169,19 @@ export interface Store {
   loadExample: (ex: Example) => void
   confirmWorkspaceReset: boolean
   setConfirmWorkspaceReset: (enabled: boolean) => void
+  editorKeymap: EditorKeymap
+  setEditorKeymap: (keymap: EditorKeymap) => void
 
   // synthesis
   synthesizing: boolean
   design: SynthesizeResponse | null
   analysisState: AnalysisState
-  error: { message: string; log?: string; status?: number } | null
+  error: {
+    message: string
+    log?: string
+    status?: number
+    diagnostic?: SynthesisDiagnostic
+  } | null
 
   // tabs
   activeTab: TabId
@@ -241,6 +255,9 @@ export function StoreProvider({
   const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
   const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
     loadResetConfirmationPreference,
+  )
+  const [editorKeymap, setEditorKeymapState] = useState(
+    loadEditorKeymapPreference,
   )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
@@ -324,6 +341,7 @@ export function StoreProvider({
     inputRevisionRef.current = revision
     queuedInputRef.current = null
     synthesisAbortRef.current?.abort()
+    setError(null)
     setInputRevision(revision)
   }, [])
 
@@ -591,6 +609,11 @@ export function StoreProvider({
     saveResetConfirmationPreference(enabled)
   }, [])
 
+  const setEditorKeymap = useCallback((keymap: EditorKeymap) => {
+    setEditorKeymapState(keymap)
+    saveEditorKeymapPreference(keymap)
+  }, [])
+
   const setTop = useCallback(
     (value: string) => {
       if (topRef.current === value) return
@@ -697,7 +720,15 @@ export function StoreProvider({
         } catch (e) {
           if (!(e instanceof DOMException && e.name === 'AbortError')) {
             const err = e as api.ApiRequestError
-            setError({ message: err.message, log: err.log, status: err.status })
+            setError({
+              message: err.message,
+              log: err.log,
+              status: err.status,
+              diagnostic: firstYosysSourceError(
+                err.log,
+                running.request.files.map((file) => file.name),
+              ),
+            })
             // Preserve the last valid design and graph. Their input key remains
             // unchanged, so source cross-probing stays disabled while stale.
           }
@@ -918,6 +949,8 @@ export function StoreProvider({
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
+      editorKeymap,
+      setEditorKeymap,
       synthesizing,
       design,
       analysisState,
@@ -958,6 +991,8 @@ export function StoreProvider({
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
+      editorKeymap,
+      setEditorKeymap,
       synthesizing,
       design,
       analysisState,
