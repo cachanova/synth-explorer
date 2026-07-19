@@ -252,6 +252,7 @@ export function Editor() {
   editorKeymapRef.current = store.editorKeymap
   const vimCompartment = useRef(new Compartment())
   const vimLoadRef = useRef(0)
+  const vimTypingRef = useRef(false)
 
   // create the view once
   useEffect(() => {
@@ -289,9 +290,8 @@ export function Editor() {
         return false
       },
     })
-    const inVimCommandMode = (view: EditorView) =>
-      editorKeymapRef.current === 'vim' &&
-      view.scrollDOM.classList.contains('cm-vimMode')
+    const inVimCommandMode = () =>
+      editorKeymapRef.current === 'vim' && !vimTypingRef.current
 
     const extensions: Extension[] = [
       lineNumbers(),
@@ -309,8 +309,8 @@ export function Editor() {
       keymap.of([
         {
           key: 'Tab',
-          run: (view) => (inVimCommandMode(view) ? true : insertTab(view)),
-          shift: (view) => (inVimCommandMode(view) ? true : indentLess(view)),
+          run: (view) => (inVimCommandMode() ? true : insertTab(view)),
+          shift: (view) => (inVimCommandMode() ? true : indentLess(view)),
         },
         ...defaultKeymap,
         ...historyKeymap,
@@ -345,12 +345,13 @@ export function Editor() {
     if (!view) return
     const load = ++vimLoadRef.current
     if (store.editorKeymap === 'standard') {
+      vimTypingRef.current = false
       view.dispatch({ effects: vimCompartment.current.reconfigure([]) })
       return
     }
 
     void import('@replit/codemirror-vim')
-      .then(({ vim, Vim }) => {
+      .then(({ getCM, vim, Vim }) => {
         if (
           load !== vimLoadRef.current ||
           editorKeymapRef.current !== 'vim' ||
@@ -365,9 +366,13 @@ export function Editor() {
         view.dispatch({
           effects: vimCompartment.current.reconfigure(vim({ status: true })),
         })
+        getCM(view)?.on('vim-mode-change', ({ mode }: { mode: string }) => {
+          vimTypingRef.current = mode === 'insert' || mode === 'replace'
+        })
       })
       .catch((error: unknown) => {
         console.error('Failed to load Vim keybindings', error)
+        vimTypingRef.current = false
         if (
           load === vimLoadRef.current &&
           editorKeymapRef.current === 'vim' &&
