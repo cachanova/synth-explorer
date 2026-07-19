@@ -47,7 +47,7 @@
     font-family="system-ui, -apple-system, 'Segoe UI', sans-serif"
     font-size="30"
     font-weight="500"
-  >Online Verilog &amp; SystemVerilog synthesis</text>
+  >Online RTL synthesis, exploration &amp; analysis</text>
   <text
     x="101"
     y="394"

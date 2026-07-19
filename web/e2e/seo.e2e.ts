@@ -6,7 +6,7 @@ test('publishes crawlable metadata and semantic product identity', async ({ page
   await page.goto('/')
 
   await expect(page).toHaveTitle(
-    'Synth Explorer — Online Verilog & SystemVerilog Synthesis',
+    'Synth Explorer - Online RTL Synthesis Exploration and Analysis',
   )
   await expect(page.getByRole('heading', { level: 1, name: 'Synth Explorer' })).toBeVisible()
   await expect(
@@ -15,7 +15,7 @@ test('publishes crawlable metadata and semantic product identity', async ({ page
 
   await expect(page.locator('meta[name="description"]')).toHaveAttribute(
     'content',
-    /Synthesize Verilog and SystemVerilog with Yosys/,
+    /Synthesize RTL in your browser and explore logic paths/,
   )
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
     'href',

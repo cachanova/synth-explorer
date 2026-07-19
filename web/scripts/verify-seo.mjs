@@ -2,11 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 
 const canonicalUrl = 'https://www.synthexplorer.dev/'
-const expectedTitle = 'Synth Explorer — Online Verilog & SystemVerilog Synthesis'
+const expectedTitle = 'Synth Explorer - Online RTL Synthesis Exploration and Analysis'
 const distUrl = new URL('../dist/', import.meta.url)
 
 const html = await readFile(new URL('index.html', distUrl), 'utf8')
-assert.match(html, new RegExp(`<title>${expectedTitle.replace('&', '&amp;')}</title>`))
+assert.match(html, new RegExp(`<title>${expectedTitle}</title>`))
 assert.match(html, /<meta\s+name="description"\s+content="[^"]+"\s*\/?>/)
 assert.match(html, /<meta\s+name="robots"\s+content="index, follow"\s*\/?>/)
 assert.match(
