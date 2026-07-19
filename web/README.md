@@ -40,7 +40,9 @@ The editor workspace (open source files, active file, top, mode, and flags) is
 saved in IndexedDB and restored after a refresh. The trash button resets that
 workspace to the default `design.sv` while preserving the selected synthesis
 mode and flags; its confirmation can be disabled in the warning and re-enabled
-from Settings.
+from Settings. The file-tab toolbar can load one or more local `.v`/`.sv` files,
+save the active file, or save every open file to a chosen directory. When the
+browser does not expose native file-save pickers, save actions use downloads.
 
 Completed synthesis results use a separate browser cache keyed by the exact
 validated RTL, top, mode, flags, Yosys version, and artifact schema. Both stores

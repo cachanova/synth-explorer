@@ -622,6 +622,57 @@ a:hover {
   border-color: transparent;
   color: var(--text);
 }
+.computer-file-actions {
+  display: flex;
+  flex: 0 0 auto;
+  border-left: 1px solid var(--border);
+}
+.computer-file-input {
+  display: none;
+}
+.file-io-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--bg-1);
+  color: var(--text-faint);
+}
+.file-io-button:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--bg-2);
+  color: var(--text);
+}
+.file-io-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+.file-io-button svg {
+  width: 15px;
+  height: 15px;
+}
+.file-transfer-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--red) 10%, var(--bg-1));
+  color: var(--red);
+  font-size: 11px;
+}
+.file-transfer-error button {
+  border: none;
+  background: none;
+  color: inherit;
+  padding: 0 4px;
+}
 .file-action-menu {
   display: flex;
   align-items: center;

@@ -23,6 +23,7 @@ import {
 } from './lib/liveAnalysis'
 import { displayNodeName } from './lib/prettyType'
 import { createLatestGuard } from './lib/latest'
+import { mergeComputerFiles } from './lib/computerFiles'
 import { designSrcSpans, type SrcSpan } from './lib/src'
 import {
   loadResetConfirmationPreference,
@@ -169,6 +170,7 @@ export interface Store {
   setActiveFileName: (name: string) => void
   updateFileContent: (name: string, content: string) => void
   addFile: () => void
+  importFiles: (files: DesignFile[]) => void
   renameFile: (oldName: string, newName: string) => void
   deleteFile: (name: string) => void
   resetWorkspace: () => void
@@ -492,6 +494,36 @@ export function StoreProvider({
     setSourceSelectionState(selection)
     setConeReq((request) => (request?.kind === 'source' ? null : request))
   }, [cancelSourceProbe, markInputChanged])
+
+  const importFiles = useCallback(
+    (imported: DesignFile[]) => {
+      if (imported.length === 0) return
+      cancelSourceProbe()
+      const current = filesRef.current
+      const next = mergeComputerFiles(current, imported)
+      const contentChanged =
+        next.length !== current.length ||
+        next.some(
+          (file, index) =>
+            file.name !== current[index]?.name ||
+            file.content !== current[index]?.content,
+        )
+      filesRef.current = next
+      if (contentChanged) {
+        markInputChanged()
+        setFiles(next)
+      }
+      setDocRevision((revision) => revision + 1)
+      const active = imported[0].name
+      setActiveFileNameState(active)
+      const selection = { file: active, startLine: 1, endLine: 1 }
+      sourceSelectionRef.current = selection
+      sourceSelectionActiveRef.current = false
+      setSourceSelectionState(selection)
+      setConeReq((request) => (request?.kind === 'source' ? null : request))
+    },
+    [cancelSourceProbe, markInputChanged],
+  )
 
   const renameFile = useCallback(
     (oldName: string, newName: string) => {
@@ -900,6 +932,7 @@ export function StoreProvider({
       setActiveFileName,
       updateFileContent,
       addFile,
+      importFiles,
       renameFile,
       deleteFile,
       resetWorkspace,
@@ -939,6 +972,7 @@ export function StoreProvider({
       setActiveFileName,
       updateFileContent,
       addFile,
+      importFiles,
       renameFile,
       deleteFile,
       resetWorkspace,

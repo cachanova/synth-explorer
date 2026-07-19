@@ -3,9 +3,16 @@ import {
   useId,
   useRef,
   useState,
+  type ChangeEvent,
   type FormEvent,
   type KeyboardEvent,
 } from 'react'
+import {
+  readComputerFiles,
+  saveComputerFile,
+  saveComputerFiles,
+  SOURCE_FILE_ACCEPT,
+} from '../lib/computerFiles'
 import { shallowEqual, useStore } from '../useStore'
 
 type FileAction = {
@@ -22,6 +29,56 @@ function TrashIcon() {
   )
 }
 
+function OpenFileIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h6l2 2h10v10H3z" />
+      <path d="M12 11v5M9.5 13.5H14.5" />
+    </svg>
+  )
+}
+
+function SaveIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M5 3h12l2 2v16H5zM8 3v6h8V3M8 21v-7h8v7" />
+    </svg>
+  )
+}
+
+function SaveAllIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M7 3h10l2 2v16H7zM10 3v6h6V3M10 21v-7h6v7" />
+      <path d="M4 6v12" />
+    </svg>
+  )
+}
+
 export function FileTabs() {
   const store = useStore(
     ({
@@ -29,6 +86,7 @@ export function FileTabs() {
       activeFileName,
       setActiveFileName,
       addFile,
+      importFiles,
       renameFile,
       deleteFile,
       resetWorkspace,
@@ -39,6 +97,7 @@ export function FileTabs() {
       activeFileName,
       setActiveFileName,
       addFile,
+      importFiles,
       renameFile,
       deleteFile,
       resetWorkspace,
@@ -49,6 +108,7 @@ export function FileTabs() {
   )
   const tabRefs = useRef<Array<HTMLDivElement | null>>([])
   const renameInputRef = useRef<HTMLInputElement | null>(null)
+  const computerFileInputRef = useRef<HTMLInputElement | null>(null)
   const [action, setAction] = useState<FileAction | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const resetButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -57,6 +117,7 @@ export function FileTabs() {
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null)
   const [warningOpen, setWarningOpen] = useState(false)
   const [dontShowAgain, setDontShowAgain] = useState(false)
+  const [transferError, setTransferError] = useState<string | null>(null)
   const warningTitleId = useId()
   const warningDescriptionId = useId()
 
@@ -211,6 +272,50 @@ export function FileTabs() {
     window.requestAnimationFrame(() => resetButtonRef.current?.focus())
   }
 
+  const importComputerFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.currentTarget
+    const selected = input.files
+    if (!selected?.length) return
+    setTransferError(null)
+    try {
+      store.importFiles(await readComputerFiles(selected))
+    } catch (error) {
+      setTransferError(
+        error instanceof Error
+          ? error.message
+          : 'Could not load the selected files.',
+      )
+    } finally {
+      input.value = ''
+    }
+  }
+
+  const activeFile =
+    store.files.find((file) => file.name === store.activeFileName) ??
+    store.files[0]
+
+  const saveActiveFile = async () => {
+    setTransferError(null)
+    try {
+      await saveComputerFile(activeFile)
+    } catch (error) {
+      setTransferError(
+        error instanceof Error ? error.message : 'Could not save the file.',
+      )
+    }
+  }
+
+  const saveAllFiles = async () => {
+    setTransferError(null)
+    try {
+      await saveComputerFiles(store.files)
+    } catch (error) {
+      setTransferError(
+        error instanceof Error ? error.message : 'Could not save the files.',
+      )
+    }
+  }
+
   return (
     <>
       <div className="file-tabs-bar">
@@ -253,6 +358,45 @@ export function FileTabs() {
             +
           </button>
         </div>
+        <div className="computer-file-actions">
+          <input
+            ref={computerFileInputRef}
+            className="computer-file-input"
+            type="file"
+            accept={SOURCE_FILE_ACCEPT}
+            multiple
+            onChange={importComputerFiles}
+          />
+          <button
+            type="button"
+            className="file-io-button"
+            aria-label="Load files from computer"
+            title="Load .v or .sv files from computer"
+            onClick={() => computerFileInputRef.current?.click()}
+          >
+            <OpenFileIcon />
+          </button>
+          <button
+            type="button"
+            className="file-io-button"
+            aria-label={`Save ${activeFile.name} to computer`}
+            title={`Save ${activeFile.name} to computer`}
+            onClick={() => void saveActiveFile()}
+          >
+            <SaveIcon />
+          </button>
+          {store.files.length > 1 && (
+            <button
+              type="button"
+              className="file-io-button"
+              aria-label="Save all files to computer"
+              title="Save all open files to a folder"
+              onClick={() => void saveAllFiles()}
+            >
+              <SaveAllIcon />
+            </button>
+          )}
+        </div>
         <button
           ref={resetButtonRef}
           type="button"
@@ -264,6 +408,19 @@ export function FileTabs() {
           <TrashIcon />
         </button>
       </div>
+
+      {transferError && (
+        <div className="file-transfer-error" role="alert">
+          <span>{transferError}</span>
+          <button
+            type="button"
+            aria-label="Dismiss file error"
+            onClick={() => setTransferError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {action?.kind === 'rename' && (
         <form
