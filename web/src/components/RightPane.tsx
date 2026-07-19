@@ -17,8 +17,9 @@ const TABS: { id: TabId; label: string }[] = [
 
 export function RightPane() {
   const store = useStore(
-    ({ activeTab, setActiveTab }) => ({
+    ({ activeTab, analysisState, setActiveTab }) => ({
       activeTab,
+      analysisState,
       setActiveTab,
     }),
     shallowEqual,
@@ -44,7 +45,7 @@ export function RightPane() {
   }
 
   return (
-    <div className="pane-right">
+    <div className="pane-right" data-analysis-state={store.analysisState}>
       <div className="tab-bar" role="tablist" aria-label="Analysis views">
         {TABS.map((t, index) => (
           <button

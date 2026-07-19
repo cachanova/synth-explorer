@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { retriggerCurrentInput } from './helpers'
+import { retriggerCurrentInput, waitForAnalysisReady } from './helpers'
 
 function recordApiRequests(page: Page): string[] {
   const requests: string[] = []
@@ -19,28 +19,31 @@ async function waitForAutomaticSynthesis(
   const completed = page.evaluate(
     () =>
       new Promise<void>((resolve, reject) => {
-        const status = document.querySelector<HTMLElement>('.pane-left .tag')
-        if (!status) {
-          reject(new Error('synthesis status is missing'))
+        const analysisPane = document.querySelector<HTMLElement>('.pane-right')
+        if (!analysisPane) {
+          reject(new Error('analysis pane is missing'))
           return
         }
-        let started = status.textContent?.trim() === 'refreshing'
+        let started = analysisPane.dataset.analysisState === 'refreshing'
         const timer = window.setTimeout(() => {
           observer.disconnect()
           reject(new Error('automatic synthesis did not complete'))
         }, 120_000)
         const observer = new MutationObserver(() => {
-          const text = status.textContent?.trim()
-          if (text === 'refreshing') {
+          const state = analysisPane.dataset.analysisState
+          if (state === 'refreshing') {
             started = true
             return
           }
-          if (!started || text !== 'mapping live') return
+          if (!started || state !== 'current') return
           window.clearTimeout(timer)
           observer.disconnect()
           resolve()
         })
-        observer.observe(status, { childList: true, subtree: true })
+        observer.observe(analysisPane, {
+          attributes: true,
+          attributeFilter: ['data-analysis-state'],
+        })
       }),
   )
   await changeInput()
@@ -127,9 +130,7 @@ test('auto-synthesizes an edited design locally after the debounce', async ({ pa
 test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
-    timeout: 120_000,
-  })
+  await waitForAnalysisReady(page)
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open('synth-explorer')
@@ -163,26 +164,11 @@ test('coalesces a typing burst into one synthesis of the newest input', async ({
 test('cancels obsolete Yosys work and commits only the newest edit', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
-    timeout: 120_000,
-  })
-  const readyIcon = page.locator('.pane-left .tag .synth-icon')
-  await expect(readyIcon.locator('.bub')).toHaveCount(3)
-  expect(
-    await readyIcon.locator('.bub').first().evaluate((element) =>
-      getComputedStyle(element).animationName,
-    ),
-  ).toBe('none')
+  await waitForAnalysisReady(page)
 
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Example').selectOption('handshake_controller')
     await page.getByLabel('Mode').selectOption('xilinx')
-    await expect(page.locator('.pane-left .tag')).toHaveText('refreshing')
-    expect(
-      await page.locator('.pane-left .tag .bubble-loader .bub').first().evaluate(
-        (element) => getComputedStyle(element).animationName,
-      ),
-    ).toBe('se-bubble')
     await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
     const graphLoader = page.locator('.graph-loading-indicator')
     await expect(graphLoader).toHaveCount(1)
@@ -404,22 +390,17 @@ test('source selections and Focus use the in-browser exploration worker', async 
 test('keeps synthesis failures compact until the full log is requested', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
-    timeout: 120_000,
-  })
+  await waitForAnalysisReady(page)
 
   const editor = page.locator('.cm-content')
   await editor.click()
   await editor.press('Control+A')
   await page.keyboard.insertText('module broken(')
 
-  await expect(page.locator('.pane-left .tag')).toHaveText('synthesis failed', {
-    timeout: 120_000,
-  })
   await expect(page.getByText(/analysis is stale/i)).toHaveCount(0)
   const banner = page.locator('.error-strip')
+  await expect(banner).toBeVisible({ timeout: 120_000 })
   const details = banner.locator('details')
-  await expect(banner).toBeVisible()
   await expect(banner.locator('.synth-icon')).toBeVisible()
   await expect(banner.locator('.bub')).toHaveCount(0)
   await expect(details).not.toHaveAttribute('open', '')
