@@ -6,10 +6,14 @@ Status: investigation, July 2026. No implementation decision has been made.
 > GHDL 5.0.1's synthesis kernel runs under wasm32 with binder-driven
 > elaboration, synthesizes `numeric_std` and generic designs to netlists
 > byte-identical to native output, and fails cleanly on malformed input.
-> See [`tools/ghdl-wasm-spike/`](../tools/ghdl-wasm-spike/) for artifacts,
-> the full recipe, and the revised follow-up plan: a **two-module pipeline**
-> (GHDL wasm emitting Verilog into the existing `yosys.wasm`) is now a
-> credible alternative to statically linking libghdl into Yosys.
+> **Spike B1 also passed**: a two-module pipeline (GHDL wasm → Verilog with
+> `` `line `` directives → the existing pinned `yosys.wasm`) delivers VHDL
+> source provenance equal to native Verilog input at the app's
+> source-netlist stage (100% of cells), with zero changes to the Yosys
+> build. This is now the recommended integration shape; statically linking
+> libghdl into Yosys is no longer on the critical path. See
+> [`tools/ghdl-wasm-spike/`](../tools/ghdl-wasm-spike/) for artifacts,
+> recipes, measurements, and the productization checklist.
 
 Synth Explorer synthesizes entirely in the browser with a project-owned Yosys
 WebAssembly module (`tools/yosys-wasm/`). Supporting VHDL through

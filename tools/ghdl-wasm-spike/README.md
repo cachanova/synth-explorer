@@ -1,4 +1,11 @@
-# Spike A: GHDL synthesis kernel on wasm32 — PASSED
+# GHDL-on-WASM spikes: A (synth kernel) and B1 (two-module pipeline) — both PASSED
+
+Two sequential spikes executed 2026-07-19. Spike A proved GHDL's synthesis
+kernel runs under wasm32 (details below). Spike B1 then proved the
+two-module integration shape end to end: **VHDL provenance through the
+project's real pinned `yosys.wasm` is equivalent to native Verilog input.**
+See "Spike B1" at the bottom.
+
 
 Executed 2026-07-19 against GHDL 5.0.1. This is the first spike from
 [`docs/VHDL_GHDL_FEASIBILITY.md`](../../docs/VHDL_GHDL_FEASIBILITY.md):
@@ -131,15 +138,71 @@ Run: `node ghdl_synth_test.mjs <ghdl-synth.wasm> <lib/ghdl dir> <top> <files...>
 - Memory behavior on large designs unmeasured (memory grown to 64 MB up
   front in the host).
 
-## Suggested next step (revised Spike B)
+## Spike B1: two-module pipeline — PASSED
 
-Evaluate the two integration shapes against each other before any linking
-work:
+[`b1_pipeline.mjs`](b1_pipeline.mjs) runs the full chain with the
+**project's pinned `yosys.wasm` + `share.tar.gz`** (via Node's WASI):
 
-- **B1 — two modules**: prototype `ghdl.worker.ts` + comment-to-`(* src *)`
-  rewriting, feed `yosys.wasm`, and check end-to-end source mapping
-  quality in the real product pipeline.
-- **B2 — one module**: only if B1's provenance or double-synthesis cost
-  disappoints, attempt statically linking libghdl + the ghdl-yosys-plugin
-  shim into the WASI-SDK Yosys build (the original Spike B; harder:
-  two toolchains, one memory, one libc).
+```
+VHDL --ghdl-synth.wasm--> Verilog netlist with /* file:line:col */ comments
+     --line_directives.mjs--> Verilog with `line directives
+     --yosys.wasm--> source-netlist.json + netlist.json  (app's script shape)
+```
+
+The provenance mechanism is [`line_directives.mjs`](line_directives.mjs):
+GHDL's location comments become Verilog `` `line `` directives, which
+`read_verilog` honors — so cells get **native** yosys `src` attributes
+pointing at the VHDL file and line (`fsm.vhdl:33.18-33.35`), in exactly the
+format `web/src/lib/src.ts` already parses, including `|`-joined
+multi-fragment spans for case-derived muxes. (Attribute injection
+`(* src = ... *)` was tried first and rejected: the Verilog-2005 grammar
+does not allow attributes on continuous assigns.)
+
+Measured on the test designs, against a hand-written native-Verilog
+baseline run through the identical script:
+
+| Design | source-netlist cells with VHDL src | gates netlist |
+| --- | --- | --- |
+| `counter.vhdl` | **4/4 (100%)** — add/mux/dff at their VHDL lines | 12/34 — all FFs anchored |
+| `counter` native Verilog baseline | 4/4 (100%) | 12/34 — identical |
+| `fsm.vhdl` | **21/21 (100%)** — per-case-arm lines (27, 28, 29, 32, …) | 10/45 — FFs anchored |
+| `adder8.vhdl` | 2/2 (100%) | 8/42 — FFs anchored |
+
+Combinational cells losing `src` after `synth -flatten` (ABC) is identical
+behavior to native Verilog input — the app already compensates via the
+source netlist. Full pipeline wall time (three cold Node processes + tar
+unpack): ~1.2 s; both wasm stages together are well under the app's
+interactive budget once workers are warm.
+
+Known gaps for productization:
+
+- Port/wire declarations precede the first `` `line `` directive, so port
+  wires keep generated-file locations (port *names* still match the VHDL
+  entity). Emitting a directive for the entity line would need GHDL to
+  annotate the module header — or a small GHDL patch.
+- Column spans in the resulting attributes come from the generated
+  Verilog's layout; lines are exact, columns are not meaningful.
+- Yosys re-synthesizes GHDL's already-generic netlist. For gates/FPGA
+  modes that is the desired behavior anyway; the "rtl" view will show
+  GHDL's netlist structure rather than original VHDL idioms.
+- Multi-file designs, packages, VHDL-2008 flags, and mixed VHDL+Verilog
+  remain untested.
+
+**Recommendation:** adopt the two-module shape (B1). It requires zero
+changes to the pinned Yosys build, keeps the GHDL module small and
+independently versioned, and delivers provenance equal to native Verilog.
+The original single-module link (B2) is now only worth attempting if a
+future requirement (e.g. mixed-language hierarchy resolution inside one
+`hierarchy` pass) demands it.
+
+Productization checklist (next PR-sized steps):
+
+1. Reproducible `tools/ghdl-wasm/` build (pin the five source repos + apt
+   LLVM 16, strip with an export list, emit `SHA256SUMS`), publishing
+   `ghdl-synth.wasm` + a packed `lib/ghdl` tree.
+2. `ghdl.worker.ts` mirroring `yosys.worker.ts` (env-import shim instead
+   of WASI), producing translated Verilog + diagnostics.
+3. Pipeline changes: accept `.vhd`/`.vhdl` filenames, insert the translate
+   stage before the existing untouched Yosys flow, include the GHDL
+   artifact version in the design cache key, add the CodeMirror VHDL mode,
+   and require an explicit top for VHDL (GHDL has no `-auto-top`).
