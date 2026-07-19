@@ -9,21 +9,23 @@ import {
 } from './computerFiles'
 
 describe('computer files', () => {
-  it('reads selected Verilog files in selection order', async () => {
+  it('reads selected Verilog files and SystemVerilog headers in selection order', async () => {
     const files = await readComputerFiles([
       new File(['module top; endmodule'], 'top.sv'),
+      new File(['`define WIDTH 8'], 'defs.svh'),
       new File(['module helper; endmodule'], 'helper.v'),
     ])
 
     expect(files).toEqual([
       { name: 'top.sv', content: 'module top; endmodule' },
+      { name: 'defs.svh', content: '`define WIDTH 8' },
       { name: 'helper.v', content: 'module helper; endmodule' },
     ])
   })
 
   it('rejects unsupported, unsafe, and duplicate source names', async () => {
     await expect(readComputerFiles([new File([''], 'notes.txt')])).rejects.toThrow(
-      'must end in .v or .sv',
+      'must end in .v, .sv, or .svh',
     )
     await expect(readComputerFiles([new File([''], '../top.sv')])).rejects.toThrow(
       'Invalid source filename',

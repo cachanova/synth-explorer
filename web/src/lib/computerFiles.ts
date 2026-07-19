@@ -1,6 +1,9 @@
 import type { DesignFile } from '../types'
+import {
+  SOURCE_FILE_EXTENSIONS,
+  validateSourceFilename,
+} from './sourceFiles'
 
-export const SOURCE_FILE_ACCEPT = '.v,.sv'
 export const MAX_COMPUTER_FILE_COUNT = 128
 export const MAX_COMPUTER_FILE_BYTES = 16 * 1024 * 1024
 export const MAX_COMPUTER_FILES_BYTES = 32 * 1024 * 1024
@@ -55,15 +58,6 @@ function validateWorkspaceLimits(files: DesignFile[]): void {
   }
 }
 
-function validateSourceName(name: string): void {
-  if (!name.endsWith('.v') && !name.endsWith('.sv')) {
-    throw new Error(`Source filename must end in .v or .sv: ${name}`)
-  }
-  if (!name || name.includes('..') || !/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error(`Invalid source filename: ${name}`)
-  }
-}
-
 export async function readComputerFiles(
   selectedFiles: Iterable<File>,
   currentFiles: DesignFile[] = [],
@@ -76,7 +70,7 @@ export async function readComputerFiles(
   let totalBytes = 0
 
   for (const file of files) {
-    validateSourceName(file.name)
+    validateSourceFilename(file.name, 'Source filename')
     if (names.has(file.name)) {
       throw new Error(`More than one selected file is named ${file.name}.`)
     }
@@ -147,8 +141,8 @@ function pickerOptions(file: DesignFile) {
     suggestedName: file.name,
     types: [
       {
-        description: 'Verilog source',
-        accept: { 'text/plain': ['.v', '.sv'] },
+        description: 'Verilog or SystemVerilog source',
+        accept: { 'text/plain': [...SOURCE_FILE_EXTENSIONS] },
       },
     ],
   }
