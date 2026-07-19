@@ -115,6 +115,10 @@ test('enables and remembers Vim keybindings', async ({ page }) => {
 
   const editor = page.locator('.cm-content')
   await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')
+  await expect(page.locator('.cm-vimCursorLayer')).toHaveCSS('display', 'none')
+  await expect(
+    page.locator('.cm-cursorLayer:not(.cm-vimCursorLayer)'),
+  ).toHaveCSS('display', 'block')
   await editor.click()
   await editor.press('i')
   await expect(page.locator('.cm-vim-panel')).toContainText('--INSERT--')
