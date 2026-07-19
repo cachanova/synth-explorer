@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { retriggerCurrentInput } from './helpers'
+import { retriggerCurrentInput, waitForAnalysisReady } from './helpers'
 
 // A dropped connection while downloading the analysis WASM used to poison the
 // worker permanently: the rejected load stayed cached, so every later
@@ -25,9 +25,7 @@ test('recovers after the analysis engine download fails', async ({ page }) => {
   blockEngine = false
   await retriggerCurrentInput(page)
 
-  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
-    timeout: 90_000,
-  })
+  await waitForAnalysisReady(page)
   await expect(errorStrip).toHaveCount(0)
 })
 
@@ -50,8 +48,6 @@ test('recovers after the analysis worker script fails to load', async ({ page })
   blockWorker = false
   await retriggerCurrentInput(page)
 
-  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
-    timeout: 90_000,
-  })
+  await waitForAnalysisReady(page)
   await expect(errorStrip).toHaveCount(0)
 })
