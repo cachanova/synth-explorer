@@ -6,7 +6,7 @@
   "outputDirectory": "web/dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!assets/|yosys/).*)",
       "destination": "/index.html"
     }
   ],

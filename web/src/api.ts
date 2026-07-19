@@ -3,8 +3,10 @@
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import { bundledExamples } from './lib/examples'
+import { EngineLoadError } from './lib/engineLoad'
 import {
   LocalSynthesisError,
+  type SynthesisFailureKind,
   localCone,
   localEndpoints,
   localFanout,
@@ -53,10 +55,19 @@ export async function synthesize(
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     if (error instanceof ApiRequestError) throw error
     if (error instanceof LocalSynthesisError) {
-      throw new ApiRequestError(error.message, error.message.includes('timed out') ? 504 : 400, error.log)
+      throw new ApiRequestError(error.message, statusForFailureKind(error.kind), error.log)
+    }
+    if (error instanceof EngineLoadError) {
+      throw new ApiRequestError(error.message, statusForFailureKind('load'))
     }
     throw new ApiRequestError(error instanceof Error ? error.message : String(error), 422)
   }
+}
+
+function statusForFailureKind(kind: SynthesisFailureKind | undefined): number {
+  if (kind === 'load') return 503
+  if (kind === 'timeout') return 504
+  return 400
 }
 
 export async function retuneTiming(

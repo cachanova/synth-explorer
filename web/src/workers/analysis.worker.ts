@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import init, { AnalysisSession } from '../wasm/analysis/analysis'
+import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 
 export interface AnalysisInitialization {
   designId: string
@@ -28,10 +29,10 @@ export type AnalysisWorkerRequest =
 
 export type AnalysisWorkerResponse =
   | { id: number; ok: true; result: unknown }
-  | { id: number; ok: false; error: string }
+  | { id: number; ok: false; error: string; kind?: 'load' }
 
 let session: AnalysisSession | null = null
-const initialized = init()
+const ensureEngine = lazyLoad('failed to load the analysis engine', () => init())
 
 self.onmessage = (event: MessageEvent<AnalysisWorkerRequest>) => {
   void handle(event.data)
@@ -39,7 +40,7 @@ self.onmessage = (event: MessageEvent<AnalysisWorkerRequest>) => {
 
 async function handle(request: AnalysisWorkerRequest) {
   try {
-    await initialized
+    await ensureEngine()
     if (request.kind === 'initialize') {
       session?.free()
       const payload = request.payload
@@ -61,6 +62,7 @@ async function handle(request: AnalysisWorkerRequest) {
       id: request.id,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      kind: error instanceof EngineLoadError ? 'load' : undefined,
     })
   }
 }

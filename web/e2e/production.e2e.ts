@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { retriggerCurrentInput } from './helpers'
 
 function recordApiRequests(page: Page): string[] {
   const requests: string[] = []
@@ -44,14 +45,6 @@ async function waitForAutomaticSynthesis(
   )
   await changeInput()
   await completed
-}
-
-async function retriggerCurrentInput(page: Page) {
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press('Control+End')
-  await editor.type(' ')
-  await editor.press('Backspace')
 }
 
 async function cacheEntryCount(page: Page): Promise<number> {

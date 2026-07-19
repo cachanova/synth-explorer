@@ -10,6 +10,7 @@ import {
 } from '@bjorn3/browser_wasi_shim'
 import type { MemoryHandling, ValidatedSynthesis } from '../lib/yosysScript'
 import { buildYosysScript } from '../lib/yosysScript'
+import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 import { unpackTar } from '../lib/tar'
 
 interface Request {
@@ -25,7 +26,7 @@ export interface YosysWorkerResult {
 
 type WorkerResponse =
   | { ok: true; result: YosysWorkerResult }
-  | { ok: false; error: string; log?: string }
+  | { ok: false; error: string; kind?: 'load'; log?: string }
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -38,42 +39,49 @@ self.onmessage = (event: MessageEvent<Request>) => {
       respond({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        kind: error instanceof EngineLoadError ? 'load' : undefined,
         log: error instanceof YosysFailure ? error.log : undefined,
       }),
   )
 }
 
-const modulePromise = fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
-  .then(async (response) => {
-    if (!response.ok) throw new Error(`failed to load Yosys: ${response.status}`)
-    const contentType = response.headers.get('Content-Type') ?? ''
-    if (!contentType.includes('application/wasm')) {
-      throw new Error(
-        `failed to load Yosys: expected application/wasm, got ${contentType || 'no content type'}`,
-      )
-    }
-    if (typeof WebAssembly.compileStreaming === 'function') {
-      return WebAssembly.compileStreaming(response)
-    }
-    return WebAssembly.compile(await response.arrayBuffer())
-  })
+const loadModule = lazyLoad('failed to load Yosys', async () => {
+  const response = await fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
+  if (!response.ok) throw new Error(`status ${response.status}`)
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!contentType.includes('application/wasm')) {
+    throw new Error(`expected application/wasm, got ${contentType || 'no content type'}`)
+  }
+  if (typeof WebAssembly.compileStreaming === 'function') {
+    return WebAssembly.compileStreaming(response)
+  }
+  return WebAssembly.compile(await response.arrayBuffer())
+})
 
-const sharePromise = fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
-  .then((response) => {
-    if (!response.ok) throw new Error(`failed to load Yosys resources: ${response.status}`)
-    // Some static hosts (including Vite preview) serve .gz files with
-    // Content-Encoding: gzip. Fetch has already decoded those response bytes;
-    // only decompress hosts that serve the archive as an opaque gzip file.
-    if (response.headers.get('Content-Encoding')?.includes('gzip')) {
-      return response.arrayBuffer()
-    }
-    if (!response.body) throw new Error('Yosys resource response has no body')
-    return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
-  })
-  .then((buffer) => unpackTar(new Uint8Array(buffer)))
+const loadShare = lazyLoad('failed to load Yosys resources', async () => {
+  const response = await fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
+  if (!response.ok) throw new Error(`status ${response.status}`)
+  // Some static hosts (including Vite preview) serve .gz files with
+  // Content-Encoding: gzip. Fetch has already decoded those response bytes;
+  // only decompress hosts that serve the archive as an opaque gzip file.
+  let buffer: ArrayBuffer
+  if (response.headers.get('Content-Encoding')?.includes('gzip')) {
+    buffer = await response.arrayBuffer()
+  } else {
+    if (!response.body) throw new Error('response has no body')
+    buffer = await new Response(
+      response.body.pipeThrough(new DecompressionStream('gzip')),
+    ).arrayBuffer()
+  }
+  return unpackTar(new Uint8Array(buffer))
+})
+
+// Warm the caches as soon as the worker starts; failures surface on first use.
+void loadModule().catch(() => {})
+void loadShare().catch(() => {})
 
 async function run(request: Request): Promise<YosysWorkerResult> {
-  const [module, share] = await Promise.all([modulePromise, sharePromise])
+  const [module, share] = await Promise.all([loadModule(), loadShare()])
   const root = new Map<string, Directory | File>([
     ['share', share],
     ['tmp', new Directory([['yosys-abc-000000', new Directory([])]])],

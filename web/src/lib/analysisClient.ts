@@ -4,6 +4,7 @@ import type {
   AnalysisWorkerRequest,
   AnalysisWorkerResponse,
 } from '../workers/analysis.worker'
+import { EngineLoadError } from './engineLoad'
 
 interface Pending {
   resolve(value: unknown): void
@@ -51,9 +52,14 @@ function getWorker(): Worker {
     if (!entry) return
     pending.delete(response.id)
     if (response.ok) entry.resolve(response.result)
+    else if (response.kind === 'load') entry.reject(new EngineLoadError(response.error))
     else entry.reject(new Error(response.error))
   }
-  active.onerror = (event) => resetAnalysis(new Error(event.message || 'analysis worker error'))
+  // handle() catches everything inside the worker, so an 'error' event here
+  // means the worker script itself failed to load or parse — an engine load
+  // failure, not a design error.
+  active.onerror = (event) =>
+    resetAnalysis(new EngineLoadError(event.message || 'failed to load the analysis worker'))
   worker = active
   return active
 }
