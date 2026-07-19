@@ -11,8 +11,9 @@ analysis, caching, and graph interaction require no server requests.
    obsolete work instead of allowing a stale result to land.
 2. A SHA-256 key covers the cache schema, pinned Yosys version, validated input,
    and exact source text.
-3. IndexedDB returns a matching local artifact or a Web Lock coordinates a
-   single Yosys run across tabs.
+3. IndexedDB returns a matching local artifact. On a miss, an exact gate-mode
+   default/example input may load a content-addressed precomputed artifact from
+   the Vercel edge; otherwise a Web Lock coordinates one Yosys run across tabs.
 4. `yosys.worker.ts` runs project-built Yosys 0.67 in WASI and emits normalized
    and source-provenance JSON netlists.
 5. `analysis.worker.ts` loads those netlists into the canonical Rust
@@ -34,8 +35,10 @@ a display prefix of the full local cache digest.
 - `analysis-core/` is the only netlist/graph analysis implementation.
 - `web/src/lib/exploration.ts` is the only source-selection projection
   implementation and runs in `exploration.worker.ts`.
-- IndexedDB stores the current editor workspace and is the only completed-design
-  cache. Those records live in separate databases and have separate reset controls.
+- IndexedDB stores the current editor workspace and is the only mutable
+  completed-design cache. Those records live in separate databases and have
+  separate reset controls. Immutable precomputed example artifacts only seed
+  that same synthesis path after exact key and contract validation.
 
 No remote fallback, shadow Yosys runner, disabled backend, or hosted Vivado path
 exists in production.
@@ -48,6 +51,12 @@ Corrupt or expired records are deleted. Retention is bounded to 24 entries,
 128 MiB estimated total size, a 128 MiB per-entry ceiling, and 30 days since
 last access. Browser storage eviction, private browsing, clearing site data, or
 changing devices removes or hides entries.
+
+The default design and every bundled example have one precomputed generic-gates
+artifact. Their filenames are the full synthesis cache keys and Vercel caches
+them immutably. The bundled key manifest prevents arbitrary user inputs from
+issuing speculative artifact requests. A missing, stale, or malformed artifact
+falls through to browser-local Yosys.
 
 The editor workspace is a single versioned record containing only editable
 synthesis inputs. Derived analysis state is not restored across page loads.
@@ -72,8 +81,9 @@ Vivado installation, but vendor tools and reports are not runtime dependencies.
 `vercel.json` builds `web/`, publishes `web/dist/`, rewrites SPA routes to
 `index.html`, serves WebAssembly with the correct content type, and applies
 immutable caching to versioned assets. CI verifies Rust, regenerates and checks
-the analysis WASM package, verifies pinned Yosys hashes, builds the static app,
-and runs browser-local synthesis E2Es that assert zero `/api` traffic.
+the analysis WASM package, verifies pinned Yosys hashes and precomputed example
+contracts, builds the static app, and runs browser-local synthesis E2Es that
+assert zero `/api` traffic.
 Vercel Web Analytics and Speed Insights collect page-level usage and browser
 performance metrics; they are not part of the synthesis path and receive no RTL
 or synthesized netlist content.

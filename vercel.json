@@ -6,7 +6,7 @@
   "outputDirectory": "web/dist",
   "rewrites": [
     {
-      "source": "/((?!assets/|yosys/).*)",
+      "source": "/((?!assets/|yosys/|precomputed/).*)",
       "destination": "/index.html"
     }
   ],
@@ -22,6 +22,15 @@
     },
     {
       "source": "/yosys/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/precomputed/(.*)",
       "headers": [
         {
           "key": "Cache-Control",

@@ -15,14 +15,14 @@ import type { ConeOptions, NetlistOptions } from '../api'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
 import { initializeAnalysis, queryAnalysis } from './analysisClient'
 import { EngineLoadError } from './engineLoad'
+import { getPrecomputedSynthesis } from './precomputedSynthesis'
 import {
   deleteCachedSynthesis,
   getCachedSynthesis,
   putCachedSynthesis,
+  synthesisKey,
 } from './designCache'
 import {
-  YOSYS_CACHE_SCHEMA,
-  YOSYS_VERSION,
   defaultDelayProfile,
   validateSynthesisRequest,
   type MemoryHandling,
@@ -45,21 +45,29 @@ interface YosysWorkerResponse {
   log?: string
 }
 
-const encoder = new TextEncoder()
-let idleYosysWorker = typeof Worker === 'undefined' ? null : createYosysWorker()
+let idleYosysWorker: Worker | null = null
 
 export async function synthesizeLocally(
   request: SynthesizeRequest,
   signal?: AbortSignal,
 ): Promise<SynthesizeResponse> {
+  return synthesizeLocallyWithFallback(request, signal, true)
+}
+
+async function synthesizeLocallyWithFallback(
+  request: SynthesizeRequest,
+  signal: AbortSignal | undefined,
+  allowReuse: boolean,
+): Promise<SynthesizeResponse> {
   signal?.throwIfAborted()
   const input = validateSynthesisRequest(request)
   const key = await synthesisKey(input)
   const designId = key.slice(0, 12)
-  const cached = await getCachedSynthesis(key, input)
+  const cached = allowReuse ? await getCachedSynthesis(key, input) : null
   let output: YosysWorkerResult
   let memoriesAbstracted: boolean
   let profile: string
+  let reusedSynthesis = cached !== null
 
   if (cached) {
     output = cached.output
@@ -68,8 +76,22 @@ export async function synthesizeLocally(
   } else {
     const generated = await withSynthesisLock(key, async () => {
       signal?.throwIfAborted()
-      const coordinated = await getCachedSynthesis(key, input)
-      if (coordinated) return coordinated
+      const coordinated = allowReuse ? await getCachedSynthesis(key, input) : null
+      if (coordinated) return { ...coordinated, reused: true }
+      const precomputed = allowReuse
+        ? await getPrecomputedSynthesis(key, input, signal)
+        : null
+      signal?.throwIfAborted()
+      if (precomputed) {
+        await putCachedSynthesis({
+          key,
+          input,
+          profile: precomputed.profile,
+          memoriesAbstracted: precomputed.memoriesAbstracted,
+          output: precomputed.output,
+        })
+        return { ...precomputed, reused: true }
+      }
       const generatedProfile = defaultDelayProfile(input)
       let generatedOutput: YosysWorkerResult
       let generatedMemoriesAbstracted = false
@@ -93,11 +115,13 @@ export async function synthesizeLocally(
         profile: generatedProfile,
         memoriesAbstracted: generatedMemoriesAbstracted,
         output: generatedOutput,
+        reused: false,
       }
     }, signal)
     output = generated.output
     memoriesAbstracted = generated.memoriesAbstracted
     profile = generated.profile
+    reusedSynthesis = generated.reused
   }
 
   let summary: AnalysisSummary
@@ -117,13 +141,13 @@ export async function synthesizeLocally(
     // An engine load failure says nothing about the cached synthesis: keep
     // the cache and surface the failure instead of re-running Yosys just to
     // fail the same download again.
-    if (!cached || error instanceof EngineLoadError) throw error
+    if (!reusedSynthesis || error instanceof EngineLoadError) throw error
     try {
       await deleteCachedSynthesis(key)
     } catch {
-      throw error
+      // The recovery run below bypasses cache reads, so deletion is best-effort.
     }
-    return synthesizeLocally(request, signal)
+    return synthesizeLocallyWithFallback(request, signal, false)
   }
   return {
     design_id: summary.design_id,
@@ -199,19 +223,6 @@ export function localNodes(_id: string, ids: number[]): Promise<NodesResponse> {
 
 export function localExploration(_id: string): Promise<ExplorationSnapshot> {
   return queryAnalysis('exploration')
-}
-
-async function synthesisKey(input: ValidatedSynthesis): Promise<string> {
-  const canonical = JSON.stringify({
-    schema: YOSYS_CACHE_SCHEMA,
-    yosys: YOSYS_VERSION,
-    mode: input.mode,
-    top: input.top ?? null,
-    extraArgs: input.extraArgs,
-    files: input.files,
-  })
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(canonical))
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function runYosys(

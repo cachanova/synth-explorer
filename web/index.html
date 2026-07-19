@@ -32,7 +32,32 @@
     </script>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div
+        class="app boot-shell"
+        data-testid="boot-shell"
+        role="status"
+        aria-label="Loading Synth Explorer"
+      >
+        <header class="app-header">
+          <span class="logo">
+            <img class="brand-mark" src="/brand-mark.svg" alt="" />
+            <span>Synth <span class="accent">Explorer</span></span>
+          </span>
+        </header>
+        <div class="split" aria-hidden="true">
+          <div class="boot-pane boot-pane-left">
+            <div class="boot-toolbar"></div>
+            <div class="boot-file-bar"></div>
+            <div class="boot-workspace-status">Restoring workspace…</div>
+          </div>
+          <div class="divider"></div>
+          <div class="boot-pane boot-pane-right">
+            <div class="boot-tabs"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
