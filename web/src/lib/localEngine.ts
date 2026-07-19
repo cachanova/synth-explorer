@@ -57,13 +57,13 @@ export async function synthesizeLocally(
 async function synthesizeLocallyWithFallback(
   request: SynthesizeRequest,
   signal: AbortSignal | undefined,
-  allowPrecomputed: boolean,
+  allowReuse: boolean,
 ): Promise<SynthesizeResponse> {
   signal?.throwIfAborted()
   const input = validateSynthesisRequest(request)
   const key = await synthesisKey(input)
   const designId = key.slice(0, 12)
-  const cached = await getCachedSynthesis(key, input)
+  const cached = allowReuse ? await getCachedSynthesis(key, input) : null
   let output: YosysWorkerResult
   let memoriesAbstracted: boolean
   let profile: string
@@ -76,11 +76,12 @@ async function synthesizeLocallyWithFallback(
   } else {
     const generated = await withSynthesisLock(key, async () => {
       signal?.throwIfAborted()
-      const coordinated = await getCachedSynthesis(key, input)
+      const coordinated = allowReuse ? await getCachedSynthesis(key, input) : null
       if (coordinated) return { ...coordinated, reused: true }
-      const precomputed = allowPrecomputed
-        ? await getPrecomputedSynthesis(key, input)
+      const precomputed = allowReuse
+        ? await getPrecomputedSynthesis(key, input, signal)
         : null
+      signal?.throwIfAborted()
       if (precomputed) {
         await putCachedSynthesis({
           key,
@@ -144,7 +145,7 @@ async function synthesizeLocallyWithFallback(
     try {
       await deleteCachedSynthesis(key)
     } catch {
-      throw error
+      // The recovery run below bypasses cache reads, so deletion is best-effort.
     }
     return synthesizeLocallyWithFallback(request, signal, false)
   }

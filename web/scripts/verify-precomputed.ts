@@ -19,6 +19,26 @@ interface PrecomputedEntry {
   key: string
 }
 
+const expectedStructuralFacts: Record<
+  string,
+  { top: string; inputs: number; outputs: number }
+> = {
+  default: { top: 'top', inputs: 19, outputs: 8 },
+  reg_mux: { top: 'reg_mux', inputs: 19, outputs: 8 },
+  priority_encoder_case: { top: 'priority_encoder_case', inputs: 32, outputs: 38 },
+  priority_encoder_for: { top: 'priority_encoder_for', inputs: 32, outputs: 38 },
+  priority_encoder_carry: { top: 'priority_encoder_carry', inputs: 32, outputs: 38 },
+  adder_chain: { top: 'adder_chain', inputs: 64, outputs: 18 },
+  barrel_shifter: { top: 'barrel_shifter', inputs: 39, outputs: 32 },
+  round_robin_arbiter: { top: 'round_robin_arbiter', inputs: 7, outputs: 7 },
+  pipe: { top: 'pipe', inputs: 19, outputs: 16 },
+  srl_pipe: { top: 'srl_pipe', inputs: 12, outputs: 9 },
+  fifo_pipe: { top: 'fifo_pipe', inputs: 20, outputs: 18 },
+  inferred_fifo: { top: 'inferred_fifo', inputs: 20, outputs: 23 },
+  async_fifo_blackbox: { top: 'async_fifo_wrapper', inputs: 22, outputs: 18 },
+  handshake_controller: { top: 'handshake_controller', inputs: 5, outputs: 5 },
+}
+
 const root = process.cwd()
 const sourceDirectory = join(root, 'src', 'data', 'examples')
 const artifactDirectory = join(root, 'public', 'precomputed')
@@ -77,6 +97,7 @@ for (const entry of precomputedManifest.entries) {
   if (!isValidSynthesisArtifact(artifact, key, input)) {
     throw new Error(`Invalid precomputed artifact for ${entry.name}`)
   }
+  verifyStructuralFacts(entry.name, artifact)
 }
 if (expected.size > 0) {
   throw new Error(`Missing precomputed entries: ${[...expected.keys()].join(', ')}`)
@@ -89,3 +110,44 @@ if (extraFiles.length > 0) {
 }
 
 process.stdout.write(`Verified ${retainedFiles.size} precomputed gate-mode designs.\n`)
+
+function verifyStructuralFacts(name: string, artifact: SynthesisArtifact) {
+  const expectedFacts = expectedStructuralFacts[name]
+  if (!expectedFacts) throw new Error(`Missing structural expectations for ${name}`)
+  for (const [label, json] of [
+    ['mapped', artifact.output.netlistJson],
+    ['source', artifact.output.sourceNetlistJson],
+  ] as const) {
+    const netlist = JSON.parse(json) as {
+      modules?: Record<
+        string,
+        {
+          attributes?: Record<string, unknown>
+          ports?: Record<string, { direction?: string; bits?: unknown[] }>
+          cells?: Record<string, unknown>
+        }
+      >
+    }
+    const top = netlist.modules?.[expectedFacts.top]
+    if (!top) throw new Error(`${name} ${label} netlist is missing top ${expectedFacts.top}`)
+    const topAttribute = String(top.attributes?.top ?? '')
+    if (!/[1-9]/.test(topAttribute)) {
+      throw new Error(`${name} ${label} netlist does not mark ${expectedFacts.top} as top`)
+    }
+    let inputs = 0
+    let outputs = 0
+    for (const port of Object.values(top.ports ?? {})) {
+      const width = Array.isArray(port.bits) ? port.bits.length : 0
+      if (port.direction === 'input') inputs += width
+      if (port.direction === 'output') outputs += width
+    }
+    if (inputs !== expectedFacts.inputs || outputs !== expectedFacts.outputs) {
+      throw new Error(
+        `${name} ${label} ports changed: expected ${expectedFacts.inputs}/${expectedFacts.outputs} input/output bits, found ${inputs}/${outputs}`,
+      )
+    }
+    if (label === 'mapped' && Object.keys(top.cells ?? {}).length === 0) {
+      throw new Error(`${name} mapped netlist has no cells`)
+    }
+  }
+}

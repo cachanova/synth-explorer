@@ -843,14 +843,6 @@ a:hover {
   position: relative;
   overflow: hidden;
 }
-.editor-loading {
-  display: grid;
-  flex: 1 1 auto;
-  min-height: 0;
-  place-items: center;
-  color: var(--text-faint);
-  font-size: 12px;
-}
 .cm-editor {
   height: 100%;
 }

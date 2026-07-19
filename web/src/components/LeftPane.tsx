@@ -1,14 +1,8 @@
-import { lazy, Suspense } from 'react'
 import { shallowEqual, useStore } from '../useStore'
+import { Editor } from './Editor'
 import { ErrorStrip } from './ErrorStrip'
 import { FileTabs } from './FileTabs'
 import { Toolbar } from './Toolbar'
-
-const Editor = lazy(() =>
-  import('./Editor').then(({ Editor: EditorComponent }) => ({
-    default: EditorComponent,
-  })),
-)
 
 export function LeftPane() {
   const store = useStore(({ sourceSelection }) => ({ sourceSelection }), shallowEqual)
@@ -25,15 +19,7 @@ export function LeftPane() {
             : ''}
         </span>
       </div>
-      <Suspense
-        fallback={
-          <div className="editor-loading" role="status">
-            Loading editor…
-          </div>
-        }
-      >
-        <Editor />
-      </Suspense>
+      <Editor />
       <ErrorStrip />
     </div>
   )
