@@ -688,6 +688,9 @@ a:hover {
 .file-action-menu label,
 .file-action-menu > span:first-child {
   color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .file-action-menu input {

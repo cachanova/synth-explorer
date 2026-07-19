@@ -8,17 +8,24 @@ import {
   type KeyboardEvent,
 } from 'react'
 import {
+  computerFileCollisions,
   readComputerFiles,
   saveComputerFile,
   saveComputerFiles,
   SOURCE_FILE_ACCEPT,
 } from '../lib/computerFiles'
+import type { DesignFile } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 
 type FileAction = {
   kind: 'rename' | 'delete'
   name: string
   index: number
+}
+
+type PendingImport = {
+  files: DesignFile[]
+  collisions: string[]
 }
 
 function TrashIcon() {
@@ -107,8 +114,12 @@ export function FileTabs() {
     shallowEqual,
   )
   const tabRefs = useRef<Array<HTMLDivElement | null>>([])
+  const filesRef = useRef(store.files)
+  filesRef.current = store.files
   const renameInputRef = useRef<HTMLInputElement | null>(null)
   const computerFileInputRef = useRef<HTMLInputElement | null>(null)
+  const loadButtonRef = useRef<HTMLButtonElement | null>(null)
+  const importCancelButtonRef = useRef<HTMLButtonElement | null>(null)
   const [action, setAction] = useState<FileAction | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const resetButtonRef = useRef<HTMLButtonElement | null>(null)
@@ -118,8 +129,23 @@ export function FileTabs() {
   const [warningOpen, setWarningOpen] = useState(false)
   const [dontShowAgain, setDontShowAgain] = useState(false)
   const [transferError, setTransferError] = useState<string | null>(null)
+  const [transferRunning, setTransferRunning] = useState(false)
+  const [pendingImport, setPendingImport] = useState<PendingImport | null>(null)
   const warningTitleId = useId()
   const warningDescriptionId = useId()
+
+  useEffect(() => {
+    if (!pendingImport) return
+    window.requestAnimationFrame(() => importCancelButtonRef.current?.focus())
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      setPendingImport(null)
+      window.requestAnimationFrame(() => loadButtonRef.current?.focus())
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [pendingImport])
 
   useEffect(() => {
     if (!warningOpen) return
@@ -277,8 +303,15 @@ export function FileTabs() {
     const selected = input.files
     if (!selected?.length) return
     setTransferError(null)
+    setTransferRunning(true)
     try {
-      store.importFiles(await readComputerFiles(selected))
+      const imported = await readComputerFiles(selected, store.files)
+      const collisions = computerFileCollisions(filesRef.current, imported)
+      if (collisions.length > 0) {
+        setPendingImport({ files: imported, collisions })
+      } else {
+        store.importFiles(imported)
+      }
     } catch (error) {
       setTransferError(
         error instanceof Error
@@ -286,33 +319,76 @@ export function FileTabs() {
           : 'Could not load the selected files.',
       )
     } finally {
+      setTransferRunning(false)
       input.value = ''
     }
+  }
+
+  const confirmImport = () => {
+    if (!pendingImport) return
+    const currentCollisions = computerFileCollisions(
+      filesRef.current,
+      pendingImport.files,
+    )
+    if (
+      currentCollisions.some(
+        (name) => !pendingImport.collisions.includes(name),
+      )
+    ) {
+      setPendingImport({
+        files: pendingImport.files,
+        collisions: currentCollisions,
+      })
+      return
+    }
+    try {
+      store.importFiles(pendingImport.files)
+    } catch (error) {
+      setTransferError(
+        error instanceof Error
+          ? error.message
+          : 'Could not load the selected files.',
+      )
+    }
+    setPendingImport(null)
+    window.requestAnimationFrame(() => loadButtonRef.current?.focus())
+  }
+
+  const cancelImport = () => {
+    setPendingImport(null)
+    window.requestAnimationFrame(() => loadButtonRef.current?.focus())
   }
 
   const activeFile =
     store.files.find((file) => file.name === store.activeFileName) ??
     store.files[0]
+  const transferDisabled = transferRunning || pendingImport != null
 
   const saveActiveFile = async () => {
     setTransferError(null)
+    setTransferRunning(true)
     try {
       await saveComputerFile(activeFile)
     } catch (error) {
       setTransferError(
         error instanceof Error ? error.message : 'Could not save the file.',
       )
+    } finally {
+      setTransferRunning(false)
     }
   }
 
   const saveAllFiles = async () => {
     setTransferError(null)
+    setTransferRunning(true)
     try {
       await saveComputerFiles(store.files)
     } catch (error) {
       setTransferError(
         error instanceof Error ? error.message : 'Could not save the files.',
       )
+    } finally {
+      setTransferRunning(false)
     }
   }
 
@@ -368,10 +444,12 @@ export function FileTabs() {
             onChange={importComputerFiles}
           />
           <button
+            ref={loadButtonRef}
             type="button"
             className="file-io-button"
             aria-label="Load files from computer"
             title="Load .v or .sv files from computer"
+            disabled={transferDisabled}
             onClick={() => computerFileInputRef.current?.click()}
           >
             <OpenFileIcon />
@@ -381,6 +459,7 @@ export function FileTabs() {
             className="file-io-button"
             aria-label={`Save ${activeFile.name} to computer`}
             title={`Save ${activeFile.name} to computer`}
+            disabled={transferDisabled}
             onClick={() => void saveActiveFile()}
           >
             <SaveIcon />
@@ -391,6 +470,7 @@ export function FileTabs() {
               className="file-io-button"
               aria-label="Save all files to computer"
               title="Save all open files to a folder"
+              disabled={transferDisabled}
               onClick={() => void saveAllFiles()}
             >
               <SaveAllIcon />
@@ -403,6 +483,7 @@ export function FileTabs() {
           className="workspace-reset"
           aria-label="Reset editor"
           title="Delete all open files and reset editor"
+          disabled={transferDisabled}
           onClick={requestReset}
         >
           <TrashIcon />
@@ -418,6 +499,30 @@ export function FileTabs() {
             onClick={() => setTransferError(null)}
           >
             ×
+          </button>
+        </div>
+      )}
+
+      {pendingImport && (
+        <div
+          className="file-action-menu"
+          role="dialog"
+          aria-label="Replace existing files?"
+        >
+          <span>
+            {pendingImport.collisions.length === 1
+              ? `Replace ${pendingImport.collisions[0]}?`
+              : `Replace ${pendingImport.collisions.length} existing files?`}
+          </span>
+          <button type="button" className="danger" onClick={confirmImport}>
+            Replace
+          </button>
+          <button
+            ref={importCancelButtonRef}
+            type="button"
+            onClick={cancelImport}
+          >
+            Cancel
           </button>
         </div>
       )}
