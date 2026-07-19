@@ -14,6 +14,7 @@ vi.mock('../useStore', () => ({
     renameFile: vi.fn(),
     deleteFile: vi.fn(),
     addFile: vi.fn(),
+    importFiles: vi.fn(),
     resetWorkspace: vi.fn(),
     confirmWorkspaceReset: true,
     setConfirmWorkspaceReset: vi.fn(),
@@ -33,5 +34,8 @@ describe('FileTabs', () => {
     expect(tabs.filter((tab) => tab.includes('tabindex="-1"'))).toHaveLength(2)
     expect(tabs.every((tab) => tab.includes('aria-controls="source-editor-panel"'))).toBe(true)
     expect(markup).toContain('aria-label="Reset editor"')
+    expect(markup).toContain('aria-label="Load files from computer"')
+    expect(markup).toContain('aria-label="Save alu.sv to computer"')
+    expect(markup).toContain('aria-label="Save all files to computer"')
   })
 })
