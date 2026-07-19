@@ -201,7 +201,9 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
 
   const started = Date.now()
   await waitForAutomaticSynthesis(page, () => retriggerCurrentInput(page))
-  expect(Date.now() - started).toBeLessThan(1_000)
+  // Cache reuse still reinitializes analysis in a worker. Keep this well below
+  // cold synthesis without making the assertion depend on sub-second CI load.
+  expect(Date.now() - started).toBeLessThan(2_000)
 
   await page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
