@@ -3,8 +3,10 @@
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import { bundledExamples } from './lib/examples'
+import { EngineLoadError } from './lib/engineLoad'
 import {
   LocalSynthesisError,
+  type SynthesisFailureKind,
   localCone,
   localEndpoints,
   localFanout,
@@ -53,23 +55,19 @@ export async function synthesize(
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     if (error instanceof ApiRequestError) throw error
     if (error instanceof LocalSynthesisError) {
-      throw new ApiRequestError(error.message, statusForSynthesisFailure(error.message), error.log)
+      throw new ApiRequestError(error.message, statusForFailureKind(error.kind), error.log)
     }
-    const message = error instanceof Error ? error.message : String(error)
-    throw new ApiRequestError(message, isEngineLoadFailure(message) ? 503 : 422)
+    if (error instanceof EngineLoadError) {
+      throw new ApiRequestError(error.message, statusForFailureKind('load'))
+    }
+    throw new ApiRequestError(error instanceof Error ? error.message : String(error), 422)
   }
 }
 
-function statusForSynthesisFailure(message: string): number {
-  if (message.includes('timed out')) return 504
-  if (isEngineLoadFailure(message)) return 503
+function statusForFailureKind(kind: SynthesisFailureKind | undefined): number {
+  if (kind === 'load') return 503
+  if (kind === 'timeout') return 504
   return 400
-}
-
-// The workers tag WASM/asset download failures with this prefix so they can
-// be told apart from design errors and surfaced as "engine failed to load".
-function isEngineLoadFailure(message: string): boolean {
-  return message.startsWith('failed to load')
 }
 
 export async function retuneTiming(

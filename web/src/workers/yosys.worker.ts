@@ -10,6 +10,7 @@ import {
 } from '@bjorn3/browser_wasi_shim'
 import type { MemoryHandling, ValidatedSynthesis } from '../lib/yosysScript'
 import { buildYosysScript } from '../lib/yosysScript'
+import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 import { unpackTar } from '../lib/tar'
 
 interface Request {
@@ -25,7 +26,7 @@ export interface YosysWorkerResult {
 
 type WorkerResponse =
   | { ok: true; result: YosysWorkerResult }
-  | { ok: false; error: string; log?: string }
+  | { ok: false; error: string; kind?: 'load'; log?: string }
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -38,61 +39,42 @@ self.onmessage = (event: MessageEvent<Request>) => {
       respond({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        kind: error instanceof EngineLoadError ? 'load' : undefined,
         log: error instanceof YosysFailure ? error.log : undefined,
       }),
   )
 }
 
-// Load results are cached per worker, but never as rejections: a dropped
-// connection mid-download must not poison every later synthesis in this
-// worker, so a failed load clears the cache and the next run refetches.
-let modulePromise: Promise<WebAssembly.Module> | null = null
-let sharePromise: Promise<Directory> | null = null
+const loadModule = lazyLoad('failed to load Yosys', async () => {
+  const response = await fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
+  if (!response.ok) throw new Error(`status ${response.status}`)
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!contentType.includes('application/wasm')) {
+    throw new Error(`expected application/wasm, got ${contentType || 'no content type'}`)
+  }
+  if (typeof WebAssembly.compileStreaming === 'function') {
+    return WebAssembly.compileStreaming(response)
+  }
+  return WebAssembly.compile(await response.arrayBuffer())
+})
 
-function loadModule(): Promise<WebAssembly.Module> {
-  modulePromise ??= fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
-    .then(async (response) => {
-      if (!response.ok) throw new Error(`status ${response.status}`)
-      const contentType = response.headers.get('Content-Type') ?? ''
-      if (!contentType.includes('application/wasm')) {
-        throw new Error(`expected application/wasm, got ${contentType || 'no content type'}`)
-      }
-      if (typeof WebAssembly.compileStreaming === 'function') {
-        return WebAssembly.compileStreaming(response)
-      }
-      return WebAssembly.compile(await response.arrayBuffer())
-    })
-    .catch((error: unknown) => {
-      modulePromise = null
-      throw loadFailure('failed to load Yosys', error)
-    })
-  return modulePromise
-}
-
-function loadShare(): Promise<Directory> {
-  sharePromise ??= fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
-    .then((response) => {
-      if (!response.ok) throw new Error(`status ${response.status}`)
-      // Some static hosts (including Vite preview) serve .gz files with
-      // Content-Encoding: gzip. Fetch has already decoded those response bytes;
-      // only decompress hosts that serve the archive as an opaque gzip file.
-      if (response.headers.get('Content-Encoding')?.includes('gzip')) {
-        return response.arrayBuffer()
-      }
-      if (!response.body) throw new Error('response has no body')
-      return new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
-    })
-    .then((buffer) => unpackTar(new Uint8Array(buffer)))
-    .catch((error: unknown) => {
-      sharePromise = null
-      throw loadFailure('failed to load Yosys resources', error)
-    })
-  return sharePromise
-}
-
-function loadFailure(context: string, error: unknown): Error {
-  return new Error(`${context}: ${error instanceof Error ? error.message : String(error)}`)
-}
+const loadShare = lazyLoad('failed to load Yosys resources', async () => {
+  const response = await fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
+  if (!response.ok) throw new Error(`status ${response.status}`)
+  // Some static hosts (including Vite preview) serve .gz files with
+  // Content-Encoding: gzip. Fetch has already decoded those response bytes;
+  // only decompress hosts that serve the archive as an opaque gzip file.
+  let buffer: ArrayBuffer
+  if (response.headers.get('Content-Encoding')?.includes('gzip')) {
+    buffer = await response.arrayBuffer()
+  } else {
+    if (!response.body) throw new Error('response has no body')
+    buffer = await new Response(
+      response.body.pipeThrough(new DecompressionStream('gzip')),
+    ).arrayBuffer()
+  }
+  return unpackTar(new Uint8Array(buffer))
+})
 
 // Warm the caches as soon as the worker starts; failures surface on first use.
 void loadModule().catch(() => {})

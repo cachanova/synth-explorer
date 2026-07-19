@@ -14,6 +14,7 @@ import type {
 import type { ConeOptions, NetlistOptions } from '../api'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
 import { initializeAnalysis, queryAnalysis } from './analysisClient'
+import { EngineLoadError } from './engineLoad'
 import {
   deleteCachedSynthesis,
   getCachedSynthesis,
@@ -40,6 +41,7 @@ interface YosysWorkerResponse {
   ok: boolean
   result?: YosysWorkerResult
   error?: string
+  kind?: 'load'
   log?: string
 }
 
@@ -112,7 +114,10 @@ export async function synthesizeLocally(
     signal?.throwIfAborted()
   } catch (error) {
     if (isAbortError(error)) throw error
-    if (!cached) throw error
+    // An engine load failure says nothing about the cached synthesis: keep
+    // the cache and surface the failure instead of re-running Yosys just to
+    // fail the same download again.
+    if (!cached || error instanceof EngineLoadError) throw error
     try {
       await deleteCachedSynthesis(key)
     } catch {
@@ -228,18 +233,27 @@ function runYosys(
     }
     const onAbort = () => finish(() => reject(abortError()), false)
     const timeout = setTimeout(() => {
-      finish(() => reject(new LocalSynthesisError('yosys timed out', '')), false)
+      finish(() => reject(new LocalSynthesisError('yosys timed out', '', 'timeout')), false)
     }, 60_000)
     worker.onmessage = (event: MessageEvent<YosysWorkerResponse>) => {
       const response = event.data
       finish(() => {
         if (response.ok && response.result) resolve(response.result)
-        else reject(new LocalSynthesisError(response.error ?? 'yosys failed', response.log ?? ''))
+        else {
+          reject(
+            new LocalSynthesisError(response.error ?? 'yosys failed', response.log ?? '', response.kind),
+          )
+        }
       }, true)
     }
+    // run() catches everything inside the worker, so an 'error' event here
+    // means the worker script itself failed to load or parse.
     worker.onerror = (event) => {
       finish(
-        () => reject(new LocalSynthesisError(event.message || 'yosys worker failed', '')),
+        () =>
+          reject(
+            new LocalSynthesisError(event.message || 'failed to load the Yosys worker', '', 'load'),
+          ),
         false,
       )
     }
@@ -281,23 +295,32 @@ function isGeneric(mode: ValidatedSynthesis['mode']): boolean {
   return mode === 'gates' || mode === 'lut4' || mode === 'lut6'
 }
 
-function isResourceFailure(error: unknown): boolean {
+export function isResourceFailure(error: unknown): boolean {
   if (!(error instanceof LocalSynthesisError)) return false
+  // A load failure is a network problem, not a resource limit: retrying with
+  // abstracted memories could cache a degraded synthesis for a design that
+  // never exceeded anything.
+  if (error.kind === 'load') return false
+  if (error.kind === 'timeout') return true
   const detail = `${error.message}\n${error.log}`
-  return /timed out|bad_alloc|out of memory|memory access out of bounds/i.test(detail)
+  return /bad_alloc|out of memory|memory access out of bounds/i.test(detail)
 }
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
+export type SynthesisFailureKind = 'load' | 'timeout'
+
 export class LocalSynthesisError extends Error {
   readonly log: string
+  readonly kind?: SynthesisFailureKind
 
-  constructor(message: string, log: string) {
+  constructor(message: string, log: string, kind?: SynthesisFailureKind) {
     super(message)
     this.name = 'LocalSynthesisError'
     this.log = log
+    this.kind = kind
   }
 }
 

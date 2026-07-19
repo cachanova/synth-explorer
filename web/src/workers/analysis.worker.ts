@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import init, { AnalysisSession } from '../wasm/analysis/analysis'
+import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 
 export interface AnalysisInitialization {
   designId: string
@@ -28,25 +29,10 @@ export type AnalysisWorkerRequest =
 
 export type AnalysisWorkerResponse =
   | { id: number; ok: true; result: unknown }
-  | { id: number; ok: false; error: string }
+  | { id: number; ok: false; error: string; kind?: 'load' }
 
 let session: AnalysisSession | null = null
-// Never cache a failed engine load: a transient network drop while fetching
-// the WASM module would otherwise reject every later request in this worker,
-// so a failure clears the cache and the next request retries the load.
-let initialized: Promise<unknown> | null = null
-
-function ensureEngine(): Promise<unknown> {
-  initialized ??= init().catch((error: unknown) => {
-    initialized = null
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`failed to load the analysis engine: ${detail}`)
-  })
-  return initialized
-}
-
-// Warm the engine as soon as the worker starts; failures surface on first use.
-void ensureEngine().catch(() => {})
+const ensureEngine = lazyLoad('failed to load the analysis engine', () => init())
 
 self.onmessage = (event: MessageEvent<AnalysisWorkerRequest>) => {
   void handle(event.data)
@@ -76,6 +62,7 @@ async function handle(request: AnalysisWorkerRequest) {
       id: request.id,
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      kind: error instanceof EngineLoadError ? 'load' : undefined,
     })
   }
 }

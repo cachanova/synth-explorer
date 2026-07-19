@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { retriggerCurrentInput } from './helpers'
 
 // A dropped connection while downloading the analysis WASM used to poison the
 // worker permanently: the rejected load stayed cached, so every later
@@ -22,11 +23,32 @@ test('recovers after the analysis engine download fails', async ({ page }) => {
   // Connectivity returns; re-triggering the same input must retry the engine
   // download in the existing worker instead of replaying the cached failure.
   blockEngine = false
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press('Control+End')
-  await editor.type(' ')
-  await editor.press('Backspace')
+  await retriggerCurrentInput(page)
+
+  await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
+    timeout: 90_000,
+  })
+  await expect(errorStrip).toHaveCount(0)
+})
+
+// The worker's own JS chunk failing to fetch is the same failure class as the
+// WASM download and must get the same label and recovery, not a 422.
+test('recovers after the analysis worker script fails to load', async ({ page }) => {
+  let blockWorker = true
+  await page.route('**/assets/analysis.worker-*.js', (route) => {
+    if (blockWorker) return route.abort('failed')
+    return route.continue()
+  })
+
+  await page.goto('/')
+
+  const errorStrip = page.locator('.error-strip')
+  await expect(errorStrip).toContainText('Engine failed to load (503)', {
+    timeout: 90_000,
+  })
+
+  blockWorker = false
+  await retriggerCurrentInput(page)
 
   await expect(page.locator('.pane-left .tag')).toHaveText('mapping live', {
     timeout: 90_000,
