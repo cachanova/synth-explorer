@@ -21,6 +21,8 @@ browser profile and can be cleared from the settings menu.
   project-pinned Yosys WebAssembly build.
 - Analyze and elaborate VHDL-2008 locally with a project-pinned GHDL
   WebAssembly frontend while preserving original file/line provenance.
+- Load every bundled design in either Verilog/SystemVerilog or VHDL from the
+  toolbar's language toggle.
 - Rank logical paths and endpoints by combinational depth.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and jump from synthesized cells to source.

@@ -47,6 +47,7 @@ import {
 import type {
   DesignFile,
   Example,
+  ExampleVariant,
   Mode,
   SynthesizeResponse,
   TimingPath,
@@ -166,7 +167,7 @@ export interface Store {
   setTop: (t: string) => void
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
-  loadExample: (ex: Example) => void
+  loadExample: (variant: ExampleVariant) => void
   confirmWorkspaceReset: boolean
   setConfirmWorkspaceReset: (enabled: boolean) => void
   editorKeymap: EditorKeymap
@@ -661,10 +662,10 @@ export function StoreProvider({
   )
 
   const loadExample = useCallback(
-    (ex: Example) => {
+    (variant: ExampleVariant) => {
       cancelSourceProbe()
-      const nextFiles = ex.files.length ? ex.files : [DEFAULT_FILE]
-      const nextTop = ex.top ?? ''
+      const nextFiles = variant.files.length ? variant.files : [DEFAULT_FILE]
+      const nextTop = variant.top ?? ''
       filesRef.current = nextFiles
       topRef.current = nextTop
       markInputChanged()
@@ -672,7 +673,7 @@ export function StoreProvider({
       // Reloading the already-active example changes content without changing
       // the active file name, so the editor needs an explicit reset signal.
       setDocRevision((r) => r + 1)
-      const firstFile = ex.files[0]?.name ?? DEFAULT_FILE.name
+      const firstFile = variant.files[0]?.name ?? DEFAULT_FILE.name
       setActiveFileNameState(firstFile)
       const selection = { file: firstFile, startLine: 1, endLine: 1 }
       sourceSelectionRef.current = selection

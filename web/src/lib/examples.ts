@@ -10,11 +10,18 @@ const sources = import.meta.glob<string>('../data/examples/*.{v,sv,vhd,vhdl}', {
 export function bundledExamples(): ExamplesResponse {
   return {
     examples: manifest.flatMap((entry) => {
-      const files = entry.files.flatMap((name) => {
-        const content = sources[`../data/examples/${name}`]
-        return content == null ? [] : [{ name, content }]
-      })
-      return files.length === entry.files.length ? [{ ...entry, files }] : []
+      let complete = true
+      const variants = Object.fromEntries(
+        Object.entries(entry.variants).map(([language, variant]) => {
+          const files = variant.files.flatMap((name) => {
+            const content = sources[`../data/examples/${name}`]
+            return content == null ? [] : [{ name, content }]
+          })
+          if (files.length !== variant.files.length) complete = false
+          return [language, { top: variant.top, files }]
+        }),
+      ) as ExamplesResponse['examples'][number]['variants']
+      return complete ? [{ ...entry, variants }] : []
     }),
   }
 }

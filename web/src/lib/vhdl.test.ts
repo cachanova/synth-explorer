@@ -24,7 +24,7 @@ describe('VHDL translation', () => {
       log: '',
     })
     expect(translated).toMatchObject({
-      top: 'Counter',
+      top: 'counter',
       mode: 'gates',
       extraArgs: ['-noabc'],
       language: 'verilog',

@@ -20,7 +20,8 @@ test('synthesizes VHDL-2008 locally with source provenance', async ({ page }) =>
     route.fulfill({ status: 404, body: 'not found' }),
   )
   await page.goto('/')
-  await page.getByLabel('Example').selectOption('vhdl_counter')
+  await page.getByLabel('Language').selectOption('vhdl')
+  await page.getByLabel('Bundled example').selectOption('counter')
   await expect(page.locator('.pane-right')).toHaveAttribute(
     'data-analysis-state',
     'current',
@@ -60,36 +61,68 @@ test('synthesizes VHDL-2008 locally with source provenance', async ({ page }) =>
   })
   expect(report).toMatchObject({
     producer: expect.stringContaining('ghdl-5.0.1'),
-    top: 'vhdl_counter',
+    top: 'counter',
   })
   expect(report.cells).toBeGreaterThan(0)
   expect(report.vhdlCells).toBe(report.cells)
 
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   await expect(page.locator('.graph-stage svg')).toBeAttached({ timeout: 120_000 })
-  await page.getByRole('tab', { name: /vhdl_counter\.vhdl/ }).click()
+  await page.getByRole('tab', { name: /counter\.vhdl/ }).click()
   await page.locator('.cm-line', { hasText: "if reset = '1' then" }).click()
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(apiRequests).toEqual([])
 })
 
+test('synthesizes inferred memory and black-box VHDL through the cold engine path', async ({
+  page,
+}) => {
+  test.setTimeout(180_000)
+  await page.route('**/precomputed/*.json', (route) =>
+    route.fulfill({ status: 404, body: 'not found' }),
+  )
+  await page.goto('/')
+  await page.getByLabel('Language').selectOption('vhdl')
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  const example = page.getByLabel('Bundled example')
+  const analysis = page.locator('.pane-right')
+  const top = page
+    .locator('.card')
+    .filter({ has: page.getByText('Top', { exact: true }) })
+    .locator('.v')
+
+  for (const [name, expectedTop] of [
+    ['inferred_fifo', 'inferred_fifo'],
+    ['async_fifo_blackbox', 'async_fifo_wrapper'],
+  ] as const) {
+    await example.selectOption(name)
+    await expect(analysis).not.toHaveAttribute('data-analysis-state', 'current')
+    await expect(analysis).toHaveAttribute('data-analysis-state', 'current', {
+      timeout: 120_000,
+    })
+    await expect(page.locator('.error-strip')).toHaveCount(0)
+    await expect(top).toHaveText(expectedTop)
+  }
+})
+
 test('surfaces VHDL analysis diagnostics without invoking Yosys', async ({ page }) => {
   await page.goto('/')
-  await page.getByLabel('Example').selectOption('vhdl_counter')
+  await page.getByLabel('Language').selectOption('vhdl')
+  await page.getByLabel('Bundled example').selectOption('counter')
   await expect(page.locator('.pane-right')).toHaveAttribute(
     'data-analysis-state',
     'current',
     { timeout: 120_000 },
   )
 
-  await page.getByRole('tab', { name: /vhdl_counter\.vhdl/ }).click()
+  await page.getByRole('tab', { name: /counter\.vhdl/ }).click()
   const editor = page.locator('.cm-content')
   await editor.click()
   await editor.press('Control+A')
   await page.keyboard.insertText('entity broken is\nend entity')
 
   const error = page.locator('.error-strip')
-  await expect(error).toContainText('GHDL failed to analyze vhdl_counter.vhdl', {
+  await expect(error).toContainText('GHDL failed to analyze counter.vhdl', {
     timeout: 120_000,
   })
   await error.locator('summary').click()
@@ -108,7 +141,8 @@ test('recovers after the GHDL engine download fails', async ({ page }) => {
   })
 
   await page.goto('/')
-  await page.getByLabel('Example').selectOption('vhdl_counter')
+  await page.getByLabel('Language').selectOption('vhdl')
+  await page.getByLabel('Bundled example').selectOption('counter')
   await expect(page.locator('.error-strip')).toContainText('Engine failed to load (503)', {
     timeout: 120_000,
   })

@@ -36,6 +36,9 @@ The implementation proved the previously uncertain parts:
 - GHDL's synthesis kernel runs under wasm32 when built with AdaWebPack and
   initialized through a generated GNAT binder unit.
 - `ieee.numeric_std`, generics, clocked processes, and FSMs synthesize.
+- Inferred memories synthesize through the initialized GHDL memory-conversion
+  path, and architecture-level `syn_black_box` declarations survive as Yosys
+  black-box modules.
 - VHDL-2008 analysis works with the bundled, version-matched `std` and `ieee`
   libraries.
 - Syntax and semantic errors return readable GHDL diagnostics instead of
@@ -61,6 +64,8 @@ The reproducible toolchain and smoke fixtures live in
 - The synthesis cache identity includes the GHDL artifact version for VHDL
   records.
 - File import, saving, examples, and CodeMirror accept `.vhd` and `.vhdl`.
+- Every bundled example has a paired VHDL variant available through the
+  toolbar language toggle.
 
 ## Deliberate boundaries
 

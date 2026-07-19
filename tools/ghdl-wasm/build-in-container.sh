@@ -109,6 +109,7 @@ done
 cp "$ghdl/src/grt/grt-readline_none.ads" "$ghdl/src/grt/grt-readline_none.adb" "$frontend/"
 cp "$build/ghdl-native/grt-readline.ads" "$frontend/"
 patch --directory "$frontend" --strip=0 < "$repo/tools/ghdl-wasm/grt-stdio.patch"
+patch --directory "$frontend" --strip=0 < "$repo/tools/ghdl-wasm/blackbox-verilog.patch"
 cp "$repo/tools/ghdl-wasm/grt-stdio.adb" "$frontend/"
 
 libgnat="$gcc/gcc/ada/libgnat"

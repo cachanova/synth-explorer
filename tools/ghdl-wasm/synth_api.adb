@@ -18,9 +18,11 @@ with Synth.Flags; use Synth.Flags;
 with Synth.Context; use Synth.Context;
 with Synthesis;
 with Netlists; use Netlists;
+with Netlists.Errors;
 with Netlists.Rename;
 with Netlists.Disp_Verilog;
 with Outputs;
+with Synth.Vhdl_Foreign;
 
 package body Synth_Api is
    function Synth_Init return Integer is
@@ -37,6 +39,8 @@ package body Synth_Api is
       --  Synthesis does its own canonicalization of concurrent statements.
       Vhdl.Canon.Canon_Flag_Concurrent_Stmts := False;
       Vhdl.Canon.Canon_Flag_Add_Suspend_State := False;
+      Netlists.Errors.Initialize;
+      Synth.Vhdl_Foreign.Initialize;
 
       Libraries.Add_Library_Path ("/ghdl/lib/ghdl/");
       Ok := Libraries.Load_Std_Library;

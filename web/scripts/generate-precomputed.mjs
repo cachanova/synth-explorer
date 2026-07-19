@@ -39,24 +39,43 @@ try {
   try {
     const context = await browser.newContext()
     const page = await context.newPage()
-    // Always regenerate from the pinned browser engines, even when the
-    // previous artifact set is present in the build used by this script.
+    // Always regenerate from the pinned browser engines so the checked
+    // artifacts prove the current bundled binaries, not a prior artifact set.
     await page.route('**/precomputed/**', (route) => route.abort())
     await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
     await waitForMapping(page)
 
     const generated = [{ name: 'default', artifact: await newestCacheRecord(page) }]
-    const exampleSelect = page.getByLabel('Example')
+    const exampleSelect = page.getByLabel('Bundled example')
+    const languageSelect = page.getByLabel('Language')
     const exampleNames = await exampleSelect.locator('option').evaluateAll((options) =>
       options.map((option) => option.value).filter(Boolean),
     )
-    for (const name of exampleNames) {
-      await exampleSelect.selectOption(name)
-      await page.waitForFunction(
-        () => document.querySelector('.pane-right')?.dataset.analysisState !== 'current',
-      )
-      await waitForMapping(page)
-      generated.push({ name, artifact: await newestCacheRecord(page) })
+    for (const language of ['vhdl', 'verilog']) {
+      await languageSelect.selectOption(language)
+      if (await exampleSelect.inputValue()) {
+        await page.waitForFunction(
+          () => document.querySelector('.pane-right')?.dataset.analysisState !== 'current',
+        )
+        await waitForMapping(page)
+      }
+      for (const name of exampleNames) {
+        process.stdout.write(`Generating ${name}:${language}...\n`)
+        await exampleSelect.selectOption(name)
+        await page.waitForFunction(
+          () => document.querySelector('.pane-right')?.dataset.analysisState !== 'current',
+        )
+        try {
+          await waitForMapping(page)
+        } catch (error) {
+          const failure = await page.locator('.error-strip').textContent().catch(() => '')
+          throw new Error(`Failed to generate ${name}:${language}: ${failure || error}`)
+        }
+        generated.push({
+          name: `${name}:${language}`,
+          artifact: await newestCacheRecord(page),
+        })
+      }
     }
     await context.close()
 
@@ -116,12 +135,16 @@ async function waitForPreview() {
   throw new Error(`Timed out waiting for Vite preview:\n${previewLog}`)
 }
 
-function waitForMapping(page) {
-  return page.waitForFunction(
-    () => document.querySelector('.pane-right')?.dataset.analysisState === 'current',
+async function waitForMapping(page) {
+  await page.waitForFunction(
+    () =>
+      document.querySelector('.pane-right')?.dataset.analysisState === 'current' ||
+      document.querySelector('.error-strip') !== null,
     undefined,
     { timeout: 120_000 },
   )
+  const failure = await page.locator('.error-strip').textContent().catch(() => '')
+  if (failure) throw new Error(failure)
 }
 
 function newestCacheRecord(page) {
@@ -136,7 +159,10 @@ function newestCacheRecord(page) {
       read.onsuccess = () => resolve(read.result)
       read.onerror = () => reject(read.error)
     })
-    const newest = records.sort((left, right) => right.createdAt - left.createdAt)[0]
+    // A variant may already have been synthesized by the language toggle and
+    // then reused when its option is selected later. Cache hits update
+    // lastAccessedAt but intentionally retain their original createdAt.
+    const newest = records.sort((left, right) => right.lastAccessedAt - left.lastAccessedAt)[0]
     if (!newest) throw new Error('Synthesis completed without a cache record')
     if (newest.input.mode !== 'gates') {
       throw new Error(`Expected a gate-mode artifact, received ${newest.input.mode}`)

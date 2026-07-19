@@ -45,6 +45,9 @@ export function translatedYosysInput(
   return {
     ...input,
     files: [{ name: `ghdl-${input.top.toLowerCase()}.v`, content: verilog }],
+    // VHDL identifiers are case-insensitive. GHDL emits canonical lowercase
+    // Verilog module names, while Yosys resolves Verilog tops case-sensitively.
+    top: input.top.toLowerCase(),
     language: 'verilog',
   }
 }

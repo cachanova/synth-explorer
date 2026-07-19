@@ -1,9 +1,9 @@
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
-use work.vhdl_counter_pkg.all;
+use work.counter_pkg.all;
 
-entity vhdl_counter is
+entity counter is
   generic (
     WIDTH : positive := 8
   );
@@ -15,7 +15,7 @@ entity vhdl_counter is
   );
 end entity;
 
-architecture rtl of vhdl_counter is
+architecture rtl of counter is
   signal value : unsigned(WIDTH - 1 downto 0) := (others => '0');
 begin
   process (clk)

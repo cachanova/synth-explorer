@@ -6,7 +6,9 @@ import {
 } from './sourceFiles'
 
 export const YOSYS_VERSION = '0.67-2d1509d1b'
-export const GHDL_VERSION = '5.0.1-37ad91899ea3'
+// Upstream version plus SHA-256 prefixes for ghdl-synth.wasm and the compiled
+// standard-library archive. Either artifact can change synthesis output.
+export const GHDL_VERSION = '5.0.1-37ad91899ea3-245664fc-2cdbaa33'
 export const YOSYS_CACHE_SCHEMA = 2
 
 export type MemoryHandling = 'map' | 'abstract'

@@ -92,3 +92,13 @@ not run and synthesis tables remain zero-initialized. The `Grt.Stdio` patch
 also gives `fputc`, `fflush`, and `fclose` one WebAssembly ABI each; native C
 permits ignoring a return value, but WebAssembly rejects conflicting function
 signatures.
+
+The Verilog emitter patch writes declarations for GHDL black-box modules.
+Upstream tracks those interfaces internally but otherwise omits their module
+declarations, leaving the generated top with unresolved cells when Yosys runs.
+
+After rebuilding, update `GHDL_VERSION` in `web/src/lib/yosysScript.ts` with
+the new `ghdl-synth.wasm` and `libraries.tar.gz` checksum prefixes. The
+precomputed verifier checks both. That value versions browser caches,
+precomputed artifacts, and immutable asset URLs for project-local patches and
+compiled-library changes as well as upstream GHDL changes.

@@ -58,11 +58,11 @@ Corrupt or expired records are deleted. Retention is bounded to 24 entries,
 last access. Browser storage eviction, private browsing, clearing site data, or
 changing devices removes or hides entries.
 
-The default design and every bundled example have one precomputed generic-gates
-artifact. Their filenames are the full synthesis cache keys and Vercel caches
-them immutably. The bundled key manifest prevents arbitrary user inputs from
-issuing speculative artifact requests. A missing, stale, or malformed artifact
-falls through to browser-local Yosys.
+The default design and both language variants of every bundled example have a
+precomputed generic-gates artifact. Their filenames are the full synthesis
+cache keys and Vercel caches them immutably. The bundled key manifest prevents
+arbitrary user inputs from issuing speculative artifact requests. A missing,
+stale, or malformed artifact falls through to browser-local synthesis.
 
 The editor workspace is a single versioned record containing only editable
 synthesis inputs. Derived analysis state is not restored across page loads.

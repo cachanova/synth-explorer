@@ -389,12 +389,18 @@ export interface SourceMapResponse {
 
 // --- Bundled examples ---
 
+export type ExampleLanguage = 'verilog' | 'vhdl'
+
+export interface ExampleVariant {
+  top: string
+  files: DesignFile[]
+}
+
 export interface Example {
   name: string // "adder_chain"
   title: string
   description: string
-  top: string
-  files: DesignFile[]
+  variants: Record<ExampleLanguage, ExampleVariant>
 }
 
 export interface ExamplesResponse {

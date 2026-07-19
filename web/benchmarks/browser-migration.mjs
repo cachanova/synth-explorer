@@ -235,7 +235,7 @@ async function runFlow(page, metrics, url, warmth) {
       } else {
         await page.reload({ waitUntil: 'networkidle' })
       }
-      await page.getByLabel('Example').waitFor()
+      await page.getByLabel('Bundled example').waitFor()
       const button = page.getByRole('button', { name: 'Synthesize', exact: true })
       if (!(await button.count())) {
         await page.waitForFunction(
@@ -247,12 +247,12 @@ async function runFlow(page, metrics, url, warmth) {
 
   const button = page.getByRole('button', { name: 'Synthesize', exact: true })
   const manual = (await button.count()) > 0
-  if (manual) await page.getByLabel('Example').selectOption('reg_mux')
+  if (manual) await page.getByLabel('Bundled example').selectOption('reg_mux')
   phases.push(
     await measure('synthesize_to_overview', metrics, async () => {
       const running = armSynthesisStart(page)
       if (manual) await button.click()
-      else await page.getByLabel('Example').selectOption('reg_mux')
+      else await page.getByLabel('Bundled example').selectOption('reg_mux')
       await waitForSynthesis(page, running)
     }),
   )
