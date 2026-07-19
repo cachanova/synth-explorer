@@ -1,6 +1,8 @@
 import { expect, test } from '@playwright/test'
 
 const canonicalUrl = 'https://www.synthexplorer.dev/'
+const expectedDescription =
+  'Synthesize RTL in your browser and explore logic paths, endpoints, fanin, fanout, and source locations. Your RTL stays local.'
 
 test('publishes crawlable metadata and semantic product identity', async ({ page }) => {
   await page.goto('/')
@@ -15,7 +17,15 @@ test('publishes crawlable metadata and semantic product identity', async ({ page
 
   await expect(page.locator('meta[name="description"]')).toHaveAttribute(
     'content',
-    /Synthesize RTL in your browser and explore logic paths/,
+    expectedDescription,
+  )
+  await expect(page.locator('meta[property="og:description"]')).toHaveAttribute(
+    'content',
+    expectedDescription,
+  )
+  await expect(page.locator('meta[name="twitter:description"]')).toHaveAttribute(
+    'content',
+    expectedDescription,
   )
   await expect(page.locator('link[rel="canonical"]')).toHaveAttribute(
     'href',

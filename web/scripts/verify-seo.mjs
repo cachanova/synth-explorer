@@ -3,18 +3,33 @@ import { readFile } from 'node:fs/promises'
 
 const canonicalUrl = 'https://www.synthexplorer.dev/'
 const expectedTitle = 'Synth Explorer - Online RTL Synthesis Exploration and Analysis'
+const expectedDescription =
+  'Synthesize RTL in your browser and explore logic paths, endpoints, fanin, fanout, and source locations. Your RTL stays local.'
 const distUrl = new URL('../dist/', import.meta.url)
 
 const html = await readFile(new URL('index.html', distUrl), 'utf8')
+
+function metaContent(attribute, value) {
+  const match = html.match(
+    new RegExp(`<meta\\s+${attribute}="${value}"\\s+content="([^"]+)"\\s*/?>`),
+  )
+  assert(match, `index.html must contain ${attribute}="${value}" metadata`)
+  return match[1]
+}
+
 assert.match(html, new RegExp(`<title>${expectedTitle}</title>`))
-assert.match(html, /<meta\s+name="description"\s+content="[^"]+"\s*\/?>/)
+assert.equal(metaContent('name', 'description'), expectedDescription)
 assert.match(html, /<meta\s+name="robots"\s+content="index, follow"\s*\/?>/)
 assert.match(
   html,
   new RegExp(`<link\\s+rel="canonical"\\s+href="${canonicalUrl}"\\s*/?>`),
 )
-assert.match(html, /<meta\s+property="og:image"\s+content="https:\/\/www\.synthexplorer\.dev\/og-image\.png"\s*\/?>/)
-assert.match(html, /<meta\s+name="twitter:card"\s+content="summary_large_image"\s*\/?>/)
+assert.equal(metaContent('property', 'og:title'), expectedTitle)
+assert.equal(metaContent('property', 'og:description'), expectedDescription)
+assert.equal(metaContent('property', 'og:image'), `${canonicalUrl}og-image.png`)
+assert.equal(metaContent('name', 'twitter:card'), 'summary_large_image')
+assert.equal(metaContent('name', 'twitter:title'), expectedTitle)
+assert.equal(metaContent('name', 'twitter:description'), expectedDescription)
 assert.match(html, /<h1 class="logo" aria-label="Synth Explorer">/)
 assert.match(html, /Browser-based RTL synthesis &amp; circuit analysis/)
 
@@ -27,6 +42,7 @@ assert.equal(jsonLd['@type'], 'WebSite')
 assert.equal(jsonLd.name, 'Synth Explorer')
 assert.equal(jsonLd.alternateName, 'synthexplorer.dev')
 assert.equal(jsonLd.url, canonicalUrl)
+assert.equal(jsonLd.description, expectedDescription)
 
 const robots = await readFile(new URL('robots.txt', distUrl), 'utf8')
 assert.match(robots, /^User-agent: \*$/m)
