@@ -27,6 +27,31 @@ describe('browser Yosys script', () => {
     )
   })
 
+  it('makes SystemVerilog headers available without compiling them as units', () => {
+    const input = validateSynthesisRequest({
+      ...request('gates'),
+      files: [
+        { name: 'top.sv', content: '`include "defs.svh"\nmodule top; endmodule' },
+        { name: 'defs.svh', content: '`define WIDTH 8' },
+      ],
+    })
+
+    expect(input.files.map((file) => file.name)).toEqual(['defs.svh', 'top.sv'])
+    expect(buildYosysScript(input).match(/^read_verilog.*$/gm)).toEqual([
+      'read_verilog -sv top.sv',
+      'read_verilog -sv top.sv',
+    ])
+  })
+
+  it('requires a Verilog compilation unit in addition to headers', () => {
+    expect(() =>
+      validateSynthesisRequest({
+        ...request('gates'),
+        files: [{ name: 'defs.svh', content: '`define WIDTH 8' }],
+      }),
+    ).toThrow('at least one .v or .sv source file is required')
+  })
+
   it('keeps inferred memories abstract in the retry flow', () => {
     const script = buildYosysScript(validateSynthesisRequest(request('lut6')), 'abstract')
     expect(script).toContain('synth -top top -flatten -lut 6 -run begin:fine')

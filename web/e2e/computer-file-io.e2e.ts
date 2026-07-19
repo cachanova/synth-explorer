@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { expect, test } from '@playwright/test'
+import { waitForAnalysisReady } from './helpers'
 
 declare global {
   interface Window {
@@ -114,6 +115,42 @@ test('loads computer files and saves the active file or all open files', async (
         { scope: 'directory', name: 'file1.sv', content: editedHelper },
       ]),
     )
+})
+
+test('synthesizes a design that includes an imported SystemVerilog header', async ({
+  page,
+}) => {
+  const design = `\`include "defs.svh"
+module included_header_top(output logic [\`WIDTH-1:0] value);
+  assign value = \`VALUE;
+endmodule`
+  const header = `\`define WIDTH 4
+\`define VALUE 4'ha`
+
+  await page.locator('input[type="file"]').setInputFiles([
+    { name: 'design.sv', mimeType: 'text/plain', buffer: Buffer.from(design) },
+    { name: 'defs.svh', mimeType: 'text/plain', buffer: Buffer.from(header) },
+  ])
+  await page
+    .getByRole('dialog', { name: 'Replace existing files?' })
+    .getByRole('button', { name: 'Replace', exact: true })
+    .click()
+
+  await expect(page.getByRole('tab', { name: /^defs\.svh/ })).toBeVisible()
+  await waitForAnalysisReady(page)
+  await expect(page.getByText('Synthesis failed')).toHaveCount(0)
+
+  await page.getByRole('tab', { name: /^defs\.svh/ }).click()
+  await page.getByRole('button', { name: 'Save defs.svh to computer' }).click()
+  await expect
+    .poll(() => page.evaluate(() => window.savedComputerFiles))
+    .toContainEqual({ scope: 'file', name: 'defs.svh', content: header })
+
+  await page.waitForTimeout(350)
+  await page.reload()
+  await expect(page.getByRole('tab', { name: /^defs\.svh/ })).toBeVisible()
+  await expect(page.locator('.cm-content')).toContainText('`define WIDTH 4')
+  await waitForAnalysisReady(page)
 })
 
 test('downloads files when native save pickers are unavailable', async ({

@@ -149,7 +149,7 @@ export type Mode =
 export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
 
 export interface DesignFile {
-  name: string // bare filename, [A-Za-z0-9._-]+, .v/.sv
+  name: string // bare filename, [A-Za-z0-9._-]+, .v/.sv/.svh
   content: string
 }
 

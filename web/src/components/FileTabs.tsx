@@ -12,8 +12,8 @@ import {
   readComputerFiles,
   saveComputerFile,
   saveComputerFiles,
-  SOURCE_FILE_ACCEPT,
 } from '../lib/computerFiles'
+import { SOURCE_FILE_ACCEPT } from '../lib/sourceFiles'
 import type { DesignFile } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 
@@ -448,7 +448,7 @@ export function FileTabs() {
             type="button"
             className="file-io-button"
             aria-label="Load files from computer"
-            title="Load .v or .sv files from computer"
+            title="Load .v, .sv, or .svh files from computer"
             disabled={transferDisabled}
             onClick={() => computerFileInputRef.current?.click()}
           >

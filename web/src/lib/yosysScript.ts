@@ -1,4 +1,8 @@
 import type { DesignFile, Mode, SynthesizeRequest } from '../types'
+import {
+  isVerilogCompilationUnit,
+  validateSourceFilename,
+} from './sourceFiles'
 
 export const YOSYS_VERSION = '0.67-2d1509d1b'
 export const YOSYS_CACHE_SCHEMA = 1
@@ -21,7 +25,10 @@ export function validateSynthesisRequest(
   const files = [...request.files].sort((left, right) =>
     left.name.localeCompare(right.name),
   )
-  for (const file of files) validateFilename(file.name)
+  for (const file of files) validateSourceFilename(file.name)
+  if (!files.some((file) => isVerilogCompilationUnit(file.name))) {
+    throw new Error('at least one .v or .sv source file is required')
+  }
   const top = request.top?.trim() || undefined
   if (top && !/^[A-Za-z0-9_$]+$/.test(top)) {
     throw new Error(`invalid top module name: ${top}`)
@@ -100,7 +107,10 @@ export function defaultDelayProfile(input: ValidatedSynthesis): string {
 }
 
 function readVerilog(input: ValidatedSynthesis): string {
-  return `read_verilog -sv ${input.files.map((file) => file.name).join(' ')}\n`
+  const compilationUnits = input.files
+    .filter((file) => isVerilogCompilationUnit(file.name))
+    .map((file) => file.name)
+  return `read_verilog -sv ${compilationUnits.join(' ')}\n`
 }
 
 function topArgs(top?: string): string {
@@ -109,15 +119,6 @@ function topArgs(top?: string): string {
 
 function topOnly(top?: string): string {
   return top ? `-top ${top}` : ''
-}
-
-function validateFilename(name: string) {
-  if (!name.endsWith('.v') && !name.endsWith('.sv')) {
-    throw new Error(`source filename must end in .v or .sv: ${name}`)
-  }
-  if (!name || name.includes('..') || !/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error(`invalid source filename: ${name}`)
-  }
 }
 
 function parseExtraArgs(extraArgs?: string): string[] {
