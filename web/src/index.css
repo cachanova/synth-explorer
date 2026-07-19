@@ -866,6 +866,12 @@ a:hover {
   font-family: var(--mono);
   font-size: 13px;
 }
+.cm-editor .cm-vimMode .cm-vimCursorLayer {
+  display: none !important;
+}
+.cm-editor .cm-vimMode .cm-cursorLayer:not(.cm-vimCursorLayer) {
+  display: block !important;
+}
 .cm-src-hl {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   transition: background 0.4s ease;
