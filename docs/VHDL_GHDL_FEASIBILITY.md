@@ -2,6 +2,15 @@
 
 Status: investigation, July 2026. No implementation decision has been made.
 
+> **Update 2026-07-19:** Spike A (below) has been executed and **passed** —
+> GHDL 5.0.1's synthesis kernel runs under wasm32 with binder-driven
+> elaboration, synthesizes `numeric_std` and generic designs to netlists
+> byte-identical to native output, and fails cleanly on malformed input.
+> See [`tools/ghdl-wasm-spike/`](../tools/ghdl-wasm-spike/) for artifacts,
+> the full recipe, and the revised follow-up plan: a **two-module pipeline**
+> (GHDL wasm emitting Verilog into the existing `yosys.wasm`) is now a
+> credible alternative to statically linking libghdl into Yosys.
+
 Synth Explorer synthesizes entirely in the browser with a project-owned Yosys
 WebAssembly module (`tools/yosys-wasm/`). Supporting VHDL through
 [ghdl-yosys-plugin](https://github.com/ghdl/ghdl-yosys-plugin) is therefore not
@@ -132,7 +141,7 @@ If VHDL demand justifies investment, sequence it as spikes with cheap exits:
 1. **Spike A — synth kernel on wasm32.** Build libghdl per the ghdl-browser
    recipe and drive `--synth` (not simulation) on `numeric_std`-using
    designs from JS. This tests the riskiest unknown first, with no Yosys
-   involvement.
+   involvement. *Done — passed; see `tools/ghdl-wasm-spike/`.*
 2. **Spike B — single-module link.** Statically link that libghdl plus the
    plugin shim into the existing `tools/yosys-wasm` build; run
    `ghdl ... -e top; write_json` end to end under the browser WASI shim.
