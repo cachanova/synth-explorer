@@ -1,159 +1,86 @@
-# VHDL support via the GHDL Yosys plugin: feasibility
+# VHDL support via GHDL WebAssembly
 
-Status: investigation, July 2026. No implementation decision has been made.
+Status: implemented, July 2026.
 
-> **Update 2026-07-19:** Spike A (below) has been executed and **passed** —
-> GHDL 5.0.1's synthesis kernel runs under wasm32 with binder-driven
-> elaboration, synthesizes `numeric_std` and generic designs to netlists
-> byte-identical to native output, and fails cleanly on malformed input.
-> **Spike B1 also passed**: a two-module pipeline (GHDL wasm → Verilog with
-> `` `line `` directives → the existing pinned `yosys.wasm`) delivers VHDL
-> source provenance equal to native Verilog input at the app's
-> source-netlist stage (100% of cells), with zero changes to the Yosys
-> build. This is now the recommended integration shape; statically linking
-> libghdl into Yosys is no longer on the critical path. See
-> [`tools/ghdl-wasm-spike/`](../tools/ghdl-wasm-spike/) for artifacts,
-> recipes, measurements, and the productization checklist.
+Synth Explorer supports browser-local VHDL-2008 synthesis using GHDL 5.0.1
+followed by the existing pinned Yosys WebAssembly build. RTL remains in the
+browser; there is no server synthesis path.
 
-Synth Explorer synthesizes entirely in the browser with a project-owned Yosys
-WebAssembly module (`tools/yosys-wasm/`). Supporting VHDL through
-[ghdl-yosys-plugin](https://github.com/ghdl/ghdl-yosys-plugin) is therefore not
-primarily a Yosys-scripting question but a WebAssembly toolchain question:
-can GHDL, a large Ada program, be compiled into (or next to) our
-`yosys.wasm`? This document records what the plugin needs, the current state
-of GHDL-on-WASM, the integration surface inside this repository, and a
-recommended path.
+## Architecture decision
 
-## How the plugin works natively
+The initial investigation considered statically linking libghdl and the
+ghdl-yosys plugin into `yosys.wasm`. That route combines two incompatible
+runtime environments: AdaWebPack's minimal Ada runtime and Yosys's WASI libc.
+It also requires static plugin registration because WASI Preview 1 has no
+dynamic linking.
 
-- ghdl-yosys-plugin is a thin C++ shim, normally built as a Yosys plugin
-  shared object (`ghdl.so`) that dynamically links `libghdl`, GHDL's
-  library form. The plugin registers a `ghdl` Yosys command that analyzes and
-  elaborates VHDL sources and emits RTLIL.
-- `libghdl` and the synthesis kernel are default-on GHDL configure options
-  (`--enable-libghdl`, `--enable-synth`, both default since v0.37).
-- Synthesis is implemented in GHDL's front end and is independent of the
-  code-generation backend (mcode/LLVM/GCC). A WASM port would not need the
-  JIT machinery — only analysis, elaboration, and the synth kernel.
-- Building the plugin sources directly into the Yosys binary (static, no
-  `dlopen`) is supported upstream, though documented as "not recommended".
-  For WASI it is mandatory: WASI Preview 1 has no dynamic linking.
+The implemented design uses two sequential workers instead:
 
-## State of GHDL on WebAssembly (checked 2026-07-18)
+```text
+VHDL source files
+  -> GHDL analysis, elaboration, and synthesis worker
+  -> generated generic Verilog
+  -> VHDL-location rewrite
+  -> existing Yosys worker and synthesis modes
+  -> existing Rust analysis worker
+```
 
-- GHDL is written in Ada. The only viable compiler route is
-  GNAT-LLVM targeting wasm32, packaged today as
-  [AdaWebPack](https://github.com/godunko/adawebpack) (active; release
-  14.0.0, Feb 2025). Its runtime has hard limitations relevant to GHDL:
-  no tasks, limited exception propagation, no nested subprograms.
-- The first public proof that GHDL compiles and runs under wasm32 appeared in
-  May–June 2026: [UnsignedChad/ghdl-browser](https://github.com/UnsignedChad/ghdl-browser)
-  builds patched GHDL 5.0.1 with GNAT-LLVM + AdaWebPack into a ~4.5 MB
-  `ghdl.wasm` exposing the libghdl API to JavaScript. It targets simulation,
-  not the Yosys plugin; `IEEE.NUMERIC_STD` designs crash; the required
-  patches are not upstream. It is a one-person experimental project.
-- No public build of Yosys with the GHDL plugin exists for WASM anywhere.
-  YoWASP ships Yosys without GHDL and has never packaged GHDL
-  (2020–2026). GHDL upstream has no open WebAssembly work.
-- The commercial alternative frontend (Verific, `verific -vhdl`) is licensed
-  through Tabby CAD only and cannot be redistributed in a public browser
-  bundle; it is a non-starter for this product.
+This keeps the Yosys artifact and synthesis scripts canonical. GHDL is a
+frontend stage only; every existing generic and FPGA-target mapping mode still
+runs in Yosys.
 
-## Why a yosys.wasm + libghdl link is hard today
+## Feasibility results
 
-Even taking ghdl-browser as an existence proof, our build combines badly with
-it:
+The implementation proved the previously uncertain parts:
 
-1. **Two toolchains, one module.** Our Yosys is compiled by WASI SDK 33
-   (clang, `wasm32-wasip1`, wasi-libc, native WebAssembly exceptions).
-   AdaWebPack objects are produced by GNAT-LLVM against its own minimal Ada
-   runtime, not wasi-libc. Linking both into one module means reconciling
-   libc symbols, startup/ctor ordering, and the exception ABI. GNAT-LLVM's
-   exception support is limited, while GHDL uses Ada exceptions for error
-   recovery on malformed input — exactly the input an interactive editor
-   produces continuously.
-2. **Static plugin registration.** No `dlopen` under WASI, so the plugin's
-   `Yosys::Pass` registration must be compiled into the main binary and the
-   CMake component build (`YOSYS_COMPONENTS`) extended with an out-of-tree
-   source set plus the libghdl archive.
-3. **Synthesis kernel unproven on wasm.** ghdl-browser exercises analysis,
-   elaboration, and its own WAT codegen; whether `--synth` (the code the
-   plugin calls) survives the AdaWebPack runtime restrictions is unknown.
-4. **Standard libraries in the VFS.** libghdl needs pre-analyzed `std` and
-   `ieee` libraries on the (virtual) filesystem. These must be produced at
-   build time by a native GHDL of the same version and shipped in
-   `share.tar.gz`, growing it by several MB.
-5. **Size and pinning.** `yosys.wasm` is ~30 MB today; libghdl adds an
-   estimated 5–10 MB plus the analyzed libraries. The build would newly pin
-   GNAT-LLVM, AdaWebPack, GHDL, and a patch stack on top of the existing
-   Yosys/ABC/WASI-SDK pins, and the patch stack currently lives in an
-   unreviewed personal fork.
+- GHDL's synthesis kernel runs under wasm32 when built with AdaWebPack and
+  initialized through a generated GNAT binder unit.
+- `ieee.numeric_std`, generics, clocked processes, and FSMs synthesize.
+- VHDL-2008 analysis works with the bundled, version-matched `std` and `ieee`
+  libraries.
+- Syntax and semantic errors return readable GHDL diagnostics instead of
+  trapping the worker.
+- GHDL's emitted source comments can be converted to Verilog `` `line ``
+  directives. All cells in the source-stage netlist for the production VHDL
+  fixture carry original `.vhdl` locations, and browser source selection can
+  resolve those locations into the schematic.
+- A production Chromium test exercises the complete static build without API
+  requests and verifies both provenance and invalid-input behavior.
 
-None of these is provably impossible; every one is unowned engineering with
-no prior art for the combination.
+The reproducible toolchain and smoke fixtures live in
+[`tools/ghdl-wasm/`](../tools/ghdl-wasm/).
 
-## Integration surface in this repository
+## Product integration
 
-If a `yosys.wasm` with a built-in `ghdl` command existed, the product changes
-are modest and well-localized:
+- `web/src/workers/ghdl.worker.ts` hosts the Ada module, standard-library
+  virtual filesystem, diagnostics, and synthesis API.
+- `web/src/lib/vhdl.ts` owns the single source-location rewrite and constructs
+  the generated-Verilog input for Yosys.
+- `web/src/lib/localEngine.ts` invokes GHDL only for validated VHDL workspaces,
+  then follows the existing Yosys/cache/analysis path.
+- The synthesis cache identity includes the GHDL artifact version for VHDL
+  records.
+- File import, saving, examples, and CodeMirror accept `.vhd` and `.vhdl`.
 
-- `web/src/lib/yosysScript.ts` — accept `.vhd`/`.vhdl` filenames, and emit
-  `ghdl --std=08 <files> -e <top>` instead of (or alongside) `read_verilog
-  -sv`. Mixed Verilog + VHDL designs fall out naturally, since both
-  frontends just populate modules before `hierarchy`. Open question: the
-  plugin has no `-auto-top` equivalent, so VHDL designs likely require an
-  explicit top (or we resolve one after analysis); the optional-top UI
-  contract needs a decision here.
-- `web/src/lib/src.ts` — GHDL emits `src` attributes as `file:line`;
-  the parser already accepts line-only spans, but provenance fidelity
-  (`source-netlist.json`, source-selection projection, per-line mapping)
-  must be validated against real GHDL output, which is sparser than
-  `read_verilog`'s.
-- `web/src/components/Editor.tsx` — CodeMirror `@codemirror/legacy-modes`
-  ships a VHDL mode next to the Verilog mode already in use.
-- `web/src/lib/yosysScript.ts` cache constants — new artifact means bumping
-  `YOSYS_VERSION`/`YOSYS_CACHE_SCHEMA` so stale IndexedDB entries are
-  invalidated.
-- Examples, filename validation messages, README/architecture docs, and
-  calibration script rendering pick up the new language mechanically.
+## Deliberate boundaries
 
-## Alternatives considered
+- VHDL requires an explicit top entity. GHDL's synthesis entry point has no
+  equivalent of Yosys `hierarchy -auto-top`.
+- VHDL file order is significant. Workspace order is preserved so packages
+  can be placed before dependent entities and architectures.
+- Mixed VHDL and Verilog workspaces are rejected. Supporting them would
+  require a defined cross-language elaboration/linking contract rather than
+  merely feeding two parsers.
+- VHDL source lines are exact, but columns in Yosys `src` spans describe the
+  generated Verilog layout and should not be interpreted as VHDL columns.
+- Technology mapping may absorb or create cells without retaining every
+  frontend source attribute. The source-stage netlist remains the provenance
+  bridge used by analysis.
 
-- **vhd2vl (VHDL→Verilog translation) in WASM.** vhd2vl is plain
-  C/flex/bison and would compile to WASM trivially, giving a quick
-  "VHDL in the browser" demo. Rejected as *the* VHDL story: it handles only
-  a narrow VHDL-93 subset (no functions, procedures, or packages — which
-  excludes most `numeric_std`-based real code), is essentially dormant
-  upstream, and destroys source provenance, the product's core interaction
-  (all `src` attributes would point at generated Verilog). It could at most
-  become an explicit, honest *import* feature that converts VHDL into
-  editable Verilog shown to the user, with the translation as the source of
-  truth.
-- **Server-side GHDL.** Contradicts the product's architecture and privacy
-  claim ("RTL is not uploaded to an application server"); rejected.
+## Rejected alternatives
 
-## Recommendation
-
-Do not commit to shipping GHDL-based VHDL support yet. The product-side work
-is small, but the toolchain work is a research project whose critical path
-(GNAT-LLVM + AdaWebPack objects linked into a WASI-SDK Yosys, synth kernel
-running under a restricted Ada runtime) has no prior art and depends on an
-experimental, unupstreamed patch stack.
-
-If VHDL demand justifies investment, sequence it as spikes with cheap exits:
-
-1. **Spike A — synth kernel on wasm32.** Build libghdl per the ghdl-browser
-   recipe and drive `--synth` (not simulation) on `numeric_std`-using
-   designs from JS. This tests the riskiest unknown first, with no Yosys
-   involvement. *Done — passed; see `tools/ghdl-wasm-spike/`.*
-2. **Spike B — single-module link.** Statically link that libghdl plus the
-   plugin shim into the existing `tools/yosys-wasm` build; run
-   `ghdl ... -e top; write_json` end to end under the browser WASI shim.
-3. **Productize** only after both spikes pass: extend `build.sh` pins,
-   ship analyzed `std`/`ieee` in `share.tar.gz`, then make the frontend
-   changes listed above behind the existing mode/flag machinery.
-
-Track upstream in the meantime: AdaWebPack releases, any upstreaming of the
-ghdl-browser wasm patches into ghdl/ghdl, and any appearance of a packaged
-GHDL WASM build (e.g. from the former-YoWASP/Codeberg ecosystem) — any of
-these materially shortens spikes A and B.
+- A single GHDL-enabled Yosys module adds substantial toolchain and ABI risk
+  without a product benefit over the sequential pipeline.
+- Narrow VHDL-to-Verilog translators omit common language features such as
+  packages and procedures and weaken source provenance.
+- Server-side GHDL contradicts the static, private browser architecture.

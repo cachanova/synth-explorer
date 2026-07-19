@@ -40,6 +40,7 @@ import {
   searchKeymap,
 } from '@codemirror/search'
 import { verilog } from '@codemirror/legacy-modes/mode/verilog'
+import { vhdl } from '@codemirror/legacy-modes/mode/vhdl'
 import { tags } from '@lezer/highlight'
 import type { EditorHighlight } from '../store'
 import { useTheme } from '../lib/themeContext'
@@ -130,6 +131,10 @@ const editorThemes: Record<'light' | 'dark', Extension> = {
   dark: createEditorTheme(true),
 }
 let vimKeysConfigured = false
+
+function sourceLanguageExtension(name: string): Extension {
+  return StreamLanguage.define(name.endsWith('.vhd') || name.endsWith('.vhdl') ? vhdl : verilog)
+}
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
@@ -256,6 +261,7 @@ export function Editor() {
   currentFileRef.current = store.activeFileName
   // theme lives in a compartment so it can be swapped without rebuilding the view
   const themeCompartment = useRef(new Compartment())
+  const languageCompartment = useRef(new Compartment())
   const resolvedModeRef = useRef(resolvedMode)
   resolvedModeRef.current = resolvedMode
   const appliedModeRef = useRef(resolvedMode)
@@ -316,7 +322,7 @@ export function Editor() {
       highlightActiveLineGutter(),
       drawSelection(),
       history(),
-      StreamLanguage.define(verilog),
+      languageCompartment.current.of(sourceLanguageExtension(currentFileRef.current)),
       indentOnInput(),
       closeBrackets(),
       bracketMatching(),
@@ -413,6 +419,16 @@ export function Editor() {
     if (content !== view.state.doc.toString()) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: content },
+        effects: languageCompartment.current.reconfigure(
+          sourceLanguageExtension(store.activeFileName),
+        ),
+        annotations: programmaticUpdate.of(true),
+      })
+    } else {
+      view.dispatch({
+        effects: languageCompartment.current.reconfigure(
+          sourceLanguageExtension(store.activeFileName),
+        ),
         annotations: programmaticUpdate.of(true),
       })
     }

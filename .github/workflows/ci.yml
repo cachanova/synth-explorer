@@ -75,6 +75,10 @@ jobs:
         working-directory: web/public/yosys
         run: sha256sum --check SHA256SUMS
 
+      - name: Verify pinned GHDL artifacts
+        working-directory: web/public/ghdl
+        run: sha256sum --check SHA256SUMS
+
       - name: Verify precomputed example designs
         working-directory: web
         run: npm run verify:precomputed

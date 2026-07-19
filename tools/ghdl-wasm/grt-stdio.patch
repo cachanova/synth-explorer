@@ -1,0 +1,16 @@
+--- grt-stdio.ads
++++ grt-stdio.ads
+@@ -86,0 +87,4 @@
++
++   function C_Fputc (C : int; Stream : FILEs) return int;
++   function C_Fflush (Stream : FILEs) return int;
++   function C_Fclose (Stream : FILEs) return int;
+@@ -94 +98 @@
+-   pragma Import (C, fputc, "putc_unlocked");
++   pragma Import (C, C_Fputc, "putc_unlocked");
+@@ -100 +104 @@
+-   pragma Import (C, fflush);
++   pragma Import (C, C_Fflush, "fflush");
+@@ -103 +107 @@
+-   pragma Import (C, fclose);
++   pragma Import (C, C_Fclose, "fclose");

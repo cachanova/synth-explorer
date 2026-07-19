@@ -89,5 +89,12 @@
     "description": "A timeout-parameterized request/response controller with ready/valid handshakes and explicit completion status.",
     "top": "handshake_controller",
     "files": ["handshake_controller.sv"]
+  },
+  {
+    "name": "vhdl_counter",
+    "title": "VHDL Counter",
+    "description": "A multi-file VHDL-2008 width-generic counter using a work-library package and IEEE numeric_std.",
+    "top": "vhdl_counter",
+    "files": ["vhdl_counter_pkg.vhdl", "vhdl_counter.vhdl"]
   }
 ]

@@ -1,7 +1,7 @@
 # Synth Explorer web application
 
 This package is the entire production application. It contains the React UI,
-CodeMirror editor, browser-local Yosys and Rust analysis workers, bundled
+CodeMirror editor, browser-local GHDL, Yosys, and Rust analysis workers, bundled
 examples, IndexedDB cache, and elkjs graph viewer.
 
 ## Development
@@ -32,6 +32,8 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 ## Runtime ownership
 
 - `src/workers/yosys.worker.ts` runs the pinned files in `public/yosys/`.
+- `src/workers/ghdl.worker.ts` translates VHDL-2008 with the pinned files in
+  `public/ghdl/` before Yosys runs.
 - `src/workers/analysis.worker.ts` owns the active Rust analysis session.
 - `src/workers/exploration.worker.ts` owns the single source-selection
   projection implementation.
@@ -45,16 +47,16 @@ The editor workspace (open source files, active file, top, mode, and flags) is
 saved in IndexedDB and restored after a refresh. The trash button resets that
 workspace to the default `design.sv` while preserving the selected synthesis
 mode and flags; its confirmation can be disabled in the warning and re-enabled
-from Settings. The file-tab toolbar can load one or more local `.v`, `.sv`, or
-`.svh` files, save the active file, or save every open file to a chosen
-directory. When the browser does not expose native file-save pickers, save
-actions use downloads.
+from Settings. The file-tab toolbar can load one or more local `.v`, `.sv`,
+`.svh`, `.vhd`, or `.vhdl` files, save the active file, or save every open file
+to a chosen directory. When the browser does not expose native file-save
+pickers, save actions use downloads.
 Replacing a same-named editor tab requires confirmation. Computer-file imports
 keep the resulting workspace within 128 files, 16 MiB per imported file, and
 32 MiB total to keep browser memory bounded.
 
 Completed synthesis results use a separate browser cache keyed by the exact
-validated RTL, top, mode, flags, Yosys version, and artifact schema. Both stores
+validated RTL, top, mode, flags, relevant tool versions, and artifact schema. Both stores
 are local to one browser profile and are not synced to an account. The synthesis
 cache can be removed independently from the settings menu.
 

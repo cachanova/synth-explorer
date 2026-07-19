@@ -1,7 +1,7 @@
 import manifest from '../data/examples/manifest.json'
 import type { ExamplesResponse } from '../types'
 
-const sources = import.meta.glob<string>('../data/examples/*.{v,sv}', {
+const sources = import.meta.glob<string>('../data/examples/*.{v,sv,vhd,vhdl}', {
   query: '?raw',
   import: 'default',
   eager: true,

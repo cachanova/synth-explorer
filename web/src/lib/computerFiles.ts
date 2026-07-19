@@ -141,7 +141,7 @@ function pickerOptions(file: DesignFile) {
     suggestedName: file.name,
     types: [
       {
-        description: 'Verilog or SystemVerilog source',
+        description: 'HDL source',
         accept: { 'text/plain': [...SOURCE_FILE_EXTENSIONS] },
       },
     ],

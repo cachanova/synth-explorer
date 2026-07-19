@@ -1,6 +1,6 @@
-export const SOURCE_FILE_EXTENSIONS = ['.v', '.sv', '.svh'] as const
+export const SOURCE_FILE_EXTENSIONS = ['.v', '.sv', '.svh', '.vhd', '.vhdl'] as const
 export const SOURCE_FILE_ACCEPT = SOURCE_FILE_EXTENSIONS.join(',')
-export const SOURCE_FILE_EXTENSION_LABEL = '.v, .sv, or .svh'
+export const SOURCE_FILE_EXTENSION_LABEL = '.v, .sv, .svh, .vhd, or .vhdl'
 
 export function validateSourceFilename(
   name: string,
@@ -19,4 +19,8 @@ export function validateSourceFilename(
 
 export function isVerilogCompilationUnit(name: string): boolean {
   return name.endsWith('.v') || name.endsWith('.sv')
+}
+
+export function isVhdlSource(name: string): boolean {
+  return name.endsWith('.vhd') || name.endsWith('.vhdl')
 }

@@ -2,59 +2,63 @@
   "entries": [
     {
       "name": "default",
-      "key": "a56c8624f1dfd3d36f22ca0f21efd14de82ba7ea334c6ceabf251fe695960a54"
+      "key": "48d2193e9320c96004e60f381e64a37ad60651e8bd5e77989b49a5a385da8f1f"
     },
     {
       "name": "reg_mux",
-      "key": "0c54819b28cb8357c37d125948fab4666e7cb5bf498045aaee9306cc5647ecff"
+      "key": "6f25c2d8d527ac2dacb75281fc54a6e4a454559efbe7824ee5115d94a68eb001"
     },
     {
       "name": "priority_encoder_case",
-      "key": "e6e24bab683e0099f014e39401c0fa84757672be15934626d92bf4e32013ecbd"
+      "key": "77b0d74bb9637f0a3d00d01b2743f19901aa862f4f70307b4d404aae31a1ddeb"
     },
     {
       "name": "priority_encoder_for",
-      "key": "1f68adeb7fcc2225f5ff3873725096f8ee0023d8cc92e0d46c2ad65a11c7a5e6"
+      "key": "41888b6f6428585018fd50a66abe54e07ff4868416cca1d1bc1eee68ad875784"
     },
     {
       "name": "priority_encoder_carry",
-      "key": "68d707fbfe7bc3c52600aec0cf67b12082a9ed8910aba588c57835556ed7d724"
+      "key": "81208335ea867266f8ad114cb1866e3eedfc3cf3d5a12a77673e292e44c581f8"
     },
     {
       "name": "adder_chain",
-      "key": "ba72417346547434f594e87f622c207e57e44db961b87006687bd6e56680235d"
+      "key": "37bb6ecead16c6915a583bdf21607fbc3345fb55ee0adaa85a0263439abd6cc0"
     },
     {
       "name": "barrel_shifter",
-      "key": "0399920086a3c7308a6ee246c99d5df221fb118794231cc24fd6349752cc2e73"
+      "key": "564fc48f28c343723e80c2162e6a4ceecc9ce5c72ce1ce89e554eb81bdc18fec"
     },
     {
       "name": "round_robin_arbiter",
-      "key": "3c7e8797ba3ae96fee8fed5e750470e9e48aa2a448c3a80717532fd461b41322"
+      "key": "37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8"
     },
     {
       "name": "pipe",
-      "key": "ce24ba384cd48f0ce007c40a3844bc92768c9c76665addc08de0b2ce42b2ee35"
+      "key": "8329cf6d4b8e9c4d7e8009960bf41a915fd1622c236cece35c62720860463aca"
     },
     {
       "name": "srl_pipe",
-      "key": "aabbe7878652a9fdb2cd488b0ed1eff27b5509b06dbcb32d183f41a3668e767c"
+      "key": "fac2ae7b3eeae3e2962842cb539d121076fa1477bb5a6cfa2f93ad824a3be1e9"
     },
     {
       "name": "fifo_pipe",
-      "key": "3ccc38722599feb6eb0333c0338966f37083b0e1edf1741eb3b2242acd848f77"
+      "key": "c7d3d0eae544642d35f195e0a1a664e89a902def3bc5dac6b2a689803f847034"
     },
     {
       "name": "inferred_fifo",
-      "key": "6763c8a5bbb73e508b1cf2bb9979329b613e62881798f1ef9f1a5b0807a526bf"
+      "key": "7b4eaeea8a7f3c73fdbe9661c7594036f10c11b318d63c38d3a6584277b893d7"
     },
     {
       "name": "async_fifo_blackbox",
-      "key": "828fdf0d1b154e57cc91d46dbde4079b306e79ab38069b70c164a62c6b35f298"
+      "key": "4dbd1046ae5c8d137f2d285d4b92f10da40a1c949ac37281e5d00499db0babec"
     },
     {
       "name": "handshake_controller",
-      "key": "df09f1275d0ed190549667d351fa0b7a320c20efca3158b6a8ad0d283d409168"
+      "key": "4ee4dde202d462a6475e61518fca53b2445496aeb69319209d0a484b1b487723"
+    },
+    {
+      "name": "vhdl_counter",
+      "key": "517cb9e45715324b1b96bce0082e4b7598d0d55e677e866fd622b78cd78b3bb9"
     }
   ]
 }

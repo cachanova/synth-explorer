@@ -9,18 +9,23 @@ analysis, caching, and graph interaction require no server requests.
 1. React waits for 250 ms without an input change, then validates the files,
    top, synthesis mode, and visible mode-specific flags. A newer edit cancels
    obsolete work instead of allowing a stale result to land.
-2. A SHA-256 key covers the cache schema, pinned Yosys version, validated input,
-   and exact source text.
+2. A SHA-256 key covers the cache schema, pinned frontend/tool versions,
+   validated input, and exact source text.
 3. IndexedDB returns a matching local artifact. On a miss, an exact gate-mode
    default/example input may load a content-addressed precomputed artifact from
-   the Vercel edge; otherwise a Web Lock coordinates one Yosys run across tabs.
-4. `yosys.worker.ts` runs project-built Yosys 0.67 in WASI and emits normalized
+   the Vercel edge; otherwise a Web Lock coordinates one synthesis run across
+   tabs.
+4. For VHDL-2008, `ghdl.worker.ts` analyzes files in workspace order,
+   elaborates the explicit top entity, and emits generic Verilog. VHDL location
+   comments become `` `line `` directives before the next stage. Verilog and
+   SystemVerilog skip this frontend stage.
+5. `yosys.worker.ts` runs project-built Yosys 0.67 in WASI and emits normalized
    and source-provenance JSON netlists.
-5. `analysis.worker.ts` loads those netlists into the canonical Rust
+6. `analysis.worker.ts` loads those netlists into the canonical Rust
    `analysis-core` compiled to WebAssembly.
-6. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
+7. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
    projections, source maps, and node details are worker messages.
-7. `exploration.worker.ts` performs the one browser source-selection projection
+8. `exploration.worker.ts` performs the one browser source-selection projection
    against the Rust-produced exploration snapshot; elkjs lays out bounded
    subgraphs in its own worker.
 
@@ -32,6 +37,7 @@ a display prefix of the full local cache digest.
 
 - `web/src/lib/yosysScript.ts` is the only synthesis-script builder. Both the
   browser worker and local calibration CLI use it.
+- `web/src/lib/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
 - `analysis-core/` is the only netlist/graph analysis implementation.
 - `web/src/lib/exploration.ts` is the only source-selection projection
   implementation and runs in `exploration.worker.ts`.
@@ -61,13 +67,15 @@ falls through to browser-local Yosys.
 The editor workspace is a single versioned record containing only editable
 synthesis inputs. Derived analysis state is not restored across page loads.
 
-Yosys has a 60-second wall timeout and 128 MiB combined netlist-output limit.
+GHDL has a 30-second wall timeout. Yosys has a 60-second wall timeout and
+128 MiB combined netlist-output limit.
 The application runs only one requested synthesis at a time. A completed
 worker is reused so its streamed, compiled Yosys module and unpacked resources
 stay warm; cancellation or a worker failure terminates it and immediately
 starts a clean replacement. Each run still creates a new WebAssembly instance
 and WASI filesystem. Analysis and layout remain in separate workers so
-expensive work does not block the React thread.
+expensive work does not block the React thread. The GHDL worker follows the
+same reuse policy while creating a fresh Ada/WebAssembly instance per run.
 
 ## Timing model
 
@@ -81,7 +89,7 @@ Vivado installation, but vendor tools and reports are not runtime dependencies.
 `vercel.json` builds `web/`, publishes `web/dist/`, rewrites SPA routes to
 `index.html`, serves WebAssembly with the correct content type, and applies
 immutable caching to versioned assets. CI verifies Rust, regenerates and checks
-the analysis WASM package, verifies pinned Yosys hashes and precomputed example
+the analysis WASM package, verifies pinned Yosys and GHDL hashes and precomputed example
 contracts, builds the static app, and runs browser-local synthesis E2Es that
 assert zero `/api` traffic.
 Vercel Web Analytics and Speed Insights collect page-level usage and browser

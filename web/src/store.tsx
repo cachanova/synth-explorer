@@ -470,12 +470,16 @@ export function StoreProvider({
   const addFile = useCallback(() => {
     cancelSourceProbe()
     const current = filesRef.current
+    const activeName = workspaceSnapshotRef.current.activeFileName
+    const extension = activeName.endsWith('.vhd') || activeName.endsWith('.vhdl')
+      ? '.vhdl'
+      : '.sv'
     let i = current.length
-    let name = `file${i}.sv`
+    let name = `file${i}${extension}`
     const names = new Set(current.map((file) => file.name))
     while (names.has(name)) {
       i += 1
-      name = `file${i}.sv`
+      name = `file${i}${extension}`
     }
     const next = [...current, { name, content: '' }]
     filesRef.current = next

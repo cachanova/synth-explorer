@@ -39,8 +39,8 @@ try {
   try {
     const context = await browser.newContext()
     const page = await context.newPage()
-    // Always regenerate from the pinned Yosys engine, even when the previous
-    // artifact set is present in the build used by this script.
+    // Always regenerate from the pinned browser engines, even when the
+    // previous artifact set is present in the build used by this script.
     await page.route('**/precomputed/**', (route) => route.abort())
     await page.goto(baseURL, { waitUntil: 'domcontentloaded' })
     await waitForMapping(page)

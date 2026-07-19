@@ -3,9 +3,15 @@
 with Types; use Types;
 
 package Synth_Api is
-   --  Set analysis/elaboration flags required by synthesis. Must be called
-   --  after options__initialize and before the first analyze_file.
-   procedure Synth_Init;
+   --  Initialize VHDL-2008 analysis, load the bundled standard libraries,
+   --  and configure diagnostics. 0 = success.
+   function Synth_Init return Integer;
+
+   --  Analyze FILE into the work library. The caller must provide files in
+   --  dependency order (packages before units that use them).
+   --  0 = success; negative values identify an analysis failure.
+   function Analyze_File
+     (File : Thin_String_Ptr; Len : Natural) return Integer;
 
    --  Configure, elaborate, and synthesize entity NAME (lowercase), then
    --  write a Verilog netlist through the host's stdio imports.

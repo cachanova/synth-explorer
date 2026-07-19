@@ -3,10 +3,13 @@ pragma Suppress (All_Checks);
 with Errorout;
 with Errorout.Console;
 with Flags;
+with Libraries;
 with Name_Table;
+with Options;
 with Vhdl.Canon;
 with Vhdl.Nodes; use Vhdl.Nodes;
 with Vhdl.Configuration;
+with Vhdl.Sem_Lib;
 with Vhdl.Utils;
 with Vhdl.Std_Package;
 with Elab.Vhdl_Insts;
@@ -20,18 +23,60 @@ with Netlists.Disp_Verilog;
 with Outputs;
 
 package body Synth_Api is
-   procedure Synth_Init is
+   function Synth_Init return Integer is
+      Ok : Boolean;
    begin
       --  Route diagnostics to the host's stderr imports instead of the
       --  default null handler (which traps on the first reported error).
       Errorout.Console.Install_Handler;
+      Options.Initialize;
+      Flags.Vhdl_Std := Flags.Vhdl_08;
       Flags.Flag_Elaborate := True;
       Flags.Flag_Elaborate_With_Outdated := False;
       Flags.Flag_Only_Elab_Warnings := False;
       --  Synthesis does its own canonicalization of concurrent statements.
       Vhdl.Canon.Canon_Flag_Concurrent_Stmts := False;
       Vhdl.Canon.Canon_Flag_Add_Suspend_State := False;
+
+      Libraries.Add_Library_Path ("/ghdl/lib/ghdl/");
+      Ok := Libraries.Load_Std_Library;
+      if not Ok then
+         return -1;
+      end if;
+      Libraries.Load_Work_Library (True);
+      return 0;
    end Synth_Init;
+
+   function Analyze_File
+     (File : Thin_String_Ptr; Len : Natural) return Integer
+   is
+      Id : Name_Id;
+      Design_File : Iir;
+      Unit : Iir;
+      Next_Unit : Iir;
+   begin
+      Errorout.Nbr_Errors := 0;
+      Id := Name_Table.Get_Identifier (File (1 .. Len));
+      Design_File := Vhdl.Sem_Lib.Load_File_Name (Id);
+      if Design_File = Null_Iir then
+         return -1;
+      end if;
+
+      Unit := Get_First_Design_Unit (Design_File);
+      while Unit /= Null_Iir loop
+         Next_Unit := Get_Chain (Unit);
+         Vhdl.Sem_Lib.Finish_Compilation (Unit, False);
+         if Errorout.Nbr_Errors = 0 then
+            Set_Chain (Unit, Null_Iir);
+            Libraries.Add_Design_Unit_Into_Library (Unit);
+         end if;
+         Unit := Next_Unit;
+      end loop;
+      if Errorout.Nbr_Errors > 0 then
+         return -2;
+      end if;
+      return 0;
+   end Analyze_File;
 
    function Synth_Top (Name : Thin_String_Ptr; Len : Natural) return Integer
    is

@@ -2,21 +2,23 @@ import { describe, expect, it } from 'vitest'
 import {
   isValidSynthesisArtifact,
   synthesisKey,
+  synthesisProducer,
   type SynthesisArtifact,
 } from './designCache'
-import { YOSYS_CACHE_SCHEMA, YOSYS_VERSION, type ValidatedSynthesis } from './yosysScript'
+import { YOSYS_CACHE_SCHEMA, type ValidatedSynthesis } from './yosysScript'
 
 const input: ValidatedSynthesis = {
   files: [{ name: 'design.sv', content: 'module top; endmodule' }],
   top: 'top',
   mode: 'gates',
   extraArgs: [],
+  language: 'verilog',
 }
 
 function artifact(key: string): SynthesisArtifact {
   return {
     schema: YOSYS_CACHE_SCHEMA,
-    producer: YOSYS_VERSION,
+    producer: synthesisProducer(input),
     key,
     input,
     profile: 'generic',

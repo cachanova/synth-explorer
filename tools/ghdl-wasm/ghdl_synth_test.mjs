@@ -119,6 +119,7 @@ const env = {
   __ghdl_maybe_return_via_longjump:()=>{},
   __ghdl_run_through_longjump:(fn,a)=>{if(fn)try{inst.exports.__indirect_function_table.get(fn)(a);}catch(_){}return 0;},
   __ghdl_ELABORATE:()=>{},
+  grt_dynload_open:()=>0, grt_dynload_symbol:()=>0,
   grt_save_backtrace:()=>{}, grt_get_clk_tck:()=>100, grt_get_times:()=>{},
   backtrace_create_state:()=>0, backtrace_pcinfo:()=>0,
   loadVhpiModule:()=>0, loadVpiModule:()=>0,
@@ -166,28 +167,22 @@ function pushAstr(s) {
 }
 
 if (E.ghdlwasm_init) E.ghdlwasm_init(); else console.error("warn: no ghdlwasm_init export");
-E.options__initialize(0);
-E.synth_api__synth_init();
-{
-  const [dp, len] = pushAstr(VPREFIX + '/lib/ghdl/');
-  const bp = E.malloc(8);
-  dv().setInt32(bp,1,true); dv().setInt32(bp+4,len,true);
-  E.libraries__add_library_path(dp, bp, 0);
-  E.free(dp); E.free(bp);
+const initRc = E.synth_api__synth_init();
+if (initRc !== 0) {
+  console.error(`FAIL: synth_init rc=${initRc}`);
+  process.exit(1);
 }
-if (!E.libraries__load_std_library(1, 0)) { console.error('FAIL: load_std_library'); process.exit(1); }
-E.libraries__load_work_library(1, 0);
 
 for (const f of vhdFiles) {
   vfs.add(basename(f), readFileSync(f));
   const [fp, len] = pushAstr(basename(f));
-  let iir = 0, err = null;
-  try { iir = E.libghdl__analyze_file(fp, len, 0); }
+  let rc = 0, err = null;
+  try { rc = E.synth_api__analyze_file(fp, len); }
   catch(e) { err = e.isExit?`EXIT(${e.exitCode})`:e.message; }
   E.free(fp);
   const diag = Buffer.concat(outChunks).toString('latin1');
-  if (err || iir <= 0) {
-    console.error(`FAIL: analyze ${f}: ${err || `iir=${iir}`}\n${diag}`);
+  if (err || rc !== 0) {
+    console.error(`FAIL: analyze ${f}: ${err || `rc=${rc}`}\n${diag}`);
     process.exit(1);
   }
 }

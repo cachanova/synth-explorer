@@ -49,11 +49,11 @@ export function Toolbar() {
       </label>
 
       <label className="field">
-        <span>Top module</span>
+        <span>Top module/entity</span>
         <input
           style={{ width: 110 }}
           placeholder="auto-detect"
-          title="Leave blank to auto-detect the top module, or name it explicitly."
+          title="Name the top module or entity. Verilog can auto-detect when blank; VHDL requires an explicit entity."
           value={store.top}
           onChange={(event) => store.setTop(event.target.value)}
         />

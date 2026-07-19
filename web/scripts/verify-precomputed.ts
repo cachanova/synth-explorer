@@ -6,7 +6,10 @@ import {
   synthesisKey,
   type SynthesisArtifact,
 } from '../src/lib/designCache'
-import type { ValidatedSynthesis } from '../src/lib/yosysScript'
+import {
+  validateSynthesisRequest,
+  type ValidatedSynthesis,
+} from '../src/lib/yosysScript'
 
 interface SourceManifestEntry {
   name: string
@@ -37,6 +40,7 @@ const expectedStructuralFacts: Record<
   inferred_fifo: { top: 'inferred_fifo', inputs: 20, outputs: 23 },
   async_fifo_blackbox: { top: 'async_fifo_wrapper', inputs: 22, outputs: 18 },
   handshake_controller: { top: 'handshake_controller', inputs: 5, outputs: 5 },
+  vhdl_counter: { top: 'vhdl_counter', inputs: 3, outputs: 8 },
 }
 
 const root = process.cwd()
@@ -50,7 +54,7 @@ const precomputedManifest = JSON.parse(
 ) as { entries: PrecomputedEntry[] }
 
 const expected = new Map<string, ValidatedSynthesis>()
-expected.set('default', {
+expected.set('default', validateSynthesisRequest({
   files: [
     {
       name: 'design.sv',
@@ -58,20 +62,17 @@ expected.set('default', {
     },
   ],
   mode: 'gates',
-  extraArgs: [],
-})
+}))
 for (const entry of sourceManifest) {
-  expected.set(entry.name, {
+  expected.set(entry.name, validateSynthesisRequest({
     files: entry.files
       .map((name) => ({
         name,
         content: readFileSync(join(sourceDirectory, name), 'utf8'),
-      }))
-      .sort((left, right) => left.name.localeCompare(right.name)),
+      })),
     top: entry.top,
     mode: 'gates',
-    extraArgs: [],
-  })
+  }))
 }
 
 if (precomputedManifest.entries.length !== expected.size) {

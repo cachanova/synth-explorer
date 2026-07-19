@@ -1,19 +1,23 @@
 import type { DesignFile, Mode, SynthesizeRequest } from '../types'
 import {
   isVerilogCompilationUnit,
+  isVhdlSource,
   validateSourceFilename,
 } from './sourceFiles'
 
 export const YOSYS_VERSION = '0.67-2d1509d1b'
-export const YOSYS_CACHE_SCHEMA = 1
+export const GHDL_VERSION = '5.0.1-37ad91899ea3'
+export const YOSYS_CACHE_SCHEMA = 2
 
 export type MemoryHandling = 'map' | 'abstract'
+export type SourceLanguage = 'verilog' | 'vhdl'
 
 export interface ValidatedSynthesis {
   files: DesignFile[]
   top?: string
   mode: Mode
   extraArgs: string[]
+  language: SourceLanguage
 }
 
 export function validateSynthesisRequest(
@@ -22,20 +26,32 @@ export function validateSynthesisRequest(
   if (request.files.length === 0) {
     throw new Error('at least one source file is required')
   }
-  const files = [...request.files].sort((left, right) =>
-    left.name.localeCompare(right.name),
+  for (const file of request.files) validateSourceFilename(file.name)
+  const languages = new Set(
+    request.files.map((file) => (isVhdlSource(file.name) ? 'vhdl' : 'verilog')),
   )
-  for (const file of files) validateSourceFilename(file.name)
-  if (!files.some((file) => isVerilogCompilationUnit(file.name))) {
+  if (languages.size !== 1) {
+    throw new Error('mixed Verilog and VHDL workspaces are not supported')
+  }
+  const language = languages.values().next().value as SourceLanguage
+  // VHDL analysis is order-sensitive (packages before their users), so retain
+  // the tab/import order. Verilog keeps its historical canonical ordering.
+  const files = language === 'vhdl'
+    ? [...request.files]
+    : [...request.files].sort((left, right) => left.name.localeCompare(right.name))
+  if (language === 'verilog' && !files.some((file) => isVerilogCompilationUnit(file.name))) {
     throw new Error('at least one .v or .sv source file is required')
   }
   const top = request.top?.trim() || undefined
   if (top && !/^[A-Za-z0-9_$]+$/.test(top)) {
     throw new Error(`invalid top module name: ${top}`)
   }
+  if (language === 'vhdl' && !top) {
+    throw new Error('VHDL synthesis requires an explicit top entity')
+  }
   const extraArgs = parseExtraArgs(request.extra_args)
   validateNarrowCarry(request.mode, extraArgs)
-  return { files, top, mode: request.mode, extraArgs }
+  return { files, top, mode: request.mode, extraArgs, language }
 }
 
 export function buildYosysScript(
@@ -107,6 +123,9 @@ export function defaultDelayProfile(input: ValidatedSynthesis): string {
 }
 
 function readVerilog(input: ValidatedSynthesis): string {
+  if (input.language !== 'verilog') {
+    throw new Error('Yosys requires VHDL to be translated before script generation')
+  }
   const compilationUnits = input.files
     .filter((file) => isVerilogCompilationUnit(file.name))
     .map((file) => file.name)

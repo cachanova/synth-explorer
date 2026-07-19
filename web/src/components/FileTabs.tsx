@@ -448,7 +448,7 @@ export function FileTabs() {
             type="button"
             className="file-io-button"
             aria-label="Load files from computer"
-            title="Load .v, .sv, or .svh files from computer"
+            title="Load .v, .sv, .svh, .vhd, or .vhdl files from computer"
             disabled={transferDisabled}
             onClick={() => computerFileInputRef.current?.click()}
           >
