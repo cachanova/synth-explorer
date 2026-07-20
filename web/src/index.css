@@ -226,6 +226,10 @@ a:hover {
   right: 0;
   z-index: 30;
   width: 264px;
+  max-height: calc(100vh - 52px);
+  max-height: calc(100dvh - 52px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px;
   background: var(--bg-1);
   border: 1px solid var(--border-strong);
