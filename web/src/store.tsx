@@ -12,7 +12,6 @@ import { DEFAULT_FILE, defaultWorkspace } from './data/defaultWorkspace'
 import { StoreContext } from './storeContext'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
-  AUTO_SYNTHESIS_DELAY_MS,
   createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
@@ -40,6 +39,11 @@ import {
   type EditorKeymap,
   type WorkspaceState,
 } from './lib/workspaceStorage'
+import {
+  clampAutoSynthesisDelay,
+  loadSynthesisSettings,
+  saveSynthesisSettings,
+} from './lib/synthesisSettings'
 import {
   flagsForModeTransition,
   type ModeFlagMemory,
@@ -172,9 +176,14 @@ export interface Store {
   setConfirmWorkspaceReset: (enabled: boolean) => void
   editorKeymap: EditorKeymap
   setEditorKeymap: (keymap: EditorKeymap) => void
+  autoSynthesize: boolean
+  setAutoSynthesize: (enabled: boolean) => void
+  autoSynthesisDelayMs: number
+  setAutoSynthesisDelayMs: (delayMs: number) => void
 
   // synthesis
   synthesizing: boolean
+  synthesize: () => Promise<void>
   design: SynthesizeResponse | null
   analysisState: AnalysisState
   error: {
@@ -260,6 +269,9 @@ export function StoreProvider({
   const [editorKeymap, setEditorKeymapState] = useState(
     loadEditorKeymapPreference,
   )
+  const [synthesisSettings, setSynthesisSettings] = useState(
+    loadSynthesisSettings,
+  )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
     useState<ResolvedInputIdentity | null>(null)
@@ -269,6 +281,22 @@ export function StoreProvider({
   const [design, setDesign] = useState<SynthesizeResponse | null>(null)
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
   const [error, setError] = useState<Store['error']>(null)
+
+  const setAutoSynthesize = useCallback((enabled: boolean) => {
+    setSynthesisSettings((current) =>
+      current.autoSynthesize === enabled
+        ? current
+        : { ...current, autoSynthesize: enabled },
+    )
+  }, [])
+  const setAutoSynthesisDelayMs = useCallback((delayMs: number) => {
+    const clamped = clampAutoSynthesisDelay(delayMs)
+    setSynthesisSettings((current) =>
+      current.delayMs === clamped ? current : { ...current, delayMs: clamped },
+    )
+  }, [])
+
+  useEffect(() => saveSynthesisSettings(synthesisSettings), [synthesisSettings])
 
   const [activeTab, setActiveTab] = useState<TabId>('graph')
 
@@ -310,6 +338,7 @@ export function StoreProvider({
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
   const resolvedInputRef = useRef<SynthesisInput | null>(null)
+  const synthesisRequestedRevisionRef = useRef<number | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
@@ -689,6 +718,7 @@ export function StoreProvider({
     // Materializing the full request (and JSON-keying source content) happens
     // only after the auto-synthesis debounce, never per keystroke.
     const requested = materializeCurrentInput()
+    synthesisRequestedRevisionRef.current = requested.revision
     if (synthesisRunningRef.current) {
       // One bounded slot, always replaced by the newest complete input. A
       // revert to the running input clears an obsolete queued edit.
@@ -760,11 +790,23 @@ export function StoreProvider({
   }, [materializeCurrentInput, nextNonce])
 
   useEffect(() => {
+    if (
+      !synthesisSettings.autoSynthesize ||
+      synthesisRequestedRevisionRef.current === inputRevision
+    ) {
+      return
+    }
+    const scheduledRevision = inputRevision
     const timer = window.setTimeout(() => {
-      void requestSynthesis()
-    }, AUTO_SYNTHESIS_DELAY_MS)
+      if (
+        inputRevisionRef.current === scheduledRevision &&
+        synthesisRequestedRevisionRef.current !== scheduledRevision
+      ) {
+        void requestSynthesis()
+      }
+    }, synthesisSettings.delayMs)
     return () => window.clearTimeout(timer)
-  }, [inputRevision, requestSynthesis])
+  }, [inputRevision, requestSynthesis, synthesisSettings])
 
   useEffect(
     () => () => synthesisAbortRef.current?.abort(),
@@ -956,7 +998,12 @@ export function StoreProvider({
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      autoSynthesize: synthesisSettings.autoSynthesize,
+      setAutoSynthesize,
+      autoSynthesisDelayMs: synthesisSettings.delayMs,
+      setAutoSynthesisDelayMs,
       synthesizing,
+      synthesize: requestSynthesis,
       design,
       analysisState,
       error,
@@ -998,7 +1045,11 @@ export function StoreProvider({
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      synthesisSettings,
+      setAutoSynthesize,
+      setAutoSynthesisDelayMs,
       synthesizing,
+      requestSynthesis,
       design,
       analysisState,
       error,

@@ -18,6 +18,9 @@ export function Toolbar() {
       setMode,
       extraArgs,
       setExtraArgs,
+      autoSynthesize,
+      synthesizing,
+      synthesize,
     }) => ({
       examples,
       loadExample,
@@ -27,6 +30,9 @@ export function Toolbar() {
       setMode,
       extraArgs,
       setExtraArgs,
+      autoSynthesize,
+      synthesizing,
+      synthesize,
     }),
     shallowEqual,
   )
@@ -127,6 +133,16 @@ export function Toolbar() {
           onChange={(event) => store.setExtraArgs(event.target.value)}
         />
       </label>
+      {!store.autoSynthesize && (
+        <button
+          type="button"
+          className="primary synthesize-button"
+          disabled={store.synthesizing}
+          onClick={() => void store.synthesize()}
+        >
+          {store.synthesizing ? 'Synthesizing…' : 'Synthesize'}
+        </button>
+      )}
     </div>
   )
 }
