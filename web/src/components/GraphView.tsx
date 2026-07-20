@@ -86,6 +86,15 @@ interface PanState {
   moved: boolean
 }
 
+interface PinchState {
+  pointerIds: [number, number]
+  centerX: number
+  centerY: number
+  distance: number
+  transform: ViewportTransform
+  moved: boolean
+}
+
 function nodeVisual(
   node: GraphNode,
   kind: SymbolKind,
@@ -698,6 +707,7 @@ export const GraphView = memo(function GraphView({
   }>({ graph: null, fitNonce: null })
   const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
   const panState = useRef<PanState | null>(null)
+  const pinchState = useRef<PinchState | null>(null)
   const suppressClick = useRef(false)
   const userAdjusted = useRef(false)
   const rovingNodeId = useRef<number | null>(null)
@@ -976,6 +986,7 @@ export const GraphView = memo(function GraphView({
   const onPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
       if (event.button !== 0) return
+      if (event.pointerType === 'touch') return
       panState.current = {
         pointerId: event.pointerId,
         x: event.clientX,
@@ -990,6 +1001,8 @@ export const GraphView = memo(function GraphView({
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
+      if (event.pointerType === 'touch') return
+
       const pan = panState.current
       if (!pan || event.pointerId !== pan.pointerId) return
       if (event.buttons === 0) {
@@ -1015,7 +1028,7 @@ export const GraphView = memo(function GraphView({
   )
 
   const finishPan = useCallback(() => {
-    const moved = Boolean(panState.current?.moved)
+    const moved = Boolean(panState.current?.moved || pinchState.current?.moved)
     suppressClick.current = moved
     if (moved) {
       window.setTimeout(() => {
@@ -1023,18 +1036,139 @@ export const GraphView = memo(function GraphView({
       }, 0)
     }
     panState.current = null
+    pinchState.current = null
     svgRef.current?.classList.remove('panning')
   }, [])
+
+  const finishPointer = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      if (event.pointerType !== 'touch') finishPan()
+    },
+    [finishPan],
+  )
 
   const cancelPan = useCallback(() => {
     suppressClick.current = false
     panState.current = null
+    pinchState.current = null
     svgRef.current?.classList.remove('panning')
   }, [])
 
   useEffect(() => {
+    const svg = svgRef.current
+    if (!svg) return
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length === 1) {
+        const touch = event.touches[0]
+        panState.current = {
+          pointerId: touch.identifier,
+          x: touch.clientX,
+          y: touch.clientY,
+          transform: transformRef.current,
+          moved: false,
+        }
+      } else if (event.touches.length === 2) {
+        const [first, second] = event.touches
+        pinchState.current = {
+          pointerIds: [first.identifier, second.identifier],
+          centerX: (first.clientX + second.clientX) / 2,
+          centerY: (first.clientY + second.clientY) / 2,
+          distance: Math.max(
+            1,
+            Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY),
+          ),
+          transform: transformRef.current,
+          moved: false,
+        }
+        panState.current = null
+        userAdjusted.current = true
+      }
+      svg.classList.add('panning')
+    }
+
+    const onTouchMove = (event: TouchEvent) => {
+      event.preventDefault()
+      const pinch = pinchState.current
+      if (pinch) {
+        const first = [...event.touches].find(
+          (touch) => touch.identifier === pinch.pointerIds[0],
+        )
+        const second = [...event.touches].find(
+          (touch) => touch.identifier === pinch.pointerIds[1],
+        )
+        const stage = stageRef.current
+        if (!first || !second || !stage) return
+        const centerX = (first.clientX + second.clientX) / 2
+        const centerY = (first.clientY + second.clientY) / 2
+        const distance = Math.max(
+          1,
+          Math.hypot(second.clientX - first.clientX, second.clientY - first.clientY),
+        )
+        const rect = stage.getBoundingClientRect()
+        const zoomed = zoomViewportAt(
+          pinch.transform,
+          pinch.centerX - rect.left,
+          pinch.centerY - rect.top,
+          distance / pinch.distance,
+        )
+        pinch.moved = true
+        applyTransform(
+          panViewport(
+            zoomed,
+            centerX - pinch.centerX,
+            centerY - pinch.centerY,
+          ),
+        )
+        return
+      }
+
+      const pan = panState.current
+      const touch = [...event.touches].find(
+        (candidate) => candidate.identifier === pan?.pointerId,
+      )
+      if (!pan || !touch) return
+      const dx = touch.clientX - pan.x
+      const dy = touch.clientY - pan.y
+      if (!pan.moved && Math.hypot(dx, dy) >= 2) {
+        pan.moved = true
+        userAdjusted.current = true
+      }
+      if (pan.moved) applyTransform(panViewport(pan.transform, dx, dy))
+    }
+
+    const onTouchEnd = (event: TouchEvent) => {
+      if (pinchState.current && event.touches.length === 1) {
+        const touch = event.touches[0]
+        pinchState.current = null
+        panState.current = {
+          pointerId: touch.identifier,
+          x: touch.clientX,
+          y: touch.clientY,
+          transform: transformRef.current,
+          moved: true,
+        }
+        return
+      }
+      finishPan()
+    }
+
+    svg.addEventListener('touchstart', onTouchStart, { passive: false })
+    svg.addEventListener('touchmove', onTouchMove, { passive: false })
+    svg.addEventListener('touchend', onTouchEnd, { passive: false })
+    svg.addEventListener('touchcancel', cancelPan, { passive: false })
+    return () => {
+      svg.removeEventListener('touchstart', onTouchStart)
+      svg.removeEventListener('touchmove', onTouchMove)
+      svg.removeEventListener('touchend', onTouchEnd)
+      svg.removeEventListener('touchcancel', cancelPan)
+    }
+  }, [applyTransform, cancelPan, finishPan])
+
+  useEffect(() => {
     if (active) return
     panState.current = null
+    pinchState.current = null
     suppressClick.current = false
     svgRef.current?.classList.remove('panning')
   }, [active])
@@ -1111,7 +1245,7 @@ export const GraphView = memo(function GraphView({
         onKeyDown={onViewportKeyDown}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
-        onPointerUp={finishPan}
+        onPointerUp={finishPointer}
         onPointerCancel={cancelPan}
         onClick={(event) => {
           if (suppressClick.current) {
