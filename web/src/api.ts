@@ -108,6 +108,9 @@ export interface ConeOptions {
   hide_const?: boolean
   show_infrastructure?: boolean
   group_vectors?: boolean
+  // Restrict the first hop of a single-root cone to one physical sink pin.
+  root_port?: string
+  root_port_bit?: number
 }
 
 export function getCone(

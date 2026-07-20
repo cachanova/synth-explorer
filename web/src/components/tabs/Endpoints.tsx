@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
 import { formatBitRanges } from '../../lib/bitRanges'
 import { fuzzyFilter } from '../../lib/fuzzy'
+import { boundaryFaninRequest } from '../../lib/endpointCone'
 import {
   displayCellType,
   isHiddenName,
@@ -129,6 +130,11 @@ export function Endpoints() {
       <div className="section-title">
         Logical endpoints ({rows.length} matched / {total})
       </div>
+      {data?.boundaries_truncated && (
+        <div className="msg">
+          Boundary inputs truncated to the analysis safety limit; refine the design to inspect omitted pins.
+        </div>
+      )}
       {rows.length === 0 ? (
         <div className="faint">No matching logical endpoints.</div>
       ) : (
@@ -293,6 +299,7 @@ function BitsRow({
   onOpen,
   page,
   onPageChange,
+  rootPort,
 }: {
   name: string
   width: number
@@ -304,6 +311,7 @@ function BitsRow({
   onOpen: Opener
   page: number
   onPageChange: (page: number) => void
+  rootPort?: string
 }) {
   const sortedBits = useMemo(
     () => [...bits].sort((a, b) => b.bit - a.bit),
@@ -329,9 +337,18 @@ function BitsRow({
                 title={`${openTitle} ${bitLabel(name, width, bit.bit)}`}
                 onClick={() =>
                   onOpen({
-                    node: bit.node_id,
-                    dir: 'fanin',
-                    label: `${bitLabel(name, width, bit.bit)} (fanin)`,
+                    ...(rootPort == null
+                      ? {
+                          node: bit.node_id,
+                          dir: 'fanin' as const,
+                          label: `${bitLabel(name, width, bit.bit)} (fanin)`,
+                        }
+                      : boundaryFaninRequest(
+                          bit.node_id,
+                          `${bitLabel(name, width, bit.bit)} (fanin)`,
+                          rootPort,
+                          bit.bit,
+                        )),
                   })
                 }
               >
@@ -393,7 +410,6 @@ function RegisterRow({
         className={`clickable${open ? ' expanded' : ''}`}
         role="row"
         onClick={() =>
-          endpoint.bits.length > 0 &&
           onOpen({
             nodes: endpoint.bits.map((bit) => bit.node_id),
             dir: 'fanin',
@@ -543,10 +559,8 @@ function BoundaryRow({
         onClick={() =>
           endpoint.bits.length > 0 &&
           onOpen({
-            node: endpoint.node_id,
-            dir: 'fanin',
+            ...boundaryFaninRequest(endpoint.node_id, `${name} (fanin)`, endpoint.port),
             highlight: [endpoint.node_id],
-            label: `${name} (fanin)`,
           })
         }
         title={`Open the fanin cone of ${name}`}
@@ -574,6 +588,7 @@ function BoundaryRow({
           onOpen={onOpen}
           page={bitPage}
           onPageChange={onBitPageChange}
+          rootPort={endpoint.port}
         />
       )}
     </>

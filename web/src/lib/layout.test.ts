@@ -135,6 +135,67 @@ describe('schematic layout sizing', () => {
     expect(graph.edges?.[1].targets).toEqual(['3#i:A'])
   })
 
+  it('routes every primitive edge to its sorted named pin, including fallback paths', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', { kind: 'port' }),
+        node(2, 'port', { kind: 'port' }),
+        node(3, 'port', { kind: 'port' }),
+        node(4, 'RAM32M', {
+          seq: true,
+          register: false,
+          controls: [
+            { role: 'clock', pin: 'WCLK', net_name: 'clk', driver_id: 8, fanout: 1 },
+          ],
+        }),
+        node(5, 'port', { kind: 'port' }),
+      ],
+      // Deliberately not alphabetical: rendering and fallback routing must use
+      // the same canonical order as the fixed ELK ports.
+      edges: [
+        { from: 1, to: 4, from_port: 'we', to_port: 'WE', net_name: 'we', bits: [1] },
+        { from: 2, to: 4, from_port: 'addr', to_port: 'ADDR', net_name: 'addr', bits: [2] },
+        { from: 3, to: 4, from_port: 'wdata', to_port: 'WDATA', net_name: 'wdata', bits: [3] },
+        { from: 4, to: 5, from_port: 'RDATA', to_port: 'q', net_name: 'rdata', bits: [4] },
+      ],
+      truncated: false,
+    }
+
+    const elk = toElkGraph(sub)
+    const ram = elk.children?.find((child) => child.id === '4')
+    expect(ram?.ports?.map((port) => port.id)).toEqual([
+      '4#i:ADDR',
+      '4#i:WDATA',
+      '4#i:WE',
+      '4#o:RDATA',
+    ])
+    expect(ram?.height).toBe(75)
+    expect(ram?.ports?.map((port) => port.y)).toEqual([15.5, 31, 46.5, 31])
+
+    const laidOut = interpretResult(sub, {
+      id: 'root',
+      width: 500,
+      height: 220,
+      children: [
+        { id: '1', x: 0, y: 0, width: 74, height: 34 },
+        { id: '2', x: 0, y: 60, width: 74, height: 34 },
+        { id: '3', x: 0, y: 120, width: 74, height: 34 },
+        { id: '4', x: 200, y: 80, width: 112, height: 75 },
+        { id: '5', x: 420, y: 90, width: 74, height: 34 },
+      ],
+      edges: [],
+    })
+    expect(Object.fromEntries(
+      laidOut.edges.slice(0, 3).map((edge) => [edge.edge.to_port, edge.points[1]]),
+    )).toEqual({
+      ADDR: { x: 200, y: 95.5 },
+      WDATA: { x: 200, y: 111 },
+      WE: { x: 200, y: 126.5 },
+    })
+    expect(laidOut.edges[3].points[1]).toEqual({ x: 420, y: 107 })
+    expect(laidOut.edges[3].points[0]).toEqual({ x: 312, y: 111 })
+  })
+
   it('routes visible clock and reset edges to their flip-flop pins', () => {
     const sub: Subgraph = {
       nodes: [

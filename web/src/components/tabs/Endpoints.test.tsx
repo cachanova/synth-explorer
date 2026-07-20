@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { EndpointsResponse } from '../../types'
+import { boundaryFaninRequest } from '../../lib/endpointCone'
 
 let endpointsData: EndpointsResponse
 
@@ -33,11 +34,26 @@ vi.mock('../../useStore', () => ({
 import { Endpoints } from './Endpoints'
 
 describe('Endpoints result completeness', () => {
+  it('builds pin- and bit-specific cone requests for primitive inputs', () => {
+    expect(boundaryFaninRequest(42, 'memory.ADDR (fanin)', 'ADDR')).toMatchObject({
+      node: 42,
+      dir: 'fanin',
+      rootPort: 'ADDR',
+      rootPortBit: undefined,
+    })
+    expect(boundaryFaninRequest(42, 'memory.ADDR[1] (fanin)', 'ADDR', 1)).toMatchObject({
+      node: 42,
+      rootPort: 'ADDR',
+      rootPortBit: 1,
+    })
+  })
+
   it('renders every logical endpoint instead of stopping at 100 rows', () => {
     endpointsData = {
       registers: [],
       inputs: [],
       boundaries: [],
+      boundaries_truncated: false,
       outputs: Array.from({ length: 101 }, (_, index) => ({
         name: `endpoint-${index + 1}`,
         width: 1,
@@ -81,6 +97,7 @@ describe('Endpoints result completeness', () => {
           bits: [{ bit: 0, node_id: 42, depth: 1 }],
         },
       ],
+      boundaries_truncated: false,
     }
 
     const markup = renderToStaticMarkup(<Endpoints />)

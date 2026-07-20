@@ -3,6 +3,83 @@ import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
 describe('GraphView LUT labels', () => {
+  it('uses a distinct color for special implementation primitives', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 1,
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 58,
+            node: { id: 1, kind: 'cell', name: 'carry', cell_type: 'CARRY4' },
+          }],
+          edges: [],
+          width: 96,
+          height: 58,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('stroke="var(--blue)"')
+    expect(markup).toContain('color-mix(in srgb, var(--blue) 10%, transparent)')
+  })
+
+  it('draws primitive pin labels at the same canonical positions used by layout', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 4,
+            x: 200,
+            y: 80,
+            width: 112,
+            height: 75,
+            node: {
+              id: 4,
+              kind: 'cell',
+              name: 'memory',
+              cell_type: 'RAM32M',
+              seq: true,
+              register: false,
+              controls: [
+                { role: 'clock', pin: 'WCLK', net_name: 'clk', driver_id: 8, fanout: 1 },
+              ],
+            },
+          }],
+          edges: [
+            laidOutPrimitiveEdge(1, 4, 'WE'),
+            laidOutPrimitiveEdge(2, 4, 'ADDR'),
+            laidOutPrimitiveEdge(3, 4, 'WDATA'),
+          ],
+          width: 312,
+          height: 155,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={4}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('<text x="8" y="18.5">ADDR</text>')
+    expect(markup).toContain('<text x="8" y="34">WDATA</text>')
+    expect(markup).toContain('<text x="8" y="49.5">WE</text>')
+  })
+
   it('renders only the grouped count and no decorative LUT separators', () => {
     const markup = renderToStaticMarkup(
       <GraphView
@@ -322,6 +399,25 @@ function laidOutEdge(from: number, to: number, netName: string) {
       to_port: 'A',
       net_name: netName,
       bits: [1],
+    },
+  }
+}
+
+function laidOutPrimitiveEdge(from: number, to: number, toPort: string) {
+  return {
+    from,
+    to,
+    points: [
+      { x: 74, y: 17 },
+      { x: 200, y: 100 },
+    ],
+    edge: {
+      from,
+      to,
+      from_port: toPort.toLowerCase(),
+      to_port: toPort,
+      net_name: toPort.toLowerCase(),
+      bits: [from],
     },
   }
 }

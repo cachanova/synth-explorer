@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
+  canonicalPinNames,
   controlRoleForPin,
   fitViewportToContent,
   panViewport,
@@ -26,6 +27,7 @@ import {
   inferPortDirections,
   inputArcPath,
   inputBubbleAt,
+  isSpecialPrimitive,
   registerClockPath,
   shapePath,
   symbolKind,
@@ -117,6 +119,9 @@ function nodeVisual(
   } else if (kind === 'memory') {
     fill = 'color-mix(in srgb, var(--amber) 8%, transparent)'
     stroke = 'var(--amber)'
+  } else if (isSpecialPrimitive(node)) {
+    fill = 'color-mix(in srgb, var(--blue) 10%, transparent)'
+    stroke = 'var(--blue)'
   }
 
   if (isRoot) {
@@ -138,11 +143,6 @@ function pathD(points: Point[]): string {
   let d = `M ${points[0].x} ${points[0].y}`
   for (let i = 1; i < points.length; i++) d += ` L ${points[i].x} ${points[i].y}`
   return d
-}
-
-function compactPins(pins: string[], max = 6): string[] {
-  if (pins.length <= max) return pins
-  return [...pins.slice(0, max - 1), `+${pins.length - max + 1}`]
 }
 
 function SchematicOutline({
@@ -359,8 +359,8 @@ function NodeContents({
 }
 
 function PinLabels({ pins, width, height }: { pins: NodePins; width: number; height: number }) {
-  const incoming = compactPins(pins.incoming)
-  const outgoing = compactPins(pins.outgoing)
+  const incoming = pins.incoming
+  const outgoing = pins.outgoing
   return (
     <g className="g-pin-labels" aria-hidden="true">
       {incoming.map((pin, index) => {
@@ -750,8 +750,8 @@ export const GraphView = memo(function GraphView({
     const pinsById = new Map<number, NodePins>()
     for (const [nodeId, pins] of pinSetsById) {
       pinsById.set(nodeId, {
-        incoming: [...pins.incoming],
-        outgoing: [...pins.outgoing],
+        incoming: canonicalPinNames(pins.incoming),
+        outgoing: canonicalPinNames(pins.outgoing),
         controlInputs: [...pins.controlInputs].map(([pin, role]) => ({ pin, role })),
       })
     }

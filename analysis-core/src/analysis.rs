@@ -18,6 +18,8 @@ const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
 pub const MAX_PATH_RESULTS: usize = 8_000;
 pub const MAX_SUBGRAPH_NODES: usize = 2_000;
 pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
+const MAX_BOUNDARY_ENDPOINTS: usize = 10_000;
+const MAX_BOUNDARY_ENDPOINT_BITS: usize = 100_000;
 const FULL_NETLIST_CONTEXT_NODE_BUDGET: usize = MAX_SUBGRAPH_NODES * 16;
 pub(crate) const SOURCE_ROOT_COLLECTION_CAP: usize = MAX_SUBGRAPH_NODES + 1;
 const SOURCE_LINE_RESPONSE_CAP: usize = 10_000;
@@ -235,6 +237,7 @@ pub struct EndpointsResponse {
     pub outputs: Vec<OutputGroup>,
     pub inputs: Vec<InputGroup>,
     pub boundaries: Vec<BoundaryEndpoint>,
+    pub boundaries_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -566,6 +569,7 @@ pub struct Analysis {
     comb_loop_set: HashSet<NodeId>,
     pub endpoints: EndpointsResponse,
     endpoint_targets: Vec<EndpointTarget>,
+    endpoint_targets_truncated: bool,
     source_map: SourceMapResponse,
     source_ranges: BTreeMap<String, SourceRangeIndex>,
     source_probe_hints: BTreeMap<String, SourceProbeHintIndex>,
@@ -687,13 +691,14 @@ impl Analysis {
             depth_path_delay,
             ..
         } = compute_depths(graph, &loop_set, model);
-        let (endpoints, endpoint_targets) =
+        let (endpoints, endpoint_targets, endpoint_targets_truncated) =
             discover_endpoints(graph, &node_depth, &node_startpoint, &source_files);
         let source_map = build_source_map(graph, source_files);
         let stats = build_stats(
             graph,
             &endpoints,
             &endpoint_targets,
+            &node_depth,
             estimated_max_delay_ps,
             estimated_max_delay_breakdown,
         );
@@ -714,6 +719,7 @@ impl Analysis {
             comb_loop_set: loop_set,
             endpoints,
             endpoint_targets,
+            endpoint_targets_truncated,
             source_map,
             source_ranges: BTreeMap::new(),
             source_probe_hints: BTreeMap::new(),
@@ -750,8 +756,8 @@ impl Analysis {
         }
     }
 
-    pub fn endpoints(&self) -> EndpointsResponse {
-        self.endpoints.clone()
+    pub fn endpoints(&self) -> &EndpointsResponse {
+        &self.endpoints
     }
 
     pub fn stats(&self) -> Stats {
@@ -1483,7 +1489,8 @@ impl Analysis {
                     .iter()
                     .map(|id| graph.node_ref_name(*id))
                     .collect(),
-                truncated: route_clipped
+                truncated: self.endpoint_targets_truncated
+                    || route_clipped
                     || reconstructed_candidates < candidates.len()
                     || candidates.len() < total_targets
                     || grouped_count > limit,
@@ -1510,7 +1517,7 @@ impl Analysis {
         &self,
         graph: &Graph,
         root: NodeId,
-        options: ConeOptions,
+        options: ConeOptions<'_>,
         grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
         self.multi_root_cone(graph, &[root], options, grouping)
@@ -1520,7 +1527,7 @@ impl Analysis {
         &self,
         graph: &Graph,
         roots: &[NodeId],
-        options: ConeOptions,
+        options: ConeOptions<'_>,
         grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
         self.multi_root_subgraph(
@@ -1572,7 +1579,7 @@ impl Analysis {
         &self,
         graph: &Graph,
         roots: &[NodeId],
-        options: ConeOptions,
+        options: ConeOptions<'_>,
         grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
         self.multi_root_subgraph(
@@ -1590,7 +1597,7 @@ impl Analysis {
         graph: &Graph,
         roots: &[NodeId],
         directions: &[ConeDir],
-        options: ConeOptions,
+        options: ConeOptions<'_>,
         grouping: Option<&GroupPartition>,
         work_limits: SubgraphWorkLimits,
     ) -> Option<Subgraph> {
@@ -1734,6 +1741,22 @@ impl Analysis {
                             break 'walk;
                         }
                         examined_edges += 1;
+                    }
+                    if included_roots.len() == 1
+                        && included_roots.contains(&frame.id)
+                        && let Some(root_port) = options.root_port
+                    {
+                        let edge_port = match traversal.dir {
+                            ConeDir::Fanin => edge.to_port.as_str(),
+                            ConeDir::Fanout => edge.from_port.as_str(),
+                        };
+                        if edge_port != root_port
+                            || options.root_port_bit.is_some_and(|bit| {
+                                traversal.dir == ConeDir::Fanin && edge.to_port_bit != bit
+                            })
+                        {
+                            continue;
+                        }
                     }
                     if should_hide_edge(graph, edge, options.hide_control, options.hide_const) {
                         continue;
@@ -2455,13 +2478,17 @@ pub enum ConeDir {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ConeOptions {
+pub struct ConeOptions<'a> {
     pub dir: ConeDir,
     pub max_depth: u32,
     pub max_nodes: usize,
     pub hide_control: bool,
     pub hide_const: bool,
     pub show_infrastructure: bool,
+    /// Restrict the first hop of a single-root cone to one physical cell pin.
+    pub root_port: Option<&'a str>,
+    /// Further restrict `root_port` to one bit when the endpoint is expanded.
+    pub root_port_bit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3083,12 +3110,16 @@ fn discover_endpoints(
     node_depth: &[Option<u32>],
     node_startpoint: &[Option<NodeId>],
     source_files: &[String],
-) -> (EndpointsResponse, Vec<EndpointTarget>) {
+) -> (EndpointsResponse, Vec<EndpointTarget>, bool) {
     let design_files: HashSet<&str> = source_files.iter().map(String::as_str).collect();
     let mut targets = Vec::new();
     let mut register_map: BTreeMap<String, RegisterGroup> = BTreeMap::new();
     let mut register_bits: HashMap<(NodeId, Option<u32>), (String, usize)> = HashMap::new();
-    let mut boundary_map: BTreeMap<(String, NodeId, String), BoundaryEndpoint> = BTreeMap::new();
+    let mut boundaries = Vec::new();
+    let mut boundary_bit_count = 0;
+    let mut boundary_target_count = 0;
+    let mut boundaries_truncated = false;
+    let mut endpoint_targets_truncated = false;
 
     for node in &graph.nodes {
         if !is_register_node(node) {
@@ -3248,59 +3279,102 @@ fn discover_endpoints(
         if node.kind != NodeKind::Cell || !node.seq || is_register_node(node) {
             continue;
         }
+        let mut port_indices: HashMap<&str, usize> = HashMap::new();
+        let mut seen_port_bits: HashMap<(&str, u32), Option<(usize, usize)>> = HashMap::new();
         for edge_idx in &graph.incoming[node.id as usize] {
             let edge = &graph.edges[*edge_idx];
-            if !edge.control
-                && (!is_addressable_sequential_node(graph, node.id)
-                    || !is_depth_input_edge(graph, edge))
-            {
-                let depth = edge_depth(graph, node_depth, *edge_idx);
-                let endpoint = boundary_map
-                    .entry((node.name.clone(), node.id, edge.to_port.clone()))
-                    .or_insert_with(|| BoundaryEndpoint {
-                        name: node.name.clone(),
-                        node_id: node.id,
-                        cell_type: node.cell_type.clone().unwrap_or_default(),
-                        port: edge.to_port.clone(),
-                        width: 0,
-                        src: node.src.clone(),
-                        worst_depth: 0,
-                        bits: Vec::new(),
-                    });
-                let port_bit = edge.to_port_bit as usize;
-                endpoint.width = endpoint.width.max(port_bit + 1);
-                endpoint.worst_depth = endpoint.worst_depth.max(depth);
-                endpoint.bits.push(EndpointBit {
-                    bit: port_bit,
-                    node_id: node.id,
-                    depth,
-                });
-                targets.push(EndpointTarget {
-                    endpoint: node.id,
-                    endpoint_port: edge.to_port.clone(),
-                    edge: Some(*edge_idx),
-                    startpoint: endpoint_startpoint_id(
-                        graph,
-                        node_startpoint,
-                        node.id,
-                        Some(*edge_idx),
-                    ),
-                    depth,
-                    group: node.name.clone(),
-                    kind: EndpointKind::Blackbox,
-                    bit: port_bit,
-                });
+            if edge.control {
+                continue;
             }
+            let depth = edge_depth(graph, node_depth, *edge_idx);
+            let endpoint_index = if let Some(index) = port_indices.get(edge.to_port.as_str()) {
+                Some(*index)
+            } else if boundaries.len() < MAX_BOUNDARY_ENDPOINTS {
+                let index = boundaries.len();
+                boundaries.push(BoundaryEndpoint {
+                    name: node.name.clone(),
+                    node_id: node.id,
+                    cell_type: node.cell_type.clone().unwrap_or_default(),
+                    port: edge.to_port.clone(),
+                    width: 0,
+                    src: node.src.clone(),
+                    worst_depth: 0,
+                    bits: Vec::new(),
+                });
+                port_indices.insert(edge.to_port.as_str(), index);
+                Some(index)
+            } else {
+                boundaries_truncated = true;
+                None
+            };
+
+            let port_bit = edge.to_port_bit as usize;
+            if let Some(index) = endpoint_index {
+                boundaries[index].width = boundaries[index].width.max(port_bit + 1);
+                boundaries[index].worst_depth = boundaries[index].worst_depth.max(depth);
+                let key = (edge.to_port.as_str(), edge.to_port_bit);
+                match seen_port_bits.entry(key) {
+                    std::collections::hash_map::Entry::Occupied(stored) => {
+                        if let Some((stored_endpoint, stored_bit)) = *stored.get() {
+                            boundaries[stored_endpoint].bits[stored_bit].depth =
+                                boundaries[stored_endpoint].bits[stored_bit]
+                                    .depth
+                                    .max(depth);
+                        }
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        if boundary_bit_count < MAX_BOUNDARY_ENDPOINT_BITS {
+                            let stored_bit = boundaries[index].bits.len();
+                            boundaries[index].bits.push(EndpointBit {
+                                bit: port_bit,
+                                node_id: node.id,
+                                depth,
+                            });
+                            slot.insert(Some((index, stored_bit)));
+                            boundary_bit_count += 1;
+                        } else {
+                            slot.insert(None);
+                            boundaries_truncated = true;
+                        }
+                    }
+                }
+            }
+
+            if endpoint_index.is_none() || boundary_target_count >= MAX_BOUNDARY_ENDPOINT_BITS {
+                endpoint_targets_truncated = true;
+                continue;
+            }
+            targets.push(EndpointTarget {
+                endpoint: node.id,
+                endpoint_port: edge.to_port.clone(),
+                edge: Some(*edge_idx),
+                startpoint: endpoint_startpoint_id(
+                    graph,
+                    node_startpoint,
+                    node.id,
+                    Some(*edge_idx),
+                ),
+                depth,
+                group: node.name.clone(),
+                kind: EndpointKind::Blackbox,
+                bit: port_bit,
+            });
+            boundary_target_count += 1;
         }
     }
 
-    let mut boundaries: Vec<_> = boundary_map.into_values().collect();
     for endpoint in &mut boundaries {
         endpoint
             .bits
             .sort_by_key(|bit| (bit.bit, Reverse(bit.depth)));
         endpoint.bits.dedup_by_key(|bit| bit.bit);
     }
+    boundaries.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.node_id.cmp(&b.node_id))
+            .then_with(|| a.port.cmp(&b.port))
+    });
 
     (
         EndpointsResponse {
@@ -3308,8 +3382,10 @@ fn discover_endpoints(
             outputs,
             inputs,
             boundaries,
+            boundaries_truncated,
         },
         targets,
+        endpoint_targets_truncated,
     )
 }
 
@@ -3994,6 +4070,7 @@ fn build_stats(
     graph: &Graph,
     endpoints: &EndpointsResponse,
     endpoint_targets: &[EndpointTarget],
+    node_depth: &[Option<u32>],
     estimated_max_delay_ps: Option<f64>,
     estimated_max_delay_breakdown: Option<DelayBreakdownPs>,
 ) -> Stats {
@@ -4027,11 +4104,21 @@ fn build_stats(
                 )
         })
         .count();
-    let max_depth = endpoint_targets
+    let retained_max_depth = endpoint_targets
         .iter()
         .map(|target| target.depth)
         .max()
         .unwrap_or_default();
+    let boundary_max_depth = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == NodeKind::Cell && node.seq && !is_register_node(node))
+        .flat_map(|node| graph.incoming[node.id as usize].iter())
+        .filter(|edge_idx| !graph.edges[**edge_idx].control)
+        .map(|edge_idx| edge_depth(graph, node_depth, *edge_idx))
+        .max()
+        .unwrap_or_default();
+    let max_depth = retained_max_depth.max(boundary_max_depth);
     let mut depths = DepthSummary::default();
     for target in endpoint_targets {
         let startpoint = node_ref(graph, target.startpoint);
@@ -6079,6 +6166,74 @@ mod tests {
         let public = analysis.source_map();
         assert_eq!(public.by_line.len(), SOURCE_LINE_RESPONSE_CAP);
         assert!(public.truncated);
+    }
+
+    #[test]
+    fn boundary_endpoint_catalog_is_bounded_and_stats_remain_complete() {
+        let graph = boundary_cap_graph();
+        let analysis = Analysis::new(&graph, vec!["boundary_cap.sv".to_owned()]);
+
+        assert_eq!(analysis.endpoints.boundaries.len(), MAX_BOUNDARY_ENDPOINTS);
+        assert!(analysis.endpoints.boundaries_truncated);
+        assert!(analysis.endpoint_targets_truncated);
+        assert_eq!(analysis.stats.max_depth, 1);
+        assert!(analysis.paths(&graph, 1, None).truncated);
+    }
+
+    fn boundary_cap_graph() -> Graph {
+        let comb_id = (MAX_BOUNDARY_ENDPOINTS + 1) as NodeId;
+        let deep_boundary_id = comb_id + 1;
+        let node_count = deep_boundary_id as usize + 1;
+        let mut nodes = Vec::with_capacity(node_count);
+        nodes.push(port_node(0, "in", PortDirection::Input));
+        for id in 1..=MAX_BOUNDARY_ENDPOINTS as NodeId {
+            nodes.push(boundary_node(id));
+        }
+        nodes.push(combinational_node(comb_id, "$buf", None));
+        nodes.push(boundary_node(deep_boundary_id));
+
+        let mut edges = Vec::with_capacity(MAX_BOUNDARY_ENDPOINTS + 2);
+        let mut outgoing = vec![Vec::new(); node_count];
+        let mut incoming = vec![Vec::new(); node_count];
+        let mut add_edge = |from: NodeId, to: NodeId, bit: u32| {
+            let index = edges.len();
+            edges.push(Edge {
+                from,
+                to,
+                from_port: "Y".to_owned(),
+                to_port: "D".to_owned(),
+                to_port_bit: 0,
+                bit: Some(bit),
+                net_name: format!("n{bit}"),
+                control: false,
+            });
+            outgoing[from as usize].push(index);
+            incoming[to as usize].push(index);
+        };
+        for id in 1..=MAX_BOUNDARY_ENDPOINTS as NodeId {
+            add_edge(0, id, id);
+        }
+        add_edge(0, comb_id, comb_id);
+        add_edge(comb_id, deep_boundary_id, deep_boundary_id);
+        graph_from_parts("boundary_cap", nodes, edges, outgoing, incoming)
+    }
+
+    fn boundary_node(id: NodeId) -> Node {
+        Node {
+            id,
+            kind: NodeKind::Cell,
+            name: format!("boundary_{id}"),
+            raw_name: format!("boundary_{id}"),
+            cell_type: Some("CUSTOM_BOUNDARY".to_owned()),
+            seq: true,
+            blackbox: true,
+            src: None,
+            params: BTreeMap::new(),
+            port: None,
+            port_bit: None,
+            port_dir: None,
+            const_value: None,
+        }
     }
 
     fn deep_chain_graph(depth: usize) -> Graph {

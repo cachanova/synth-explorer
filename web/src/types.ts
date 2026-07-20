@@ -261,6 +261,7 @@ export interface EndpointsResponse {
   outputs: OutputEndpoint[]
   inputs: InputEndpoint[]
   boundaries: BoundaryEndpoint[]
+  boundaries_truncated: boolean
 }
 
 // --- Path analysis ---

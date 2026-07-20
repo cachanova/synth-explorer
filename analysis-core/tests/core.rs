@@ -81,7 +81,7 @@ fn grouped_register_banks() -> (Graph, Analysis, GroupPartition) {
     (graph, analysis, partition)
 }
 
-fn cone_options(max_nodes: usize) -> ConeOptions {
+fn cone_options(max_nodes: usize) -> ConeOptions<'static> {
     ConeOptions {
         dir: ConeDir::Fanin,
         max_depth: 64,
@@ -89,6 +89,8 @@ fn cone_options(max_nodes: usize) -> ConeOptions {
         hide_control: true,
         hide_const: true,
         show_infrastructure: false,
+        root_port: None,
+        root_port_bit: None,
     }
 }
 
@@ -284,6 +286,8 @@ fn cone_stops_at_boundary_nodes() {
                 hide_control: true,
                 hide_const: true,
                 show_infrastructure: false,
+                root_port: None,
+                root_port_bit: None,
             },
             None,
         )
@@ -316,6 +320,8 @@ fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
         hide_control: false,
         hide_const: true,
         show_infrastructure: false,
+        root_port: None,
+        root_port_bit: None,
     };
     let envelope = analysis.envelope(&graph, &roots, options, None).unwrap();
     assert!(!envelope.truncated);
@@ -493,6 +499,10 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
         .iter()
         .find(|node| node.cell_type.as_deref() == Some("RAM32M"))
         .unwrap();
+    assert_eq!(
+        ram.name, "ram",
+        "memory endpoints use the stable instance name"
+    );
 
     let endpoints = analysis.endpoints();
     let endpoint_ports: Vec<_> = endpoints
@@ -535,6 +545,75 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
     assert!(paths.iter().any(|path| {
         path.endpoint.id == ram.id && path.endpoint_port == "ADDR" && path.bits.contains(&1)
     }));
+
+    let addr_cone = analysis
+        .cone(
+            &graph,
+            ram.id,
+            ConeOptions {
+                dir: ConeDir::Fanin,
+                max_depth: 8,
+                max_nodes: 100,
+                hide_control: false,
+                hide_const: false,
+                show_infrastructure: false,
+                root_port: Some("ADDR"),
+                root_port_bit: None,
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        addr_cone
+            .edges
+            .iter()
+            .filter(|edge| edge.to == ram.id)
+            .all(|edge| edge.to_port == "ADDR")
+    );
+    assert!(
+        addr_cone
+            .nodes
+            .iter()
+            .any(|node| node.node.name == "addr[0]")
+    );
+    assert!(
+        addr_cone
+            .nodes
+            .iter()
+            .any(|node| node.node.name == "addr[1]")
+    );
+
+    let addr_bit_cone = analysis
+        .cone(
+            &graph,
+            ram.id,
+            ConeOptions {
+                root_port: Some("ADDR"),
+                root_port_bit: Some(1),
+                ..cone_options(100)
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        addr_bit_cone
+            .edges
+            .iter()
+            .filter(|edge| edge.to == ram.id)
+            .all(|edge| edge.to_port == "ADDR")
+    );
+    assert!(
+        addr_bit_cone
+            .nodes
+            .iter()
+            .any(|node| node.node.name == "addr[1]")
+    );
+    assert!(
+        addr_bit_cone
+            .nodes
+            .iter()
+            .all(|node| node.node.name != "addr[0]")
+    );
 }
 
 #[test]
@@ -712,6 +791,14 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
         .iter()
         .find(|output| output.name == "q31")
         .unwrap();
+    let shift = graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("SRLC32E"))
+        .unwrap();
+    assert!(endpoints.boundaries.iter().any(|endpoint| {
+        endpoint.node_id == shift.id && endpoint.name == "shift" && endpoint.port == "A"
+    }));
     assert_eq!(q.worst_depth, 1);
     assert_eq!(q31.worst_depth, 0);
 
@@ -723,6 +810,13 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
         .unwrap();
     assert_eq!(q31_path.depth, 0);
     assert!(q31_path.nodes.iter().all(|node| node.name != "address"));
+    assert!(
+        analysis
+            .paths(&graph, 25, None)
+            .paths
+            .iter()
+            .any(|path| { path.endpoint.id == shift.id && path.endpoint_port == "A" })
+    );
 
     let cone = analysis
         .cone(
@@ -735,6 +829,8 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
                 hide_control: true,
                 hide_const: true,
                 show_infrastructure: false,
+                root_port: None,
+                root_port_bit: None,
             },
             None,
         )

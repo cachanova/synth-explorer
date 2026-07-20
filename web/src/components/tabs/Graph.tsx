@@ -277,6 +277,8 @@ export function Graph({ active }: { active: boolean }) {
             hide_const: graphOptions.hideConst,
             show_infrastructure: false,
             group_vectors: graphOptions.groupVectors,
+            root_port: request.rootPort,
+            root_port_bit: request.rootPortBit,
           }, controller.signal).then((graph) => ({
             graph,
             status: null,
@@ -716,6 +718,8 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
       dir,
       label: coneReq.label,
       highlight: coneReq.highlight,
+      rootPort: dir === 'fanin' ? coneReq.rootPort : undefined,
+      rootPortBit: dir === 'fanin' ? coneReq.rootPortBit : undefined,
     })
   }
 

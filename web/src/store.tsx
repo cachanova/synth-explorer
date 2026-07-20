@@ -76,6 +76,8 @@ export interface ConeGraphRequest {
   label: string // human description for the graph header
   // node ids to highlight (e.g. a path); empty for plain cones
   highlight: number[]
+  rootPort?: string
+  rootPortBit?: number
   nonce: number // force re-render even if identical request
 }
 
@@ -212,6 +214,8 @@ export interface Store {
     dir: 'fanin' | 'fanout'
     label: string
     highlight?: number[]
+    rootPort?: string
+    rootPortBit?: number
   }) => void
   openControlCone: (opts: {
     node: number
@@ -837,6 +841,8 @@ export function StoreProvider({
       dir: 'fanin' | 'fanout'
       label: string
       highlight?: number[]
+      rootPort?: string
+      rootPortBit?: number
     }) => {
       if (analysisStateRef.current !== 'current') return
       cancelSourceProbe()
@@ -856,6 +862,8 @@ export function StoreProvider({
         dir: opts.dir,
         label: opts.label,
         highlight: opts.highlight ?? [],
+        rootPort: opts.rootPort,
+        rootPortBit: opts.rootPortBit,
         nonce: nextNonce(),
       })
       setActiveTab('graph')
@@ -873,8 +881,11 @@ export function StoreProvider({
       node: path.endpoint.id,
       nodes: [path.endpoint.id],
       dir: 'fanin',
-      label: `Path → ${displayNodeName(path.endpoint)} (depth ${path.depth})`,
+      label: `Path → ${displayNodeName(path.endpoint)}${
+        path.endpoint_kind === 'blackbox' ? `.${path.endpoint_port}` : ''
+      } (depth ${path.depth})`,
       highlight: path.nodes.map((n) => n.id),
+      rootPort: path.endpoint_kind === 'blackbox' ? path.endpoint_port : undefined,
       nonce: nextNonce(),
     })
     setActiveTab('graph')

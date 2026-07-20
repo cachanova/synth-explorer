@@ -202,14 +202,18 @@ impl Graph {
                 }
             }
             if builder.nodes[node_id as usize].seq && info.q_bits.is_empty() {
-                for port in &output_ports {
+                let mut ports: Vec<_> = output_ports.iter().collect();
+                ports.sort();
+                for port in ports {
                     if let Some(bits) = cell.connections.get(port) {
                         info.q_bits.extend(bits.clone());
                     }
                 }
             }
             if builder.nodes[node_id as usize].seq && info.d_bits.is_empty() {
-                for port in &input_ports {
+                let mut ports: Vec<_> = input_ports.iter().collect();
+                ports.sort();
+                for port in ports {
                     if is_control_pin_for_cell(&cell.cell_type, port) {
                         continue;
                     }
@@ -219,6 +223,7 @@ impl Graph {
                 }
             }
             if builder.nodes[node_id as usize].seq
+                && is_register_type(&cell.cell_type)
                 && let Some(name) = info
                     .q_bits
                     .iter()
@@ -233,7 +238,9 @@ impl Graph {
                     strip_bit_suffix(&name).to_owned()
                 };
             }
-            for output_port in &output_ports {
+            let mut sorted_output_ports: Vec<_> = output_ports.iter().collect();
+            sorted_output_ports.sort();
+            for output_port in sorted_output_ports {
                 if let Some(bits) = cell.connections.get(output_port) {
                     for bit in bits {
                         drivers
@@ -250,8 +257,11 @@ impl Graph {
             let Some(&sink_id) = cell_nodes.get(cell_name) else {
                 continue;
             };
-            for input_port in input_ports(cell) {
-                let Some(bits) = cell.connections.get(&input_port) else {
+            let input_ports = input_ports(cell);
+            let mut sorted_input_ports: Vec<_> = input_ports.iter().collect();
+            sorted_input_ports.sort();
+            for input_port in sorted_input_ports {
+                let Some(bits) = cell.connections.get(input_port) else {
                     continue;
                 };
                 for (port_bit, bit) in bits.iter().enumerate() {
@@ -260,7 +270,7 @@ impl Graph {
                     }
                     let port_bit =
                         u32::try_from(port_bit).map_err(|_| GraphError::TooManyPortBits)?;
-                    let control = is_control_pin_for_cell(&cell.cell_type, &input_port);
+                    let control = is_control_pin_for_cell(&cell.cell_type, input_port);
                     let net_name = bit_to_name(bit, &builder.net_names);
                     for (driver_id, driver_port) in
                         resolve_drivers(bit, &drivers, &mut builder, &mut const_nodes)?
