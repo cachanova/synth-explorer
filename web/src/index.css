@@ -1585,10 +1585,12 @@ th.sortable:hover {
   background: var(--bg);
   background-image: radial-gradient(var(--bg-3) 1px, transparent 0);
   background-size: 22px 22px;
+  touch-action: none;
 }
 .graph-stage svg {
   display: block;
   cursor: grab;
+  touch-action: none;
 }
 .graph-stage svg.panning {
   cursor: grabbing;
