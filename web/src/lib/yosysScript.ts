@@ -17,9 +17,14 @@ export type SourceLanguage = 'verilog' | 'vhdl'
 export interface ValidatedSynthesis {
   files: DesignFile[]
   top?: string
+  tool?: 'vivado'
   mode: Mode
   extraArgs: string[]
   language: SourceLanguage
+  target?: string
+  vivadoFamily?: string
+  vivadoSpeed?: string
+  vivadoVersion?: string
 }
 
 export function validateSynthesisRequest(
@@ -53,7 +58,37 @@ export function validateSynthesisRequest(
   }
   const extraArgs = parseExtraArgs(request.extra_args)
   validateNarrowCarry(request.mode, extraArgs)
-  return { files, top, mode: request.mode, extraArgs, language }
+  const tool = request.tool ?? 'yosys'
+  if (tool === 'vivado') {
+    if (!top) throw new Error('Vivado synthesis requires an explicit top module or entity')
+    if (!request.target || !validVivadoField(request.target, 128)) {
+      throw new Error('Vivado synthesis requires a valid installed target')
+    }
+    if (!request.vivado_family || !validVivadoField(request.vivado_family, 128)) {
+      throw new Error('Vivado synthesis requires the target family')
+    }
+    if (!request.vivado_speed || !validVivadoField(request.vivado_speed, 32)) {
+      throw new Error('Vivado synthesis requires the target speed grade')
+    }
+    if (!request.vivado_version?.trim()) {
+      throw new Error('Vivado synthesis requires the paired tool version')
+    }
+    if (extraArgs.some((arg) => arg === '-top' || arg === '-part' || arg.startsWith('-top=') || arg.startsWith('-part='))) {
+      throw new Error('Vivado top and part must use the dedicated fields')
+    }
+  }
+  return {
+    files,
+    top,
+    tool: tool === 'vivado' ? 'vivado' : undefined,
+    mode: request.mode,
+    extraArgs,
+    language,
+    target: tool === 'vivado' ? request.target : undefined,
+    vivadoFamily: tool === 'vivado' ? request.vivado_family : undefined,
+    vivadoSpeed: tool === 'vivado' ? request.vivado_speed : undefined,
+    vivadoVersion: tool === 'vivado' ? request.vivado_version : undefined,
+  }
 }
 
 export function buildYosysScript(
@@ -115,6 +150,15 @@ export function buildYosysScript(
 }
 
 export function defaultDelayProfile(input: ValidatedSynthesis): string {
+  if (input.tool === 'vivado') {
+    const family = input.vivadoFamily?.toLowerCase() ?? ''
+    if (family.includes('uplus')) return 'ultrascale_plus'
+    if (family.endsWith('u')) return 'ultrascale'
+    if (family.endsWith('7') || family.endsWith('7l') || family === 'zynq') {
+      return 'series7'
+    }
+    return 'generic'
+  }
   if (input.mode === 'ice40' || input.mode === 'ecp5') return input.mode
   if (input.mode !== 'xilinx') return 'generic'
   const familyIndex = input.extraArgs.indexOf('-family')
@@ -122,6 +166,23 @@ export function defaultDelayProfile(input: ValidatedSynthesis): string {
   if (family === 'xcup') return 'ultrascale_plus'
   if (family === 'xcu') return 'ultrascale'
   return 'series7'
+}
+
+export function buildVivadoNormalizeScript(top: string): string {
+  if (!/^[A-Za-z0-9_$]+$/.test(top)) throw new Error(`invalid top module name: ${top}`)
+  return (
+    'read_verilog -lib /share/xilinx/cells_sim.v\n' +
+    'read_verilog -lib /share/xilinx/cells_xtra.v\n' +
+    'read_verilog vivado-netlist.v\n' +
+    `hierarchy -check -top ${top}\n` +
+    'flatten\nselect -clear\n' +
+    `select ${top}\n` +
+    'write_json -selected netlist.json\n'
+  )
+}
+
+function validVivadoField(value: string, limit: number): boolean {
+  return value.length <= limit && /^[A-Za-z0-9_.-]+$/.test(value)
 }
 
 function readVerilog(input: ValidatedSynthesis): string {

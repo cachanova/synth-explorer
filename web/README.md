@@ -2,7 +2,8 @@
 
 This package is the entire production application. It contains the React UI,
 CodeMirror editor, browser-local GHDL, Yosys, and Rust analysis workers, bundled
-examples, IndexedDB cache, and elkjs graph viewer.
+examples, IndexedDB cache, elkjs graph viewer, and the optional client for the
+loopback-only local Vivado bridge.
 
 ## Development
 
@@ -12,7 +13,8 @@ npm run dev
 ```
 
 Vite serves <http://localhost:5173>. Synthesis works directly from that origin;
-there is no API proxy or backend process.
+there is no hosted API proxy or backend process. Local Vivado development also
+needs the bridge described in [`../vivado-bridge/`](../vivado-bridge/).
 
 | Command | Purpose |
 | --- | --- |
@@ -37,6 +39,8 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 - `src/workers/analysis.worker.ts` owns the active Rust analysis session,
   including bounded source-selection projections.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
+- `src/lib/vivadoBridge.ts` is the only HTTP client and talks exclusively to
+  the explicitly paired service at `127.0.0.1`.
 - `public/precomputed/` contains content-addressed gate-mode artifacts for the
   default design and bundled examples; `src/data/precomputedManifest.json`
   limits which exact input keys may use them.

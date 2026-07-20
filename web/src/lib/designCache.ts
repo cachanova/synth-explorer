@@ -36,6 +36,15 @@ export async function synthesisKey(input: ValidatedSynthesis): Promise<string> {
     schema: YOSYS_CACHE_SCHEMA,
     yosys: YOSYS_VERSION,
     ghdl: input.language === 'vhdl' ? GHDL_VERSION : null,
+    ...(input.tool === 'vivado'
+      ? {
+          tool: input.tool,
+          target: input.target,
+          vivadoFamily: input.vivadoFamily,
+          vivadoSpeed: input.vivadoSpeed,
+          vivadoVersion: input.vivadoVersion,
+        }
+      : {}),
     mode: input.mode,
     top: input.top ?? null,
     extraArgs: input.extraArgs,
@@ -170,6 +179,10 @@ export function isValidSynthesisArtifact(
 }
 
 export function synthesisProducer(input: ValidatedSynthesis): string {
+  if (input.tool === 'vivado') {
+    return `vivado-${input.vivadoVersion}+normalizer-${YOSYS_VERSION}` +
+      (input.language === 'vhdl' ? `+ghdl-${GHDL_VERSION}` : '')
+  }
   return input.language === 'vhdl'
     ? `${YOSYS_VERSION}+ghdl-${GHDL_VERSION}`
     : YOSYS_VERSION

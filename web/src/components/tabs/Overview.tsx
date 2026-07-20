@@ -32,8 +32,9 @@ export function ModeName({ mode }: { mode: string }) {
 
 export function Overview() {
   const store = useStore(
-    ({ design, autoSynthesize, autoSynthesisDelayMs }) => ({
+    ({ design, synthTool, autoSynthesize, autoSynthesisDelayMs }) => ({
       design,
+      synthTool,
       autoSynthesize,
       autoSynthesisDelayMs,
     }),
@@ -43,10 +44,16 @@ export function Overview() {
   if (!design) {
     return (
       <div className="empty-state">
-        Paste or edit Verilog or VHDL on the left.{' '}
-        {store.autoSynthesize
-          ? `Synth Explorer automatically refreshes the synthesized logic after ${formatSynthesisDelay(store.autoSynthesisDelayMs)} without input.`
-          : 'Select Synthesize when you are ready to refresh the analysis.'}
+        {store.synthTool === 'vivado'
+          ? 'Enter a top module or entity, then run Vivado from the toolbar.'
+          : (
+              <>
+                Paste or edit Verilog or VHDL on the left.{' '}
+                {store.autoSynthesize
+                  ? `Synth Explorer automatically refreshes the synthesized logic after ${formatSynthesisDelay(store.autoSynthesisDelayMs)} without input.`
+                  : 'Select Synthesize when you are ready to refresh the analysis.'}
+              </>
+            )}
       </div>
     )
   }
@@ -68,7 +75,8 @@ export function Overview() {
 
       <div className="cards">
         <Card k="Top" v={design.top} small />
-        <Card k="Synth tool" v="Yosys (browser)" small />
+        <Card k="Synth tool" v={design.tool === 'vivado' ? 'Vivado (local)' : 'Yosys (browser)'} small />
+        {design.target && <Card k="Target" v={design.target} small />}
         <Card k="Mode" v={displayMode(design.mode)} small />
         <Card k="Cells" v={stats.num_cells} />
         <Card k="Reg bits" v={stats.num_register_bits} />

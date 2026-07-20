@@ -1,5 +1,5 @@
-// Browser-local analysis facade. No function in this module performs an HTTP
-// API request; the only network reads are versioned static WASM/CDN assets.
+// Browser-local analysis facade. Yosys and all analysis stay in browser workers.
+// The optional Vivado path talks only to the explicitly paired loopback bridge.
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import { bundledExamples } from './lib/examples'
@@ -31,6 +31,7 @@ import type {
   SynthesizeResponse,
   TimingRequest,
   TimingResponse,
+  SynthTool,
   XilinxFamily,
 } from './types'
 
@@ -175,6 +176,11 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
   { value: 'ice40', label: 'iCE40' },
   { value: 'ecp5', label: 'ECP5' },
   { value: 'xilinx', label: 'Xilinx' },
+]
+
+export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
+  { value: 'yosys', label: 'Yosys (browser)' },
+  { value: 'vivado', label: 'Vivado (local)' },
 ]
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs

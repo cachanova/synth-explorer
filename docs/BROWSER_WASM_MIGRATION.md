@@ -11,6 +11,11 @@ Vivado is retained only as an optional licensed dependency for manual local
 calibration. Calibration imports the canonical production Yosys script builder;
 it is not a second production synthesis implementation.
 
+Subsequent work added a user-run, loopback-only Vivado bridge without restoring
+the retired hosted backend. The static site remains the product deployment;
+Vivado execution, licensing, RTL, and generated netlists stay on the user's
+machine, and all downstream analysis still runs in browser workers.
+
 ## Completed cutovers
 
 1. Pinned main control `3ffd95ef4f6c6fdaa74f715dfb97d68d19313197`
@@ -39,13 +44,14 @@ Each runtime responsibility has one implementation:
   analysis worker;
 - completed design cache: browser IndexedDB.
 
-There is no runtime feature flag, remote fallback, alternate endpoint, native
-production Yosys, or disabled Vivado/backend implementation.
+There is no runtime feature flag, remote fallback, native production Yosys, or
+disabled hosted backend implementation. The optional local Vivado endpoint is a
+separately launched loopback process selected by the user.
 
 ## Browser cache identity
 
-The full cache digest covers the artifact schema, pinned Yosys producer version,
-mode, top, validated synthesis arguments, filenames, and exact RTL bytes.
+The full cache digest covers the artifact schema, tool producer version, mode,
+top, target, validated synthesis arguments, filenames, and exact RTL bytes.
 Timing-model changes do not invalidate synthesis because they do not change the
 netlist. The displayed twelve-character design ID is only a prefix; IndexedDB
 uses the full digest.

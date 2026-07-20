@@ -49,6 +49,25 @@ describe('precomputed synthesis identity', () => {
     await expect(synthesisKey(vhdlInput)).resolves.not.toBe(await synthesisKey(input))
   })
 
+  it('preserves existing Yosys keys and isolates local Vivado producers', async () => {
+    await expect(synthesisKey(input)).resolves.toBe(
+      '986bb5711941737939fd119203defe7526140ad397557afd4e780426f4d2bbc2',
+    )
+    const vivadoInput: ValidatedSynthesis = {
+      ...input,
+      tool: 'vivado',
+      mode: 'xilinx',
+      target: 'xc7a35tcpg236-1',
+      vivadoFamily: 'artix7',
+      vivadoSpeed: '-1',
+      vivadoVersion: 'Vivado v2026.1; bridge 0.1.0',
+    }
+    expect(synthesisProducer(vivadoInput)).toBe(
+      `vivado-${vivadoInput.vivadoVersion}+normalizer-${YOSYS_VERSION}`,
+    )
+    await expect(synthesisKey(vivadoInput)).resolves.not.toBe(await synthesisKey(input))
+  })
+
   it('accepts only the exact cache key, producer, schema, and input', async () => {
     const key = await synthesisKey(input)
     expect(isValidSynthesisArtifact(artifact(key), key, input)).toBe(true)

@@ -79,6 +79,10 @@
         {
           "key": "Referrer-Policy",
           "value": "strict-origin-when-cross-origin"
+        },
+        {
+          "key": "Permissions-Policy",
+          "value": "loopback-network=(self), local-network=(self)"
         }
       ]
     }

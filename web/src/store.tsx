@@ -52,13 +52,19 @@ import {
   type ModeFlagMemory,
 } from './lib/flagRegistry'
 import { boundaryPathPinSelection } from './lib/endpointCone'
+import {
+  connectVivadoBridge,
+  VivadoBridgeError,
+} from './lib/vivadoBridge'
 import type {
   DesignFile,
   Example,
   ExampleVariant,
   Mode,
+  SynthTool,
   SynthesizeResponse,
   TimingPath,
+  VivadoBridgeStatus,
 } from './types'
 
 export type TabId =
@@ -164,8 +170,12 @@ export interface Store {
   /** Bumped when file content is replaced outside the editor (example load). */
   docRevision: number
   top: string
+  synthTool: SynthTool
   mode: Mode
   extraArgs: string
+  vivadoStatus: VivadoBridgeStatus | null
+  vivadoTarget: string
+  vivadoExtraArgs: string
   examples: Example[]
 
   setActiveFileName: (name: string) => void
@@ -176,8 +186,14 @@ export interface Store {
   deleteFile: (name: string) => void
   resetWorkspace: () => void
   setTop: (t: string) => void
+  setSynthTool: (tool: SynthTool) => void
   setMode: (m: Mode) => void
   setExtraArgs: (a: string) => void
+  setVivadoTarget: (target: string) => void
+  setVivadoExtraArgs: (args: string) => void
+  connectVivado: () => Promise<boolean>
+  disconnectVivado: () => void
+  synthesize: () => Promise<void>
   loadExample: (variant: ExampleVariant) => void
   confirmWorkspaceReset: boolean
   setConfirmWorkspaceReset: (enabled: boolean) => void
@@ -273,8 +289,12 @@ export function StoreProvider({
   const [activeFileName, setActiveFileNameState] = useState(initial.activeFileName)
   const [docRevision, setDocRevision] = useState(0)
   const [top, setTopState] = useState(initial.top)
+  const [synthTool, setSynthToolState] = useState<SynthTool>('yosys')
   const [mode, setModeState] = useState<Mode>(initial.mode)
   const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
+  const [vivadoStatus, setVivadoStatus] = useState<VivadoBridgeStatus | null>(null)
+  const [vivadoTarget, setVivadoTargetState] = useState('')
+  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState('')
   const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
     loadResetConfirmationPreference,
   )
@@ -343,10 +363,18 @@ export function StoreProvider({
   filesRef.current = files
   const topRef = useRef(top)
   topRef.current = top
+  const synthToolRef = useRef(synthTool)
+  synthToolRef.current = synthTool
   const modeRef = useRef(mode)
   modeRef.current = mode
   const extraArgsRef = useRef(extraArgs)
   extraArgsRef.current = extraArgs
+  const vivadoStatusRef = useRef(vivadoStatus)
+  vivadoStatusRef.current = vivadoStatus
+  const vivadoTargetRef = useRef(vivadoTarget)
+  vivadoTargetRef.current = vivadoTarget
+  const vivadoExtraArgsRef = useRef(vivadoExtraArgs)
+  vivadoExtraArgsRef.current = vivadoExtraArgs
   // Historical flags for inactive modes stay session-local. The active mode
   // and its exact flags are part of the persisted workspace.
   const modeFlagMemoryRef = useRef<ModeFlagMemory>({})
@@ -365,12 +393,26 @@ export function StoreProvider({
     const cached = resolvedInputRef.current
     if (cached?.revision === revision) return cached
 
+    const selectedPart = vivadoStatusRef.current?.parts.find(
+      (part) => part.name === vivadoTargetRef.current,
+    )
     const resolved = synthesisInput(
       filesRef.current,
       topRef.current,
       modeRef.current,
-      extraArgsRef.current,
+      synthToolRef.current === 'vivado'
+        ? vivadoExtraArgsRef.current
+        : extraArgsRef.current,
       revision,
+      synthToolRef.current,
+      synthToolRef.current === 'vivado' && selectedPart && vivadoStatusRef.current
+        ? {
+            name: selectedPart.name,
+            family: selectedPart.family,
+            speed: selectedPart.speed,
+            version: `${vivadoStatusRef.current.vivado_version}; bridge ${vivadoStatusRef.current.bridge_version}`,
+          }
+        : undefined,
     )
     resolvedInputRef.current = resolved
     setResolvedInputIdentity((current) =>
@@ -678,6 +720,51 @@ export function StoreProvider({
     [markInputChanged],
   )
 
+  const setSynthTool = useCallback(
+    (value: SynthTool) => {
+      if (value === 'vivado' && !vivadoStatusRef.current) return
+      if (synthToolRef.current === value) return
+      synthToolRef.current = value
+      markInputChanged()
+      setSynthToolState(value)
+    },
+    [markInputChanged],
+  )
+
+  const connectVivado = useCallback(async () => {
+    try {
+      const status = await connectVivadoBridge()
+      const target = status.parts.some((part) => part.name === vivadoTargetRef.current)
+        ? vivadoTargetRef.current
+        : status.parts.find((part) => part.name === 'xc7a35tcpg236-1')?.name ??
+          status.parts[0].name
+      vivadoStatusRef.current = status
+      vivadoTargetRef.current = target
+      setVivadoStatus(status)
+      setVivadoTargetState(target)
+      setError(null)
+      return true
+    } catch (error) {
+      const bridgeError = error as VivadoBridgeError
+      setError({
+        message: bridgeError.message,
+        log: bridgeError.log,
+        status: bridgeError.status || undefined,
+      })
+      return false
+    }
+  }, [])
+
+  const disconnectVivado = useCallback(() => {
+    vivadoStatusRef.current = null
+    setVivadoStatus(null)
+    if (synthToolRef.current === 'vivado') {
+      synthToolRef.current = 'yosys'
+      setSynthToolState('yosys')
+      markInputChanged()
+    }
+  }, [markInputChanged])
+
   const setMode = useCallback(
     (value: Mode) => {
       if (modeRef.current === value) return
@@ -706,6 +793,27 @@ export function StoreProvider({
       extraArgsRef.current = value
       markInputChanged()
       setExtraArgsState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setVivadoTarget = useCallback(
+    (value: string) => {
+      if (!vivadoStatusRef.current?.parts.some((part) => part.name === value)) return
+      if (vivadoTargetRef.current === value) return
+      vivadoTargetRef.current = value
+      markInputChanged()
+      setVivadoTargetState(value)
+    },
+    [markInputChanged],
+  )
+
+  const setVivadoExtraArgs = useCallback(
+    (value: string) => {
+      if (vivadoExtraArgsRef.current === value) return
+      vivadoExtraArgsRef.current = value
+      markInputChanged()
+      setVivadoExtraArgsState(value)
     },
     [markInputChanged],
   )
@@ -812,6 +920,7 @@ export function StoreProvider({
   useEffect(() => {
     if (
       !synthesisSettings.autoSynthesize ||
+      synthTool !== 'yosys' ||
       synthesisRequestedRevisionRef.current === inputRevision
     ) {
       return
@@ -826,7 +935,7 @@ export function StoreProvider({
       }
     }, synthesisSettings.delayMs)
     return () => window.clearTimeout(timer)
-  }, [inputRevision, requestSynthesis, synthesisSettings])
+  }, [inputRevision, requestSynthesis, synthesisSettings, synthTool])
 
   useEffect(
     () => () => synthesisAbortRef.current?.abort(),
@@ -1009,8 +1118,12 @@ export function StoreProvider({
       activeFileName,
       docRevision,
       top,
+      synthTool,
       mode,
       extraArgs,
+      vivadoStatus,
+      vivadoTarget,
+      vivadoExtraArgs,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -1020,8 +1133,14 @@ export function StoreProvider({
       deleteFile,
       resetWorkspace,
       setTop,
+      setSynthTool,
       setMode,
       setExtraArgs,
+      setVivadoTarget,
+      setVivadoExtraArgs,
+      connectVivado,
+      disconnectVivado,
+      synthesize: requestSynthesis,
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
@@ -1058,8 +1177,12 @@ export function StoreProvider({
       activeFileName,
       docRevision,
       top,
+      synthTool,
       mode,
       extraArgs,
+      vivadoStatus,
+      vivadoTarget,
+      vivadoExtraArgs,
       examples,
       setActiveFileName,
       updateFileContent,
@@ -1069,8 +1192,14 @@ export function StoreProvider({
       deleteFile,
       resetWorkspace,
       setTop,
+      setSynthTool,
       setMode,
       setExtraArgs,
+      setVivadoTarget,
+      setVivadoExtraArgs,
+      connectVivado,
+      disconnectVivado,
+      requestSynthesis,
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,

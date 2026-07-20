@@ -29,6 +29,10 @@ import {
   type ValidatedSynthesis,
 } from './yosysScript'
 import { translatedYosysInput } from './vhdl'
+import {
+  VivadoBridgeError,
+  synthesizeWithVivadoBridge,
+} from './vivadoBridge'
 
 interface AnalysisSummary {
   design_id: string
@@ -80,7 +84,7 @@ async function synthesizeLocallyWithFallback(
       signal?.throwIfAborted()
       const coordinated = allowReuse ? await getCachedSynthesis(key, input) : null
       if (coordinated) return { ...coordinated, reused: true }
-      const precomputed = allowReuse
+      const precomputed = allowReuse && input.tool !== 'vivado'
         ? await getPrecomputedSynthesis(key, input, signal)
         : null
       signal?.throwIfAborted()
@@ -104,13 +108,52 @@ async function synthesizeLocallyWithFallback(
         yosysInput = translatedYosysInput(input, translation)
         ghdlLog = translation.log
       }
-      try {
-        generatedOutput = await runYosys(yosysInput, 'map', signal)
-      } catch (error) {
-        if (isAbortError(error)) throw error
-        if (!isResourceFailure(error) || !isGeneric(input.mode)) throw error
-        generatedOutput = await runYosys(yosysInput, 'abstract', signal)
-        generatedMemoriesAbstracted = true
+      if (input.tool === 'vivado') {
+        const source = await runYosys(
+          { ...yosysInput, tool: undefined, mode: 'rtl', extraArgs: [] },
+          'map',
+          signal,
+        )
+        try {
+          const vivado = await synthesizeWithVivadoBridge(
+            {
+              files: input.files,
+              top: input.top!,
+              target: input.target!,
+              extraArgs: input.extraArgs,
+            },
+            signal,
+          )
+          generatedOutput = await runVivadoNormalizer(
+            vivado.netlist,
+            vivado.top,
+            source.sourceNetlistJson,
+            signal,
+          )
+          generatedOutput = {
+            ...generatedOutput,
+            log: joinLogs(
+              ghdlLog ? `GHDL:\n${ghdlLog}` : '',
+              `Vivado:\n${vivado.log}`,
+              `Yosys normalizer:\n${generatedOutput.log}`,
+            ),
+          }
+          ghdlLog = ''
+        } catch (error) {
+          if (error instanceof VivadoBridgeError) {
+            throw new LocalSynthesisError(error.message, error.log ?? '')
+          }
+          throw error
+        }
+      } else {
+        try {
+          generatedOutput = await runYosys(yosysInput, 'map', signal)
+        } catch (error) {
+          if (isAbortError(error)) throw error
+          if (!isResourceFailure(error) || !isGeneric(input.mode)) throw error
+          generatedOutput = await runYosys(yosysInput, 'abstract', signal)
+          generatedMemoriesAbstracted = true
+        }
       }
       if (ghdlLog) {
         generatedOutput = {
@@ -167,9 +210,10 @@ async function synthesizeLocallyWithFallback(
   return {
     design_id: summary.design_id,
     top: summary.top,
-    tool: 'yosys',
+    tool: input.tool ?? 'yosys',
     mode: input.mode,
     delay_profile: summary.delay_profile,
+    target: input.target,
     stats: summary.stats,
     warnings: summary.warnings,
     log: output.log,
@@ -241,6 +285,29 @@ function runYosys(
   memory: MemoryHandling,
   signal?: AbortSignal,
 ): Promise<YosysWorkerResult> {
+  return runYosysWorker({ input, memory }, signal)
+}
+
+function runVivadoNormalizer(
+  netlist: string,
+  top: string,
+  sourceNetlistJson: string,
+  signal?: AbortSignal,
+): Promise<YosysWorkerResult> {
+  return runYosysWorker(
+    { kind: 'vivado-normalize', netlist, top, sourceNetlistJson },
+    signal,
+  )
+}
+
+type YosysWorkerRequest =
+  | { input: ValidatedSynthesis; memory: MemoryHandling }
+  | { kind: 'vivado-normalize'; netlist: string; top: string; sourceNetlistJson: string }
+
+function runYosysWorker(
+  request: YosysWorkerRequest,
+  signal?: AbortSignal,
+): Promise<YosysWorkerResult> {
   const worker = acquireYosysWorker()
   return new Promise((resolve, reject) => {
     let settled = false
@@ -282,11 +349,15 @@ function runYosys(
     if (signal?.aborted) return onAbort()
     signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      worker.postMessage({ input, memory })
+      worker.postMessage(request)
     } catch (error) {
       finish(() => reject(error), false)
     }
   })
+}
+
+function joinLogs(...logs: string[]): string {
+  return logs.filter(Boolean).join('\n\n')
 }
 
 function createYosysWorker(): Worker {
