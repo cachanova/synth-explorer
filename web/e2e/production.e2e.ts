@@ -555,6 +555,14 @@ test('source selections and Focus use the in-browser exploration worker', async 
     )
     .toEqual(contextualLogicIds)
   await expect(page.locator('.g-node-body[data-relevant="0"]')).toHaveCount(0)
+  const focusedNodeCount = await page.locator('.g-node-body').count()
+  const expandableBoundary = page.locator(
+    '.g-node-body[data-boundary="true"][data-graph-node-id="44"]',
+  )
+  await expect(expandableBoundary).toBeVisible()
+  await expandableBoundary.focus()
+  await expandableBoundary.press('Shift+Enter')
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(focusedNodeCount)
 
   await focus.uncheck()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
