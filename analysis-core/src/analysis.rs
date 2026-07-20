@@ -555,6 +555,7 @@ pub struct Analysis {
     source_probe_hints: BTreeMap<String, SourceProbeHintIndex>,
     synthetic_src: HashMap<NodeId, BTreeSet<String>>,
     procedural_targets: BTreeMap<String, BTreeMap<usize, Vec<NodeId>>>,
+    has_control_output: Vec<bool>,
     stats: Stats,
     warnings: Vec<String>,
     /// The delay model used for the estimated timing figures (from the target).
@@ -679,6 +680,11 @@ impl Analysis {
             estimated_max_delay_breakdown,
         );
         let warnings = build_warnings(graph, &comb_loops);
+        let has_control_output = graph
+            .outgoing
+            .iter()
+            .map(|edges| edges.iter().any(|edge| graph.edges[*edge].control))
+            .collect();
         Self {
             node_depth,
             node_delay,
@@ -695,6 +701,7 @@ impl Analysis {
             source_probe_hints: BTreeMap::new(),
             synthetic_src: HashMap::new(),
             procedural_targets: BTreeMap::new(),
+            has_control_output,
             stats,
             warnings,
             delay_model: *model,
@@ -828,11 +835,10 @@ impl Analysis {
         let probe = self
             .source_probe_range(graph, file, start_line, end_line)
             .ok_or(SourceSelectionError::UnknownFile)?;
-        let control = probe.roots.iter().any(|root| {
-            graph.outgoing[*root as usize]
-                .iter()
-                .any(|edge_idx| graph.edges[*edge_idx].control)
-        });
+        let control = probe
+            .roots
+            .iter()
+            .any(|root| self.has_control_output[*root as usize]);
         let cone_options = ConeOptions {
             dir: probe.direction.unwrap_or(ConeDir::Fanin),
             max_depth: 64,
@@ -850,7 +856,12 @@ impl Analysis {
                 selected_grouping,
                 probe.expand_output_register_inputs,
             ),
-            None => self.envelope(graph, &probe.roots, cone_options, selected_grouping),
+            None => self.multi_root_source_envelope(
+                graph,
+                &probe.roots,
+                cone_options,
+                selected_grouping,
+            ),
         }
         .expect("source indexes contain only valid graph node ids");
         let direct_ids = graph
@@ -1479,7 +1490,14 @@ impl Analysis {
         options: ConeOptions,
         grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
-        self.multi_root_subgraph(graph, roots, &[options.dir], options, grouping, false)
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[options.dir],
+            options,
+            grouping,
+            SubgraphWorkLimits::default(),
+        )
     }
 
     fn multi_root_source_cone(
@@ -1496,7 +1514,24 @@ impl Analysis {
             &[options.dir],
             options,
             grouping,
-            expand_output_register_inputs,
+            SubgraphWorkLimits::for_source_selection(expand_output_register_inputs),
+        )
+    }
+
+    fn multi_root_source_envelope(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+        grouping: Option<&GroupPartition>,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[ConeDir::Fanin, ConeDir::Fanout],
+            options,
+            grouping,
+            SubgraphWorkLimits::for_source_selection(false),
         )
     }
 
@@ -1513,7 +1548,7 @@ impl Analysis {
             &[ConeDir::Fanin, ConeDir::Fanout],
             options,
             grouping,
-            false,
+            SubgraphWorkLimits::default(),
         )
     }
 
@@ -1524,7 +1559,7 @@ impl Analysis {
         directions: &[ConeDir],
         options: ConeOptions,
         grouping: Option<&GroupPartition>,
-        expand_output_register_inputs: bool,
+        work_limits: SubgraphWorkLimits,
     ) -> Option<Subgraph> {
         if roots
             .iter()
@@ -1545,10 +1580,18 @@ impl Analysis {
         let mut boundary_nodes: HashSet<NodeId> = HashSet::new();
         let mut edge_set: HashSet<usize> = HashSet::new();
         let mut expanded_register_inputs: HashSet<NodeId> = HashSet::new();
+        let mut examined_edges = 0usize;
         let mut truncated = false;
 
         for root in roots {
             if unique_roots.insert(*root) {
+                if work_limits
+                    .max_raw_nodes
+                    .is_some_and(|limit| seen.len() >= limit)
+                {
+                    truncated = true;
+                    continue;
+                }
                 let unit = unit_id(grouping, base, *root);
                 if !seen_units.contains(&unit) && seen_units.len() >= cap {
                     truncated = true;
@@ -1561,26 +1604,27 @@ impl Analysis {
         }
 
         let included_roots = seen.clone();
-        let mut output_register_frontier: HashSet<NodeId> = if expand_output_register_inputs {
-            included_roots
-                .iter()
-                .copied()
-                .filter(|id| {
-                    let node = &graph.nodes[*id as usize];
-                    (node.kind == NodeKind::PortBit
-                        && matches!(
-                            node.port_dir,
-                            Some(PortDirection::Output | PortDirection::Inout)
-                        ))
-                        || node
-                            .cell_type
-                            .as_deref()
-                            .is_some_and(is_transparent_data_buffer)
-                })
-                .collect()
-        } else {
-            HashSet::new()
-        };
+        let mut output_register_frontier: HashSet<NodeId> =
+            if work_limits.expand_output_register_inputs {
+                included_roots
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        let node = &graph.nodes[*id as usize];
+                        (node.kind == NodeKind::PortBit
+                            && matches!(
+                                node.port_dir,
+                                Some(PortDirection::Output | PortDirection::Inout)
+                            ))
+                            || node
+                                .cell_type
+                                .as_deref()
+                                .is_some_and(is_transparent_data_buffer)
+                    })
+                    .collect()
+            } else {
+                HashSet::new()
+            };
         let mut traversals: Vec<Traversal> = directions
             .iter()
             .map(|dir| Traversal {
@@ -1595,7 +1639,7 @@ impl Analysis {
             })
             .collect();
 
-        loop {
+        'walk: loop {
             let mut advanced = false;
             for traversal in &mut traversals {
                 loop {
@@ -1612,13 +1656,22 @@ impl Analysis {
                             continue;
                         }
                         if depth >= options.max_depth {
-                            if has_visible_neighbor(
+                            let visible = match has_visible_neighbor(
                                 graph,
                                 id,
                                 traversal.dir,
                                 options.hide_control,
                                 options.hide_const,
+                                &mut examined_edges,
+                                work_limits.max_examined_edges,
                             ) {
+                                Ok(visible) => visible,
+                                Err(()) => {
+                                    truncated = true;
+                                    break 'walk;
+                                }
+                            };
+                            if visible {
                                 boundary_nodes.insert(id);
                                 truncated = true;
                             }
@@ -1642,8 +1695,23 @@ impl Analysis {
                     };
                     frame.next_edge += 1;
                     let edge = &graph.edges[edge_idx];
+                    if let Some(limit) = work_limits.max_examined_edges {
+                        if examined_edges >= limit {
+                            truncated = true;
+                            break 'walk;
+                        }
+                        examined_edges += 1;
+                    }
                     if should_hide_edge(graph, edge, options.hide_control, options.hide_const) {
                         continue;
+                    }
+                    if !edge_set.contains(&edge_idx)
+                        && work_limits
+                            .max_raw_edges
+                            .is_some_and(|limit| edge_set.len() >= limit)
+                    {
+                        truncated = true;
+                        break 'walk;
                     }
                     if traversal.dir == ConeDir::Fanin
                         && is_addressable_sequential_node(graph, frame.id)
@@ -1666,6 +1734,13 @@ impl Analysis {
                         ConeDir::Fanout => edge.to,
                     };
                     if !seen.contains(&next) {
+                        if work_limits
+                            .max_raw_nodes
+                            .is_some_and(|limit| seen.len() >= limit)
+                        {
+                            truncated = true;
+                            break 'walk;
+                        }
                         let unit = unit_id(grouping, base, next);
                         if !seen_units.contains(&unit) && seen_units.len() >= cap {
                             truncated = true;
@@ -1674,7 +1749,7 @@ impl Analysis {
                         seen_units.insert(unit);
                         seen.insert(next);
                     }
-                    if expand_output_register_inputs
+                    if work_limits.expand_output_register_inputs
                         && traversal.dir == ConeDir::Fanin
                         && output_register_frontier.contains(&frame.id)
                     {
@@ -1721,6 +1796,9 @@ impl Analysis {
                 boundary_nodes: &boundary_nodes,
                 truncated,
                 show_infrastructure: options.show_infrastructure,
+                max_control_edge_visits: work_limits
+                    .max_examined_edges
+                    .map(|limit| limit.saturating_sub(examined_edges)),
             },
         );
         Some(match grouping {
@@ -1781,6 +1859,7 @@ impl Analysis {
                 boundary_nodes: &empty,
                 truncated,
                 show_infrastructure: options.show_infrastructure,
+                max_control_edge_visits: None,
             },
         );
         match grouping {
@@ -1893,6 +1972,7 @@ impl Analysis {
                 boundary_nodes: &empty,
                 truncated,
                 show_infrastructure: options.show_infrastructure,
+                max_control_edge_visits: None,
             },
         );
         match grouping {
@@ -2090,12 +2170,21 @@ impl Analysis {
     ) -> Subgraph {
         let mut node_ids: Vec<NodeId> = seen.iter().copied().collect();
         node_ids.sort_unstable();
+        let mut control_edge_visits = 0usize;
+        let mut controls_truncated = false;
         let nodes = node_ids
             .into_iter()
             .map(|id| {
                 let node = &graph.nodes[id as usize];
                 let boundary =
                     !projection.roots.contains(&id) && projection.boundary_nodes.contains(&id);
+                let (controls, truncated) = node_controls(
+                    graph,
+                    id,
+                    &mut control_edge_visits,
+                    projection.max_control_edge_visits,
+                );
+                controls_truncated |= truncated;
                 GraphNode {
                     node: self.node_ref(graph, id),
                     is_root: projection.roots.contains(&id).then_some(true),
@@ -2105,7 +2194,7 @@ impl Analysis {
                         .then(|| self.node_depth[id as usize])
                         .flatten(),
                     params: node.params.clone(),
-                    controls: node_controls(graph, id),
+                    controls,
                     width: None,
                     members: None,
                 }
@@ -2121,7 +2210,7 @@ impl Analysis {
         let subgraph = Subgraph {
             nodes,
             edges,
-            truncated: projection.truncated || edges_truncated,
+            truncated: projection.truncated || edges_truncated || controls_truncated,
         };
         let projected = if projection.show_infrastructure {
             subgraph
@@ -2137,6 +2226,7 @@ struct SubgraphProjection<'a> {
     boundary_nodes: &'a HashSet<NodeId>,
     truncated: bool,
     show_infrastructure: bool,
+    max_control_edge_visits: Option<usize>,
 }
 
 fn path_node_signature(node: &NodeRef) -> String {
@@ -2298,6 +2388,25 @@ struct Traversal {
     seen: HashSet<NodeId>,
     queue: VecDeque<(NodeId, u32)>,
     current: Option<TraversalFrame>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SubgraphWorkLimits {
+    expand_output_register_inputs: bool,
+    max_raw_nodes: Option<usize>,
+    max_raw_edges: Option<usize>,
+    max_examined_edges: Option<usize>,
+}
+
+impl SubgraphWorkLimits {
+    fn for_source_selection(expand_output_register_inputs: bool) -> Self {
+        Self {
+            expand_output_register_inputs,
+            max_raw_nodes: Some(MAX_SUBGRAPH_NODES),
+            max_raw_edges: Some(MAX_SUBGRAPH_EDGES),
+            max_examined_edges: Some(MAX_SUBGRAPH_EDGES),
+        }
+    }
 }
 
 struct TraversalFrame {
@@ -3278,9 +3387,22 @@ fn is_labeled_control_edge(graph: &Graph, edge: &Edge) -> bool {
     }
 }
 
-fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
+fn node_controls(
+    graph: &Graph,
+    node_id: NodeId,
+    examined_edges: &mut usize,
+    max_examined_edges: Option<usize>,
+) -> (Vec<ControlRef>, bool) {
     let mut controls = Vec::new();
+    let mut truncated = false;
     for edge_idx in &graph.incoming[node_id as usize] {
+        if let Some(limit) = max_examined_edges {
+            if *examined_edges >= limit {
+                truncated = true;
+                break;
+            }
+            *examined_edges += 1;
+        }
         let edge = &graph.edges[*edge_idx];
         if !is_labeled_control_edge(graph, edge) {
             continue;
@@ -3324,7 +3446,7 @@ fn node_controls(graph: &Graph, node_id: NodeId) -> Vec<ControlRef> {
     controls.dedup_by(|a, b| {
         a.role == b.role && a.net_name == b.net_name && a.driver_id == b.driver_id
     });
-    controls
+    (controls, truncated)
 }
 
 fn control_synchronous(cell_type: Option<&str>, role: ControlRole) -> Option<bool> {
@@ -3557,14 +3679,25 @@ fn has_visible_neighbor(
     dir: ConeDir,
     hide_control: bool,
     hide_const: bool,
-) -> bool {
+    examined_edges: &mut usize,
+    max_examined_edges: Option<usize>,
+) -> Result<bool, ()> {
     let edges = match dir {
         ConeDir::Fanin => &graph.incoming[id as usize],
         ConeDir::Fanout => &graph.outgoing[id as usize],
     };
-    edges
-        .iter()
-        .any(|idx| !should_hide_edge(graph, &graph.edges[*idx], hide_control, hide_const))
+    for idx in edges {
+        if let Some(limit) = max_examined_edges {
+            if *examined_edges >= limit {
+                return Err(());
+            }
+            *examined_edges += 1;
+        }
+        if !should_hide_edge(graph, &graph.edges[*idx], hide_control, hide_const) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn merge_edges(edges: Vec<&Edge>) -> (Vec<GraphEdge>, bool) {
@@ -5085,6 +5218,190 @@ mod tests {
     }
 
     #[test]
+    fn grouped_source_selection_caps_raw_members_and_serialized_payload() {
+        let node_count = 5_000;
+        let graph = graph_from_parts(
+            "wide_group",
+            (0..node_count)
+                .map(|id| combinational_node(id as NodeId, "$and", Some("source.sv:10")))
+                .collect(),
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        );
+        let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Comb,
+                members: (0..node_count as NodeId).collect(),
+                label: "wide_logic".to_owned(),
+                cell_type: "$and".to_owned(),
+            }],
+            group_of: (0..node_count as NodeId).map(|id| (id, 0)).collect(),
+        };
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("source.sv"),
+                &grouping,
+                SourceSelectionRange {
+                    file: "source.sv",
+                    start_line: 10,
+                    end_line: 10,
+                },
+                SourceSelectionOptions {
+                    group_vectors: true,
+                    ..selection_options()
+                },
+            )
+            .unwrap();
+
+        assert!(result.graph.truncated);
+        assert_eq!(result.graph.nodes.len(), 1);
+        assert_eq!(
+            result.graph.nodes[0].members.as_ref().unwrap().len(),
+            MAX_SUBGRAPH_NODES
+        );
+        assert!(serde_json::to_vec(&result).unwrap().len() < 100_000);
+    }
+
+    #[test]
+    fn source_selection_caps_raw_edge_bits_before_serialization() {
+        let edge_count = MAX_SUBGRAPH_EDGES * 2;
+        let edges: Vec<Edge> = (0..edge_count)
+            .map(|bit| Edge {
+                from: 0,
+                to: 1,
+                from_port: "a".to_owned(),
+                to_port: "A".to_owned(),
+                bit: Some(bit as u32),
+                net_name: "wide".to_owned(),
+                control: false,
+            })
+            .collect();
+        let graph = graph_from_parts(
+            "wide_edges",
+            vec![
+                port_node(0, "a", PortDirection::Input),
+                combinational_node(1, "$and", Some("source.sv:10")),
+            ],
+            edges,
+            vec![(0..edge_count).collect(), Vec::new()],
+            vec![Vec::new(), (0..edge_count).collect()],
+        );
+        let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("source.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "source.sv",
+                    start_line: 10,
+                    end_line: 10,
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert!(result.graph.truncated);
+        assert_eq!(result.graph.edges.len(), 1);
+        assert_eq!(result.graph.edges[0].bits.len(), MAX_SUBGRAPH_EDGES);
+    }
+
+    #[test]
+    fn source_selection_caps_examined_hidden_edges() {
+        let edge_count = MAX_SUBGRAPH_EDGES * 2;
+        let edges: Vec<Edge> = (0..edge_count)
+            .map(|bit| Edge {
+                from: 0,
+                to: 1,
+                from_port: "1'b0".to_owned(),
+                to_port: "A".to_owned(),
+                bit: Some(bit as u32),
+                net_name: "hidden".to_owned(),
+                control: false,
+            })
+            .collect();
+        let graph = graph_from_parts(
+            "hidden_edges",
+            vec![
+                constant_node(0, "1'b0"),
+                combinational_node(1, "$and", Some("source.sv:10")),
+            ],
+            edges,
+            vec![(0..edge_count).collect(), Vec::new()],
+            vec![Vec::new(), (0..edge_count).collect()],
+        );
+        let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("source.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "source.sv",
+                    start_line: 10,
+                    end_line: 10,
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert!(result.graph.truncated);
+        assert_eq!(result.graph.nodes.len(), 1);
+        assert!(result.graph.edges.is_empty());
+    }
+
+    #[test]
+    fn source_selection_queries_sparse_targets_in_a_large_procedural_block() {
+        let graph = source_selection_fixture();
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 1,
+            end_line: 1_000_000_000,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Block,
+        }]);
+        analysis.set_procedural_targets(HashMap::from([(
+            ("top.sv".to_owned(), 999_999_999),
+            vec![1],
+        )]));
+        let started = Instant::now();
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 500_000_000,
+                    end_line: 500_000_000,
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert!(started.elapsed().as_secs() < 1);
+        assert_eq!(result.status, SourceSelectionStatus::Mapped);
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.is_root == Some(true))
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
+
+    #[test]
     fn source_selection_preserves_validation_precedence() {
         let graph = source_selection_fixture();
         let analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
@@ -6278,6 +6595,24 @@ mod tests {
             port_bit: None,
             port_dir: None,
             const_value: None,
+        }
+    }
+
+    fn constant_node(id: NodeId, value: &str) -> Node {
+        Node {
+            id,
+            kind: NodeKind::Const,
+            name: value.to_owned(),
+            raw_name: value.to_owned(),
+            cell_type: None,
+            seq: false,
+            blackbox: false,
+            src: None,
+            params: BTreeMap::new(),
+            port: None,
+            port_bit: None,
+            port_dir: None,
+            const_value: Some(value.to_owned()),
         }
     }
 

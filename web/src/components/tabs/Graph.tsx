@@ -155,20 +155,28 @@ export function Graph({ active }: { active: boolean }) {
       cached?.controller.abort()
       const fullController = new AbortController()
       let entry: FullGraphCacheEntry
-      const promise = getNetlist(
-        requestDesignId,
-        {
-          max_nodes: graphOptions.maxNodes,
-          show_infrastructure: false,
-          group_vectors: graphOptions.groupVectors,
-          hide_control: graphOptions.hideControl,
-          hide_const: graphOptions.hideConst,
-        },
-        fullController.signal,
-      ).catch((error) => {
-        if (fullGraphCache.current === entry) fullGraphCache.current = null
-        throw error
-      })
+      // Let the selection effect in this commit post its bounded query first.
+      // The analysis worker is synchronous, so queueing a whole-netlist scan
+      // first would otherwise head-of-line block the responsive source result.
+      const promise = Promise.resolve()
+        .then(() => {
+          fullController.signal.throwIfAborted()
+          return getNetlist(
+            requestDesignId,
+            {
+              max_nodes: graphOptions.maxNodes,
+              show_infrastructure: false,
+              group_vectors: graphOptions.groupVectors,
+              hide_control: graphOptions.hideControl,
+              hide_const: graphOptions.hideConst,
+            },
+            fullController.signal,
+          )
+        })
+        .catch((error) => {
+          if (fullGraphCache.current === entry) fullGraphCache.current = null
+          throw error
+        })
       entry = { key: fullGraphKey, controller: fullController, promise }
       fullGraphCache.current = entry
       return promise
