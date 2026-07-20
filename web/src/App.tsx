@@ -23,6 +23,9 @@ function GitHubMark() {
 
 function App() {
   const [leftWidth, setLeftWidth] = useState(46) // percent
+  const [mobileWorkspace, setMobileWorkspace] = useState<'editor' | 'analysis'>(
+    'editor',
+  )
   const dragging = useRef(false)
 
   const onDown = useCallback(() => {
@@ -65,11 +68,31 @@ function App() {
         </a>
         <SettingsMenu />
       </header>
+      <nav className="mobile-workspace-nav" aria-label="Workspace views">
+        <button
+          type="button"
+          className={`mobile-workspace-tab${mobileWorkspace === 'editor' ? ' active' : ''}`}
+          aria-pressed={mobileWorkspace === 'editor'}
+          onClick={() => setMobileWorkspace('editor')}
+        >
+          Editor
+        </button>
+        <button
+          type="button"
+          className={`mobile-workspace-tab${mobileWorkspace === 'analysis' ? ' active' : ''}`}
+          aria-pressed={mobileWorkspace === 'analysis'}
+          onClick={() => setMobileWorkspace('analysis')}
+        >
+          Analysis
+        </button>
+      </nav>
       <main className="split">
         <div
+          className={`workspace-pane workspace-editor${
+            mobileWorkspace === 'editor' ? ' mobile-active' : ''
+          }`}
           style={{
             width: `${leftWidth}%`,
-            display: 'flex',
             minWidth: 340,
             // Hold the set width; the analysis pane (min-width:0) absorbs the
             // shrink. Otherwise a wide analysis toolbar steals editor width via
@@ -80,7 +103,13 @@ function App() {
           <LeftPane />
         </div>
         <div className="divider" onMouseDown={onDown} title="Drag to resize" />
-        <RightPane />
+        <div
+          className={`workspace-pane workspace-analysis${
+            mobileWorkspace === 'analysis' ? ' mobile-active' : ''
+          }`}
+        >
+          <RightPane />
+        </div>
       </main>
       <Analytics />
       <SpeedInsights />

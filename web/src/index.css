@@ -116,6 +116,7 @@ a:hover {
   display: flex;
   flex-direction: column;
   height: 100%;
+  height: 100dvh;
 }
 
 .app-header {
@@ -414,6 +415,14 @@ a:hover {
   flex: 1 1 auto;
   min-height: 0;
 }
+.workspace-pane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+}
+.workspace-analysis {
+  flex: 1 1 auto;
+}
 .pane-left {
   display: flex;
   flex-direction: column;
@@ -438,6 +447,81 @@ a:hover {
 }
 .divider:hover {
   background: var(--accent-dim);
+}
+.mobile-workspace-nav {
+  display: none;
+}
+
+@media (max-width: 720px) and (orientation: portrait) {
+  .app-header {
+    gap: 8px;
+    padding-inline: 8px;
+  }
+  .repo-link span {
+    display: none;
+  }
+  .mobile-workspace-nav {
+    display: flex;
+    flex: 0 0 auto;
+    padding: 0 8px;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border);
+  }
+  .mobile-workspace-tab {
+    flex: 1 1 50%;
+    min-height: 40px;
+    padding: 7px 12px 6px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: none;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .mobile-workspace-tab:hover:not(:disabled) {
+    background: none;
+    border-bottom-color: transparent;
+    color: var(--text);
+  }
+  .mobile-workspace-tab.active,
+  .mobile-workspace-tab.active:hover:not(:disabled) {
+    border-bottom-color: var(--accent);
+    color: var(--text);
+  }
+  .mobile-workspace-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -3px;
+  }
+  .split {
+    width: 100%;
+    overflow: hidden;
+  }
+  .workspace-pane {
+    display: none;
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 auto !important;
+  }
+  .workspace-pane.mobile-active {
+    display: flex;
+  }
+  .pane-left {
+    border-right: none;
+  }
+  .pane-right {
+    width: 100%;
+  }
+  .divider {
+    display: none;
+  }
+  .boot-pane-left {
+    width: 100%;
+    flex: 1 1 auto;
+    border-right: none;
+  }
+  .boot-pane-right {
+    display: none;
+  }
 }
 
 /* The HTML boot shell paints before the application bundle has downloaded or
