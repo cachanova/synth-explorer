@@ -12,7 +12,7 @@ describe('source selection analysis client', () => {
     const response = {
       status: 'mapped',
       control: false,
-      highlight: [1],
+      directIds: [1],
       graph: { nodes: [], edges: [], truncated: false },
     }
     queryAnalysis.mockResolvedValue(response)

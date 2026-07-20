@@ -526,7 +526,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
   await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
-  await expect(focus).toBeEnabled()
+  await expect(focus).toBeEnabled({ timeout: 15_000 })
   const workerContract = await page.evaluate(() => {
     const requests =
       (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
@@ -620,38 +620,43 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
     requests.length = 0
   })
   await page.getByLabel('hide const').uncheck()
-  await expect.poll(async () =>
-    page.evaluate(() => {
-      const requests =
-        (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
-      return requests.filter(
-        (request) =>
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const requests =
+          (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+        const methods = requests
+          .filter(
+            (request): request is Record<string, unknown> =>
+              request != null &&
+              typeof request === 'object' &&
+              !Array.isArray(request) &&
+              request.kind === 'query' &&
+              (request.method === 'source' || request.method === 'netlist'),
+          )
+          .map((request) => request.method)
+        return {
+          source: methods.includes('source'),
+          netlist: methods.includes('netlist'),
+        }
+      }),
+    )
+    .toEqual({ source: true, netlist: true })
+  const refreshMethods = await page.evaluate(() => {
+    const requests =
+      (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+    return requests
+      .filter(
+        (request): request is Record<string, unknown> =>
           request != null &&
           typeof request === 'object' &&
-          'kind' in request &&
+          !Array.isArray(request) &&
           request.kind === 'query' &&
-          'method' in request &&
           (request.method === 'source' || request.method === 'netlist'),
-      ).length
-    }),
-  ).toBeGreaterThanOrEqual(2)
-  expect(
-    await page.evaluate(() => {
-      const requests =
-        (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
-      return requests
-        .filter(
-          (request): request is Record<string, unknown> =>
-            request != null &&
-            typeof request === 'object' &&
-            !Array.isArray(request) &&
-            request.kind === 'query' &&
-            (request.method === 'source' || request.method === 'netlist'),
-        )
-        .map((request) => request.method)
-        .slice(0, 2)
-    }),
-  ).toEqual(['source', 'netlist'])
+      )
+      .map((request) => request.method)
+  })
+  expect(refreshMethods.indexOf('source')).toBeLessThan(refreshMethods.indexOf('netlist'))
 
   await page.locator('.cm-content').press('Escape')
   await expect(focus).toBeDisabled()

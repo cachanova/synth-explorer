@@ -24,6 +24,7 @@ const SOURCE_LINE_RESPONSE_CAP: usize = 10_000;
 const SOURCE_LINE_RESPONSE_NODE_BUDGET: usize = 20_000;
 const SOURCE_RANGE_RESPONSE_CAP: usize = 10_000;
 pub(crate) const SOURCE_RANGE_ASSOCIATION_CAP: usize = 20_000;
+const SOURCE_PROBE_TARGET_VISIT_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
 #[serde(rename_all = "lowercase")]
@@ -333,6 +334,7 @@ struct SourceProbeSelection {
     roots: Vec<NodeId>,
     direction: Option<ConeDir>,
     expand_output_register_inputs: bool,
+    truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, DeepSizeOf)]
@@ -848,7 +850,7 @@ impl Analysis {
             show_infrastructure: false,
         };
         let selected_grouping = options.group_vectors.then_some(grouping);
-        let graph = match probe.direction {
+        let mut graph = match probe.direction {
             Some(_) => self.multi_root_source_cone(
                 graph,
                 &probe.roots,
@@ -864,6 +866,7 @@ impl Analysis {
             ),
         }
         .expect("source indexes contain only valid graph node ids");
+        graph.truncated |= probe.truncated;
         let direct_ids = graph
             .nodes
             .iter()
@@ -961,6 +964,7 @@ impl Analysis {
                 roots: default_roots,
                 direction: None,
                 expand_output_register_inputs: false,
+                truncated: false,
             });
         };
         let overlapping: Vec<&SourceProbeHint> = index
@@ -973,6 +977,7 @@ impl Analysis {
                 roots: default_roots,
                 direction: None,
                 expand_output_register_inputs: false,
+                truncated: false,
             });
         }
         let selected: Vec<&SourceProbeHint> = if start_line == end_line
@@ -995,7 +1000,9 @@ impl Analysis {
         {
             roots.clear();
         }
-        for kind in [SourceProbeHintKind::Procedural, SourceProbeHintKind::Block] {
+        let mut target_visits = 0usize;
+        let mut truncated = false;
+        'targets: for kind in [SourceProbeHintKind::Procedural, SourceProbeHintKind::Block] {
             for hint in selected.iter().filter(|hint| hint.kind == kind) {
                 if let Some(targets) = self.procedural_targets.get(file) {
                     for ids in targets
@@ -1003,8 +1010,14 @@ impl Analysis {
                         .map(|(_, ids)| ids)
                     {
                         for id in ids {
+                            if target_visits == SOURCE_PROBE_TARGET_VISIT_CAP {
+                                truncated = true;
+                                break 'targets;
+                            }
+                            target_visits += 1;
                             if insert_bounded_node(&mut roots, *id) {
-                                break;
+                                truncated = true;
+                                break 'targets;
                             }
                         }
                     }
@@ -1026,6 +1039,7 @@ impl Analysis {
             expand_output_register_inputs: selected
                 .iter()
                 .any(|hint| hint.kind == SourceProbeHintKind::OutputPort),
+            truncated,
         })
     }
 
@@ -5388,6 +5402,54 @@ mod tests {
             .unwrap();
 
         assert!(started.elapsed().as_secs() < 1);
+        assert_eq!(result.status, SourceSelectionStatus::Mapped);
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.is_root == Some(true))
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn source_selection_caps_duplicate_procedural_target_visits() {
+        let graph = source_selection_fixture();
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        let end_line = SOURCE_PROBE_TARGET_VISIT_CAP * 2;
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 1,
+            end_line,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Block,
+        }]);
+        analysis.set_procedural_targets(
+            (1..=end_line)
+                .map(|line| (("top.sv".to_owned(), line), vec![1]))
+                .collect(),
+        );
+        let started = Instant::now();
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 1,
+                    end_line: 1,
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert!(started.elapsed().as_secs() < 1);
+        assert!(result.graph.truncated);
         assert_eq!(result.status, SourceSelectionStatus::Mapped);
         assert_eq!(
             result
