@@ -188,12 +188,13 @@ describe('browser source exploration', () => {
     snapshot.nodes[1].group_id = 0
     snapshot.nodes[1].src = 'top.sv:2-2|top.sv:9-12'
     snapshot.nodes[1].group_src = 'top.sv:9-12'
+    snapshot.edges.push(edge(3, 1, 'Y', 'B'))
     snapshot.groups.push({ kind: 'comb', members: [1, 3], label: 'logic[1:0]', cell_type: '$and' })
     snapshot.source_ranges.push({
       file: 'top.sv',
       start_line: 9,
       end_line: 9,
-      node_ids: [1, 3],
+      node_ids: [1],
       mapping_incomplete: true,
     })
     snapshot.source_hints.push({
