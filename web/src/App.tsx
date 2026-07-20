@@ -73,6 +73,7 @@ function App() {
           type="button"
           className={`mobile-workspace-tab${mobileWorkspace === 'editor' ? ' active' : ''}`}
           aria-pressed={mobileWorkspace === 'editor'}
+          aria-controls="workspace-editor"
           onClick={() => setMobileWorkspace('editor')}
         >
           Editor
@@ -81,6 +82,7 @@ function App() {
           type="button"
           className={`mobile-workspace-tab${mobileWorkspace === 'analysis' ? ' active' : ''}`}
           aria-pressed={mobileWorkspace === 'analysis'}
+          aria-controls="workspace-analysis"
           onClick={() => setMobileWorkspace('analysis')}
         >
           Analysis
@@ -88,6 +90,7 @@ function App() {
       </nav>
       <main className="split">
         <div
+          id="workspace-editor"
           className={`workspace-pane workspace-editor${
             mobileWorkspace === 'editor' ? ' mobile-active' : ''
           }`}
@@ -104,6 +107,7 @@ function App() {
         </div>
         <div className="divider" onMouseDown={onDown} title="Drag to resize" />
         <div
+          id="workspace-analysis"
           className={`workspace-pane workspace-analysis${
             mobileWorkspace === 'analysis' ? ' mobile-active' : ''
           }`}

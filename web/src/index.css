@@ -452,7 +452,7 @@ a:hover {
   display: none;
 }
 
-@media (max-width: 720px) and (orientation: portrait) {
+@media (max-width: 720px) {
   .app-header {
     gap: 8px;
     padding-inline: 8px;
@@ -469,7 +469,7 @@ a:hover {
   }
   .mobile-workspace-tab {
     flex: 1 1 50%;
-    min-height: 40px;
+    min-height: 44px;
     padding: 7px 12px 6px;
     border: none;
     border-bottom: 2px solid transparent;
@@ -514,7 +514,7 @@ a:hover {
   .divider {
     display: none;
   }
-  .boot-pane-left {
+  .boot-shell .boot-pane-left {
     width: 100%;
     flex: 1 1 auto;
     border-right: none;
