@@ -338,6 +338,7 @@ export function StoreProvider({
   const inputRevisionRef = useRef(inputRevision)
   inputRevisionRef.current = inputRevision
   const resolvedInputRef = useRef<SynthesisInput | null>(null)
+  const synthesisRequestedRevisionRef = useRef<number | null>(null)
   const synthesisRunningRef = useRef(false)
   const synthesisKeyRef = useRef<string | null>(null)
   const queuedInputRef = useRef<QueuedSynthesis | null>(null)
@@ -717,6 +718,7 @@ export function StoreProvider({
     // Materializing the full request (and JSON-keying source content) happens
     // only after the auto-synthesis debounce, never per keystroke.
     const requested = materializeCurrentInput()
+    synthesisRequestedRevisionRef.current = requested.revision
     if (synthesisRunningRef.current) {
       // One bounded slot, always replaced by the newest complete input. A
       // revert to the running input clears an obsolete queued edit.
@@ -790,12 +792,18 @@ export function StoreProvider({
   useEffect(() => {
     if (
       !synthesisSettings.autoSynthesize ||
-      analysisStateRef.current === 'current'
+      synthesisRequestedRevisionRef.current === inputRevision
     ) {
       return
     }
+    const scheduledRevision = inputRevision
     const timer = window.setTimeout(() => {
-      if (analysisStateRef.current !== 'current') void requestSynthesis()
+      if (
+        inputRevisionRef.current === scheduledRevision &&
+        synthesisRequestedRevisionRef.current !== scheduledRevision
+      ) {
+        void requestSynthesis()
+      }
     }, synthesisSettings.delayMs)
     return () => window.clearTimeout(timer)
   }, [inputRevision, requestSynthesis, synthesisSettings])

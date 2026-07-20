@@ -25,6 +25,44 @@ async function waitForAutomaticSynthesis(
   })
 }
 
+async function startAnalysisStateRecording(page: Page) {
+  await page.evaluate(() => {
+    const pane = document.querySelector('.pane-right')
+    if (!pane) throw new Error('analysis pane is missing')
+    const states: string[] = []
+    const observer = new MutationObserver(() => {
+      states.push(pane.getAttribute('data-analysis-state') ?? '')
+    })
+    observer.observe(pane, {
+      attributes: true,
+      attributeFilter: ['data-analysis-state'],
+    })
+    Object.assign(window, {
+      __synthesisStates: states,
+      __synthesisObserver: observer,
+    })
+  })
+}
+
+async function recordedAnalysisStates(page: Page): Promise<string[]> {
+  return page.evaluate(
+    () =>
+      (window as typeof window & { __synthesisStates?: string[] })
+        .__synthesisStates ?? [],
+  )
+}
+
+async function stopAnalysisStateRecording(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const testWindow = window as typeof window & {
+      __synthesisStates?: string[]
+      __synthesisObserver?: MutationObserver
+    }
+    testWindow.__synthesisObserver?.disconnect()
+    return testWindow.__synthesisStates ?? []
+  })
+}
+
 async function cacheEntryCount(page: Page): Promise<number> {
   return page.evaluate(async () => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -115,22 +153,7 @@ test('supports persistent manual synthesis and a configurable delay', async ({ p
   await page.goto('/')
   await waitForAnalysisReady(page)
 
-  await page.evaluate(() => {
-    const pane = document.querySelector('.pane-right')
-    if (!pane) throw new Error('analysis pane is missing')
-    const states: string[] = []
-    const observer = new MutationObserver(() => {
-      states.push(pane.getAttribute('data-analysis-state') ?? '')
-    })
-    observer.observe(pane, {
-      attributes: true,
-      attributeFilter: ['data-analysis-state'],
-    })
-    Object.assign(window, {
-      __synthesisStates: states,
-      __synthesisObserver: observer,
-    })
-  })
+  await startAnalysisStateRecording(page)
 
   await page.getByRole('button', { name: 'Settings' }).click()
   const automatic = page.getByRole('checkbox', {
@@ -143,16 +166,7 @@ test('supports persistent manual synthesis and a configurable delay', async ({ p
   for (let step = 0; step < 5; step += 1) await delay.press('ArrowRight')
   await expect(page.locator('.settings-delay-value')).toHaveText('0.5 s')
   await page.waitForTimeout(750)
-  expect(
-    await page.evaluate(() => {
-      const testWindow = window as typeof window & {
-        __synthesisStates?: string[]
-        __synthesisObserver?: MutationObserver
-      }
-      testWindow.__synthesisObserver?.disconnect()
-      return testWindow.__synthesisStates ?? []
-    }),
-  ).not.toContain('refreshing')
+  expect(await stopAnalysisStateRecording(page)).not.toContain('refreshing')
 
   await automatic.uncheck()
   await page.getByRole('button', { name: 'Settings' }).click()
@@ -174,12 +188,17 @@ test('supports persistent manual synthesis and a configurable delay', async ({ p
   await page.getByRole('button', { name: 'Settings' }).click()
   await expect(synthesize).toHaveCount(0)
 
+  await startAnalysisStateRecording(page)
   await page.getByLabel('Bundled example').selectOption('counter')
   await page.waitForTimeout(250)
   await expect(page.locator('.pane-right')).toHaveAttribute(
     'data-analysis-state',
     'stale',
   )
+  await expect
+    .poll(() => recordedAnalysisStates(page), { timeout: 500 })
+    .toContain('refreshing')
+  await stopAnalysisStateRecording(page)
   await expect(page.locator('.pane-right')).toHaveAttribute(
     'data-analysis-state',
     'current',
@@ -486,6 +505,15 @@ test('keeps synthesis failures compact until the full log is requested', async (
   await expect
     .poll(async () => Math.round((await banner.boundingBox())?.height ?? 0))
     .toBeLessThanOrEqual(32)
+
+  await startAnalysisStateRecording(page)
+  await page.getByRole('button', { name: 'Settings' }).click()
+  const delay = page.getByLabel('Automatic synthesis delay')
+  await delay.focus()
+  await delay.press('ArrowRight')
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.waitForTimeout(500)
+  expect(await stopAnalysisStateRecording(page)).not.toContain('refreshing')
 
   await banner.locator('summary').click()
   await expect(details).toHaveAttribute('open', '')
