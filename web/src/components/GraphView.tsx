@@ -1,4 +1,13 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   canonicalPinNames,
   controlRoleForPin,
@@ -13,6 +22,7 @@ import {
   viewportTransformAttribute,
   zoomViewportAt,
   type LaidOutGraph,
+  type LaidOutEdge,
   type LaidOutNode,
   type Point,
   type ViewportTransform,
@@ -682,6 +692,90 @@ const SchematicNode = memo(function SchematicNode({
   )
 })
 
+interface SchematicEdgesProps {
+  edges: LaidOutEdge[]
+  nodeById: Map<number, LaidOutNode>
+  relevantIds: Set<number>
+  overlayIds: Set<number>
+  extendOverlayToBoundaryNets: boolean
+}
+
+// Selection changes affect node state far more often than edge state. Keep the
+// complete edge layer outside those reconciliations, and avoid a host <g> per
+// edge: relevance can live on the path and optional bus label directly.
+const SchematicEdges = memo(function SchematicEdges({
+  edges,
+  nodeById,
+  relevantIds,
+  overlayIds,
+  extendOverlayToBoundaryNets,
+}: SchematicEdgesProps) {
+  return edges.map((laidOutEdge, index) => {
+    const relevant =
+      relevantIds.size === 0 ||
+      (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
+    const fromHighlighted = overlayIds.has(laidOutEdge.from)
+    const toHighlighted = overlayIds.has(laidOutEdge.to)
+    const fromKind =
+      extendOverlayToBoundaryNets && toHighlighted
+        ? nodeById.get(laidOutEdge.from)?.node.kind
+        : undefined
+    const toKind =
+      extendOverlayToBoundaryNets && fromHighlighted
+        ? nodeById.get(laidOutEdge.to)?.node.kind
+        : undefined
+    // Source overlays name logic cells, not their port/constant boundary
+    // nodes. Keep those terminal nets continuous without lighting up branches
+    // from the selected logic into unrelated context cells.
+    const highlighted =
+      (fromHighlighted && toHighlighted) ||
+      (extendOverlayToBoundaryNets &&
+        relevant &&
+        ((fromHighlighted && toKind != null && toKind !== 'cell') ||
+          (toHighlighted && fromKind != null && fromKind !== 'cell')))
+    let points = laidOutEdge.points
+    if (points.length < 2) {
+      const from = nodeById.get(laidOutEdge.from)
+      const to = nodeById.get(laidOutEdge.to)
+      if (from && to) {
+        points = [
+          { x: from.x + from.width, y: from.y + from.height / 2 },
+          { x: to.x, y: to.y + to.height / 2 },
+        ]
+      }
+    }
+    const bits = laidOutEdge.edge.bits.length
+    const isBus = bits > 1
+    const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
+    const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
+    const title = `${shortNetName(laidOutEdge.edge.net_name)} (${bits} bit${isBus ? 's' : ''}): ${laidOutEdge.edge.from_port}→${laidOutEdge.edge.to_port}`
+    return (
+      <Fragment key={index}>
+        <path
+          className={className}
+          d={pathD(points)}
+          markerEnd={`url(#${highlighted ? 'arrow-hl' : 'arrow'})`}
+          data-relevant={relevant ? 1 : 0}
+        >
+          <title>{title}</title>
+        </path>
+        {isBus && mid && (
+          <text
+            className="g-bus-label"
+            x={mid.x}
+            y={mid.y - 3}
+            textAnchor="middle"
+            aria-hidden="true"
+            data-relevant={relevant ? 1 : 0}
+          >
+            {bits}
+          </text>
+        )}
+      </Fragment>
+    )
+  })
+})
+
 export const GraphView = memo(function GraphView({
   graph,
   rootId,
@@ -1281,71 +1375,13 @@ export const GraphView = memo(function GraphView({
         </defs>
 
         <g ref={viewportRef}>
-          {graph.edges.map((laidOutEdge, index) => {
-            const relevant =
-              relevantIds.size === 0 ||
-              (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
-            const fromHighlighted = overlayIds.has(laidOutEdge.from)
-            const toHighlighted = overlayIds.has(laidOutEdge.to)
-            const fromKind =
-              extendOverlayToBoundaryNets && toHighlighted
-                ? metadata.nodeById.get(laidOutEdge.from)?.node.kind
-                : undefined
-            const toKind =
-              extendOverlayToBoundaryNets && fromHighlighted
-                ? metadata.nodeById.get(laidOutEdge.to)?.node.kind
-                : undefined
-            // Source overlays name logic cells, not their port/constant boundary
-            // nodes. Keep those terminal nets continuous without lighting up
-            // branches from the selected logic into unrelated context cells.
-            const highlighted =
-              (fromHighlighted && toHighlighted) ||
-              (extendOverlayToBoundaryNets &&
-                relevant &&
-                ((fromHighlighted && toKind != null && toKind !== 'cell') ||
-                  (toHighlighted && fromKind != null && fromKind !== 'cell')))
-            let points = laidOutEdge.points
-            if (points.length < 2) {
-              const from = metadata.nodeById.get(laidOutEdge.from)
-              const to = metadata.nodeById.get(laidOutEdge.to)
-              if (from && to) {
-                points = [
-                  { x: from.x + from.width, y: from.y + from.height / 2 },
-                  { x: to.x, y: to.y + to.height / 2 },
-                ]
-              }
-            }
-            const bits = laidOutEdge.edge.bits.length
-            const isBus = bits > 1
-            const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
-            const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
-            return (
-              <g className="g-edge-wrap" key={index} data-relevant={relevant ? 1 : 0}>
-                <path
-                  className={className}
-                  d={pathD(points)}
-                  markerEnd={`url(#${highlighted ? 'arrow-hl' : 'arrow'})`}
-                >
-                  <title>
-                    {shortNetName(laidOutEdge.edge.net_name)} ({bits} bit
-                    {isBus ? 's' : ''}): {laidOutEdge.edge.from_port}→
-                    {laidOutEdge.edge.to_port}
-                  </title>
-                </path>
-                {isBus && mid && (
-                  <text
-                    className="g-bus-label"
-                    x={mid.x}
-                    y={mid.y - 3}
-                    textAnchor="middle"
-                    aria-hidden="true"
-                  >
-                    {bits}
-                  </text>
-                )}
-              </g>
-            )
-          })}
+          <SchematicEdges
+            edges={graph.edges}
+            nodeById={metadata.nodeById}
+            relevantIds={relevantIds}
+            overlayIds={overlayIds}
+            extendOverlayToBoundaryNets={extendOverlayToBoundaryNets}
+          />
 
           {graph.nodes.map((laidOutNode) => (
             <SchematicNode

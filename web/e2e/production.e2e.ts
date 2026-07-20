@@ -542,7 +542,8 @@ test('renders and resizes the browser-produced graph without resetting user zoom
     return { nodes: latest.input.nodes.length, edges: latest.input.edges.length }
   })
   await expect(page.locator('.g-node-body')).toHaveCount(exactCounts.nodes)
-  await expect(page.locator('.g-edge-wrap')).toHaveCount(exactCounts.edges)
+  await expect(page.locator('.g-edge')).toHaveCount(exactCounts.edges)
+  await expect(page.locator('.g-edge-wrap')).toHaveCount(0)
   await expect(page.getByLabel('Focus')).toBeChecked()
   await expect(page.getByLabel('Focus')).toBeEnabled()
 
@@ -655,6 +656,21 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   const dimmedNodes = page.locator('.g-node-body[data-relevant="0"]')
   await expect.poll(() => dimmedNodes.count()).toBeGreaterThan(0)
   await expect(dimmedNodes.first()).toHaveCSS('opacity', '0.25')
+  const dimmedEdges = page.locator('.g-edge[data-relevant="0"]')
+  await expect.poll(() => dimmedEdges.count()).toBeGreaterThan(0)
+  expect(
+    await page.locator('.graph-stage-wrap').evaluate((stage) => {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.classList.add('g-edge', 'control')
+      path.dataset.relevant = '0'
+      svg.append(path)
+      stage.append(svg)
+      const opacity = getComputedStyle(path).opacity
+      svg.remove()
+      return opacity
+    }),
+  ).toBe('0.1625')
 
   await focus.check()
   await expect(focus).toBeChecked()
@@ -676,6 +692,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
     )
     .toEqual(contextualLogicIds)
   await expect(page.locator('.g-node-body[data-relevant="0"]')).toHaveCount(0)
+  await expect(dimmedEdges).toHaveCount(0)
   const focusedNodeCount = await page.locator('.g-node-body').count()
   const expandableBoundary = page.locator(
     '.g-node-body[data-boundary="true"][data-graph-node-id="44"]',

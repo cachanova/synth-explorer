@@ -1741,6 +1741,9 @@ th.sortable:hover {
 .graph-stage-wrap[data-focus='off'] [data-relevant='0'] {
   opacity: 0.25;
 }
+.graph-stage-wrap[data-focus='off'] .g-edge.control[data-relevant='0'] {
+  opacity: 0.1625;
+}
 .graph-stage-wrap[data-focus='on'] [data-relevant='0'] {
   visibility: hidden;
   opacity: 0;

@@ -245,3 +245,60 @@ explicitly opt-in 3,000-node ceiling could be reconsidered only after ELK and
 SVG-render improvements, with an additional edge budget of roughly 6,000 above
 the current boundary. The existing 10,000-edge allowance can remain for views
 at or below 2,000 nodes.
+
+## Large-graph ELK and SVG optimization
+
+- Date: 2026-07-20
+- Control: `e3ddec98106cfb0323d9de4d1582c30170ef5e87`
+- Browser: Chromium `148.0.7778.96`, headless at 1440×900
+- Trials: seven interleaved production-build trials per synthetic graph and
+  setting, plus four synthesized fixture topologies
+- Traffic: zero application API requests or failed requests. ELK trials and the
+  actual feature browser probe had zero page errors. The excluded synthetic pan
+  injection produced the documented pointer-capture error after measured
+  interactions.
+
+ELK's default layered thoroughness is 7. Values 5 and 6 did not produce a
+consistent speed or quality advantage. Thoroughness 4 was applied only to the
+existing robust `BRANDES_KOEPF` path; `NETWORK_SIMPLEX` output for small graphs
+was left unchanged.
+
+| Graph | ELK default p50 (range) | ELK thoroughness 4 p50 (range) | Visible default p50 (range) | Visible thoroughness 4 p50 (range) |
+| --- | ---: | ---: | ---: | ---: |
+| 480 nodes / 1,392 edges | 925.4 ms (830.5–1003.5) | 798.5 ms (753.6–986.1), -13.7% | 1524.8 ms (1432.7–1603.4) | 1432.2 ms (1350.4–1593.9), -6.1% |
+| 2,000 nodes / 3,960 edges | 2496.4 ms (2371.9–2585.9) | 2239.3 ms (2095.2–2364.2), -10.3% | 3463.8 ms (3282.0–3510.8) | 3206.0 ms (2987.2–3381.8), -7.4% |
+
+All trials were deterministic within each setting and had zero fixed-port
+endpoint mismatches. At 2,000 nodes, width, height, and bend count were
+unchanged and the crossing count changed from 2,059 to 2,060. At 480 nodes,
+width decreased 0.5%, height and bends were unchanged, and crossings decreased
+from 13,528 to 13,520. Across four synthesized fixtures from 152 to 400 nodes,
+thoroughness 4 reduced median ELK time by approximately 14–25%; dimensions and
+bends were unchanged, with crossings identical or within 0.4%. No material
+worker-memory regression was measured.
+
+The SVG candidate removed the host `<g>` wrapper around every edge, stored
+Focus relevance directly on the path and optional bus label, and memoized the
+edge layer so node-only selection changes do not reconcile every edge. Paths,
+titles, markers, bus labels, geometry, and exact edge counts were preserved.
+
+| Metric | 480 nodes / 1,392 edges | 2,000 nodes / 3,960 edges |
+| --- | ---: | ---: |
+| React render and commit | 136.3 → 124.2 ms (-8.9%) | 333.9 → 299.9 ms (-10.2%) |
+| Commit to visible | 30.2 → 28.7 ms (-5.0%) | 114.1 → 102.8 ms (-9.9%) |
+| Node selection visible | 46.2 → 37.4 ms (-19.0%) | 111.0 → 83.6 ms (-24.7%) |
+| SVG elements | 6,550 → 5,158 (-21.3%) | 21,846 → 17,886 (-18.1%) |
+| DOM nodes | 19,189 → 17,797 (-7.3%) | 59,581 → 55,621 (-6.6%) |
+
+At 2,000 nodes, browser task time fell 10.4%, script time 21.5%, style time
+15.1%, and layout time 5.6%. Retained heap growth fell from 24.88 MiB to
+18.93 MiB and aggregate retained Chromium RSS growth from 240.4 MiB to
+230.0 MiB. Paint timing was flat and noisy, so these results establish React,
+DOM construction, style, and layout gains rather than a rasterization gain.
+Removing per-node ref callbacks was also tested separately and did not produce
+a reliable improvement.
+
+These optimizations improve the existing bounded viewer but do not by
+themselves justify raising the 2,000-node cap. The next render target is the
+per-node hover/focus state and handler count, followed by measured zoom-level
+detail culling.

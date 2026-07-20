@@ -529,6 +529,9 @@ export function toElkGraph(
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
       'elk.layered.nodePlacement.strategy': nodePlacement,
+      ...(nodePlacement === 'BRANDES_KOEPF'
+        ? { 'elk.layered.thoroughness': '4' }
+        : {}),
     },
     children,
     edges,

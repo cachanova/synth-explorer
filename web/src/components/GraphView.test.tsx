@@ -156,7 +156,7 @@ describe('GraphView LUT labels', () => {
                 from_port: 'Y',
                 to_port: 'A',
                 net_name: 'context_edge',
-                bits: [1],
+                bits: [1, 2],
               },
             },
           ],
@@ -176,7 +176,12 @@ describe('GraphView LUT labels', () => {
 
     expect(markup).toMatch(/g-node-body[^>]*data-relevant="1"/)
     expect(markup).toMatch(/g-node-body[^>]*data-relevant="0"/)
-    expect(markup).toMatch(/data-relevant="0"[^>]*><path class="g-edge/)
+    expect(markup).toMatch(/<path class="g-edge bus"[^>]*data-relevant="0"/)
+    expect(markup).toMatch(
+      /<text class="g-bus-label"[^>]*data-relevant="0"[^>]*>2<\/text>/,
+    )
+    expect(markup).toContain('<title>context_edge (2 bits): Y→A</title>')
+    expect(markup).not.toContain('g-edge-wrap')
     expect(markup).toMatch(/g-node-body[^>]*\bhl\b/)
   })
 
