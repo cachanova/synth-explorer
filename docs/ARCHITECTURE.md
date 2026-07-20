@@ -79,8 +79,12 @@ to the compact geometry response. The graph surface stays mounted across tabs,
 so it starts that reusable worker once at mount and completes a two-node layered
 layout. This lets module startup overlap the editor's initial idle/debounce
 window and finish before the first design layout request. No design-sized graph
-is laid out speculatively. The GHDL worker follows the same reuse policy while
-creating a fresh Ada/WebAssembly instance per run.
+is laid out speculatively. Large schematics use ELK's robust
+`BRANDES_KOEPF` placement with measured thoroughness 4; the small-graph
+`NETWORK_SIMPLEX` output remains unchanged. In the browser, the memoized edge
+layer stores relevance directly on edge paths and bus labels instead of adding
+one wrapper element per edge. The GHDL worker follows the same reuse policy
+while creating a fresh Ada/WebAssembly instance per run.
 
 ## Timing model
 

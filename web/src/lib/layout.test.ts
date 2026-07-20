@@ -108,6 +108,34 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
   })
 
+  it('reduces ELK thoroughness only on the robust large-graph placement path', () => {
+    const input = prepareLayoutInput({
+      nodes: [node(1, '$_AND_'), node(2, '$_OR_')],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'Y',
+          to_port: 'A',
+          net_name: 'n1',
+          bits: [1],
+        },
+      ],
+      truncated: false,
+    })
+
+    expect(
+      toElkGraph(input, 'NETWORK_SIMPLEX').layoutOptions?.[
+        'elk.layered.thoroughness'
+      ],
+    ).toBeUndefined()
+    expect(
+      toElkGraph(input, 'BRANDES_KOEPF').layoutOptions?.[
+        'elk.layered.thoroughness'
+      ],
+    ).toBe('4')
+  })
+
   it('routes flip-flop data edges to D and Q ports, not the box centre', () => {
     const sub: Subgraph = {
       nodes: [
