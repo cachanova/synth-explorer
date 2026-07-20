@@ -6,13 +6,13 @@ export class AnalysisSession {
     [Symbol.dispose](): void;
     cone_json(query_json: string): string;
     endpoints_json(): string;
-    exploration_json(): string;
     fanout_json(limit?: number | null): string;
     netlist_json(query_json: string): string;
     constructor(design_id: string, netlist_json: string, source_netlist_json: string, files_json: string, mode: string, profile: string);
     nodes_json(ids_json: string): string;
     paths_json(query_json: string): string;
     source_map_json(): string;
+    source_selection_json(query_json: string): string;
     summary_json(): string;
     timing_json(query_json: string): string;
 }
@@ -24,13 +24,13 @@ export interface InitOutput {
     readonly __wbg_analysissession_free: (a: number, b: number) => void;
     readonly analysissession_cone_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_endpoints_json: (a: number) => [number, number, number, number];
-    readonly analysissession_exploration_json: (a: number) => [number, number, number, number];
     readonly analysissession_fanout_json: (a: number, b: number) => [number, number, number, number];
     readonly analysissession_netlist_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number];
     readonly analysissession_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_paths_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_source_map_json: (a: number) => [number, number, number, number];
+    readonly analysissession_source_selection_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_summary_json: (a: number) => [number, number, number, number];
     readonly analysissession_timing_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;

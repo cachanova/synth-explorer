@@ -34,9 +34,8 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 - `src/workers/yosys.worker.ts` runs the pinned files in `public/yosys/`.
 - `src/workers/ghdl.worker.ts` translates VHDL-2008 with the pinned files in
   `public/ghdl/` before Yosys runs.
-- `src/workers/analysis.worker.ts` owns the active Rust analysis session.
-- `src/workers/exploration.worker.ts` owns the single source-selection
-  projection implementation.
+- `src/workers/analysis.worker.ts` owns the active Rust analysis session,
+  including bounded source-selection projections.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
 - `public/precomputed/` contains content-addressed gate-mode artifacts for the
   default design and bundled examples; `src/data/precomputedManifest.json`

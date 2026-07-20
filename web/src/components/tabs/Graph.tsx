@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getNetlist } from '../../api'
-import {
-  analyzeSourceInBrowser,
-  initializeExploration,
-  resetExploration,
-} from '../../lib/explorationClient'
+import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
@@ -119,22 +115,6 @@ export function Graph({ active }: { active: boolean }) {
     window.addEventListener('keydown', clearSelection)
     return () => window.removeEventListener('keydown', clearSelection)
   }, [active, clearGraphSelection])
-
-  useEffect(() => {
-    if (!design) {
-      resetExploration()
-      return
-    }
-    if (!active || analysisState !== 'current') return
-    let current = true
-    void initializeExploration(design.design_id).catch((reason) => {
-      if (!current || (reason instanceof DOMException && reason.name === 'AbortError')) return
-      setError(reason instanceof Error ? reason.message : String(reason))
-    })
-    return () => {
-      current = false
-    }
-  }, [active, analysisState, design])
 
   // Every option changes a graph projection. Source projections are local;
   // full and node-cone projections still come from the analysis worker.

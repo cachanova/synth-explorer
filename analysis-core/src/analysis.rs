@@ -11,6 +11,7 @@ use deepsize::DeepSizeOf;
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use thiserror::Error;
 
 const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
@@ -115,6 +116,49 @@ pub struct Subgraph {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SourceSelectionOptions {
+    pub max_nodes: usize,
+    pub hide_control: bool,
+    pub hide_const: bool,
+    pub group_vectors: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SourceSelectionRange<'a> {
+    pub file: &'a str,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSelectionStatus {
+    Mapped,
+    MappingIncomplete,
+    OptimizedOrAbsorbed,
+    Unmapped,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceSelectionResult {
+    pub status: SourceSelectionStatus,
+    pub control: bool,
+    #[serde(rename = "directIds")]
+    pub direct_ids: Vec<u32>,
+    pub graph: Subgraph,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SourceSelectionError {
+    #[error("unknown file")]
+    UnknownFile,
+    #[error("line range must satisfy 1 <= start_line <= end_line")]
+    InvalidRange,
+    #[error("at most 200 source lines may be selected")]
+    TooManyLines,
 }
 
 #[derive(Debug, Clone, Serialize, DeepSizeOf)]
@@ -285,61 +329,10 @@ pub struct SourceProbeHint {
     pub kind: SourceProbeHintKind,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct ExplorationNode {
-    #[serde(flatten)]
-    pub graph: GraphNode,
-    /// Native Yosys source metadata used by the server's grouped projection.
-    /// `graph.node.src` may additionally contain recovered source ranges.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_src: Option<String>,
-    pub boundary: bool,
-    pub comb: bool,
-    pub constant: bool,
-    pub output_frontier: bool,
-    pub addressable_sequential: bool,
-    pub register_type: bool,
-    pub infrastructure: bool,
-    pub transparent_buffer: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ExplorationEdge {
-    pub from: u32,
-    pub to: u32,
-    pub from_port: String,
-    pub to_port: String,
-    pub net_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bit: Option<u32>,
-    pub control: bool,
-    pub hidden_control: bool,
-    pub depth_input: bool,
-    pub depth_output: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SourceSeenRange {
-    pub file: String,
-    pub start_line: usize,
-    pub end_line: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ExplorationSnapshot {
-    pub schema_version: u32,
-    pub files: Vec<String>,
-    pub nodes: Vec<ExplorationNode>,
-    pub edges: Vec<ExplorationEdge>,
-    pub source_by_line: BTreeMap<String, Vec<u32>>,
-    pub source_ranges: Vec<SourceRangeMapping>,
-    pub source_hints: Vec<SourceProbeHint>,
-    pub procedural_targets: BTreeMap<String, BTreeMap<usize, Vec<NodeId>>>,
-    pub source_seen_lines: Vec<String>,
-    pub source_seen_ranges: Vec<SourceSeenRange>,
-    pub groups: Vec<crate::grouping::Group>,
+struct SourceProbeSelection {
+    roots: Vec<NodeId>,
+    direction: Option<ConeDir>,
+    expand_output_register_inputs: bool,
 }
 
 #[derive(Debug, Clone, Default, DeepSizeOf)]
@@ -598,17 +591,34 @@ struct PathSelection {
 #[derive(Debug, Clone, Default, DeepSizeOf)]
 struct SourceRangeIndex {
     ranges: Vec<SourceRangeMapping>,
+    prefix_max_end: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Default, DeepSizeOf)]
 struct SourceProbeHintIndex {
     hints: Vec<SourceProbeHint>,
+    prefix_max_end: Vec<usize>,
 }
 
 impl SourceProbeHintIndex {
     fn rebuild(&mut self) {
         self.hints.sort();
         self.hints.dedup();
+        self.prefix_max_end.clear();
+        self.prefix_max_end.reserve(self.hints.len());
+        let mut max_end = 0;
+        for hint in &self.hints {
+            max_end = max_end.max(hint.end_line);
+            self.prefix_max_end.push(max_end);
+        }
+    }
+
+    fn overlapping(&self, start_line: usize, end_line: usize) -> &[SourceProbeHint] {
+        let end = self
+            .hints
+            .partition_point(|hint| hint.start_line <= end_line);
+        let start = self.prefix_max_end[..end].partition_point(|max_end| *max_end < start_line);
+        &self.hints[start..end]
     }
 }
 
@@ -616,6 +626,21 @@ impl SourceRangeIndex {
     fn rebuild(&mut self) {
         self.ranges.sort();
         self.ranges.dedup();
+        self.prefix_max_end.clear();
+        self.prefix_max_end.reserve(self.ranges.len());
+        let mut max_end = 0;
+        for range in &self.ranges {
+            max_end = max_end.max(range.end_line);
+            self.prefix_max_end.push(max_end);
+        }
+    }
+
+    fn overlapping(&self, start_line: usize, end_line: usize) -> &[SourceRangeMapping] {
+        let end = self
+            .ranges
+            .partition_point(|range| range.start_line <= end_line);
+        let start = self.prefix_max_end[..end].partition_point(|max_end| *max_end < start_line);
+        &self.ranges[start..end]
     }
 }
 
@@ -677,7 +702,7 @@ impl Analysis {
     }
 
     /// Install per-line procedural assignment targets recovered from the
-    /// submitted sources for the browser exploration snapshot.
+    /// submitted sources for source-selection queries.
     pub fn set_procedural_targets(&mut self, targets: HashMap<(String, usize), Vec<NodeId>>) {
         for ((file, line), ids) in targets {
             self.procedural_targets
@@ -778,107 +803,305 @@ impl Analysis {
         response
     }
 
-    /// Immutable, fully prepared data used by the browser's selection worker.
-    /// Synthesis, provenance recovery, cell classification, and grouping stay
-    /// native; the client performs only bounded lookups and graph walks.
-    pub fn exploration_snapshot(
+    pub fn source_selection(
         &self,
         graph: &Graph,
         source_index: &SourceLineIndex,
         grouping: &GroupPartition,
-    ) -> ExplorationSnapshot {
-        let nodes = graph
+        selection: SourceSelectionRange<'_>,
+        options: SourceSelectionOptions,
+    ) -> Result<SourceSelectionResult, SourceSelectionError> {
+        let SourceSelectionRange {
+            file,
+            start_line,
+            end_line,
+        } = selection;
+        if !self.source_map.files.iter().any(|name| name == file) {
+            return Err(SourceSelectionError::UnknownFile);
+        }
+        if start_line < 1 || end_line < start_line {
+            return Err(SourceSelectionError::InvalidRange);
+        }
+        if end_line - start_line >= 200 {
+            return Err(SourceSelectionError::TooManyLines);
+        }
+        let probe = self
+            .source_probe_range(graph, file, start_line, end_line)
+            .ok_or(SourceSelectionError::UnknownFile)?;
+        let control = probe.roots.iter().any(|root| {
+            graph.outgoing[*root as usize]
+                .iter()
+                .any(|edge_idx| graph.edges[*edge_idx].control)
+        });
+        let cone_options = ConeOptions {
+            dir: probe.direction.unwrap_or(ConeDir::Fanin),
+            max_depth: 64,
+            max_nodes: options.max_nodes,
+            hide_control: options.hide_control && !control,
+            hide_const: options.hide_const,
+            show_infrastructure: false,
+        };
+        let selected_grouping = options.group_vectors.then_some(grouping);
+        let graph = match probe.direction {
+            Some(_) => self.multi_root_source_cone(
+                graph,
+                &probe.roots,
+                cone_options,
+                selected_grouping,
+                probe.expand_output_register_inputs,
+            ),
+            None => self.envelope(graph, &probe.roots, cone_options, selected_grouping),
+        }
+        .expect("source indexes contain only valid graph node ids");
+        let direct_ids = graph
             .nodes
             .iter()
-            .map(|node| {
-                let cell_type = node.cell_type.as_deref();
-                ExplorationNode {
-                    graph: GraphNode {
-                        node: self.node_ref(graph, node.id),
-                        is_root: None,
-                        is_boundary: None,
-                        depth: graph
-                            .is_comb(node.id)
-                            .then(|| self.node_depth[node.id as usize])
-                            .flatten(),
-                        params: node.params.clone(),
-                        controls: node_controls(graph, node.id),
-                        width: None,
-                        members: None,
-                    },
-                    group_src: node.src.clone(),
-                    boundary: graph.is_boundary(node.id),
-                    comb: graph.is_comb(node.id),
-                    constant: node.kind == NodeKind::Const,
-                    output_frontier: (node.kind == NodeKind::PortBit
-                        && matches!(
-                            node.port_dir,
-                            Some(PortDirection::Output | PortDirection::Inout)
-                        ))
-                        || cell_type.is_some_and(is_transparent_data_buffer),
-                    addressable_sequential: is_addressable_sequential_node(graph, node.id),
-                    register_type: cell_type.is_some_and(is_register_type),
-                    infrastructure: cell_type.is_some_and(is_infrastructure_cell),
-                    transparent_buffer: cell_type.is_some_and(is_transparent_data_buffer),
-                    group_id: grouping.group_of.get(&node.id).copied(),
-                }
-            })
+            .filter(|node| node.is_root == Some(true))
+            .map(|node| node.node.id)
             .collect();
-        let edges = graph
-            .edges
-            .iter()
-            .map(|edge| ExplorationEdge {
-                from: edge.from,
-                to: edge.to,
-                from_port: edge.from_port.clone(),
-                to_port: edge.to_port.clone(),
-                net_name: edge.net_name.clone(),
-                bit: edge.bit,
-                control: edge.control,
-                hidden_control: is_labeled_control_edge(graph, edge),
-                depth_input: is_depth_input_edge(graph, edge),
-                depth_output: is_depth_output_edge(graph, edge),
-            })
-            .collect();
-        let source_ranges = self
-            .source_ranges
-            .values()
-            .flat_map(|index| index.ranges.iter().cloned())
-            .collect();
-        let source_hints = self
-            .source_probe_hints
-            .values()
-            .flat_map(|index| index.hints.iter().cloned())
-            .collect();
-        let mut source_seen_lines: Vec<String> = source_index.lines.iter().cloned().collect();
-        source_seen_lines.sort();
-        let source_seen_ranges = source_index
-            .recovered_ranges
-            .iter()
-            .flat_map(|(file, index)| {
-                index
-                    .intervals
-                    .iter()
-                    .map(|(start_line, end_line)| SourceSeenRange {
-                        file: file.clone(),
-                        start_line: *start_line,
-                        end_line: *end_line,
-                    })
-            })
-            .collect();
-        ExplorationSnapshot {
-            schema_version: 1,
-            files: self.source_map.files.clone(),
-            nodes,
-            edges,
-            source_by_line: self.source_map.by_line.clone(),
-            source_ranges,
-            source_hints,
-            procedural_targets: self.procedural_targets.clone(),
-            source_seen_lines,
-            source_seen_ranges,
-            groups: grouping.groups.clone(),
+        let mapping_incomplete = self
+            .source_mapping_incomplete(file, start_line, end_line)
+            .expect("analysis source indexes contain the requested file");
+        let source_seen = source_index
+            .contains_range(file, start_line, end_line)
+            .ok_or(SourceSelectionError::UnknownFile)?;
+        let status = if mapping_incomplete {
+            SourceSelectionStatus::MappingIncomplete
+        } else if !probe.roots.is_empty() {
+            SourceSelectionStatus::Mapped
+        } else if source_seen {
+            SourceSelectionStatus::OptimizedOrAbsorbed
+        } else {
+            SourceSelectionStatus::Unmapped
+        };
+        Ok(SourceSelectionResult {
+            status,
+            control,
+            direct_ids,
+            graph,
+        })
+    }
+
+    fn source_mapping_incomplete(
+        &self,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Option<bool> {
+        if !self.source_map.files.iter().any(|name| name == file) {
+            return None;
         }
+        Some(self.source_ranges.get(file).is_some_and(|index| {
+            index
+                .overlapping(start_line, end_line)
+                .iter()
+                .any(|range| range.end_line >= start_line && range.mapping_incomplete)
+        }))
+    }
+
+    fn source_nodes_range(
+        &self,
+        graph: &Graph,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Option<Vec<NodeId>> {
+        if !self.source_map.files.iter().any(|name| name == file) {
+            return None;
+        }
+        let mut ids = BTreeSet::new();
+        'collect: {
+            for line in start_line..=end_line {
+                if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
+                    for id in line_ids {
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
+                        }
+                    }
+                }
+            }
+            if let Some(index) = self.source_ranges.get(file) {
+                for range in index.overlapping(start_line, end_line) {
+                    if range.end_line < start_line {
+                        continue;
+                    }
+                    for id in &range.node_ids {
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
+                        }
+                    }
+                }
+            }
+        }
+        let roots: Vec<NodeId> = ids.into_iter().collect();
+        Some(self.narrow_to_assignment_targets(graph, file, start_line, end_line, roots))
+    }
+
+    fn source_probe_range(
+        &self,
+        graph: &Graph,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> Option<SourceProbeSelection> {
+        let default_roots = self.source_nodes_range(graph, file, start_line, end_line)?;
+        let Some(index) = self.source_probe_hints.get(file) else {
+            return Some(SourceProbeSelection {
+                roots: default_roots,
+                direction: None,
+                expand_output_register_inputs: false,
+            });
+        };
+        let overlapping: Vec<&SourceProbeHint> = index
+            .overlapping(start_line, end_line)
+            .iter()
+            .filter(|hint| hint.end_line >= start_line)
+            .collect();
+        if overlapping.is_empty() {
+            return Some(SourceProbeSelection {
+                roots: default_roots,
+                direction: None,
+                expand_output_register_inputs: false,
+            });
+        }
+        let selected: Vec<&SourceProbeHint> = if start_line == end_line
+            && overlapping
+                .iter()
+                .any(|hint| hint.kind != SourceProbeHintKind::Block)
+        {
+            overlapping
+                .into_iter()
+                .filter(|hint| hint.kind != SourceProbeHintKind::Block)
+                .collect()
+        } else {
+            overlapping
+        };
+
+        let mut roots: BTreeSet<NodeId> = default_roots.into_iter().collect();
+        if selected
+            .iter()
+            .all(|hint| hint.kind == SourceProbeHintKind::Block)
+        {
+            roots.clear();
+        }
+        for kind in [SourceProbeHintKind::Procedural, SourceProbeHintKind::Block] {
+            for hint in selected.iter().filter(|hint| hint.kind == kind) {
+                if let Some(targets) = self.procedural_targets.get(file) {
+                    for ids in targets
+                        .range(hint.start_line..=hint.end_line)
+                        .map(|(_, ids)| ids)
+                    {
+                        for id in ids {
+                            if insert_bounded_node(&mut roots, *id) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if roots.is_empty() {
+            roots.extend(self.source_nodes_range(graph, file, start_line, end_line)?);
+        }
+        let mut directions = selected.iter().map(|hint| hint.direction);
+        let first = directions.next();
+        let uniform = first.filter(|direction| directions.all(|other| other == *direction));
+        Some(SourceProbeSelection {
+            roots: roots.into_iter().collect(),
+            direction: uniform.map(|direction| match direction {
+                SourceProbeDirection::Fanin => ConeDir::Fanin,
+                SourceProbeDirection::Fanout => ConeDir::Fanout,
+            }),
+            expand_output_register_inputs: selected
+                .iter()
+                .any(|hint| hint.kind == SourceProbeHintKind::OutputPort),
+        })
+    }
+
+    fn narrow_to_assignment_targets(
+        &self,
+        graph: &Graph,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+        roots: Vec<NodeId>,
+    ) -> Vec<NodeId> {
+        if roots.is_empty() || self.procedural_targets.is_empty() {
+            return roots;
+        }
+        let block_roots: HashSet<NodeId> = roots
+            .iter()
+            .copied()
+            .filter(|id| self.is_block_attributed(graph, *id, file, start_line, end_line))
+            .collect();
+        if block_roots.is_empty() {
+            return roots;
+        }
+        let overlapping = self
+            .source_ranges
+            .get(file)
+            .map_or(&[][..], |index| index.overlapping(start_line, end_line));
+        let mut targets = HashSet::new();
+        for line in start_line..=end_line {
+            let line_targets = self
+                .procedural_targets
+                .get(file)
+                .and_then(|targets| targets.get(&line));
+            if let Some(ids) = line_targets {
+                targets.extend(ids.iter().copied());
+            }
+            let contributed = self
+                .source_map
+                .by_line
+                .get(&format!("{file}:{line}"))
+                .is_some_and(|ids| ids.iter().any(|id| block_roots.contains(id)))
+                || overlapping.iter().any(|range| {
+                    range.start_line <= line
+                        && line <= range.end_line
+                        && range.node_ids.iter().any(|id| block_roots.contains(id))
+                });
+            if contributed && line_targets.is_none_or(|ids| ids.is_empty()) {
+                return roots;
+            }
+        }
+        if targets.is_empty() {
+            return roots;
+        }
+        let narrowed: Vec<NodeId> = roots
+            .iter()
+            .copied()
+            .filter(|id| targets.contains(id) || !block_roots.contains(id))
+            .collect();
+        if narrowed.is_empty() { roots } else { narrowed }
+    }
+
+    fn is_block_attributed(
+        &self,
+        graph: &Graph,
+        id: NodeId,
+        file: &str,
+        start_line: usize,
+        end_line: usize,
+    ) -> bool {
+        let spans_outside = |src: &str| {
+            src.split('|').any(|location| {
+                parse_src_loc(location).is_some_and(|(span_file, span_start, span_end)| {
+                    span_file == file
+                        && span_start <= end_line
+                        && span_end >= start_line
+                        && (span_start < start_line || span_end > end_line)
+                })
+            })
+        };
+        graph
+            .nodes
+            .get(id as usize)
+            .and_then(|node| node.src.as_deref())
+            .is_some_and(spans_outside)
+            || self
+                .synthetic_src
+                .get(&id)
+                .is_some_and(|sources| sources.iter().any(|src| spans_outside(src)))
     }
 
     pub fn extend_source_ranges(&mut self, ranges: Vec<SourceRangeMapping>, truncated: bool) {
@@ -1256,7 +1479,25 @@ impl Analysis {
         options: ConeOptions,
         grouping: Option<&GroupPartition>,
     ) -> Option<Subgraph> {
-        self.multi_root_subgraph(graph, roots, &[options.dir], options, grouping)
+        self.multi_root_subgraph(graph, roots, &[options.dir], options, grouping, false)
+    }
+
+    fn multi_root_source_cone(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+        grouping: Option<&GroupPartition>,
+        expand_output_register_inputs: bool,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[options.dir],
+            options,
+            grouping,
+            expand_output_register_inputs,
+        )
     }
 
     pub fn envelope(
@@ -1272,6 +1513,7 @@ impl Analysis {
             &[ConeDir::Fanin, ConeDir::Fanout],
             options,
             grouping,
+            false,
         )
     }
 
@@ -1282,6 +1524,7 @@ impl Analysis {
         directions: &[ConeDir],
         options: ConeOptions,
         grouping: Option<&GroupPartition>,
+        expand_output_register_inputs: bool,
     ) -> Option<Subgraph> {
         if roots
             .iter()
@@ -1301,6 +1544,7 @@ impl Analysis {
         let mut included_root_ids = Vec::new();
         let mut boundary_nodes: HashSet<NodeId> = HashSet::new();
         let mut edge_set: HashSet<usize> = HashSet::new();
+        let mut expanded_register_inputs: HashSet<NodeId> = HashSet::new();
         let mut truncated = false;
 
         for root in roots {
@@ -1317,6 +1561,26 @@ impl Analysis {
         }
 
         let included_roots = seen.clone();
+        let mut output_register_frontier: HashSet<NodeId> = if expand_output_register_inputs {
+            included_roots
+                .iter()
+                .copied()
+                .filter(|id| {
+                    let node = &graph.nodes[*id as usize];
+                    (node.kind == NodeKind::PortBit
+                        && matches!(
+                            node.port_dir,
+                            Some(PortDirection::Output | PortDirection::Inout)
+                        ))
+                        || node
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_transparent_data_buffer)
+                })
+                .collect()
+        } else {
+            HashSet::new()
+        };
         let mut traversals: Vec<Traversal> = directions
             .iter()
             .map(|dir| Traversal {
@@ -1341,6 +1605,7 @@ impl Analysis {
                         };
                         if !included_roots.contains(&id)
                             && graph.is_boundary(id)
+                            && !expanded_register_inputs.contains(&id)
                             && !is_addressable_sequential_node(graph, id)
                         {
                             boundary_nodes.insert(id);
@@ -1408,6 +1673,24 @@ impl Analysis {
                         }
                         seen_units.insert(unit);
                         seen.insert(next);
+                    }
+                    if expand_output_register_inputs
+                        && traversal.dir == ConeDir::Fanin
+                        && output_register_frontier.contains(&frame.id)
+                    {
+                        if graph.nodes[next as usize]
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_register_type)
+                        {
+                            expanded_register_inputs.insert(next);
+                        } else if graph.nodes[next as usize]
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_transparent_data_buffer)
+                        {
+                            output_register_frontier.insert(next);
+                        }
                     }
                     let stop_at_state_input = traversal.dir == ConeDir::Fanout
                         && is_addressable_sequential_node(graph, next)
@@ -3656,6 +3939,13 @@ fn format_source_range(range: &SourceRangeMapping) -> String {
     format!("{}:{}-{}", range.file, range.start_line, range.end_line)
 }
 
+fn insert_bounded_node(ids: &mut BTreeSet<NodeId>, id: NodeId) -> bool {
+    if ids.len() < SOURCE_ROOT_COLLECTION_CAP {
+        ids.insert(id);
+    }
+    ids.len() >= SOURCE_ROOT_COLLECTION_CAP
+}
+
 fn insert_src_lines(mut src: &str, mut insert: impl FnMut(&str, usize)) {
     while !src.is_empty() {
         let (loc, rest) = src
@@ -3833,6 +4123,7 @@ fn bit_index_from_name(name: &str) -> Option<usize> {
 mod tests {
     use super::*;
     use crate::graph::{CellInfo, Edge, Graph, Node, NodeKind};
+    use crate::grouping::{Group, GroupKind};
     use crate::netlist::{PortDirection, YosysBit, YosysModule, parse_str, select_top};
     use std::time::Instant;
 
@@ -4708,18 +4999,533 @@ mod tests {
     }
 
     #[test]
-    fn exploration_snapshot_retains_the_source_root_sentinel() {
+    fn source_selection_returns_only_the_bounded_projection() {
+        let graph = graph_from_parts(
+            "source_selection",
+            vec![combinational_node(0, "$and", Some("source.sv:10"))],
+            Vec::new(),
+            vec![Vec::new()],
+            vec![Vec::new()],
+        );
+        let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
+        let module = YosysModule {
+            attributes: BTreeMap::new(),
+            ports: BTreeMap::new(),
+            cells: BTreeMap::new(),
+            netnames: BTreeMap::new(),
+        };
+        let source_index = SourceLineIndex::from_module(&module, vec!["source.sv".to_owned()]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "source.sv",
+                    start_line: 10,
+                    end_line: 10,
+                },
+                SourceSelectionOptions {
+                    max_nodes: 400,
+                    hide_control: true,
+                    hide_const: true,
+                    group_vectors: false,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.status, SourceSelectionStatus::Mapped);
+        assert_eq!(result.direct_ids, vec![0]);
+        assert_eq!(result.graph.nodes.len(), 1);
+        assert_eq!(result.graph.nodes[0].is_root, Some(true));
+    }
+
+    #[test]
+    fn source_selection_keeps_a_large_design_response_bounded() {
+        let node_count = 50_000;
+        let nodes = (0..node_count)
+            .map(|id| {
+                combinational_node(
+                    id as NodeId,
+                    "$and",
+                    (id == node_count / 2).then_some("source.sv:10"),
+                )
+            })
+            .collect();
+        let graph = graph_from_parts(
+            "large_source_selection",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        );
+        let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
+        let source_index = empty_source_index("source.sv");
+        let started = Instant::now();
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "source.sv",
+                    start_line: 10,
+                    end_line: 10,
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert!(started.elapsed().as_secs() < 1);
+        assert_eq!(result.status, SourceSelectionStatus::Mapped);
+        assert_eq!(result.graph.nodes.len(), 1);
+        assert_eq!(result.graph.nodes[0].node.id, (node_count / 2) as NodeId);
+    }
+
+    #[test]
+    fn source_selection_preserves_validation_precedence() {
+        let graph = source_selection_fixture();
+        let analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        let source_index = empty_source_index("top.sv");
+        let select = |file, start_line, end_line| {
+            analysis.source_selection(
+                &graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file,
+                    start_line,
+                    end_line,
+                },
+                selection_options(),
+            )
+        };
+
+        assert_eq!(
+            select("missing.sv", 0, 0).unwrap_err(),
+            SourceSelectionError::UnknownFile
+        );
+        assert_eq!(
+            select("top.sv", 0, 0).unwrap_err(),
+            SourceSelectionError::InvalidRange
+        );
+        assert_eq!(
+            select("top.sv", 1, 201).unwrap_err(),
+            SourceSelectionError::TooManyLines
+        );
+    }
+
+    #[test]
+    fn source_selection_honors_directional_hints_and_legacy_envelopes() {
+        let mut fanin_graph = source_selection_fixture();
+        fanin_graph.nodes[1].src = Some("top.sv:4".to_owned());
+        let mut fanin_analysis = Analysis::new(&fanin_graph, vec!["top.sv".to_owned()]);
+        fanin_analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 4,
+            end_line: 4,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Signal,
+        }]);
+        let source_index = empty_source_index("top.sv");
+        let fanin = fanin_analysis
+            .source_selection(
+                &fanin_graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 4,
+                    end_line: 4,
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            fanin
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(fanin.direct_ids, vec![1]);
+
+        let mut fanout_graph = source_selection_fixture();
+        fanout_graph.nodes[0].src = Some("top.sv:2".to_owned());
+        let mut fanout_analysis = Analysis::new(&fanout_graph, vec!["top.sv".to_owned()]);
+        fanout_analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 2,
+            end_line: 2,
+            direction: SourceProbeDirection::Fanout,
+            kind: SourceProbeHintKind::Signal,
+        }]);
+        let fanout = fanout_analysis
+            .source_selection(
+                &fanout_graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 2,
+                    end_line: 2,
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            fanout
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert_eq!(fanout.graph.nodes[2].is_boundary, Some(true));
+
+        let mut envelope_graph = source_selection_fixture();
+        envelope_graph.nodes[1].src = Some("top.sv:7".to_owned());
+        let envelope_analysis = Analysis::new(&envelope_graph, vec!["top.sv".to_owned()]);
+        let envelope = envelope_analysis
+            .source_selection(
+                &envelope_graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 7,
+                    end_line: 7,
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            envelope
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    #[test]
+    fn source_selection_narrows_block_attribution_to_the_assignment_target() {
+        let mut first = combinational_node(0, "$dff", Some("top.sv:8.1-14.3"));
+        first.seq = true;
+        let mut second = combinational_node(1, "$dff", Some("top.sv:8.1-14.3"));
+        second.seq = true;
+        let graph = graph_from_parts(
+            "procedural",
+            vec![first, second],
+            Vec::new(),
+            vec![Vec::new(), Vec::new()],
+            vec![Vec::new(), Vec::new()],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.set_procedural_targets(HashMap::from([(("top.sv".to_owned(), 10), vec![0])]));
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 10,
+            end_line: 10,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Procedural,
+        }]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 10,
+                    end_line: 10,
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.is_root == Some(true))
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn source_selection_distinguishes_optimized_source_from_unmapped_text() {
+        let graph = source_selection_fixture();
+        let analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        let mut source_index = empty_source_index("top.sv");
+        let seen = SourceRangeMapping {
+            file: "top.sv".to_owned(),
+            start_line: 20,
+            end_line: 20,
+            node_ids: Vec::new(),
+            mapping_incomplete: false,
+        };
+        source_index.extend_ranges([&seen]);
+
+        let status = |line| {
+            analysis
+                .source_selection(
+                    &graph,
+                    &source_index,
+                    &GroupPartition::default(),
+                    SourceSelectionRange {
+                        file: "top.sv",
+                        start_line: line,
+                        end_line: line,
+                    },
+                    selection_options(),
+                )
+                .unwrap()
+                .status
+        };
+        assert_eq!(status(20), SourceSelectionStatus::OptimizedOrAbsorbed);
+        assert_eq!(status(21), SourceSelectionStatus::Unmapped);
+    }
+
+    #[test]
+    fn source_selection_expands_a_direct_output_register_through_its_data_input() {
+        let mut register = combinational_node(2, "$dff", None);
+        register.seq = true;
+        register.name = "registered".to_owned();
+        let mut output = port_node(3, "y", PortDirection::Output);
+        output.src = Some("top.sv:5".to_owned());
+        let nodes = vec![
+            port_node(0, "a", PortDirection::Input),
+            combinational_node(1, "$and", None),
+            register,
+            output,
+        ];
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); nodes.len()];
+        let mut incoming = vec![Vec::new(); nodes.len()];
+        for (from, to, from_port, to_port) in [(0, 1, "a", "A"), (1, 2, "Y", "D"), (2, 3, "Q", "y")]
+        {
+            let index = edges.len();
+            edges.push(Edge {
+                from,
+                to,
+                from_port: from_port.to_owned(),
+                to_port: to_port.to_owned(),
+                bit: Some(index as u32),
+                net_name: format!("n{index}"),
+                control: false,
+            });
+            outgoing[from as usize].push(index);
+            incoming[to as usize].push(index);
+        }
+        let graph = graph_from_parts("registered_output", nodes, edges, outgoing, incoming);
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 5,
+            end_line: 5,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::OutputPort,
+        }]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn source_selection_projects_groups_and_prioritizes_incomplete_mapping() {
+        let graph = graph_from_parts(
+            "grouped_source",
+            vec![
+                port_node(0, "a", PortDirection::Input),
+                combinational_node(1, "$and", Some("top.sv:9-12")),
+                port_node(2, "y", PortDirection::Output),
+                combinational_node(3, "$and", Some("top.sv:9-12")),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 4],
+            vec![Vec::new(); 4],
+        );
+        let range = SourceRangeMapping {
+            file: "top.sv".to_owned(),
+            start_line: 9,
+            end_line: 9,
+            node_ids: vec![1, 3],
+            mapping_incomplete: true,
+        };
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(vec![range.clone()], false);
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 9,
+            end_line: 9,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Signal,
+        }]);
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Comb,
+                members: vec![1, 3],
+                label: "logic[1:0]".to_owned(),
+                cell_type: "$and".to_owned(),
+            }],
+            group_of: HashMap::from([(1, 0), (3, 0)]),
+        };
+        let mut source_index = empty_source_index("top.sv");
+        source_index.extend_ranges([&range]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &source_index,
+                &grouping,
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 9,
+                    end_line: 9,
+                },
+                SourceSelectionOptions {
+                    group_vectors: true,
+                    ..selection_options()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.status, SourceSelectionStatus::MappingIncomplete);
+        assert_eq!(result.graph.nodes.len(), 1);
+        let group = &result.graph.nodes[0];
+        assert_eq!(group.node.id, 4);
+        assert_eq!(group.node.name, "logic[1:0]");
+        assert_eq!(group.node.src.as_deref(), Some("top.sv:9-12"));
+        assert_eq!(group.is_root, Some(true));
+        assert_eq!(group.width, Some(2));
+        assert_eq!(group.members.as_deref(), Some(&[1, 3][..]));
+        assert_eq!(result.direct_ids, vec![4]);
+        assert!(group.controls.is_empty());
+    }
+
+    #[test]
+    fn source_selection_omits_recovered_metadata_from_grouped_ports() {
+        let graph = graph_from_parts(
+            "grouped_ports",
+            vec![
+                port_node(0, "a[0]", PortDirection::Input),
+                port_node(1, "a[1]", PortDirection::Input),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 2],
+            vec![Vec::new(); 2],
+        );
+        let range = SourceRangeMapping {
+            file: "top.sv".to_owned(),
+            start_line: 2,
+            end_line: 2,
+            node_ids: vec![0, 1],
+            mapping_incomplete: false,
+        };
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(vec![range.clone()], false);
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Port,
+                members: vec![0, 1],
+                label: "a[1:0]".to_owned(),
+                cell_type: String::new(),
+            }],
+            group_of: HashMap::from([(0, 0), (1, 0)]),
+        };
+        let mut source_index = empty_source_index("top.sv");
+        source_index.extend_ranges([&range]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &source_index,
+                &grouping,
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 2,
+                    end_line: 2,
+                },
+                SourceSelectionOptions {
+                    group_vectors: true,
+                    ..selection_options()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(result.graph.nodes.len(), 1);
+        let group = &result.graph.nodes[0];
+        assert_eq!(group.node.id, 2);
+        assert_eq!(group.node.name, "a[1:0]");
+        assert_eq!(group.node.src, None);
+        assert_eq!(group.width, Some(2));
+        assert!(group.controls.is_empty());
+    }
+
+    #[test]
+    fn source_range_roots_use_a_sentinel_and_propagate_truncation() {
         let graph = sourced_node_graph(SOURCE_ROOT_COLLECTION_CAP + 500);
         let analysis = Analysis::new(&graph, vec!["source.sv".to_owned()]);
-        let roots = &analysis.source_map.by_line["source.sv:1"];
+        let roots = analysis
+            .source_nodes_range(&graph, "source.sv", 1, 1)
+            .unwrap();
 
         assert_eq!(roots.len(), SOURCE_ROOT_COLLECTION_CAP);
         assert_eq!(roots.first(), Some(&0));
         assert_eq!(roots.last(), Some(&(MAX_SUBGRAPH_NODES as NodeId)));
+
+        let envelope = analysis
+            .envelope(
+                &graph,
+                &roots,
+                ConeOptions {
+                    dir: ConeDir::Fanin,
+                    max_depth: 64,
+                    max_nodes: 400,
+                    hide_control: true,
+                    hide_const: true,
+                    show_infrastructure: true,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(envelope.nodes.len(), 400);
+        assert!(envelope.truncated);
     }
 
     #[test]
-    fn sparse_recovered_span_stays_compact_in_the_exploration_snapshot() {
+    fn sparse_recovered_span_uses_one_interval_for_queries_and_source_probe() {
         let graph = graph_from_parts(
             "sparse",
             vec![combinational_node(0, "$and", None)],
@@ -4744,6 +5550,15 @@ mod tests {
             kind: SourceProbeHintKind::Signal,
         }]);
 
+        assert_eq!(
+            analysis.source_nodes_range(&graph, "sparse.sv", 500_000, 500_000),
+            Some(vec![0])
+        );
+        let probe = analysis
+            .source_probe_range(&graph, "sparse.sv", 500_000, 500_000)
+            .unwrap();
+        assert_eq!(probe.roots, [0]);
+        assert_eq!(probe.direction, Some(ConeDir::Fanin));
         assert!(analysis.source_map.by_line.is_empty());
         assert_eq!(analysis.synthetic_src.len(), 1);
         assert_eq!(analysis.synthetic_src[&0].len(), 1);
@@ -4763,16 +5578,6 @@ mod tests {
         };
         let mut source_index = SourceLineIndex::from_module(&module, vec!["sparse.sv".to_owned()]);
         source_index.extend_ranges([&range]);
-        let snapshot =
-            analysis.exploration_snapshot(&graph, &source_index, &GroupPartition::default());
-        assert_eq!(snapshot.source_ranges, vec![range.clone()]);
-        assert_eq!(
-            snapshot.nodes[0].graph.node.src.as_deref(),
-            Some("sparse.sv:2-1000003")
-        );
-        assert_eq!(snapshot.nodes[0].group_src, None);
-        assert_eq!(snapshot.source_hints.len(), 1);
-        assert_eq!(snapshot.source_seen_ranges.len(), 1);
         assert_eq!(
             source_index.contains_range("sparse.sv", 500_000, 500_000),
             Some(true)
@@ -5401,6 +6206,60 @@ mod tests {
             Vec::new(),
             vec![Vec::new(); node_count],
             vec![Vec::new(); node_count],
+        )
+    }
+
+    fn selection_options() -> SourceSelectionOptions {
+        SourceSelectionOptions {
+            max_nodes: 400,
+            hide_control: true,
+            hide_const: true,
+            group_vectors: false,
+        }
+    }
+
+    fn empty_source_index(file: &str) -> SourceLineIndex {
+        let module = YosysModule {
+            attributes: BTreeMap::new(),
+            ports: BTreeMap::new(),
+            cells: BTreeMap::new(),
+            netnames: BTreeMap::new(),
+        };
+        SourceLineIndex::from_module(&module, vec![file.to_owned()])
+    }
+
+    fn source_selection_fixture() -> Graph {
+        let nodes = vec![
+            port_node(0, "a", PortDirection::Input),
+            combinational_node(1, "$and", None),
+            port_node(2, "y", PortDirection::Output),
+        ];
+        let edges = vec![
+            Edge {
+                from: 0,
+                to: 1,
+                from_port: "a".to_owned(),
+                to_port: "A".to_owned(),
+                bit: Some(0),
+                net_name: "a".to_owned(),
+                control: false,
+            },
+            Edge {
+                from: 1,
+                to: 2,
+                from_port: "Y".to_owned(),
+                to_port: "y".to_owned(),
+                bit: Some(1),
+                net_name: "y".to_owned(),
+                control: false,
+            },
+        ];
+        graph_from_parts(
+            "source_selection",
+            nodes,
+            edges,
+            vec![vec![0], vec![1], Vec::new()],
+            vec![Vec::new(), vec![0], vec![1]],
         )
     }
 

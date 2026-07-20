@@ -21,7 +21,7 @@ export type AnalysisMethod =
   | 'fanout'
   | 'sourceMap'
   | 'nodes'
-  | 'exploration'
+  | 'source'
 
 export type AnalysisWorkerRequest =
   | { id: number; kind: 'initialize'; payload: AnalysisInitialization }
@@ -85,8 +85,8 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
       return parse(active.source_map_json())
     case 'nodes':
       return parse(active.nodes_json(JSON.stringify(payload ?? [])))
-    case 'exploration':
-      return parse(active.exploration_json())
+    case 'source':
+      return parse(active.source_selection_json(JSON.stringify(payload ?? {})))
   }
 }
 

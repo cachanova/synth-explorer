@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use synth_explorer_analysis::analysis::{
-    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, PathSort, TimingEstimate,
+    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, PathSort, SourceSelectionOptions,
+    SourceSelectionRange, TimingEstimate,
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
@@ -72,16 +73,20 @@ struct NetlistQuery {
     group_vectors: Option<bool>,
 }
 
-#[derive(Serialize)]
-struct NodesResponse {
-    nodes: Vec<synth_explorer_analysis::analysis::NodeRef>,
+#[derive(Deserialize)]
+struct SourceSelectionQuery {
+    file: String,
+    start_line: usize,
+    end_line: usize,
+    max_nodes: Option<usize>,
+    hide_control: Option<bool>,
+    hide_const: Option<bool>,
+    group_vectors: Option<bool>,
 }
 
 #[derive(Serialize)]
-struct ExplorationResponse<'a> {
-    design_id: &'a str,
-    #[serde(flatten)]
-    snapshot: synth_explorer_analysis::analysis::ExplorationSnapshot,
+struct NodesResponse {
+    nodes: Vec<synth_explorer_analysis::analysis::NodeRef>,
 }
 
 #[wasm_bindgen]
@@ -285,15 +290,29 @@ impl AnalysisSession {
         to_json(&NodesResponse { nodes })
     }
 
-    pub fn exploration_json(&self) -> Result<String, JsValue> {
-        to_json(&ExplorationResponse {
-            design_id: &self.design_id,
-            snapshot: self.design.analysis.exploration_snapshot(
+    pub fn source_selection_json(&self, query_json: &str) -> Result<String, JsValue> {
+        let query: SourceSelectionQuery = parse_json(query_json, "source selection query")?;
+        let response = self
+            .design
+            .analysis
+            .source_selection(
                 &self.design.graph,
                 &self.design.source_index,
                 &self.design.grouping,
-            ),
-        })
+                SourceSelectionRange {
+                    file: &query.file,
+                    start_line: query.start_line,
+                    end_line: query.end_line,
+                },
+                SourceSelectionOptions {
+                    max_nodes: query.max_nodes.unwrap_or(400),
+                    hide_control: query.hide_control.unwrap_or(true),
+                    hide_const: query.hide_const.unwrap_or(true),
+                    group_vectors: query.group_vectors.unwrap_or(false),
+                },
+            )
+            .map_err(|error| js_error(error.to_string()))?;
+        to_json(&response)
     }
 }
 

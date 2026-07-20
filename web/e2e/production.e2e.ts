@@ -492,7 +492,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   expect(apiRequests).toEqual([])
 })
 
-test('source selections and Focus use the in-browser exploration worker', async ({ page }) => {
+test('source selections and Focus use the in-browser Rust analysis worker', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
