@@ -66,22 +66,24 @@ test('switches between regular and relative line numbers and remembers the setti
   ).toHaveAttribute('aria-checked', 'true')
 })
 
-test('hybrid line numbers follow Vim mode and editor focus', async ({ page }) => {
+test('hybrid line numbers follow Vim mode and pointer/browser focus', async ({ page }) => {
   const editor = page.locator('.cm-content')
   await replaceEditorText(
     page,
     Array.from({ length: 12 }, (_, index) => `wire line_${index + 1};`).join('\n'),
   )
+  await moveCursorToLine(editor, 5)
   await page.getByRole('button', { name: 'Settings' }).click()
   await page.getByRole('radio', { name: 'Vim', exact: true }).click()
   await page.getByRole('radio', { name: 'Hybrid', exact: true }).click()
 
-  await moveCursorToLine(editor, 5)
   await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')
+  await editor.hover()
   await expect.poll(() => visibleLineNumbers(page)).toEqual([
     '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
   ])
 
+  await editor.focus()
   await editor.press('i')
   await expect(page.locator('.cm-vim-panel')).toContainText('--INSERT--')
   await expect.poll(() => visibleLineNumbers(page)).toEqual([

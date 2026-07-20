@@ -285,7 +285,6 @@ export function Editor() {
   const vimCompartment = useRef(new Compartment())
   const vimLoadRef = useRef(0)
   const vimTypingRef = useRef(false)
-  const editorFocusedRef = useRef(false)
   const editorHoveredRef = useRef(false)
   const browserFocusedRef = useRef(true)
   const appliedLineNumbersRef = useRef('regular')
@@ -301,7 +300,6 @@ export function Editor() {
       (preference === 'hybrid' &&
         editorKeymapRef.current === 'vim' &&
         !vimTypingRef.current &&
-        editorFocusedRef.current &&
         editorHoveredRef.current &&
         browserFocusedRef.current)
     const activeLine = view.state.doc.lineAt(view.state.selection.main.head).number
@@ -349,8 +347,7 @@ export function Editor() {
           )
         }
       }
-      if (u.focusChanged) editorFocusedRef.current = u.view.hasFocus
-      if (u.selectionSet || u.docChanged || u.focusChanged) {
+      if (u.selectionSet || u.docChanged) {
         queueLineNumberRefresh(u.view)
       }
     })
