@@ -54,7 +54,12 @@ test('switches between regular and relative line numbers and remembers the setti
   ])
 
   await page.getByRole('button', { name: 'Settings' }).click()
-  await page.getByRole('radio', { name: 'Relative', exact: true }).click()
+  const regular = page.getByRole('radio', { name: 'Regular', exact: true })
+  const relative = page.getByRole('radio', { name: 'Relative', exact: true })
+  await regular.focus()
+  await regular.press('ArrowRight')
+  await expect(relative).toHaveAttribute('aria-checked', 'true')
+  await expect(relative).toBeFocused()
   await expect.poll(() => visibleLineNumbers(page)).toEqual([
     '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
   ])
