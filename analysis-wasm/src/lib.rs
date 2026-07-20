@@ -383,3 +383,75 @@ fn profile_name(profile: DelayProfile) -> &'static str {
 fn js_error(message: impl AsRef<str>) -> JsValue {
     JsValue::from_str(message.as_ref())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const NETLIST: &str = include_str!("../../analysis-core/tests/fixtures/reg_mux_rtl.json");
+
+    fn session(mode: &str, profile: &str) -> AnalysisSession {
+        AnalysisSession::new("test", NETLIST, NETLIST, "[]", mode, profile)
+            .expect("fixture session builds")
+    }
+
+    fn path_identities(json: &str) -> BTreeSet<(String, Vec<u64>)> {
+        let response: serde_json::Value = serde_json::from_str(json).expect("paths JSON parses");
+        response["paths"]
+            .as_array()
+            .expect("paths is an array")
+            .iter()
+            .map(|path| {
+                let endpoint = path["endpoint_group"]
+                    .as_str()
+                    .expect("endpoint group is a string")
+                    .to_owned();
+                let nodes = path["nodes"]
+                    .as_array()
+                    .expect("nodes is an array")
+                    .iter()
+                    .map(|node| node["id"].as_u64().expect("node id is numeric"))
+                    .collect();
+                (endpoint, nodes)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hidden_timing_paths_stay_depth_only_without_delay_values() {
+        let response = session("rtl", "generic")
+            .paths_json(r#"{"sort":"delay"}"#)
+            .expect("paths query succeeds");
+        let json: serde_json::Value = serde_json::from_str(&response).expect("paths JSON parses");
+        let paths = json["paths"].as_array().expect("paths is an array");
+
+        assert!(!paths.is_empty());
+        assert!(
+            paths
+                .iter()
+                .all(|path| path.get("estimated_delay_ns").is_none())
+        );
+    }
+
+    #[test]
+    fn visible_timing_sorts_share_the_canonical_route_set() {
+        let session = session("xilinx", "series7");
+        let depth = session
+            .paths_json(r#"{"sort":"depth"}"#)
+            .expect("depth query succeeds");
+        let delay = session
+            .paths_json(r#"{"sort":"delay"}"#)
+            .expect("delay query succeeds");
+        let json: serde_json::Value = serde_json::from_str(&depth).expect("paths JSON parses");
+        let paths = json["paths"].as_array().expect("paths is an array");
+
+        assert!(!paths.is_empty());
+        assert!(
+            paths
+                .iter()
+                .all(|path| path["estimated_delay_ns"].is_number())
+        );
+        assert_eq!(path_identities(&depth), path_identities(&delay));
+    }
+}
