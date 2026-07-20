@@ -113,38 +113,81 @@ test('auto-synthesizes an edited design locally after the debounce', async ({ pa
 test('supports persistent manual synthesis and a configurable delay', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
-  await page.evaluate(() => {
-    localStorage.setItem(
-      'synthexplorer.synthesisSettings.v1',
-      JSON.stringify({ autoSynthesize: false, delayMs: 250 }),
-    )
-  })
-  await page.reload()
+  await waitForAnalysisReady(page)
 
-  const synthesize = page.getByRole('button', { name: 'Synthesize', exact: true })
-  await expect(synthesize).toBeVisible()
+  await page.evaluate(() => {
+    const pane = document.querySelector('.pane-right')
+    if (!pane) throw new Error('analysis pane is missing')
+    const states: string[] = []
+    const observer = new MutationObserver(() => {
+      states.push(pane.getAttribute('data-analysis-state') ?? '')
+    })
+    observer.observe(pane, {
+      attributes: true,
+      attributeFilter: ['data-analysis-state'],
+    })
+    Object.assign(window, {
+      __synthesisStates: states,
+      __synthesisObserver: observer,
+    })
+  })
+
   await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(
-    page.getByRole('checkbox', { name: 'Synthesize automatically' }),
-  ).not.toBeChecked()
+  const automatic = page.getByRole('checkbox', {
+    name: 'Synthesize automatically',
+  })
+  await expect(automatic).toBeChecked()
   const delay = page.getByLabel('Automatic synthesis delay')
   await expect(delay).toHaveValue('250')
   await delay.focus()
   for (let step = 0; step < 5; step += 1) await delay.press('ArrowRight')
   await expect(page.locator('.settings-delay-value')).toHaveText('0.5 s')
+  await page.waitForTimeout(750)
+  expect(
+    await page.evaluate(() => {
+      const testWindow = window as typeof window & {
+        __synthesisStates?: string[]
+        __synthesisObserver?: MutationObserver
+      }
+      testWindow.__synthesisObserver?.disconnect()
+      return testWindow.__synthesisStates ?? []
+    }),
+  ).not.toContain('refreshing')
+
+  await automatic.uncheck()
   await page.getByRole('button', { name: 'Settings' }).click()
+  const synthesize = page.getByRole('button', { name: 'Synthesize', exact: true })
+  await expect(synthesize).toBeVisible()
 
   await page.getByLabel('Bundled example').selectOption('reg_mux')
   await page.waitForTimeout(750)
-  await expect(page.locator('.pane-right')).not.toHaveAttribute(
+  await expect(page.locator('.pane-right')).toHaveAttribute(
     'data-analysis-state',
-    'current',
+    'stale',
   )
 
   await synthesize.click()
   await waitForAnalysisReady(page)
-  expect(apiRequests).toEqual([])
 
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await automatic.check()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(synthesize).toHaveCount(0)
+
+  await page.getByLabel('Bundled example').selectOption('counter')
+  await page.waitForTimeout(250)
+  await expect(page.locator('.pane-right')).toHaveAttribute(
+    'data-analysis-state',
+    'stale',
+  )
+  await expect(page.locator('.pane-right')).toHaveAttribute(
+    'data-analysis-state',
+    'current',
+    { timeout: 120_000 },
+  )
+
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await automatic.uncheck()
   await page.reload()
   await expect(synthesize).toBeVisible()
   await page.getByRole('button', { name: 'Settings' }).click()
@@ -152,6 +195,7 @@ test('supports persistent manual synthesis and a configurable delay', async ({ p
     page.getByRole('checkbox', { name: 'Synthesize automatically' }),
   ).not.toBeChecked()
   await expect(page.getByLabel('Automatic synthesis delay')).toHaveValue('500')
+  expect(apiRequests).toEqual([])
 })
 
 test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {

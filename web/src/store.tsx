@@ -788,9 +788,14 @@ export function StoreProvider({
   }, [materializeCurrentInput, nextNonce])
 
   useEffect(() => {
-    if (!synthesisSettings.autoSynthesize) return
+    if (
+      !synthesisSettings.autoSynthesize ||
+      analysisStateRef.current === 'current'
+    ) {
+      return
+    }
     const timer = window.setTimeout(() => {
-      void requestSynthesis()
+      if (analysisStateRef.current !== 'current') void requestSynthesis()
     }, synthesisSettings.delayMs)
     return () => window.clearTimeout(timer)
   }, [inputRevision, requestSynthesis, synthesisSettings])
