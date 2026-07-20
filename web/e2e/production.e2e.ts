@@ -449,12 +449,70 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
 })
 
 test('renders and resizes the browser-produced graph without resetting user zoom', async ({ page }) => {
+  await page.addInitScript(() => {
+    const workerURLs: string[] = []
+    const elkRequests: unknown[] = []
+    const NativeWorker = Worker
+    const InstrumentedWorker = new Proxy(NativeWorker, {
+      construct(target, args, newTarget) {
+        const url = String(args[0])
+        workerURLs.push(url)
+        const worker = Reflect.construct(target, args, newTarget)
+        if (url.includes('elk.worker')) {
+          const nativePostMessage = worker.postMessage.bind(worker)
+          worker.postMessage = (...postArgs: Parameters<Worker['postMessage']>) => {
+            elkRequests.push(postArgs[0])
+            nativePostMessage(...postArgs)
+          }
+        }
+        return worker
+      },
+    })
+    Object.defineProperty(window, 'Worker', {
+      configurable: true,
+      value: InstrumentedWorker,
+    })
+    Object.assign(window, { __workerURLs: workerURLs, __elkRequests: elkRequests })
+  })
   await page.setViewportSize({ width: 1280, height: 720 })
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
+  // Keep the graph mounted but inactive so this test distinguishes mount-time
+  // prewarm from the first real Schematic layout.
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __workerURLs?: string[] }).__workerURLs?.filter(
+            (url) => url.includes('elk.worker'),
+          ).length ?? 0,
+      ),
+    )
+    .toBe(1)
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? [],
+    ),
+  ).toEqual([])
   await waitForAutomaticSynthesis(page, () =>
     page.getByLabel('Bundled example').selectOption('reg_mux'),
   )
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __workerURLs?: string[] }).__workerURLs?.filter(
+            (url) => url.includes('elk.worker'),
+          ).length ?? 0,
+      ),
+    )
+    .toBe(1)
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? [],
+    ),
+  ).toEqual([])
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
 
   const stage = page.locator('.graph-stage')
@@ -462,6 +520,29 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const viewport = svg.locator(':scope > g').first()
   await expect(svg).toBeVisible()
   await expect(page.locator('.g-node-body').first()).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const requests =
+          (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? []
+        const latest = requests.at(-1) as
+          | { input?: { nodes?: unknown[]; edges?: unknown[] } }
+          | undefined
+        if (!latest?.input?.nodes || !latest.input.edges) return null
+        return { nodes: latest.input.nodes.length, edges: latest.input.edges.length }
+      }),
+    )
+    .not.toBeNull()
+  const exactCounts = await page.evaluate(() => {
+    const requests =
+      (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? []
+    const latest = requests.at(-1) as {
+      input: { nodes: unknown[]; edges: unknown[] }
+    }
+    return { nodes: latest.input.nodes.length, edges: latest.input.edges.length }
+  })
+  await expect(page.locator('.g-node-body')).toHaveCount(exactCounts.nodes)
+  await expect(page.locator('.g-edge-wrap')).toHaveCount(exactCounts.edges)
   await expect(page.getByLabel('Focus')).toBeChecked()
   await expect(page.getByLabel('Focus')).toBeEnabled()
 

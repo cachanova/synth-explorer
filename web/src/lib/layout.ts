@@ -705,6 +705,11 @@ function getWorker(): Worker {
   return w
 }
 
+/** Load and initialize the reusable ELK worker before the first schematic opens. */
+export function prewarmLayoutWorker(): void {
+  getWorker()
+}
+
 /** Lay out and adapt a Subgraph in the worker. */
 function runLayout(
   input: LayoutInput,

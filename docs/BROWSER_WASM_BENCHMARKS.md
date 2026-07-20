@@ -135,3 +135,113 @@ the default design and then waits 250 ms before automatically processing the
 selected example. For the interaction the feature is intended to improve,
 main has unbounded edit-to-result latency until the user clicks; live-auto's
 measured median is 381 ms with no click or synthesis request round trip.
+
+## ELK worker prewarm
+
+- Date: 2026-07-20
+- Control: `e1c223bac4fb862ffdaef652ca1e780c02f80c6b`
+- Candidate: the ELK-prewarm working tree described in this change
+- Browser: Chromium `148.0.7778.96`, headless at 1440×900
+- Builds: production Vite builds on separate localhost ports
+- Trials: ten interleaved idle-path pairs at 480 nodes and five at 2,000 nodes;
+  a separate choice experiment used five and three trials per condition
+- Traffic: zero application API requests and zero failed requests
+
+The harness rendered deterministic layered DAGs through the production-bundled
+ELK module worker and the real React `GraphView`. It recorded compact projection,
+worker startup, `elk.layout`, response, React commit, and a forced-layout
+double-animation-frame visibility boundary. Every trial verified exact SVG node
+and edge counts. The idle-path comparison deliberately completed prewarm before
+the interaction, matching a user who remains on another analysis tab after a
+result becomes current; it does not represent the default already-active
+Schematic path.
+
+The initial choice experiment measured construction-only separately from a
+complete tiny layout. This is why the implementation spends the additional
+worker CPU instead of only downloading and evaluating the module:
+
+| Graph | Cold on demand p50 | Construction only p50 | Two-node prewarm p50 |
+| --- | ---: | ---: | ---: |
+| 480 nodes / 1,392 edges | 1383.7 ms | 1084.8 ms | 981.4 ms |
+| 2,000 nodes / 3,960 edges | 3445.7 ms | 3184.9 ms | 2837.7 ms |
+
+The larger paired idle-path validation produced the following medians and full
+observed ranges. Ranges are reported instead of a near-cap p95 because five
+trials are not enough to characterize tail latency.
+
+| Graph | Cold on demand p50 (range) | Two-node prewarm p50 (range) | Change |
+| --- | ---: | ---: | ---: |
+| 480 nodes / 1,392 edges | 1367.4 ms (1344.6–1417.1) | 991.8 ms (973.7–1027.4) | -27.5% |
+| 2,000 nodes / 3,960 edges | 3479.9 ms (3401.2–3530.6) | 2880.9 ms (2833.7–2929.1) | -17.2% |
+
+The production-flow harness then started with a clean browser context, loaded
+the real application, synthesized generated RTL, ran browser Rust analysis, and
+waited for the default active Schematic to render exact counts. An
+analysis-current trigger provided no defensible total-flow improvement: -0.1%
+at 480 nodes and +0.4% at 2,000 nodes, because the real layout request followed
+worker construction immediately. Starting at graph-surface mount instead
+created a real warmup window:
+
+| Graph | Trials | Cold total-to-visible p50 (range) | Mount prewarm p50 (range) | Change |
+| --- | ---: | ---: | ---: | ---: |
+| 480 nodes / 477 edges | 9 | 2606.6 ms (2569.6–2679.5) | 2257.3 ms (2191.4–2515.7) | -13.4% |
+| 2,000 nodes / 1,997 edges | 5 | 5534.4 ms (5359.5–5586.9) | 5133.4 ms (5106.2–5446.0) | -7.2% |
+
+At 480 nodes, mount prewarm added 26.2 ms (+2.1%) to the refreshing-to-current
+phase while reducing current-to-visible by 375.1 ms (-39.9%). At 2,000 nodes it
+showed no synthesis penalty and reduced current-to-visible by 314.9 ms (-14.7%).
+Median total long-task time increased by 65 ms at 480 nodes and 13 ms near the
+cap; maximum long-task duration increased by 16 ms and 25 ms respectively. The
+end-to-end gain therefore includes a small, measured startup-contention cost
+rather than treating prewarm CPU as free.
+
+The isolated warmup consumed 355.6 ms p50 at 480 nodes and 347.8 ms near the cap
+before the measured idle-path interaction. Its synchronous main-thread call was
+under 1 ms, and the next two animation frames remained at about 20–22 ms. The
+production trigger starts this work when the always-mounted graph surface
+mounts, allowing module parsing and one-time ELK JIT work to overlap the initial
+editor idle/debounce window without laying out the user design or changing its
+geometry.
+
+At warm steady state, `elk.layout` still accounts for about 87% of first-visible
+latency. Compact TypeScript projection, cloning, graph preparation, adaptation,
+both transfers, and hydration together measured 14.6 ms p50 at 480 nodes and
+34.4 ms near the cap. The latter is only about 1.2% of the 2.88-second total, so
+moving those phases to Rust would not materially improve this path. The next
+measured candidate is lowering large-graph ELK thoroughness, which is tracked
+separately because it changes layout shape.
+
+## Schematic node-cap stress test
+
+- Date: 2026-07-20
+- Source: the production-built ELK-prewarm working tree
+- Browser: Chromium `148.0.7778.96`, headless at 1440×900
+- Trials: three per representative graph; one exploratory sparse-10,000 and
+  dense-2,000 trial
+- Traffic: zero application API requests, failed requests, and page errors
+
+The cap experiment drove deterministic layered graphs through the complete
+worker and real SVG render path. It retained the current 10-second layout
+deadline and verified exact rendered node and edge counts. Memory is reported as
+the renderer's RSS increase; it includes browser bookkeeping and is therefore a
+coarse process-level measure rather than only the graph's JavaScript objects.
+
+| Graph | ELK p50 | Visible p50 | Main-thread long tasks | Renderer RSS increase |
+| --- | ---: | ---: | ---: | ---: |
+| 2,000 nodes / 3,960 edges | 2.44 s | 2.93 s | 416 ms | 234 MiB |
+| 3,000 nodes / 5,960 edges | 3.80 s | 4.51 s | 624 ms | 302 MiB |
+| 5,000 nodes / 9,960 edges | 7.04 s | 8.14 s | 928 ms | 433 MiB |
+| 10,000 nodes / 9,980 edges, sparse | 4.09 s | 5.71 s | 1.44 s | 601 MiB |
+
+A separate dense 2,000-node / 9,900-edge probe needed 4.52 seconds to become
+visible, approximately the representative 3,000-node result. Node count alone
+is therefore not a sufficient safety budget. Five thousand representative
+nodes already approach the layout deadline on a strong desktop and produce
+about 150,000 DOM nodes; removing the cap would expose slower devices and dense
+topologies to long freezes or timeouts.
+
+The measured safe decision is to retain the hard 2,000-node cap. A later,
+explicitly opt-in 3,000-node ceiling could be reconsidered only after ELK and
+SVG-render improvements, with an additional edge budget of roughly 6,000 above
+the current boundary. The existing 10,000-edge allowance can remain for views
+at or below 2,000 nodes.

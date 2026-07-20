@@ -12,6 +12,7 @@ import {
   nodeDimensions,
   panViewport,
   placementForLayout,
+  prewarmLayoutWorker,
   preserveViewportAnchor,
   prepareLayoutInput,
   toElkGraph,
@@ -477,6 +478,35 @@ describe('schematic layout sizing', () => {
     FakeWorker.instances = []
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('prewarms one worker without posting layout work', () => {
+    vi.stubGlobal('Worker', FakeWorker)
+
+    prewarmLayoutWorker()
+    prewarmLayoutWorker()
+
+    expect(FakeWorker.instances).toHaveLength(1)
+    expect(FakeWorker.instances[0].requests).toEqual([])
+    FakeWorker.instances[0].onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('recreates a worker that crashes during otherwise-idle prewarm', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+
+    prewarmLayoutWorker()
+    const crashed = FakeWorker.instances[0]
+    crashed.onerror?.({ message: 'warmup crashed' } as ErrorEvent)
+    expect(crashed.terminate).toHaveBeenCalledOnce()
+
+    const pending = layoutSubgraph(workerSubgraph())
+    const replacement = FakeWorker.instances[1]
+    expect(replacement.requests).toHaveLength(1)
+    replacement.onmessage?.({
+      data: { id: replacement.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await expect(pending).resolves.toMatchObject({ width: 76 })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('sends compact layout input and terminates a superseded worker', async () => {

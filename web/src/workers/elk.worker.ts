@@ -6,36 +6,17 @@
 // MUST come before the elk import — see elkEnvShim.ts for why.
 import './elkEnvShim'
 import ELK from 'elkjs/lib/elk.bundled.js'
-import {
-  interpretResult,
-  toElkGraph,
-  type LayoutGeometry,
-  type LayoutInput,
-  type NodePlacement,
-} from '../lib/layout'
+import { runElkRequest, startElkWarmup } from './elkRuntime'
+export type { ElkRequest, ElkResponse } from './elkRuntime'
+import type { ElkRequest } from './elkRuntime'
 
 const elk = new ELK()
 
-export interface ElkRequest {
-  id: number
-  input: LayoutInput
-  placement: NodePlacement
-}
-
-export type ElkResponse =
-  | { id: number; ok: true; result: LayoutGeometry }
-  | { id: number; ok: false; error: string }
+// Parse/JIT the same layered, fixed-port path used by real schematics while
+// the worker is idle. A two-node graph pays almost all of ELK's one-time
+// startup cost without doing design-sized speculative work.
+const elkReady = startElkWarmup(elk)
 
 self.onmessage = async (e: MessageEvent<ElkRequest>) => {
-  const { id, input, placement } = e.data
-  try {
-    const graph = toElkGraph(input, placement)
-    const laidOut = await elk.layout(graph)
-    const result = interpretResult(input, laidOut)
-    const msg: ElkResponse = { id, ok: true, result }
-    ;(self as unknown as Worker).postMessage(msg)
-  } catch (err) {
-    const msg: ElkResponse = { id, ok: false, error: String(err) }
-    ;(self as unknown as Worker).postMessage(msg)
-  }
+  ;(self as unknown as Worker).postMessage(await runElkRequest(elk, elkReady, e.data))
 }
