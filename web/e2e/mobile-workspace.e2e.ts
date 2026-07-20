@@ -1,5 +1,24 @@
 import { expect, test } from '@playwright/test'
 
+test('keeps every setting reachable on a narrow phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+
+  await page.getByRole('button', { name: 'Settings' }).click()
+  const popover = page.getByRole('dialog', { name: 'Settings' })
+  const clearCache = page.getByRole('button', { name: 'Clear synthesis cache' })
+  await popover.evaluate((element) => element.scrollTo(0, element.scrollHeight))
+
+  await expect(clearCache).toBeInViewport()
+  await expect
+    .poll(() =>
+      popover.evaluate(
+        (element) => element.scrollHeight > element.clientHeight && element.scrollTop > 0,
+      ),
+    )
+    .toBe(true)
+})
+
 test('uses full-width Editor and Analysis views on a narrow phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/')

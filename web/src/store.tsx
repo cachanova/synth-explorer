@@ -31,12 +31,15 @@ import {
 } from './lib/yosysDiagnostics'
 import {
   loadEditorKeymapPreference,
+  loadEditorLineNumbersPreference,
   loadResetConfirmationPreference,
   markWorkspaceResetPending,
   saveEditorKeymapPreference,
+  saveEditorLineNumbersPreference,
   saveResetConfirmationPreference,
   saveWorkspace,
   type EditorKeymap,
+  type EditorLineNumbers,
   type WorkspaceState,
 } from './lib/workspaceStorage'
 import {
@@ -176,6 +179,8 @@ export interface Store {
   setConfirmWorkspaceReset: (enabled: boolean) => void
   editorKeymap: EditorKeymap
   setEditorKeymap: (keymap: EditorKeymap) => void
+  editorLineNumbers: EditorLineNumbers
+  setEditorLineNumbers: (mode: EditorLineNumbers) => void
   autoSynthesize: boolean
   setAutoSynthesize: (enabled: boolean) => void
   autoSynthesisDelayMs: number
@@ -271,6 +276,9 @@ export function StoreProvider({
   )
   const [synthesisSettings, setSynthesisSettings] = useState(
     loadSynthesisSettings,
+  )
+  const [editorLineNumbers, setEditorLineNumbersState] = useState(
+    loadEditorLineNumbersPreference,
   )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
@@ -648,6 +656,11 @@ export function StoreProvider({
     saveEditorKeymapPreference(keymap)
   }, [])
 
+  const setEditorLineNumbers = useCallback((mode: EditorLineNumbers) => {
+    setEditorLineNumbersState(mode)
+    saveEditorLineNumbersPreference(mode)
+  }, [])
+
   const setTop = useCallback(
     (value: string) => {
       if (topRef.current === value) return
@@ -998,6 +1011,8 @@ export function StoreProvider({
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
+      setEditorLineNumbers,
       autoSynthesize: synthesisSettings.autoSynthesize,
       setAutoSynthesize,
       autoSynthesisDelayMs: synthesisSettings.delayMs,
@@ -1045,6 +1060,8 @@ export function StoreProvider({
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
+      setEditorLineNumbers,
       synthesisSettings,
       setAutoSynthesize,
       setAutoSynthesisDelayMs,

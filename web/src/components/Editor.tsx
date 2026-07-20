@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import {
   Annotation,
   Compartment,
@@ -136,6 +136,18 @@ function sourceLanguageExtension(name: string): Extension {
   return StreamLanguage.define(name.endsWith('.vhd') || name.endsWith('.vhdl') ? vhdl : verilog)
 }
 
+function lineNumberExtension(relative: boolean, activeLine = 1): Extension {
+  return relative
+    ? lineNumbers({
+        formatNumber(lineNumber) {
+          return lineNumber === activeLine
+            ? String(lineNumber)
+            : String(Math.abs(lineNumber - activeLine))
+        },
+      })
+    : lineNumbers()
+}
+
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
   { from: number; primary: boolean }[] | null
@@ -235,6 +247,7 @@ export function Editor() {
       clearGraphSelection,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
     }) => ({
       files,
       activeFileName,
@@ -246,6 +259,7 @@ export function Editor() {
       clearGraphSelection,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
     }),
     shallowEqual,
   )
@@ -262,6 +276,7 @@ export function Editor() {
   // theme lives in a compartment so it can be swapped without rebuilding the view
   const themeCompartment = useRef(new Compartment())
   const languageCompartment = useRef(new Compartment())
+  const lineNumberCompartment = useRef(new Compartment())
   const resolvedModeRef = useRef(resolvedMode)
   resolvedModeRef.current = resolvedMode
   const appliedModeRef = useRef(resolvedMode)
@@ -270,10 +285,42 @@ export function Editor() {
   const vimCompartment = useRef(new Compartment())
   const vimLoadRef = useRef(0)
   const vimTypingRef = useRef(false)
+  const editorHoveredRef = useRef(false)
+  const browserFocusedRef = useRef(true)
+  const appliedLineNumbersRef = useRef('regular')
   const diagnosticsLoadRef = useRef(0)
   const setDiagnosticsRef = useRef<
     typeof import('@codemirror/lint')['setDiagnostics'] | null
   >(null)
+
+  const refreshLineNumbers = useCallback((view: EditorView) => {
+    const preference = storeRef.current.editorLineNumbers
+    const relative =
+      preference === 'relative' ||
+      (preference === 'hybrid' &&
+        editorKeymapRef.current === 'vim' &&
+        !vimTypingRef.current &&
+        editorHoveredRef.current &&
+        browserFocusedRef.current)
+    const activeLine = view.state.doc.lineAt(view.state.selection.main.head).number
+    const signature = relative ? `relative:${activeLine}` : 'regular'
+    if (appliedLineNumbersRef.current === signature) return
+    appliedLineNumbersRef.current = signature
+    view.dispatch({
+      effects: lineNumberCompartment.current.reconfigure(
+        lineNumberExtension(relative, activeLine),
+      ),
+    })
+  }, [])
+
+  const queueLineNumberRefresh = useCallback(
+    (view: EditorView) => {
+      queueMicrotask(() => {
+        if (viewRef.current === view) refreshLineNumbers(view)
+      })
+    },
+    [refreshLineNumbers],
+  )
 
   // create the view once
   useEffect(() => {
@@ -283,18 +330,25 @@ export function Editor() {
         ?.content ?? ''
 
     const updateListener = EditorView.updateListener.of((u) => {
-      if (u.transactions.some((tr) => tr.annotation(programmaticUpdate))) return
-      if (u.docChanged) {
-        const text = u.state.doc.toString()
-        storeRef.current.updateFileContent(currentFileRef.current, text)
+      const isProgrammatic = u.transactions.some((tr) =>
+        tr.annotation(programmaticUpdate),
+      )
+      if (!isProgrammatic) {
+        if (u.docChanged) {
+          const text = u.state.doc.toString()
+          storeRef.current.updateFileContent(currentFileRef.current, text)
+        }
+        if (u.selectionSet || u.docChanged) {
+          const { startLine, endLine } = selectedLines(u.state)
+          storeRef.current.setSourceSelection(
+            currentFileRef.current,
+            startLine,
+            endLine,
+          )
+        }
       }
       if (u.selectionSet || u.docChanged) {
-        const { startLine, endLine } = selectedLines(u.state)
-        storeRef.current.setSourceSelection(
-          currentFileRef.current,
-          startLine,
-          endLine,
-        )
+        queueLineNumberRefresh(u.view)
       }
     })
 
@@ -313,11 +367,13 @@ export function Editor() {
     })
     const inVimCommandMode = () =>
       editorKeymapRef.current === 'vim' && !vimTypingRef.current
+    const initialRelative = storeRef.current.editorLineNumbers === 'relative'
+    appliedLineNumbersRef.current = initialRelative ? 'relative:1' : 'regular'
 
     const extensions: Extension[] = [
       clearGraphSelectionOnEscape,
       vimCompartment.current.of([]),
-      lineNumbers(),
+      lineNumberCompartment.current.of(lineNumberExtension(initialRelative)),
       highlightActiveLine(),
       highlightActiveLineGutter(),
       drawSelection(),
@@ -350,11 +406,30 @@ export function Editor() {
       parent: hostRef.current,
     })
     viewRef.current = view
+    browserFocusedRef.current = document.visibilityState === 'visible' && document.hasFocus()
+    const onWindowFocus = () => {
+      browserFocusedRef.current = document.visibilityState === 'visible'
+      refreshLineNumbers(view)
+    }
+    const onWindowBlur = () => {
+      browserFocusedRef.current = false
+      refreshLineNumbers(view)
+    }
+    const onVisibilityChange = () => {
+      browserFocusedRef.current = document.visibilityState === 'visible' && document.hasFocus()
+      refreshLineNumbers(view)
+    }
+    window.addEventListener('focus', onWindowFocus)
+    window.addEventListener('blur', onWindowBlur)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
+      window.removeEventListener('focus', onWindowFocus)
+      window.removeEventListener('blur', onWindowBlur)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
       view.destroy()
       viewRef.current = null
     }
-  }, [])
+  }, [queueLineNumberRefresh, refreshLineNumbers])
 
   // swap the CodeMirror theme when the resolved appearance changes
   useEffect(() => {
@@ -373,6 +448,7 @@ export function Editor() {
     if (store.editorKeymap === 'standard') {
       vimTypingRef.current = false
       view.dispatch({ effects: vimCompartment.current.reconfigure([]) })
+      refreshLineNumbers(view)
       return
     }
 
@@ -394,7 +470,9 @@ export function Editor() {
         })
         getCM(view)?.on('vim-mode-change', ({ mode }: { mode: string }) => {
           vimTypingRef.current = mode === 'insert' || mode === 'replace'
+          queueLineNumberRefresh(view)
         })
+        refreshLineNumbers(view)
       })
       .catch((error: unknown) => {
         console.error('Failed to load Vim keybindings', error)
@@ -407,7 +485,12 @@ export function Editor() {
           storeRef.current.setEditorKeymap('standard')
         }
       })
-  }, [store.editorKeymap])
+  }, [queueLineNumberRefresh, refreshLineNumbers, store.editorKeymap])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (view) refreshLineNumbers(view)
+  }, [refreshLineNumbers, store.editorLineNumbers])
 
   // reset document when the active file identity changes or its content is
   // replaced outside the editor (docRevision covers reloading the same file)
@@ -523,6 +606,16 @@ export function Editor() {
       role="tabpanel"
       aria-labelledby={`source-file-tab-${activeFileIndex}`}
       ref={hostRef}
+      onPointerEnter={() => {
+        editorHoveredRef.current = true
+        const view = viewRef.current
+        if (view) refreshLineNumbers(view)
+      }}
+      onPointerLeave={() => {
+        editorHoveredRef.current = false
+        const view = viewRef.current
+        if (view) refreshLineNumbers(view)
+      }}
     />
   )
 }

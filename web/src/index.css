@@ -226,6 +226,10 @@ a:hover {
   right: 0;
   z-index: 30;
   width: 264px;
+  max-height: calc(100vh - 52px);
+  max-height: calc(100dvh - 52px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 10px;
   background: var(--bg-1);
   border: 1px solid var(--border-strong);
@@ -294,6 +298,14 @@ a:hover {
 }
 .editor-keymap-seg {
   grid-template-columns: repeat(2, 1fr);
+}
+.settings-option-label {
+  margin: 0 2px 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.seg + .settings-option-label {
+  margin-top: 9px;
 }
 .seg-btn {
   display: inline-flex;

@@ -1,4 +1,11 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { PALETTES, type Mode } from '../lib/palettes'
 import { useTheme } from '../lib/themeContext'
 import { clearLocalSynthesisCache } from '../lib/designCache'
@@ -51,6 +58,32 @@ const MODE_META: { id: Mode; label: string; icon: ReactNode }[] = [
   },
 ]
 
+const EDITOR_KEYMAPS = ['standard', 'vim'] as const
+const EDITOR_LINE_NUMBERS = ['regular', 'relative', 'hybrid'] as const
+
+function moveSegmentedRadio(
+  event: ReactKeyboardEvent<HTMLButtonElement>,
+  index: number,
+  count: number,
+  select: (index: number) => void,
+) {
+  let next: number | null = null
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+    next = (index + 1) % count
+  }
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+    next = (index - 1 + count) % count
+  }
+  if (event.key === 'Home') next = 0
+  if (event.key === 'End') next = count - 1
+  if (next == null) return
+  event.preventDefault()
+  select(next)
+  event.currentTarget.parentElement
+    ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+    [next]?.focus()
+}
+
 export function SettingsMenu() {
   const { palette, mode, resolvedMode, setPalette, setMode } = useTheme()
   const store = useStore(
@@ -59,6 +92,8 @@ export function SettingsMenu() {
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
+      setEditorLineNumbers,
       autoSynthesize,
       setAutoSynthesize,
       autoSynthesisDelayMs,
@@ -68,6 +103,8 @@ export function SettingsMenu() {
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
+      setEditorLineNumbers,
       autoSynthesize,
       setAutoSynthesize,
       autoSynthesisDelayMs,
@@ -123,14 +160,20 @@ export function SettingsMenu() {
           <div className="settings-section">
             <div className="settings-head">Appearance</div>
             <div className="seg" role="radiogroup" aria-label="Appearance mode">
-              {MODE_META.map((m) => (
+              {MODE_META.map((m, index) => (
                 <button
                   key={m.id}
                   type="button"
                   role="radio"
                   aria-checked={mode === m.id}
+                  tabIndex={mode === m.id ? 0 : -1}
                   className={`seg-btn${mode === m.id ? ' active' : ''}`}
                   onClick={() => setMode(m.id)}
+                  onKeyDown={(event) =>
+                    moveSegmentedRadio(event, index, MODE_META.length, (next) =>
+                      setMode(MODE_META[next].id),
+                    )
+                  }
                 >
                   <span className="seg-ic">{m.icon}</span>
                   {m.label}
@@ -172,12 +215,13 @@ export function SettingsMenu() {
 
           <div className="settings-section">
             <div className="settings-head">Editor</div>
+            <div className="settings-option-label">Keybindings</div>
             <div
               className="seg editor-keymap-seg"
               role="radiogroup"
               aria-label="Editor keybindings"
             >
-              {(['standard', 'vim'] as const).map((keymap) => {
+              {EDITOR_KEYMAPS.map((keymap, index) => {
                 const label = keymap === 'standard' ? 'Standard' : 'Vim'
                 return (
                   <button
@@ -185,15 +229,51 @@ export function SettingsMenu() {
                     type="button"
                     role="radio"
                     aria-checked={store.editorKeymap === keymap}
+                    tabIndex={store.editorKeymap === keymap ? 0 : -1}
                     className={`seg-btn${
                       store.editorKeymap === keymap ? ' active' : ''
                     }`}
                     onClick={() => store.setEditorKeymap(keymap)}
+                    onKeyDown={(event) =>
+                      moveSegmentedRadio(
+                        event,
+                        index,
+                        EDITOR_KEYMAPS.length,
+                        (next) => store.setEditorKeymap(EDITOR_KEYMAPS[next]),
+                      )
+                    }
                   >
                     {label}
                   </button>
                 )
               })}
+            </div>
+            <div className="settings-option-label">Line numbers</div>
+            <div className="seg" role="radiogroup" aria-label="Editor line numbers">
+              {EDITOR_LINE_NUMBERS.map((mode, index) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={store.editorLineNumbers === mode}
+                  tabIndex={store.editorLineNumbers === mode ? 0 : -1}
+                  className={`seg-btn${
+                    store.editorLineNumbers === mode ? ' active' : ''
+                  }`}
+                  onClick={() => store.setEditorLineNumbers(mode)}
+                  onKeyDown={(event) =>
+                    moveSegmentedRadio(
+                      event,
+                      index,
+                      EDITOR_LINE_NUMBERS.length,
+                      (next) =>
+                        store.setEditorLineNumbers(EDITOR_LINE_NUMBERS[next]),
+                    )
+                  }
+                >
+                  {mode[0].toUpperCase() + mode.slice(1)}
+                </button>
+              ))}
             </div>
           </div>
 

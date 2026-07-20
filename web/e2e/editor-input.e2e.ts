@@ -15,12 +15,110 @@ async function editorText(editor: Locator): Promise<string> {
   return (await editor.locator('.cm-line').allTextContents()).join('\n')
 }
 
+async function visibleLineNumbers(page: Page): Promise<string[]> {
+  return page.locator('.cm-lineNumbers .cm-gutterElement').evaluateAll((elements) =>
+    elements
+      .filter((element) => getComputedStyle(element).visibility !== 'hidden')
+      .map((element) => element.textContent ?? ''),
+  )
+}
+
+async function moveCursorToLine(editor: Locator, line: number) {
+  await editor.click()
+  await editor.press(process.platform === 'darwin' ? 'Meta+Home' : 'Control+Home')
+  for (let current = 1; current < line; current += 1) {
+    await editor.press('ArrowDown')
+  }
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
   await page.evaluate(() => {
     localStorage.removeItem('synthexplorer.editorKeymap.v1')
+    localStorage.removeItem('synthexplorer.editorLineNumbers.v1')
   })
   await page.reload()
+})
+
+test('switches between regular and relative line numbers and remembers the setting', async ({
+  page,
+}) => {
+  const editor = page.locator('.cm-content')
+  await replaceEditorText(
+    page,
+    Array.from({ length: 12 }, (_, index) => `wire line_${index + 1};`).join('\n'),
+  )
+  await moveCursorToLine(editor, 5)
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12',
+  ])
+
+  await page.getByRole('button', { name: 'Settings' }).click()
+  const regular = page.getByRole('radio', { name: 'Regular', exact: true })
+  const relative = page.getByRole('radio', { name: 'Relative', exact: true })
+  await regular.focus()
+  await regular.press('ArrowRight')
+  await expect(relative).toHaveAttribute('aria-checked', 'true')
+  await expect(relative).toBeFocused()
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
+  ])
+
+  await page.reload()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(
+    page.getByRole('radio', { name: 'Relative', exact: true }),
+  ).toHaveAttribute('aria-checked', 'true')
+})
+
+test('hybrid line numbers follow Vim mode and pointer/browser focus', async ({ page }) => {
+  const editor = page.locator('.cm-content')
+  await replaceEditorText(
+    page,
+    Array.from({ length: 12 }, (_, index) => `wire line_${index + 1};`).join('\n'),
+  )
+  await moveCursorToLine(editor, 5)
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('radio', { name: 'Vim', exact: true }).click()
+  await page.getByRole('radio', { name: 'Hybrid', exact: true }).click()
+
+  await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')
+  await editor.hover()
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
+  ])
+
+  await editor.focus()
+  await editor.press('i')
+  await expect(page.locator('.cm-vim-panel')).toContainText('--INSERT--')
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12',
+  ])
+
+  await editor.press('Escape')
+  await expect(page.locator('.cm-vim-panel')).toContainText('--NORMAL--')
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
+  ])
+
+  await page.locator('.pane-right').hover()
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12',
+  ])
+
+  await editor.hover()
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
+  ])
+
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')))
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12',
+  ])
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+  await expect.poll(() => visibleLineNumbers(page)).toEqual([
+    '4', '3', '2', '1', '5', '1', '2', '3', '4', '5', '6', '7',
+  ])
 })
 
 test('inserts a literal tab at the cursor', async ({ page }) => {
