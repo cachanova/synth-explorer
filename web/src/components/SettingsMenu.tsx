@@ -59,6 +59,8 @@ export function SettingsMenu() {
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
+      setEditorLineNumbers,
       autoSynthesize,
       setAutoSynthesize,
       autoSynthesisDelayMs,
@@ -68,6 +70,8 @@ export function SettingsMenu() {
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      editorLineNumbers,
+      setEditorLineNumbers,
       autoSynthesize,
       setAutoSynthesize,
       autoSynthesisDelayMs,
@@ -172,6 +176,7 @@ export function SettingsMenu() {
 
           <div className="settings-section">
             <div className="settings-head">Editor</div>
+            <div className="settings-option-label">Keybindings</div>
             <div
               className="seg editor-keymap-seg"
               role="radiogroup"
@@ -194,6 +199,23 @@ export function SettingsMenu() {
                   </button>
                 )
               })}
+            </div>
+            <div className="settings-option-label">Line numbers</div>
+            <div className="seg" role="radiogroup" aria-label="Editor line numbers">
+              {(['regular', 'relative', 'hybrid'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={store.editorLineNumbers === mode}
+                  className={`seg-btn${
+                    store.editorLineNumbers === mode ? ' active' : ''
+                  }`}
+                  onClick={() => store.setEditorLineNumbers(mode)}
+                >
+                  {mode[0].toUpperCase() + mode.slice(1)}
+                </button>
+              ))}
             </div>
           </div>
 

@@ -7,8 +7,10 @@ const WORKSPACE_SCHEMA = 1
 const RESET_CONFIRMATION_KEY = 'synthexplorer.confirmResetWorkspace.v1'
 const RESET_PENDING_KEY = 'synthexplorer.workspaceResetPending.v1'
 const EDITOR_KEYMAP_KEY = 'synthexplorer.editorKeymap.v1'
+const EDITOR_LINE_NUMBERS_KEY = 'synthexplorer.editorLineNumbers.v1'
 
 export type EditorKeymap = 'standard' | 'vim'
+export type EditorLineNumbers = 'regular' | 'relative' | 'hybrid'
 
 const MODES = new Set<Mode>([
   'rtl',
@@ -184,6 +186,23 @@ export function loadEditorKeymapPreference(): EditorKeymap {
 export function saveEditorKeymapPreference(keymap: EditorKeymap): void {
   try {
     localStorage.setItem(EDITOR_KEYMAP_KEY, keymap)
+  } catch {
+    // Keep the preference for this session when local storage is unavailable.
+  }
+}
+
+export function loadEditorLineNumbersPreference(): EditorLineNumbers {
+  try {
+    const stored = localStorage.getItem(EDITOR_LINE_NUMBERS_KEY)
+    return stored === 'relative' || stored === 'hybrid' ? stored : 'regular'
+  } catch {
+    return 'regular'
+  }
+}
+
+export function saveEditorLineNumbersPreference(mode: EditorLineNumbers): void {
+  try {
+    localStorage.setItem(EDITOR_LINE_NUMBERS_KEY, mode)
   } catch {
     // Keep the preference for this session when local storage is unavailable.
   }

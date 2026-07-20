@@ -295,6 +295,14 @@ a:hover {
 .editor-keymap-seg {
   grid-template-columns: repeat(2, 1fr);
 }
+.settings-option-label {
+  margin: 0 2px 5px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.seg + .settings-option-label {
+  margin-top: 9px;
+}
 .seg-btn {
   display: inline-flex;
   align-items: center;
