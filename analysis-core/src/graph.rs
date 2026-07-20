@@ -39,6 +39,7 @@ pub struct Edge {
     pub to: NodeId,
     pub from_port: String,
     pub to_port: String,
+    pub to_port_bit: u32,
     pub bit: Option<u32>,
     pub net_name: String,
     pub control: bool,
@@ -74,6 +75,8 @@ pub struct Graph {
 pub enum GraphError {
     #[error("node count exceeds u32 id space")]
     TooManyNodes,
+    #[error("cell port width exceeds u32 index space")]
+    TooManyPortBits,
 }
 
 impl Graph {
@@ -251,7 +254,12 @@ impl Graph {
                 let Some(bits) = cell.connections.get(&input_port) else {
                     continue;
                 };
-                for bit in bits {
+                for (port_bit, bit) in bits.iter().enumerate() {
+                    if bit.is_unconnected() {
+                        continue;
+                    }
+                    let port_bit =
+                        u32::try_from(port_bit).map_err(|_| GraphError::TooManyPortBits)?;
                     let control = is_control_pin_for_cell(&cell.cell_type, &input_port);
                     let net_name = bit_to_name(bit, &builder.net_names);
                     for (driver_id, driver_port) in
@@ -262,6 +270,7 @@ impl Graph {
                             to: sink_id,
                             from_port: driver_port,
                             to_port: input_port.clone(),
+                            to_port_bit: port_bit,
                             bit: bit.net(),
                             net_name: net_name.clone(),
                             control,
@@ -280,6 +289,7 @@ impl Graph {
                     continue;
                 };
                 let net_name = bit_to_name(bit, &builder.net_names);
+                let port_bit = u32::try_from(idx).map_err(|_| GraphError::TooManyPortBits)?;
                 for (driver_id, driver_port) in
                     resolve_drivers(bit, &drivers, &mut builder, &mut const_nodes)?
                 {
@@ -291,6 +301,7 @@ impl Graph {
                         to: sink_id,
                         from_port: driver_port,
                         to_port: port_name.clone(),
+                        to_port_bit: port_bit,
                         bit: bit.net(),
                         net_name: net_name.clone(),
                         control: false,
@@ -527,7 +538,7 @@ pub fn is_control_pin(port: &str) -> bool {
 }
 
 pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
-    if is_control_pin(port) {
+    if is_control_pin(port) || is_clock_pin_for_cell(cell_type, port) {
         return true;
     }
     let upper_port = port.to_ascii_uppercase();
@@ -562,8 +573,9 @@ pub fn is_latch_type(cell_type: &str) -> bool {
 pub fn is_clock_pin_for_cell(cell_type: &str, port: &str) -> bool {
     let upper = port.to_ascii_uppercase();
     // Unambiguous on any cell, including a user blackbox. `$mem` spells its
-    // ports `RD_CLK`/`WR_CLK`.
-    if upper == "CLK" || upper.ends_with("_CLK") {
+    // ports `RD_CLK`/`WR_CLK`, while vendor RAMs use WCLK/RCLK, CLKA/CLKB, or
+    // compound names such as CLKARDCLK.
+    if upper.starts_with("CLK") || upper.ends_with("CLK") {
         return true;
     }
     // On a blackbox, a port named `C`/`E`/`G` is just as likely to be data, so
@@ -858,8 +870,18 @@ mod tests {
         assert!(is_clock_pin_for_cell("FDRE", "c"));
         assert!(is_clock_pin_for_cell("$dff", "CLK"));
         assert!(is_clock_pin_for_cell("$_DFF_P_", "C"));
-        // A memory's clocks keep their `RD_`/`WR_` prefixes.
-        assert!(is_clock_pin_for_cell("$mem_v2", "RD_CLK"));
+        // Memory primitives use both generic and vendor-specific spellings.
+        for pin in [
+            "RD_CLK",
+            "WR_CLK",
+            "WCLK",
+            "RCLK",
+            "CLKA",
+            "CLKB",
+            "CLKARDCLK",
+        ] {
+            assert!(is_clock_pin_for_cell("RAM32M", pin), "RAM32M.{pin}");
+        }
 
         // A clock *enable* and a reset are control pins, but they are real
         // setup-constrained data paths: timing them is correct, so they must

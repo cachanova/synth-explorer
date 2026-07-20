@@ -59,6 +59,7 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('SB_GB'))).toBe('buf')
     expect(symbolKind(cell('$add'))).toBe('arith')
     expect(symbolKind(cell('$mem_v2'))).toBe('memory')
+    expect(symbolKind(cell('RAM32M'))).toBe('memory')
     expect(symbolKind(cell('RAMB36E2'))).toBe('memory')
     expect(symbolKind(cell('CARRY4', { is_boundary: true }))).toBe('box')
     expect(symbolKind(cell('mystery', { seq: true, is_boundary: true }))).toBe('box')

@@ -127,6 +127,41 @@ describe('Paths result completeness', () => {
     expect(new Set(virtualKeys)).toHaveProperty('size', 2)
     expect(markup.match(/<tr[^>]*class="clickable"/g)).toHaveLength(2)
   })
+
+  it('treats boundary input pins as distinct named logical endpoints', () => {
+    getPathsMock.mockClear()
+    const address = {
+      ...path(1),
+      endpoint: {
+        id: 7,
+        kind: 'cell' as const,
+        name: 'memory',
+        cell_type: 'RAM32M',
+        seq: true,
+        register: false,
+      },
+      endpoint_group: 'memory',
+      endpoint_kind: 'blackbox' as const,
+      endpoint_port: 'ADDR',
+      class: 'other' as const,
+    }
+    const writeEnable = {
+      ...address,
+      endpoint_port: 'WE',
+    }
+    pathsData = {
+      paths: [address, writeEnable],
+      comb_loops: [],
+      truncated: false,
+    }
+    getPathsMock.mockResolvedValue(pathsData)
+
+    const markup = renderToStaticMarkup(<Paths />)
+
+    expect(markup).toContain('memory.ADDR')
+    expect(markup).toContain('memory.WE')
+    expect(markup).toContain('one structural route')
+  })
 })
 
 describe('Paths table sorting', () => {

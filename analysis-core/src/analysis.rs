@@ -217,10 +217,24 @@ pub struct InputGroup {
 }
 
 #[derive(Debug, Clone, Serialize, DeepSizeOf)]
+pub struct BoundaryEndpoint {
+    pub name: String,
+    pub node_id: NodeId,
+    pub cell_type: String,
+    pub port: String,
+    pub width: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub src: Option<String>,
+    pub worst_depth: u32,
+    pub bits: Vec<EndpointBit>,
+}
+
+#[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct EndpointsResponse {
     pub registers: Vec<RegisterGroup>,
     pub outputs: Vec<OutputGroup>,
     pub inputs: Vec<InputGroup>,
+    pub boundaries: Vec<BoundaryEndpoint>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -648,6 +662,8 @@ impl SourceRangeIndex {
 }
 
 type PathGroupKey = (String, EndpointKind, PathClass, u32, String, Vec<String>);
+type EndpointTargetGroupKey<'a> = (EndpointKind, &'a str, &'a str);
+type EndpointTargetGroup<'a> = (EndpointTargetGroupKey<'a>, Vec<&'a EndpointTarget>);
 
 impl Analysis {
     pub fn new(graph: &Graph, source_files: Vec<String>) -> Self {
@@ -1346,7 +1362,7 @@ impl Analysis {
         const TARGETS_PER_GROUP_CAP: usize = 64;
         let candidate_cap = limit.max(1).saturating_mul(16).min(MAX_PATH_RESULTS);
         let mut total_targets = 0;
-        let mut grouped_targets: HashMap<(EndpointKind, &str), Vec<&EndpointTarget>> =
+        let mut grouped_targets: HashMap<EndpointTargetGroupKey<'_>, Vec<&EndpointTarget>> =
             HashMap::new();
         for target in self
             .endpoint_targets
@@ -1355,7 +1371,11 @@ impl Analysis {
         {
             total_targets += 1;
             let group = grouped_targets
-                .entry((target.kind, target.group.as_str()))
+                .entry((
+                    target.kind,
+                    target.group.as_str(),
+                    target.endpoint_port.as_str(),
+                ))
                 .or_default();
             if group.len() < TARGETS_PER_GROUP_CAP {
                 group.push(target);
@@ -1372,8 +1392,7 @@ impl Analysis {
             }
         }
 
-        let mut target_groups: Vec<((EndpointKind, &str), Vec<&EndpointTarget>)> =
-            grouped_targets.into_iter().collect();
+        let mut target_groups: Vec<EndpointTargetGroup<'_>> = grouped_targets.into_iter().collect();
         for (_, targets) in &mut target_groups {
             targets.sort_by(|a, b| compare_rank(a, b));
         }
@@ -3069,6 +3088,7 @@ fn discover_endpoints(
     let mut targets = Vec::new();
     let mut register_map: BTreeMap<String, RegisterGroup> = BTreeMap::new();
     let mut register_bits: HashMap<(NodeId, Option<u32>), (String, usize)> = HashMap::new();
+    let mut boundary_map: BTreeMap<(String, NodeId, String), BoundaryEndpoint> = BTreeMap::new();
 
     for node in &graph.nodes {
         if !is_register_node(node) {
@@ -3234,6 +3254,27 @@ fn discover_endpoints(
                 && (!is_addressable_sequential_node(graph, node.id)
                     || !is_depth_input_edge(graph, edge))
             {
+                let depth = edge_depth(graph, node_depth, *edge_idx);
+                let endpoint = boundary_map
+                    .entry((node.name.clone(), node.id, edge.to_port.clone()))
+                    .or_insert_with(|| BoundaryEndpoint {
+                        name: node.name.clone(),
+                        node_id: node.id,
+                        cell_type: node.cell_type.clone().unwrap_or_default(),
+                        port: edge.to_port.clone(),
+                        width: 0,
+                        src: node.src.clone(),
+                        worst_depth: 0,
+                        bits: Vec::new(),
+                    });
+                let port_bit = edge.to_port_bit as usize;
+                endpoint.width = endpoint.width.max(port_bit + 1);
+                endpoint.worst_depth = endpoint.worst_depth.max(depth);
+                endpoint.bits.push(EndpointBit {
+                    bit: port_bit,
+                    node_id: node.id,
+                    depth,
+                });
                 targets.push(EndpointTarget {
                     endpoint: node.id,
                     endpoint_port: edge.to_port.clone(),
@@ -3244,13 +3285,21 @@ fn discover_endpoints(
                         node.id,
                         Some(*edge_idx),
                     ),
-                    depth: edge_depth(graph, node_depth, *edge_idx),
+                    depth,
                     group: node.name.clone(),
                     kind: EndpointKind::Blackbox,
-                    bit: 0,
+                    bit: port_bit,
                 });
             }
         }
+    }
+
+    let mut boundaries: Vec<_> = boundary_map.into_values().collect();
+    for endpoint in &mut boundaries {
+        endpoint
+            .bits
+            .sort_by_key(|bit| (bit.bit, Reverse(bit.depth)));
+        endpoint.bits.dedup_by_key(|bit| bit.bit);
     }
 
     (
@@ -3258,6 +3307,7 @@ fn discover_endpoints(
             registers: register_map.into_values().collect(),
             outputs,
             inputs,
+            boundaries,
         },
         targets,
     )
@@ -3381,7 +3431,11 @@ fn is_direct_endpoint(graph: &Graph, node_id: NodeId) -> bool {
 }
 
 fn control_role(pin: &str) -> ControlRole {
-    match pin.to_ascii_uppercase().as_str() {
+    let upper = pin.to_ascii_uppercase();
+    if upper.starts_with("CLK") || upper.ends_with("CLK") {
+        return ControlRole::Clock;
+    }
+    match upper.as_str() {
         "CLK" | "C" => ControlRole::Clock,
         "R" | "RST" | "ARST" | "SRST" | "CLR" | "LSR" => ControlRole::Reset,
         "S" | "SET" | "PRE" | "SR" => ControlRole::Set,
@@ -4871,6 +4925,7 @@ mod tests {
                 to: 1,
                 from_port: "Y".to_owned(),
                 to_port: "D".to_owned(),
+                to_port_bit: bit,
                 bit: Some(bit),
                 net_name: "wide_bus".to_owned(),
                 control: false,
@@ -6091,6 +6146,7 @@ mod tests {
                 to,
                 from_port: if idx == 0 { "in" } else { "Y" }.to_owned(),
                 to_port: if idx == depth { "out" } else { "A" }.to_owned(),
+                to_port_bit: 0,
                 bit: Some(idx as u32),
                 net_name: format!("n{idx}"),
                 control: false,
@@ -6163,6 +6219,7 @@ mod tests {
                 } else {
                     "A".to_owned()
                 },
+                to_port_bit: 0,
                 bit: Some(bit as u32),
                 net_name: format!("n{bit}"),
                 control: false,
@@ -6287,6 +6344,7 @@ mod tests {
                     to: id,
                     from_port: "in".to_owned(),
                     to_port: "D".to_owned(),
+                    to_port_bit: bit as u32,
                     bit: Some((bit + 1) as u32),
                     net_name: format!("d[{bit}]"),
                     control: false,
@@ -6338,6 +6396,7 @@ mod tests {
                     to: to as NodeId,
                     from_port: "Y".to_owned(),
                     to_port: "A".to_owned(),
+                    to_port_bit: 0,
                     bit: Some(edge_idx as u32),
                     net_name: format!("n{from}_{to}"),
                     control: false,
@@ -6696,6 +6755,7 @@ mod tests {
             } else {
                 "A".to_owned()
             },
+            to_port_bit: 0,
             bit: Some(bit),
             net_name: format!("n{bit}"),
             control: false,

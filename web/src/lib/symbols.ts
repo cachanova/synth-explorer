@@ -132,7 +132,7 @@ const ARITH_GLYPHS: Record<string, string> = {
   REDUCE_XOR: '=1',
 }
 
-const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAMB|URAM|DP16KD|SPRAM|SRL(?:16E|C32E))/i
+const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAM|URAM|DP16KD|SPRAM|SRL(?:16E|C32E))/i
 const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
 const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i

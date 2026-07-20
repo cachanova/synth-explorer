@@ -536,6 +536,7 @@ mod tests {
             to,
             from_port: from_port.to_owned(),
             to_port: to_port.to_owned(),
+            to_port_bit: 0,
             bit: Some(idx as u32),
             net_name: net.to_owned(),
             control: false,

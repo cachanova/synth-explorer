@@ -245,10 +245,22 @@ export interface InputEndpoint {
   bits: { bit: number; node_id: number }[]
 }
 
+export interface BoundaryEndpoint {
+  name: string // boundary-cell display name
+  node_id: number
+  cell_type: string // memory, vendor primitive, or black-box cell type
+  port: string // connected data input pin, e.g. ADDR, WDATA, WE
+  width: number
+  src?: string
+  worst_depth: number
+  bits: EndpointBit[]
+}
+
 export interface EndpointsResponse {
   registers: RegisterEndpoint[]
   outputs: OutputEndpoint[]
   inputs: InputEndpoint[]
+  boundaries: BoundaryEndpoint[]
 }
 
 // --- Path analysis ---

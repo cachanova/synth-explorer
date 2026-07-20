@@ -250,7 +250,9 @@ export function registerControlYFraction(role: ControlRole): number {
 }
 
 export function controlRoleForPin(pin: string): ControlRole {
-  switch (pin.toUpperCase()) {
+  const upper = pin.toUpperCase()
+  if (upper.startsWith('CLK') || upper.endsWith('CLK')) return 'clock'
+  switch (upper) {
     case 'CLK':
     case 'C':
       return 'clock'

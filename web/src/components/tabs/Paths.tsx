@@ -211,13 +211,16 @@ function routeVariants(paths: TimingPath[]): RouteVariant[] {
 }
 
 function logicalEndpointKey(path: TimingPath): string {
-  return `${path.endpoint_kind}:${path.endpoint_group}`
+  return `${path.endpoint_kind}:${path.endpoint_group}:${path.endpoint_port}`
 }
 
 function logicalEndpointName(path: TimingPath): string {
-  return isHiddenName(path.endpoint_group)
+  const group = isHiddenName(path.endpoint_group)
     ? displayNodeName(path.endpoint)
     : path.endpoint_group
+  return path.endpoint_kind === 'blackbox'
+    ? `${group}.${path.endpoint_port}`
+    : group
 }
 
 export function PathEndpointName({ path }: { path: TimingPath }) {

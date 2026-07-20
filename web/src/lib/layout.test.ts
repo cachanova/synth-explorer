@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
+  controlRoleForPin,
   fitViewportToContent,
   interpretResult,
   layoutSubgraph,
@@ -25,6 +26,12 @@ const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): Gra
 })
 
 describe('schematic layout sizing', () => {
+  it('classifies vendor memory clock pin spellings as clocks', () => {
+    for (const pin of ['WCLK', 'RCLK', 'CLKA', 'CLKB', 'CLKARDCLK']) {
+      expect(controlRoleForPin(pin)).toBe('clock')
+    }
+  })
+
   it('gives gates compact schematic proportions', () => {
     expect(nodeDimensions(node(1, '$_AND_'))).toEqual({ width: 76, height: 52 })
   })

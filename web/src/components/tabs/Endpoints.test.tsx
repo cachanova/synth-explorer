@@ -25,6 +25,7 @@ vi.mock('../../useStore', () => ({
   useStore: () => ({
     design: { design_id: 'design' },
     analysisState: 'current',
+    files: [],
     openCone: vi.fn(),
   }),
 }))
@@ -36,6 +37,7 @@ describe('Endpoints result completeness', () => {
     endpointsData = {
       registers: [],
       inputs: [],
+      boundaries: [],
       outputs: Array.from({ length: 101 }, (_, index) => ({
         name: `endpoint-${index + 1}`,
         width: 1,
@@ -49,5 +51,44 @@ describe('Endpoints result completeness', () => {
     expect(markup).toContain('Logical endpoints (101 matched / 101)')
     expect(markup.match(/<tr[^>]*class="clickable"/g)).toHaveLength(101)
     expect(markup).toContain('endpoint-101')
+  })
+
+  it('renders connected memory input pins as logical endpoints', () => {
+    endpointsData = {
+      registers: [],
+      inputs: [],
+      outputs: [],
+      boundaries: [
+        {
+          name: 'memory',
+          node_id: 42,
+          cell_type: 'RAM32M',
+          port: 'ADDR',
+          width: 5,
+          worst_depth: 3,
+          bits: [
+            { bit: 0, node_id: 42, depth: 2 },
+            { bit: 1, node_id: 42, depth: 3 },
+          ],
+        },
+        {
+          name: 'memory',
+          node_id: 42,
+          cell_type: 'RAM32M',
+          port: 'WE',
+          width: 1,
+          worst_depth: 1,
+          bits: [{ bit: 0, node_id: 42, depth: 1 }],
+        },
+      ],
+    }
+
+    const markup = renderToStaticMarkup(<Endpoints />)
+
+    expect(markup).toContain('Logical endpoints (2 matched / 2)')
+    expect(markup).toContain('memory.ADDR')
+    expect(markup).toContain('memory.WE')
+    expect(markup).toContain('Memory input')
+    expect(markup).not.toContain('UNUSED')
   })
 })

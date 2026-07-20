@@ -453,6 +453,91 @@ fn full_netlist_applies_control_and_constant_visibility_before_capping() {
 }
 
 #[test]
+fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "clk":   { "direction": "input", "bits": [2] },
+                "addr":  { "direction": "input", "bits": [3, 4] },
+                "wdata": { "direction": "input", "bits": [5, 6] },
+                "we":    { "direction": "input", "bits": [7] },
+                "rdata": { "direction": "output", "bits": [8, 9] }
+            },
+            "cells": { "ram": {
+                "type": "RAM32M",
+                "port_directions": {
+                    "WCLK": "input", "ADDR": "input", "WDATA": "input",
+                    "WE": "input", "TIED": "input", "UNUSED": "input",
+                    "RDATA": "output"
+                },
+                "connections": {
+                    "WCLK": [2], "ADDR": [3, 4], "WDATA": [5, 6],
+                    "WE": [7], "TIED": ["0"], "UNUSED": ["x", "x"],
+                    "RDATA": [8, 9]
+                }
+            } },
+            "netnames": {
+                "clk": { "bits": [2] }, "addr": { "bits": [3, 4] },
+                "wdata": { "bits": [5, 6] }, "we": { "bits": [7] },
+                "rdata": { "bits": [8, 9] }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["memory.sv".to_owned()]);
+    let ram = graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("RAM32M"))
+        .unwrap();
+
+    let endpoints = analysis.endpoints();
+    let endpoint_ports: Vec<_> = endpoints
+        .boundaries
+        .iter()
+        .filter(|endpoint| endpoint.node_id == ram.id)
+        .map(|endpoint| (endpoint.port.as_str(), endpoint.width))
+        .collect();
+    assert_eq!(
+        endpoint_ports,
+        vec![("ADDR", 2), ("TIED", 1), ("WDATA", 2), ("WE", 1)]
+    );
+
+    let ram_edges: Vec<_> = graph.incoming[ram.id as usize]
+        .iter()
+        .map(|edge| &graph.edges[*edge])
+        .collect();
+    assert!(ram_edges.iter().all(|edge| edge.to_port != "UNUSED"));
+    assert!(
+        ram_edges
+            .iter()
+            .any(|edge| edge.to_port == "WCLK" && edge.control)
+    );
+    let hidden_controls =
+        analysis.full_netlist(&graph, full_options(100, false, true, false), None);
+    assert!(
+        hidden_controls
+            .edges
+            .iter()
+            .all(|edge| edge.to_port != "WCLK")
+    );
+
+    let paths = analysis.paths(&graph, 100, None).paths;
+    let path_ports: HashSet<_> = paths
+        .iter()
+        .filter(|path| path.endpoint.id == ram.id)
+        .map(|path| path.endpoint_port.as_str())
+        .collect();
+    assert_eq!(path_ports, HashSet::from(["ADDR", "TIED", "WDATA", "WE"]));
+    assert!(paths.iter().any(|path| {
+        path.endpoint.id == ram.id && path.endpoint_port == "ADDR" && path.bits.contains(&1)
+    }));
+}
+
+#[test]
 fn comb_loop_nodes_are_comb_cells() {
     let (graph, analysis) = fixture("comb_loop_rtl.json");
     assert_eq!(analysis.comb_loops.len(), 2);
