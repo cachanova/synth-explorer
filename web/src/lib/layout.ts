@@ -232,6 +232,8 @@ export const REG_CLOCK_Y_FRAC = 0.72
 export const REG_RESET_Y_FRAC = 0.5
 export const REG_SET_Y_FRAC = 0.14
 export const REG_ENABLE_Y_FRAC = 0.88
+const PIN_ROW_HEIGHT = 14
+const CONTROL_ROW_HEIGHT = 13
 
 /** Fixed schematic position for a register's non-data input pin. */
 export function registerControlYFraction(role: ControlRole): number {
@@ -250,7 +252,9 @@ export function registerControlYFraction(role: ControlRole): number {
 }
 
 export function controlRoleForPin(pin: string): ControlRole {
-  switch (pin.toUpperCase()) {
+  const upper = pin.toUpperCase()
+  if (upper.startsWith('CLK') || upper.endsWith('CLK')) return 'clock'
+  switch (upper) {
     case 'CLK':
     case 'C':
       return 'clock'
@@ -282,6 +286,71 @@ function isRegKind(node: GraphNode): boolean {
   return kind === 'reg' || kind === 'latch'
 }
 
+export function canonicalPinNames(pins: Iterable<string>): string[] {
+  return [...new Set(pins)].sort()
+}
+
+interface PinCatalog {
+  incoming: Map<number, string[]>
+  outgoing: Map<number, string[]>
+  incomingIndex: Map<number, Map<string, number>>
+  outgoingIndex: Map<number, Map<string, number>>
+}
+
+function collectPinCatalog(edges: readonly GraphEdge[]): PinCatalog {
+  const incomingSets = new Map<number, Set<string>>()
+  const outgoingSets = new Map<number, Set<string>>()
+  const add = (map: Map<number, Set<string>>, id: number, pin: string) => {
+    let pins = map.get(id)
+    if (!pins) {
+      pins = new Set()
+      map.set(id, pins)
+    }
+    pins.add(pin)
+  }
+  for (const edge of edges) {
+    add(outgoingSets, edge.from, edge.from_port)
+    add(incomingSets, edge.to, edge.to_port)
+  }
+  const build = (sets: Map<number, Set<string>>) => {
+    const names = new Map<number, string[]>()
+    const positions = new Map<number, Map<string, number>>()
+    for (const [id, pins] of sets) {
+      const ordered = canonicalPinNames(pins)
+      names.set(id, ordered)
+      positions.set(id, new Map(ordered.map((pin, index) => [pin, index])))
+    }
+    return { names, positions }
+  }
+  const incoming = build(incomingSets)
+  const outgoing = build(outgoingSets)
+  return {
+    incoming: incoming.names,
+    outgoing: outgoing.names,
+    incomingIndex: incoming.positions,
+    outgoingIndex: outgoing.positions,
+  }
+}
+
+function dimensionsForPins(
+  node: GraphNode,
+  incoming: number,
+  outgoing: number,
+): { width: number; height: number } {
+  const base = nodeDimensions(node)
+  if (isRegKind(node)) return base
+  const pinRows = Math.max(incoming, outgoing)
+  const controlHeight = controlsFor(node).length * CONTROL_ROW_HEIGHT
+  return {
+    width: base.width,
+    height: Math.max(base.height, (pinRows + 1) * PIN_ROW_HEIGHT + controlHeight),
+  }
+}
+
+function pinBodyHeight(node: GraphNode, height: number): number {
+  return Math.max(1, height - controlsFor(node).length * CONTROL_ROW_HEIGHT)
+}
+
 export function toElkGraph(
   sub: Subgraph,
   nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
@@ -291,22 +360,9 @@ export function toElkGraph(
   // Distinct input/output pin names per node, so every component's edges route
   // to spread-out pins on the west/east sides instead of collapsing to the box
   // centre. Sorted for a stable top-to-bottom pin order.
-  const inPins = new Map<number, string[]>()
-  const outPins = new Map<number, string[]>()
-  const addPin = (map: Map<number, string[]>, id: number, pin: string) => {
-    let arr = map.get(id)
-    if (!arr) {
-      arr = []
-      map.set(id, arr)
-    }
-    if (!arr.includes(pin)) arr.push(pin)
-  }
-  for (const e of sub.edges) {
-    addPin(outPins, e.from, e.from_port)
-    addPin(inPins, e.to, e.to_port)
-  }
-  for (const arr of inPins.values()) arr.sort()
-  for (const arr of outPins.values()) arr.sort()
+  const pins = collectPinCatalog(sub.edges)
+  const inPins = pins.incoming
+  const outPins = pins.outgoing
 
   const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
   const controlPins = new Map<number, Map<string, ControlRole>>()
@@ -324,7 +380,9 @@ export function toElkGraph(
 
   const regIds = new Set<number>()
   const children: ElkNode[] = sub.nodes.map((n) => {
-    const { width, height } = nodeDimensions(n)
+    const ins = inPins.get(n.id) ?? []
+    const outs = outPins.get(n.id) ?? []
+    const { width, height } = dimensionsForPins(n, ins.length, outs.length)
     if (isRegKind(n)) {
       regIds.add(n.id)
       // Fixed D/control (west) and Q (east) ports keep every visible register
@@ -362,8 +420,6 @@ export function toElkGraph(
         ],
       }
     }
-    const ins = inPins.get(n.id) ?? []
-    const outs = outPins.get(n.id) ?? []
     if (ins.length === 0 && outs.length === 0) {
       return { id: String(n.id), width, height }
     }
@@ -371,13 +427,13 @@ export function toElkGraph(
       ...ins.map((pin, i) => ({
         id: `${n.id}#i:${pin}`,
         x: 0,
-        y: ((i + 1) * height) / (ins.length + 1),
+        y: ((i + 1) * pinBodyHeight(n, height)) / (ins.length + 1),
         layoutOptions: { 'elk.port.side': 'WEST' },
       })),
       ...outs.map((pin, j) => ({
         id: `${n.id}#o:${pin}`,
         x: width,
-        y: ((j + 1) * height) / (outs.length + 1),
+        y: ((j + 1) * pinBodyHeight(n, height)) / (outs.length + 1),
         layoutOptions: { 'elk.port.side': 'EAST' },
       })),
     ]
@@ -442,11 +498,16 @@ function assertRenderableSubgraph(sub: Subgraph): void {
 export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
   const byId = new Map<number, GraphNode>()
   for (const n of sub.nodes) byId.set(n.id, n)
+  const pins = collectPinCatalog(sub.edges)
 
   const nodes: LaidOutNode[] = (root.children ?? []).map((c) => {
     const id = Number(c.id)
     const node = byId.get(id)!
-    const fallback = nodeDimensions(node)
+    const fallback = dimensionsForPins(
+      node,
+      pins.incoming.get(id)?.length ?? 0,
+      pins.outgoing.get(id)?.length ?? 0,
+    )
     return {
       id,
       x: c.x ?? 0,
@@ -473,13 +534,22 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       : edge.control
         ? registerControlYFraction(controlRoleForPin(edge.to_port))
         : REG_DATA_IN_Y_FRAC
+    if (!register) {
+      const names = output ? pins.outgoing.get(id) : pins.incoming.get(id)
+      const positions = output ? pins.outgoingIndex.get(id) : pins.incomingIndex.get(id)
+      const pin = output ? edge.from_port : edge.to_port
+      const index = positions?.get(pin)
+      const height = pinBodyHeight(laidOut.node, laidOut.height)
+      return {
+        x: laidOut.x + (output ? laidOut.width : 0),
+        y: laidOut.y + (index == null || names == null
+          ? height / 2
+          : ((index + 1) * height) / (names.length + 1)),
+      }
+    }
     return {
       x: laidOut.x + (output ? laidOut.width : 0),
-      y:
-        laidOut.y +
-        (register
-          ? Math.min(laidOut.height, REG_BODY_HEIGHT) * registerYFraction
-          : laidOut.height / 2),
+      y: laidOut.y + Math.min(laidOut.height, REG_BODY_HEIGHT) * registerYFraction,
     }
   }
   const edges: LaidOutEdge[] = sub.edges.map((src, i) => {

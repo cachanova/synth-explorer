@@ -536,6 +536,7 @@ mod tests {
             to,
             from_port: from_port.to_owned(),
             to_port: to_port.to_owned(),
+            to_port_bit: 0,
             bit: Some(idx as u32),
             net_name: net.to_owned(),
             control: false,
@@ -721,10 +722,10 @@ mod tests {
     fn register_bank_seeds_one_group_per_register_vector() {
         let graph = register_bank_graph(2, 8);
         let analysis = Analysis::new(&graph, vec!["bank.sv".to_owned()]);
-        let registers = analysis.endpoints().registers;
+        let registers = &analysis.endpoints().registers;
         assert_eq!(registers.len(), 2);
 
-        let partition = GroupPartition::build(&graph, &registers);
+        let partition = GroupPartition::build(&graph, registers);
 
         assert_eq!(partition.groups.len(), 2);
         for (idx, group) in partition.groups.iter().enumerate() {

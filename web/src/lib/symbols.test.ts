@@ -8,6 +8,7 @@ import {
   inferPortDirection,
   inferPortDirections,
   inputBubbleAt,
+  isSpecialPrimitive,
   shapePath,
   symbolKind,
 } from './symbols'
@@ -59,9 +60,33 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('SB_GB'))).toBe('buf')
     expect(symbolKind(cell('$add'))).toBe('arith')
     expect(symbolKind(cell('$mem_v2'))).toBe('memory')
+    expect(symbolKind(cell('RAM32M'))).toBe('memory')
     expect(symbolKind(cell('RAMB36E2'))).toBe('memory')
     expect(symbolKind(cell('CARRY4', { is_boundary: true }))).toBe('box')
     expect(symbolKind(cell('mystery', { seq: true, is_boundary: true }))).toBe('box')
+  })
+
+  it('identifies vendor-specific implementation primitives', () => {
+    for (const primitive of [
+      'CARRY4', 'SB_LUT4', 'TRELLIS_COMB', 'IBUF', 'LUT6', 'XORCY', 'MUXCY', 'INV',
+    ]) {
+      expect(isSpecialPrimitive(cell(primitive)), primitive).toBe(true)
+    }
+    expect(isSpecialPrimitive(cell('$add'))).toBe(false)
+    expect(isSpecialPrimitive(cell('mystery'))).toBe(false)
+  })
+
+  it('does not classify unrelated RAM-prefixed cells as memories', () => {
+    expect(symbolKind(cell('ramp_generator'))).toBe('box')
+  })
+
+  it('recognizes memory primitives across supported synthesis families', () => {
+    for (const primitive of [
+      '$mem_v2', 'RAM32M', 'RAMB36E2', 'URAM288', 'DP16KD', 'SB_RAM40_4K',
+      'SB_SPRAM256KA',
+    ]) {
+      expect(symbolKind(cell(primitive)), primitive).toBe('memory')
+    }
   })
 
   it('keeps the base symbol for grouped vector nodes', () => {

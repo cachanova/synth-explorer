@@ -97,6 +97,12 @@ impl YosysBit {
             Self::Const(value) => Some(value.as_str()),
         }
     }
+
+    /// Yosys uses an unknown bit for an omitted cell input connection. It is
+    /// not a structural driver and should not create a synthetic pin/edge.
+    pub fn is_unconnected(&self) -> bool {
+        matches!(self, Self::Const(value) if value.eq_ignore_ascii_case("x"))
+    }
 }
 
 pub fn parse_value(value: Value) -> Result<YosysNetlist, NetlistError> {

@@ -60,6 +60,10 @@ struct ConeQuery {
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
     group_vectors: Option<bool>,
+    root_port: Option<String>,
+    root_port_bit: Option<u32>,
+    #[serde(default)]
+    root_port_bits: Vec<u32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -147,7 +151,7 @@ impl AnalysisSession {
     }
 
     pub fn endpoints_json(&self) -> Result<String, JsValue> {
-        to_json(&self.design.analysis.endpoints())
+        to_json(self.design.analysis.endpoints())
     }
 
     pub fn timing_json(&self, query_json: &str) -> Result<String, JsValue> {
@@ -236,6 +240,10 @@ impl AnalysisSession {
                     hide_control: query.hide_control.unwrap_or(true),
                     hide_const: query.hide_const.unwrap_or(true),
                     show_infrastructure: query.show_infrastructure.unwrap_or(false),
+                    root_port: query.root_port.as_deref(),
+                    root_port_bit: query.root_port_bit,
+                    root_port_bits: (!query.root_port_bits.is_empty())
+                        .then_some(query.root_port_bits.as_slice()),
                 },
                 grouping,
             )

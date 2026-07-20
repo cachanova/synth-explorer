@@ -2,14 +2,17 @@ import { useEffect, useMemo, useState } from 'react'
 import { getEndpoints } from '../../api'
 import { formatBitRanges } from '../../lib/bitRanges'
 import { fuzzyFilter } from '../../lib/fuzzy'
+import { boundaryFaninRequest } from '../../lib/endpointCone'
 import {
   displayCellType,
   isHiddenName,
   shortNetName,
 } from '../../lib/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
+import { symbolKind } from '../../lib/symbols'
 import type { Store } from '../../store'
 import type {
+  BoundaryEndpoint,
   EndpointBit,
   OutputAlias,
   OutputEndpoint,
@@ -20,11 +23,12 @@ import { SrcLink } from '../SrcLink'
 import { StaleResultsChip } from '../StaleResultsChip'
 import { VirtualTable } from '../VirtualTable'
 
-type EndpointFilter = 'all' | 'register' | 'registered_output' | 'output'
+type EndpointFilter = 'all' | 'register' | 'registered_output' | 'output' | 'boundary'
 
 type LogicalEndpoint =
   | { kind: 'register'; endpoint: RegisterEndpoint }
   | { kind: 'output'; endpoint: OutputEndpoint }
+  | { kind: 'boundary'; endpoint: BoundaryEndpoint }
 
 const BIT_PAGE_SIZE = 64
 
@@ -53,10 +57,14 @@ export function Endpoints() {
       ...(data?.outputs ?? []).map(
         (endpoint): LogicalEndpoint => ({ kind: 'output', endpoint }),
       ),
+      ...(data?.boundaries ?? []).map(
+        (endpoint): LogicalEndpoint => ({ kind: 'boundary', endpoint }),
+      ),
     ]
     const byKind = all.filter((row) => {
       if (kindFilter === 'all') return true
       if (kindFilter === 'output') return row.kind === 'output'
+      if (kindFilter === 'boundary') return row.kind === 'boundary'
       if (row.kind !== 'register') return false
       if (kindFilter === 'registered_output') {
         return row.endpoint.output_aliases.length > 0
@@ -75,7 +83,10 @@ export function Endpoints() {
   if (loading && !data) return <div className="empty-state">Loading endpoints…</div>
   if (error) return <div className="empty-state">Failed to load endpoints: {error}</div>
 
-  const total = (data?.registers.length ?? 0) + (data?.outputs.length ?? 0)
+  const total =
+    (data?.registers.length ?? 0) +
+    (data?.outputs.length ?? 0) +
+    (data?.boundaries.length ?? 0)
   const toggleRow = (key: string) => {
     setOpenRows((current) => {
       const next = new Set(current)
@@ -112,12 +123,18 @@ export function Endpoints() {
           <option value="register">Registers</option>
           <option value="registered_output">Registered outputs</option>
           <option value="output">Combinational outputs</option>
+          <option value="boundary">Boundary inputs</option>
         </select>
       </div>
 
       <div className="section-title">
         Logical endpoints ({rows.length} matched / {total})
       </div>
+      {data?.boundaries_truncated && (
+        <div className="msg">
+          Boundary inputs truncated to the analysis safety limit; refine the design to inspect omitted pins.
+        </div>
+      )}
       {rows.length === 0 ? (
         <div className="faint">No matching logical endpoints.</div>
       ) : (
@@ -126,7 +143,9 @@ export function Endpoints() {
           columnWidths={['28%', '15%', '8%', '20%', '10%', '19%']}
           getRowKey={(index) => {
             const row = rows[index]
-            return `${row.kind}:${row.endpoint.name}`
+            return row.kind === 'boundary'
+              ? `${row.kind}:${row.endpoint.node_id}:${row.endpoint.port}`
+              : `${row.kind}:${row.endpoint.name}`
           }}
           resetKey={`${filter}:${kindFilter}`}
           header={
@@ -141,7 +160,9 @@ export function Endpoints() {
           }
           renderRow={(index) => {
             const row = rows[index]
-            const key = `${row.kind}:${row.endpoint.name}`
+            const key = row.kind === 'boundary'
+              ? `${row.kind}:${row.endpoint.node_id}:${row.endpoint.port}`
+              : `${row.kind}:${row.endpoint.name}`
             return (
               row.kind === 'register' ? (
                 <RegisterRow
@@ -152,8 +173,17 @@ export function Endpoints() {
                   bitPage={bitPages.get(key) ?? 0}
                   onBitPageChange={(page) => setBitPage(key, page)}
                 />
-              ) : (
+              ) : row.kind === 'output' ? (
                 <OutputRow
+                  endpoint={row.endpoint}
+                  onOpen={store.openCone}
+                  open={openRows.has(key)}
+                  onToggle={() => toggleRow(key)}
+                  bitPage={bitPages.get(key) ?? 0}
+                  onBitPageChange={(page) => setBitPage(key, page)}
+                />
+              ) : (
+                <BoundaryRow
                   endpoint={row.endpoint}
                   onOpen={store.openCone}
                   open={openRows.has(key)}
@@ -174,6 +204,9 @@ type Opener = Store['openCone']
 
 function endpointSearchText(row: LogicalEndpoint): string {
   if (row.kind === 'output') return `${row.endpoint.name} combinational output`
+  if (row.kind === 'boundary') {
+    return `${row.endpoint.name} ${row.endpoint.port} ${row.endpoint.cell_type} boundary memory input`
+  }
   const endpoint = row.endpoint
   return [
     endpoint.name,
@@ -183,6 +216,26 @@ function endpointSearchText(row: LogicalEndpoint): string {
     endpoint.output_aliases.map((alias) => alias.name).join(' '),
     endpoint.output_aliases.length > 0 ? 'registered output' : 'register',
   ].join(' ')
+}
+
+function boundaryDisplayName(endpoint: BoundaryEndpoint): string {
+  const cellName = isHiddenName(endpoint.name)
+    ? displayCellType(endpoint.cell_type)
+    : endpoint.name
+  return `${cellName}.${endpoint.port}`
+}
+
+function boundaryKind(endpoint: BoundaryEndpoint): string {
+  return symbolKind({
+    id: endpoint.node_id,
+    kind: 'cell',
+    name: endpoint.name,
+    cell_type: endpoint.cell_type,
+    seq: true,
+    register: false,
+  }) === 'memory'
+    ? 'Memory input'
+    : 'Boundary input'
 }
 
 function bitLabel(name: string, width: number, bit: number): string {
@@ -246,6 +299,7 @@ function BitsRow({
   onOpen,
   page,
   onPageChange,
+  rootPort,
 }: {
   name: string
   width: number
@@ -257,6 +311,7 @@ function BitsRow({
   onOpen: Opener
   page: number
   onPageChange: (page: number) => void
+  rootPort?: string
 }) {
   const sortedBits = useMemo(
     () => [...bits].sort((a, b) => b.bit - a.bit),
@@ -282,9 +337,18 @@ function BitsRow({
                 title={`${openTitle} ${bitLabel(name, width, bit.bit)}`}
                 onClick={() =>
                   onOpen({
-                    node: bit.node_id,
-                    dir: 'fanin',
-                    label: `${bitLabel(name, width, bit.bit)} (fanin)`,
+                    ...(rootPort == null
+                      ? {
+                          node: bit.node_id,
+                          dir: 'fanin' as const,
+                          label: `${bitLabel(name, width, bit.bit)} (fanin)`,
+                        }
+                      : boundaryFaninRequest(
+                          bit.node_id,
+                          `${bitLabel(name, width, bit.bit)} (fanin)`,
+                          rootPort,
+                          bit.bit,
+                        )),
                   })
                 }
               >
@@ -346,7 +410,6 @@ function RegisterRow({
         className={`clickable${open ? ' expanded' : ''}`}
         role="row"
         onClick={() =>
-          endpoint.bits.length > 0 &&
           onOpen({
             nodes: endpoint.bits.map((bit) => bit.node_id),
             dir: 'fanin',
@@ -466,6 +529,71 @@ function OutputRow({
           onOpen={onOpen}
           page={bitPage}
           onPageChange={onBitPageChange}
+        />
+      )}
+    </>
+  )
+}
+
+function BoundaryRow({
+  endpoint,
+  onOpen,
+  open,
+  onToggle,
+  bitPage,
+  onBitPageChange,
+}: {
+  endpoint: BoundaryEndpoint
+  onOpen: Opener
+  open: boolean
+  onToggle: () => void
+  bitPage: number
+  onBitPageChange: (page: number) => void
+}) {
+  const name = boundaryDisplayName(endpoint)
+  return (
+    <>
+      <tr
+        className={`clickable${open ? ' expanded' : ''}`}
+        role="row"
+        onClick={() =>
+          onOpen({
+            ...boundaryFaninRequest(endpoint.node_id, `${name} (fanin)`, endpoint.port),
+            highlight: [endpoint.node_id],
+          })
+        }
+        title={`Open the fanin cone of ${name}`}
+      >
+        <td role="cell">
+          <span className="mono">{name}</span>
+          {endpoint.bits.length > 0 && <ExpandButton open={open} onToggle={onToggle} />}
+        </td>
+        <td role="cell"><span className="tag">{boundaryKind(endpoint)}</span></td>
+        <td
+          role="cell"
+          className="num"
+          title={endpoint.bits_truncated ? 'Additional connected bits omitted by the safety limit' : undefined}
+        >
+          {endpoint.bits.length}{endpoint.bits_truncated ? '+' : ''}
+        </td>
+        <td role="cell"><span className="tag">{displayCellType(endpoint.cell_type)}</span></td>
+        <td role="cell" className="num" title={`Worst structural depth into ${endpoint.port}`}>
+          <span className="depth-chip">{endpoint.worst_depth}</span>
+        </td>
+        <td role="cell"><SrcLink src={endpoint.src} /></td>
+      </tr>
+      {open && (
+        <BitsRow
+          name={name}
+          width={endpoint.width}
+          bits={endpoint.bits}
+          depthLabel="Input-cone depth"
+          openTitle="Open boundary input fanin for"
+          colSpan={6}
+          onOpen={onOpen}
+          page={bitPage}
+          onPageChange={onBitPageChange}
+          rootPort={endpoint.port}
         />
       )}
     </>
