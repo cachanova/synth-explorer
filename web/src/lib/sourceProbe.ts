@@ -2,7 +2,7 @@ import type { SourceSelectionStatus } from '../types'
 
 export interface SourceProbePresentation {
   acceptReturnedGraph: boolean
-  highlightSelection: boolean
+  showDirectSelection: boolean
   message: string | null
 }
 
@@ -13,19 +13,19 @@ export function sourceProbePresentation(
     case null:
       return {
         acceptReturnedGraph: true,
-        highlightSelection: false,
+        showDirectSelection: false,
         message: null,
       }
     case 'mapped':
       return {
         acceptReturnedGraph: true,
-        highlightSelection: true,
+        showDirectSelection: true,
         message: null,
       }
     case 'mapping_incomplete':
       return {
         acceptReturnedGraph: true,
-        highlightSelection: true,
+        showDirectSelection: true,
         message:
           'Source mapping is incomplete because provenance limits were reached; the schematic shows only retained associations.',
       }
@@ -34,13 +34,13 @@ export function sourceProbePresentation(
     case 'optimized_or_absorbed':
       return {
         acceptReturnedGraph: false,
-        highlightSelection: false,
+        showDirectSelection: false,
         message: null,
       }
     case 'unmapped':
       return {
         acceptReturnedGraph: false,
-        highlightSelection: false,
+        showDirectSelection: false,
         message: null,
       }
   }

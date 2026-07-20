@@ -6,7 +6,7 @@ describe('source probe presentation', () => {
     const presentation = sourceProbePresentation('mapping_incomplete')
 
     expect(presentation.acceptReturnedGraph).toBe(true)
-    expect(presentation.highlightSelection).toBe(true)
+    expect(presentation.showDirectSelection).toBe(true)
     expect(presentation.message).toContain('mapping is incomplete')
     expect(presentation.message).toContain('retained associations')
     expect(presentation.message).not.toMatch(/optimi[sz]ed|absorbed/i)

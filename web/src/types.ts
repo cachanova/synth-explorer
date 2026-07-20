@@ -64,7 +64,8 @@ export type SourceSelectionStatus =
 export interface SourceSelectionResult {
   status: SourceSelectionStatus
   control: boolean
-  highlight: number[]
+  /** Displayed graph nodes directly attributable to the selected source range. */
+  directIds: number[]
   graph: Subgraph
 }
 

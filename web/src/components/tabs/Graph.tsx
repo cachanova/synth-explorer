@@ -277,7 +277,7 @@ export function Graph({ active }: { active: boolean }) {
             graph: response.graph,
             status: response.status,
             control: response.control,
-            highlight: response.highlight,
+            directIds: response.directIds,
           }))
         : getCone(requestDesignId, {
             node: request.node,
@@ -293,10 +293,10 @@ export function Graph({ active }: { active: boolean }) {
             graph,
             status: null,
             control: false,
-            highlight: [],
+            directIds: [],
           }))
     fetchRelevantGraph
-      .then(({ graph, status, control, highlight }) => {
+      .then(({ graph, status, control, directIds }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         setSourceControl(control)
         const presentation = sourceProbePresentation(status)
@@ -309,8 +309,8 @@ export function Graph({ active }: { active: boolean }) {
             relevantIds: graph.nodes.map((node) => node.id),
             overlayIds: [
               ...request.highlight,
-              ...(request.kind === 'source' && presentation.highlightSelection
-                ? highlight
+              ...(request.kind === 'source' && presentation.showDirectSelection
+                ? directIds
                 : []),
             ],
           })

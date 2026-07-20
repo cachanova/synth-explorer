@@ -522,10 +522,24 @@ test('source selections and Focus use the in-browser exploration worker', async 
   await expect(focus).not.toBeChecked()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+  const directNodeIds = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+  )
+  const dimmedNodes = page.locator('.g-node-body[data-relevant="0"]')
+  await expect.poll(() => dimmedNodes.count()).toBeGreaterThan(0)
+  await expect(dimmedNodes.first()).toHaveCSS('opacity', '0.25')
 
   await focus.check()
   await expect(focus).toBeChecked()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThan(fullNodeIds.length)
+  await expect
+    .poll(() =>
+      page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+    )
+    .toEqual(directNodeIds)
+  await expect(page.locator('.g-node-body[data-relevant="0"]')).toHaveCount(0)
   const focusedNodeCount = await page.locator('.g-node-body').count()
   expect(focusedNodeCount).toBeGreaterThan(0)
 
