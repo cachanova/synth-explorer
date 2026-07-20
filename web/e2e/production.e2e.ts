@@ -513,9 +513,6 @@ test('source selections and Focus use the in-browser exploration worker', async 
   )
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press('Control+End')
   await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
   await expect(focus).toBeEnabled()
   await expect(focus).not.toBeChecked()
