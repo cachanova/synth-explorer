@@ -24,10 +24,9 @@ analysis, caching, and graph interaction require no server requests.
 6. `analysis.worker.ts` loads those netlists into the canonical Rust
    `analysis-core` compiled to WebAssembly.
 7. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
-   projections, source maps, and node details are worker messages.
-8. `exploration.worker.ts` performs the one browser source-selection projection
-   against the Rust-produced exploration snapshot; elkjs lays out bounded
-   subgraphs in its own worker.
+   projections, source maps, source selections, and node details are worker
+   messages. Results are bounded before crossing the worker boundary.
+8. elkjs lays out bounded subgraphs in its own worker.
 
 There is no HTTP API, application server, remote design identifier, account,
 or shared design store. The twelve-character design ID shown in the UI is only
@@ -38,9 +37,8 @@ a display prefix of the full local cache digest.
 - `web/src/lib/yosysScript.ts` is the only synthesis-script builder. Both the
   browser worker and local calibration CLI use it.
 - `web/src/lib/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
-- `analysis-core/` is the only netlist/graph analysis implementation.
-- `web/src/lib/exploration.ts` is the only source-selection projection
-  implementation and runs in `exploration.worker.ts`.
+- `analysis-core/` is the only netlist/graph and source-selection analysis
+  implementation.
 - IndexedDB stores the current editor workspace and is the only mutable
   completed-design cache. Those records live in separate databases and have
   separate reset controls. Immutable precomputed example artifacts only seed

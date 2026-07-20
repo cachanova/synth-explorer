@@ -35,8 +35,8 @@ Each runtime responsibility has one implementation:
 
 - production synthesis script: `web/src/lib/yosysScript.ts`;
 - synthesis executor: browser Yosys worker;
-- structural analysis: Rust `analysis-core` in the analysis worker;
-- source-selection projection: TypeScript exploration worker;
+- structural and source-selection analysis: Rust `analysis-core` in the
+  analysis worker;
 - completed design cache: browser IndexedDB.
 
 There is no runtime feature flag, remote fallback, alternate endpoint, native

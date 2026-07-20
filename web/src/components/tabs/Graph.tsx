@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiRequestError, getCone, getNetlist } from '../../api'
-import {
-  analyzeSourceInBrowser,
-  initializeExploration,
-  resetExploration,
-} from '../../lib/explorationClient'
+import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
@@ -120,22 +116,6 @@ export function Graph({ active }: { active: boolean }) {
     return () => window.removeEventListener('keydown', clearSelection)
   }, [active, clearGraphSelection])
 
-  useEffect(() => {
-    if (!design) {
-      resetExploration()
-      return
-    }
-    if (!active || analysisState !== 'current') return
-    let current = true
-    void initializeExploration(design.design_id).catch((reason) => {
-      if (!current || (reason instanceof DOMException && reason.name === 'AbortError')) return
-      setError(reason instanceof Error ? reason.message : String(reason))
-    })
-    return () => {
-      current = false
-    }
-  }, [active, analysisState, design])
-
   // Every option changes a graph projection. Source projections are local;
   // full and node-cone projections still come from the analysis worker.
   const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}`
@@ -175,20 +155,28 @@ export function Graph({ active }: { active: boolean }) {
       cached?.controller.abort()
       const fullController = new AbortController()
       let entry: FullGraphCacheEntry
-      const promise = getNetlist(
-        requestDesignId,
-        {
-          max_nodes: graphOptions.maxNodes,
-          show_infrastructure: false,
-          group_vectors: graphOptions.groupVectors,
-          hide_control: graphOptions.hideControl,
-          hide_const: graphOptions.hideConst,
-        },
-        fullController.signal,
-      ).catch((error) => {
-        if (fullGraphCache.current === entry) fullGraphCache.current = null
-        throw error
-      })
+      // Let the selection effect in this commit post its bounded query first.
+      // The analysis worker is synchronous, so queueing a whole-netlist scan
+      // first would otherwise head-of-line block the responsive source result.
+      const promise = Promise.resolve()
+        .then(() => {
+          fullController.signal.throwIfAborted()
+          return getNetlist(
+            requestDesignId,
+            {
+              max_nodes: graphOptions.maxNodes,
+              show_infrastructure: false,
+              group_vectors: graphOptions.groupVectors,
+              hide_control: graphOptions.hideControl,
+              hide_const: graphOptions.hideConst,
+            },
+            fullController.signal,
+          )
+        })
+        .catch((error) => {
+          if (fullGraphCache.current === entry) fullGraphCache.current = null
+          throw error
+        })
       entry = { key: fullGraphKey, controller: fullController, promise }
       fullGraphCache.current = entry
       return promise

@@ -492,7 +492,19 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   expect(apiRequests).toEqual([])
 })
 
-test('source selections and Focus use the in-browser exploration worker', async ({ page }) => {
+test('source selections and Focus use the in-browser Rust analysis worker', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const originalPostMessage = Worker.prototype.postMessage
+    Object.defineProperty(Worker.prototype, 'postMessage', {
+      configurable: true,
+      value: function (...args: unknown[]) {
+        requests.push(args[0])
+        return Reflect.apply(originalPostMessage, this, args)
+      },
+    })
+    ;(window as typeof window & { __workerRequests?: unknown[] }).__workerRequests = requests
+  })
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
@@ -514,7 +526,38 @@ test('source selections and Focus use the in-browser exploration worker', async 
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
   await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
-  await expect(focus).toBeEnabled()
+  await expect(focus).toBeEnabled({ timeout: 15_000 })
+  const workerContract = await page.evaluate(() => {
+    const requests =
+      (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+    const records = requests.filter(
+      (request): request is Record<string, unknown> =>
+        request != null && typeof request === 'object' && !Array.isArray(request),
+    )
+    const sourceQueries = records.filter(
+      (request) => request.kind === 'query' && request.method === 'source',
+    )
+    return {
+      snapshotRequests: records.filter((request) =>
+        Object.prototype.hasOwnProperty.call(request, 'snapshot'),
+      ).length,
+      sourceQueries: sourceQueries.length,
+      sourcePayloadKeys: Object.keys(
+        (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined) ?? {},
+      ).sort(),
+    }
+  })
+  expect(workerContract.snapshotRequests).toBe(0)
+  expect(workerContract.sourceQueries).toBeGreaterThan(0)
+  expect(workerContract.sourcePayloadKeys).toEqual([
+    'end_line',
+    'file',
+    'group_vectors',
+    'hide_const',
+    'hide_control',
+    'max_nodes',
+    'start_line',
+  ])
   await expect(focus).not.toBeChecked()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
@@ -570,6 +613,50 @@ test('source selections and Focus use the in-browser exploration worker', async 
       nodes.map((node) => node.getAttribute('data-graph-node-id')),
     ),
   ).toEqual(fullNodeIds)
+
+  await page.evaluate(() => {
+    const requests =
+      (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+    requests.length = 0
+  })
+  await page.getByLabel('hide const').uncheck()
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const requests =
+          (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+        const methods = requests
+          .filter(
+            (request): request is Record<string, unknown> =>
+              request != null &&
+              typeof request === 'object' &&
+              !Array.isArray(request) &&
+              request.kind === 'query' &&
+              (request.method === 'source' || request.method === 'netlist'),
+          )
+          .map((request) => request.method)
+        return {
+          source: methods.includes('source'),
+          netlist: methods.includes('netlist'),
+        }
+      }),
+    )
+    .toEqual({ source: true, netlist: true })
+  const refreshMethods = await page.evaluate(() => {
+    const requests =
+      (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+    return requests
+      .filter(
+        (request): request is Record<string, unknown> =>
+          request != null &&
+          typeof request === 'object' &&
+          !Array.isArray(request) &&
+          request.kind === 'query' &&
+          (request.method === 'source' || request.method === 'netlist'),
+      )
+      .map((request) => request.method)
+  })
+  expect(refreshMethods.indexOf('source')).toBeLessThan(refreshMethods.indexOf('netlist'))
 
   await page.locator('.cm-content').press('Escape')
   await expect(focus).toBeDisabled()

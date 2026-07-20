@@ -1,6 +1,5 @@
 import type {
   EndpointsResponse,
-  ExplorationSnapshot,
   FanoutResponse,
   NodesResponse,
   PathsResponse,
@@ -235,10 +234,6 @@ export function localSourceMap(_id: string): Promise<SourceMapResponse> {
 
 export function localNodes(_id: string, ids: number[]): Promise<NodesResponse> {
   return queryAnalysis('nodes', ids.slice(0, 200))
-}
-
-export function localExploration(_id: string): Promise<ExplorationSnapshot> {
-  return queryAnalysis('exploration')
 }
 
 function runYosys(
