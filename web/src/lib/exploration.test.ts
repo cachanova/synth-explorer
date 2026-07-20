@@ -26,7 +26,7 @@ describe('browser source exploration', () => {
     expect(response.status).toBe('mapped')
     expect(response.graph.nodes.map((node) => node.id)).toEqual([0, 1])
     expect(response.graph.nodes.find((node) => node.id === 1)?.is_root).toBe(true)
-    expect(response.highlight).toEqual([1])
+    expect(response.directIds).toEqual([1])
   })
 
   it('follows prepared input declarations through fanout', () => {
@@ -44,7 +44,36 @@ describe('browser source exploration', () => {
 
     expect(response.graph.nodes.map((node) => node.id)).toEqual([0, 1, 2])
     expect(response.graph.nodes.find((node) => node.id === 2)?.is_boundary).toBe(true)
-    expect(response.highlight).toEqual([1])
+    expect(response.directIds).toEqual([0])
+  })
+
+  it('keeps upstream context visible without highlighting it as direct source logic', () => {
+    const snapshot = fixture()
+    snapshot.nodes.splice(
+      2,
+      0,
+      node(2, 'cell', { name: 'selected_logic', comb: true, depth: 2 }),
+    )
+    snapshot.nodes[3] = node(3, 'port', {
+      name: 'y',
+      boundary: true,
+      output_frontier: true,
+    })
+    snapshot.edges = [edge(0, 1, 'a', 'A'), edge(1, 2, 'Y', 'A'), edge(2, 3, 'Y', 'y')]
+    snapshot.source_by_line['top.sv:4'] = [2]
+    snapshot.source_hints.push({
+      file: 'top.sv',
+      start_line: 4,
+      end_line: 4,
+      direction: 'fanin',
+      kind: 'signal',
+    })
+
+    const response = analyzeSourceSelection(prepareExploration(snapshot), 'top.sv', 4, 4, options)
+
+    expect(response.graph.nodes.map((entry) => entry.id)).toEqual([0, 1, 2])
+    expect(response.graph.nodes.filter((entry) => entry.is_root).map((entry) => entry.id)).toEqual([2])
+    expect(response.directIds).toEqual([2])
   })
 
   it('narrows block-attributed roots to the selected procedural target', () => {
@@ -66,6 +95,7 @@ describe('browser source exploration', () => {
     const response = analyzeSourceSelection(prepareExploration(snapshot), 'top.sv', 10, 10, options)
 
     expect(response.graph.nodes.filter((entry) => entry.is_root).map((entry) => entry.id)).toEqual([3])
+    expect(response.directIds).toEqual([3])
   })
 
   it('queries sparse targets without walking every line of a large procedural block', () => {
@@ -142,7 +172,7 @@ describe('browser source exploration', () => {
     const response = analyzeSourceSelection(prepareExploration(snapshot), 'top.sv', 7, 7, options)
 
     expect(response.graph.nodes.map((entry) => entry.id)).toEqual([0, 1, 2])
-    expect(response.highlight).toEqual([1])
+    expect(response.directIds).toEqual([1])
   })
 
   it('projects prepared vector groups and gives incomplete mapping precedence', () => {
@@ -158,12 +188,13 @@ describe('browser source exploration', () => {
     snapshot.nodes[1].group_id = 0
     snapshot.nodes[1].src = 'top.sv:2-2|top.sv:9-12'
     snapshot.nodes[1].group_src = 'top.sv:9-12'
+    snapshot.edges.push(edge(3, 1, 'Y', 'B'))
     snapshot.groups.push({ kind: 'comb', members: [1, 3], label: 'logic[1:0]', cell_type: '$and' })
     snapshot.source_ranges.push({
       file: 'top.sv',
       start_line: 9,
       end_line: 9,
-      node_ids: [1, 3],
+      node_ids: [1],
       mapping_incomplete: true,
     })
     snapshot.source_hints.push({
@@ -188,6 +219,7 @@ describe('browser source exploration', () => {
       src: 'top.sv:9-12',
       width: 2,
     })
+    expect(response.directIds).toEqual([4])
     expect(group).not.toHaveProperty('controls')
   })
 

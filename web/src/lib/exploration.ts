@@ -41,7 +41,6 @@ interface IntervalIndex<T extends { start_line: number; end_line: number }> {
 interface SourceProbe {
   roots: number[]
   direction: SourceProbeDirection | null
-  highlightLogic: boolean
   expandOutputRegisterInputs: boolean
 }
 
@@ -116,8 +115,11 @@ export function analyzeSourceSelection(
       expandOutputRegisterInputs: probe.expandOutputRegisterInputs,
     },
   )
-  const highlight = graph.nodes
-    .filter((node) => (probe.highlightLogic ? node.kind === 'cell' : node.is_root === true))
+  // The traversed graph is the broader relevant envelope. Only projected roots
+  // are directly attributable to the selected source range and should receive
+  // the accent overlay.
+  const directIds = graph.nodes
+    .filter((node) => node.is_root === true)
     .map((node) => node.id)
   const mappingIncomplete = overlappingRanges(prepared, file, startLine, endLine).some(
     (range) => range.mapping_incomplete,
@@ -134,7 +136,7 @@ export function analyzeSourceSelection(
           ? 'optimized_or_absorbed'
           : 'unmapped',
     control,
-    highlight,
+    directIds,
     graph,
   }
 }
@@ -151,7 +153,6 @@ function sourceProbeRange(
     return {
       roots: defaultRoots,
       direction: null,
-      highlightLogic: false,
       expandOutputRegisterInputs: false,
     }
   }
@@ -177,7 +178,6 @@ function sourceProbeRange(
   return {
     roots: [...roots].sort(numberCompare),
     direction,
-    highlightLogic: true,
     expandOutputRegisterInputs: selected.some((hint) => hint.kind === 'output_port'),
   }
 }

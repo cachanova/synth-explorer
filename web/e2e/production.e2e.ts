@@ -497,7 +497,6 @@ test('source selections and Focus use the in-browser exploration worker', async 
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('handshake_controller')
-    await page.getByLabel('Mode').selectOption('xilinx')
   })
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
 
@@ -514,24 +513,52 @@ test('source selections and Focus use the in-browser exploration worker', async 
   )
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press('Control+End')
-  await page.locator('.cm-line', { hasText: "wait_count <= wait_count + 1'b1;" }).click()
+  await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
   await expect(focus).toBeEnabled()
   await expect(focus).not.toBeChecked()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+  const directNodeIds = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+  )
+  const contextualLogic = page.locator(
+    '.g-node-body[data-relevant="1"]:not(.hl):not(.g-symbol-port-in):not(.g-symbol-port-out):not(.g-symbol-const)',
+  )
+  await expect.poll(() => contextualLogic.count()).toBeGreaterThan(0)
+  const contextualLogicIds = await contextualLogic.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+  )
+  const dimmedNodes = page.locator('.g-node-body[data-relevant="0"]')
+  await expect.poll(() => dimmedNodes.count()).toBeGreaterThan(0)
+  await expect(dimmedNodes.first()).toHaveCSS('opacity', '0.25')
 
   await focus.check()
   await expect(focus).toBeChecked()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThan(fullNodeIds.length)
+  await expect
+    .poll(() =>
+      page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+    )
+    .toEqual(directNodeIds)
+  await expect
+    .poll(() =>
+      page.locator(
+        '.g-node-body[data-relevant="1"]:not(.hl):not(.g-symbol-port-in):not(.g-symbol-port-out):not(.g-symbol-const)',
+      ).evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+    )
+    .toEqual(contextualLogicIds)
+  await expect(page.locator('.g-node-body[data-relevant="0"]')).toHaveCount(0)
   const focusedNodeCount = await page.locator('.g-node-body').count()
-  expect(focusedNodeCount).toBeGreaterThan(0)
-
-  const boundaryNode = page.locator('.g-node-body[data-boundary="true"]').first()
-  await expect(boundaryNode).toBeVisible()
-  await boundaryNode.dblclick()
+  const expandableBoundary = page.locator(
+    '.g-node-body[data-boundary="true"][data-graph-node-id="44"]',
+  )
+  await expect(expandableBoundary).toBeVisible()
+  await expandableBoundary.focus()
+  await expandableBoundary.press('Shift+Enter')
   await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(focusedNodeCount)
 
   await focus.uncheck()
