@@ -72,8 +72,11 @@ worker is reused so its streamed, compiled Yosys module and unpacked resources
 stay warm; cancellation or a worker failure terminates it and immediately
 starts a clean replacement. Each run still creates a new WebAssembly instance
 and WASI filesystem. Analysis and layout remain in separate workers so
-expensive work does not block the React thread. The GHDL worker follows the
-same reuse policy while creating a fresh Ada/WebAssembly instance per run.
+expensive work does not block the React thread. The layout worker owns ELK graph
+preparation, layered layout, and route/result adaptation; the React thread sends
+only compact, bounded layout fields and reattaches its resident graph metadata
+to the compact geometry response. The GHDL worker follows the same reuse policy
+while creating a fresh Ada/WebAssembly instance per run.
 
 ## Timing model
 
