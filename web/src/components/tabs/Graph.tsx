@@ -5,7 +5,11 @@ import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
-import { layoutSubgraph, type LaidOutGraph } from '../../lib/layout'
+import {
+  layoutSubgraph,
+  prewarmLayoutWorker,
+  type LaidOutGraph,
+} from '../../lib/layout'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
 import { controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
@@ -104,6 +108,13 @@ export function Graph({ active }: { active: boolean }) {
   // The full projection is independent of source/cone selection. Reusing this
   // single entry keeps non-focus selection changes free of netlist refetches.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
+
+  // ELK is a large module and this graph surface stays mounted across tabs.
+  // Start its reusable worker once at mount so module startup can overlap the
+  // editor's initial idle/debounce window instead of the first real layout.
+  useEffect(() => {
+    prewarmLayoutWorker()
+  }, [])
 
   useEffect(() => {
     if (!active) return

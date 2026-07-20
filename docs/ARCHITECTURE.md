@@ -75,8 +75,12 @@ and WASI filesystem. Analysis and layout remain in separate workers so
 expensive work does not block the React thread. The layout worker owns ELK graph
 preparation, layered layout, and route/result adaptation; the React thread sends
 only compact, bounded layout fields and reattaches its resident graph metadata
-to the compact geometry response. The GHDL worker follows the same reuse policy
-while creating a fresh Ada/WebAssembly instance per run.
+to the compact geometry response. The graph surface stays mounted across tabs,
+so it starts that reusable worker once at mount and completes a two-node layered
+layout. This lets module startup overlap the editor's initial idle/debounce
+window and finish before the first design layout request. No design-sized graph
+is laid out speculatively. The GHDL worker follows the same reuse policy while
+creating a fresh Ada/WebAssembly instance per run.
 
 ## Timing model
 
