@@ -451,6 +451,9 @@ a:hover {
 .mobile-workspace-nav {
   display: none;
 }
+.boot-workspace-nav {
+  pointer-events: none;
+}
 
 @media (max-width: 720px) {
   .app-header {

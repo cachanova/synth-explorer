@@ -5,16 +5,21 @@ test('uses full-width Editor and Analysis views on a narrow phone', async ({ pag
   await page.goto('/')
 
   const workspaceNavigation = page.getByRole('navigation', { name: 'Workspace views' })
+  const editorButton = page.getByRole('button', { name: 'Editor', exact: true })
+  const analysisButton = page.getByRole('button', { name: 'Analysis', exact: true })
   const editorPane = page.locator('.pane-left')
   const analysisPane = page.locator('.pane-right')
 
   await expect(workspaceNavigation).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Editor', exact: true })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  )
+  await expect(editorButton).toHaveAttribute('aria-pressed', 'true')
+  await expect(editorButton).toHaveAttribute('aria-controls', 'workspace-editor')
+  await expect(analysisButton).toHaveAttribute('aria-pressed', 'false')
+  await expect(analysisButton).toHaveAttribute('aria-controls', 'workspace-analysis')
   await expect(editorPane).toBeVisible()
   await expect(analysisPane).toBeHidden()
+  await expect
+    .poll(() => editorPane.evaluate((element) => element.scrollWidth <= element.clientWidth))
+    .toBe(true)
   await expect
     .poll(() =>
       page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
@@ -26,12 +31,10 @@ test('uses full-width Editor and Analysis views on a narrow phone', async ({ pag
   await editor.press('Control+End')
   await page.keyboard.insertText('\n// mobile workspace state')
   await editorPane.evaluate((element) => Reflect.set(window, '__mobileEditorPane', element))
-  await page.getByRole('button', { name: 'Analysis', exact: true }).click()
+  await analysisButton.click()
 
-  await expect(page.getByRole('button', { name: 'Analysis', exact: true })).toHaveAttribute(
-    'aria-pressed',
-    'true',
-  )
+  await expect(editorButton).toHaveAttribute('aria-pressed', 'false')
+  await expect(analysisButton).toHaveAttribute('aria-pressed', 'true')
   await expect(editorPane).toBeHidden()
   await expect(analysisPane).toBeVisible()
   await expect
@@ -46,7 +49,7 @@ test('uses full-width Editor and Analysis views on a narrow phone', async ({ pag
     )
     .toBe(true)
 
-  await page.getByRole('button', { name: 'Editor', exact: true }).click()
+  await editorButton.click()
   await expect(editorPane).toBeVisible()
   await expect(editor).toContainText('// mobile workspace state')
   expect(
@@ -59,6 +62,12 @@ test('uses full-width Editor and Analysis views on a narrow phone', async ({ pag
   await expect(workspaceNavigation).toBeVisible()
   await expect(editorPane).toBeVisible()
   await expect(analysisPane).toBeHidden()
+  await analysisButton.click()
+  await expect(editorPane).toBeHidden()
+  await expect(analysisPane).toBeVisible()
+  await expect
+    .poll(() => analysisPane.evaluate((element) => element.scrollWidth <= element.clientWidth))
+    .toBe(true)
 })
 
 test('keeps the resizable side-by-side workspace on desktop', async ({ page }) => {
