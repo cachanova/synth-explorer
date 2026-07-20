@@ -445,13 +445,16 @@ export function Graph({ active }: { active: boolean }) {
     relevantSubgraph?.designId,
   ])
 
-  const sub = displayedGraph?.subgraph ?? null
-  const laid = displayedGraph?.graph ?? null
   const displayedDesignCurrent = isDisplayedDesignCurrent(
     design?.design_id,
     displayedGraph?.designId,
   )
-  const displayedDesignMismatch = Boolean(displayedGraph && !displayedDesignCurrent)
+  // Keep completed layouts cached, but never render a schematic for stale
+  // synthesis inputs or while the replacement design is still being laid out.
+  const visibleDisplayedGraph =
+    analysisState === 'current' && displayedDesignCurrent ? displayedGraph : null
+  const sub = visibleDisplayedGraph?.subgraph ?? null
+  const laid = visibleDisplayedGraph?.graph ?? null
   const sourcePresentation = sourceProbePresentation(sourceStatus)
   const displayedProjectionCurrent =
     projectionKey != null && displayedGraph?.projectionKey === projectionKey
@@ -655,12 +658,7 @@ export function Graph({ active }: { active: boolean }) {
           {analysisState === 'stale' && (
             <span className="msg">source changed — synthesize to refresh mapping</span>
           )}
-          {displayedDesignMismatch && (
-            <span className="msg">
-              showing a schematic snapshot from the previous synthesis — interactions are disabled
-            </span>
-          )}
-          {requestDesignMismatch && !displayedDesignMismatch && (
+          {requestDesignMismatch && (
             <span className="msg">this cone belongs to the previous synthesis</span>
           )}
           {sourcePresentation.message && (
