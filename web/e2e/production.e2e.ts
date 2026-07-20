@@ -286,27 +286,6 @@ test('sorts every reported path without changing the result set', async ({ page 
   expect(ascending).toEqual([...ascending].sort((left, right) => left - right))
 })
 
-test('clears the schematic while source or top-level changes are pending', async ({ page }) => {
-  await page.goto('/')
-  await waitForAnalysisReady(page)
-
-  const analysisPane = page.locator('.pane-right')
-  const schematic = page.locator('.graph-stage svg')
-  const editor = page.locator('.cm-content')
-
-  await editor.click()
-  await editor.press('Control+End')
-  await editor.type('\n// changed source')
-  await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
-  await expect(schematic).toHaveCount(0)
-  await waitForAnalysisReady(page)
-
-  await page.getByLabel('Top module/entity').fill('top')
-  await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
-  await expect(schematic).toHaveCount(0)
-  await waitForAnalysisReady(page)
-})
-
 test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
@@ -597,6 +576,27 @@ test('source selections and Focus use the in-browser exploration worker', async 
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
   expect(apiRequests).toEqual([])
+})
+
+test('clears the schematic while source or top-level changes are pending', async ({ page }) => {
+  await page.goto('/')
+  await waitForAnalysisReady(page)
+
+  const analysisPane = page.locator('.pane-right')
+  const schematic = page.locator('.graph-stage svg')
+  const editor = page.locator('.cm-content')
+
+  await editor.click()
+  await editor.press('Control+End')
+  await editor.type('\n// changed source')
+  await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
+  await expect(schematic).toHaveCount(0)
+  await waitForAnalysisReady(page)
+
+  await page.getByLabel('Top module/entity').fill('top')
+  await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
+  await expect(schematic).toHaveCount(0)
+  await waitForAnalysisReady(page)
 })
 
 test('keeps synthesis failures compact until the full log is requested', async ({ page }) => {
