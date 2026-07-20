@@ -1,8 +1,6 @@
 import type { DesignFile, Mode, SynthesizeRequest } from '../types'
 import { buildSynthesizeRequest } from './synthesize'
 
-export const AUTO_SYNTHESIS_DELAY_MS = 250
-
 export interface SourceSelection {
   file: string
   startLine: number

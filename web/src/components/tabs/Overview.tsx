@@ -1,6 +1,7 @@
 import { displayCellType } from '../../lib/prettyType'
-import { useStore } from '../../useStore'
+import { formatSynthesisDelay } from '../../lib/synthesisSettings'
 import type { CellCategoryCounts } from '../../types'
+import { shallowEqual, useStore } from '../../useStore'
 import { TimingModel } from '../TimingModel'
 import { Card } from '../Card'
 
@@ -30,12 +31,22 @@ export function ModeName({ mode }: { mode: string }) {
 }
 
 export function Overview() {
-  const design = useStore((store) => store.design)
+  const store = useStore(
+    ({ design, autoSynthesize, autoSynthesisDelayMs }) => ({
+      design,
+      autoSynthesize,
+      autoSynthesisDelayMs,
+    }),
+    shallowEqual,
+  )
+  const { design } = store
   if (!design) {
     return (
       <div className="empty-state">
-        Paste or edit Verilog or VHDL on the left. Synth Explorer automatically refreshes
-        the synthesized logic after 250 ms without input.
+        Paste or edit Verilog or VHDL on the left.{' '}
+        {store.autoSynthesize
+          ? `Synth Explorer automatically refreshes the synthesized logic after ${formatSynthesisDelay(store.autoSynthesisDelayMs)} without input.`
+          : 'Select Synthesize when you are ready to refresh the analysis.'}
       </div>
     )
   }

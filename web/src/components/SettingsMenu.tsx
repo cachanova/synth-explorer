@@ -2,6 +2,12 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { PALETTES, type Mode } from '../lib/palettes'
 import { useTheme } from '../lib/themeContext'
 import { clearLocalSynthesisCache } from '../lib/designCache'
+import {
+  AUTO_SYNTHESIS_DELAY_STEP_MS,
+  formatSynthesisDelay,
+  MAX_AUTO_SYNTHESIS_DELAY_MS,
+  MIN_AUTO_SYNTHESIS_DELAY_MS,
+} from '../lib/synthesisSettings'
 import { shallowEqual, useStore } from '../useStore'
 
 function GearIcon() {
@@ -53,11 +59,19 @@ export function SettingsMenu() {
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      autoSynthesize,
+      setAutoSynthesize,
+      autoSynthesisDelayMs,
+      setAutoSynthesisDelayMs,
     }) => ({
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
       editorKeymap,
       setEditorKeymap,
+      autoSynthesize,
+      setAutoSynthesize,
+      autoSynthesisDelayMs,
+      setAutoSynthesisDelayMs,
     }),
     shallowEqual,
   )
@@ -123,6 +137,37 @@ export function SettingsMenu() {
                 </button>
               ))}
             </div>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-head">Synthesis</div>
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={store.autoSynthesize}
+                onChange={(event) => store.setAutoSynthesize(event.target.checked)}
+              />
+              Synthesize automatically
+            </label>
+            <label className="settings-range">
+              <span>
+                Delay before compiling
+                <span className="settings-delay-value">
+                  {formatSynthesisDelay(store.autoSynthesisDelayMs)}
+                </span>
+              </span>
+              <input
+                type="range"
+                aria-label="Automatic synthesis delay"
+                min={MIN_AUTO_SYNTHESIS_DELAY_MS}
+                max={MAX_AUTO_SYNTHESIS_DELAY_MS}
+                step={AUTO_SYNTHESIS_DELAY_STEP_MS}
+                value={store.autoSynthesisDelayMs}
+                onChange={(event) =>
+                  store.setAutoSynthesisDelayMs(Number(event.target.value))
+                }
+              />
+            </label>
           </div>
 
           <div className="settings-section">

@@ -253,6 +253,29 @@ a:hover {
 .settings-toggle {
   margin: 0 2px 9px;
 }
+.settings-range {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.settings-range > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.settings-delay-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.settings-range input {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
 .cache-status {
   display: block;
   margin: 6px 2px 0;
@@ -466,6 +489,9 @@ a:hover {
 }
 .toolbar .grow {
   flex: 1 1 auto;
+}
+.synthesize-button {
+  min-height: 28px;
 }
 .field {
   display: flex;

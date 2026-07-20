@@ -91,6 +91,14 @@ test('auto-synthesizes an edited design locally after the debounce', async ({ pa
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
 
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(
+    page.getByRole('checkbox', { name: 'Synthesize automatically' }),
+  ).toBeChecked()
+  await expect(page.getByLabel('Automatic synthesis delay')).toHaveValue('250')
+  await expect(page.locator('.settings-delay-value')).toHaveText('0.25 s')
+  await page.getByRole('button', { name: 'Settings' }).click()
+
   await waitForAutomaticSynthesis(page, () =>
     page.getByLabel('Bundled example').selectOption('reg_mux'),
   )
@@ -100,6 +108,50 @@ test('auto-synthesizes an edited design locally after the debounce', async ({ pa
   expect(await cacheEntryCount(page)).toBeGreaterThanOrEqual(1)
   await expect(page.getByRole('button', { name: 'Synthesize', exact: true })).toHaveCount(0)
   expect(apiRequests).toEqual([])
+})
+
+test('supports persistent manual synthesis and a configurable delay', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await page.evaluate(() => {
+    localStorage.setItem(
+      'synthexplorer.synthesisSettings.v1',
+      JSON.stringify({ autoSynthesize: false, delayMs: 250 }),
+    )
+  })
+  await page.reload()
+
+  const synthesize = page.getByRole('button', { name: 'Synthesize', exact: true })
+  await expect(synthesize).toBeVisible()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(
+    page.getByRole('checkbox', { name: 'Synthesize automatically' }),
+  ).not.toBeChecked()
+  const delay = page.getByLabel('Automatic synthesis delay')
+  await expect(delay).toHaveValue('250')
+  await delay.focus()
+  for (let step = 0; step < 5; step += 1) await delay.press('ArrowRight')
+  await expect(page.locator('.settings-delay-value')).toHaveText('0.5 s')
+  await page.getByRole('button', { name: 'Settings' }).click()
+
+  await page.getByLabel('Bundled example').selectOption('reg_mux')
+  await page.waitForTimeout(750)
+  await expect(page.locator('.pane-right')).not.toHaveAttribute(
+    'data-analysis-state',
+    'current',
+  )
+
+  await synthesize.click()
+  await waitForAnalysisReady(page)
+  expect(apiRequests).toEqual([])
+
+  await page.reload()
+  await expect(synthesize).toBeVisible()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await expect(
+    page.getByRole('checkbox', { name: 'Synthesize automatically' }),
+  ).not.toBeChecked()
+  await expect(page.getByLabel('Automatic synthesis delay')).toHaveValue('500')
 })
 
 test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {
