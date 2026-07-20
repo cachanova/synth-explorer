@@ -388,12 +388,31 @@ fn js_error(message: impl AsRef<str>) -> JsValue {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+    use synth_explorer_analysis::analysis::PathsResponse;
 
-    const NETLIST: &str = include_str!("../../analysis-core/tests/fixtures/reg_mux_rtl.json");
+    const PRECOMPUTED: &str = include_str!(
+        "../../web/public/precomputed/37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8.json"
+    );
 
     fn session(mode: &str, profile: &str) -> AnalysisSession {
-        AnalysisSession::new("test", NETLIST, NETLIST, "[]", mode, profile)
-            .expect("fixture session builds")
+        let fixture: serde_json::Value =
+            serde_json::from_str(PRECOMPUTED).expect("precomputed fixture parses");
+        let output = &fixture["output"];
+        let files =
+            serde_json::to_string(&fixture["input"]["files"]).expect("fixture files serialize");
+        AnalysisSession::new(
+            "test",
+            output["netlistJson"]
+                .as_str()
+                .expect("netlist JSON is present"),
+            output["sourceNetlistJson"]
+                .as_str()
+                .expect("source netlist JSON is present"),
+            &files,
+            mode,
+            profile,
+        )
+        .expect("fixture session builds")
     }
 
     fn path_identities(json: &str) -> BTreeSet<(String, Vec<u64>)> {
@@ -418,9 +437,30 @@ mod tests {
             .collect()
     }
 
+    fn response_identities(response: &PathsResponse) -> BTreeSet<(String, Vec<u64>)> {
+        response
+            .paths
+            .iter()
+            .map(|path| {
+                (
+                    path.endpoint_group.clone(),
+                    path.nodes.iter().map(|node| u64::from(node.id)).collect(),
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn hidden_timing_paths_stay_depth_only_without_delay_values() {
-        let response = session("rtl", "generic")
+        let session = session("gates", "generic");
+        let depth_only = session.design.analysis.paths_with_model(
+            &session.design.graph,
+            &session.design.delay_model,
+            MAX_PATH_RESULTS,
+            None,
+            PathSort::Depth,
+        );
+        let response = session
             .paths_json(r#"{"sort":"delay"}"#)
             .expect("paths query succeeds");
         let json: serde_json::Value = serde_json::from_str(&response).expect("paths JSON parses");
@@ -432,11 +472,19 @@ mod tests {
                 .iter()
                 .all(|path| path.get("estimated_delay_ns").is_none())
         );
+        assert_eq!(path_identities(&response), response_identities(&depth_only));
     }
 
     #[test]
     fn visible_timing_sorts_share_the_canonical_route_set() {
-        let session = session("xilinx", "series7");
+        let session = session("gates", "series7");
+        let depth_only = session.design.analysis.paths_with_model(
+            &session.design.graph,
+            &session.design.delay_model,
+            MAX_PATH_RESULTS,
+            None,
+            PathSort::Depth,
+        );
         let depth = session
             .paths_json(r#"{"sort":"depth"}"#)
             .expect("depth query succeeds");
@@ -453,5 +501,7 @@ mod tests {
                 .all(|path| path["estimated_delay_ns"].is_number())
         );
         assert_eq!(path_identities(&depth), path_identities(&delay));
+        assert!(path_identities(&depth).is_superset(&response_identities(&depth_only)));
+        assert!(path_identities(&depth).len() > depth_only.paths.len());
     }
 }

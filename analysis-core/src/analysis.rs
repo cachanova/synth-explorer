@@ -590,6 +590,11 @@ struct PathComputation<'a> {
     delay_startpoint: &'a [Option<NodeId>],
 }
 
+struct PathSelection {
+    response: PathsResponse,
+    reconstructed_nodes: usize,
+}
+
 #[derive(Debug, Clone, Default, DeepSizeOf)]
 struct SourceRangeIndex {
     ranges: Vec<SourceRangeMapping>,
@@ -932,6 +937,18 @@ impl Analysis {
         to: Option<NodeId>,
         sort: PathSort,
     ) -> PathsResponse {
+        self.path_variants_with_model_and_work(graph, model, limit, to, sort)
+            .0
+    }
+
+    fn path_variants_with_model_and_work(
+        &self,
+        graph: &Graph,
+        model: &DelayModel,
+        limit: usize,
+        to: Option<NodeId>,
+        sort: PathSort,
+    ) -> (PathsResponse, usize) {
         let recomputed;
         let (node_delay, depth_path_delay, delay_pred, delay_startpoint) =
             if *model == self.delay_model {
@@ -964,8 +981,15 @@ impl Analysis {
         };
         let depth_budget = PATH_RECONSTRUCTION_NODE_BUDGET / 2;
         let delay_budget = PATH_RECONSTRUCTION_NODE_BUDGET - depth_budget;
-        let depth = self.paths_with_computation(graph, limit, to, &depth_computation, depth_budget);
-        let delay = self.paths_with_computation(graph, limit, to, &delay_computation, delay_budget);
+        let depth_selection =
+            self.paths_with_computation(graph, limit, to, &depth_computation, depth_budget);
+        let delay_selection =
+            self.paths_with_computation(graph, limit, to, &delay_computation, delay_budget);
+        let reconstructed_nodes =
+            depth_selection.reconstructed_nodes + delay_selection.reconstructed_nodes;
+        debug_assert!(reconstructed_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
+        let depth = depth_selection.response;
+        let delay = delay_selection.response;
         debug_assert_eq!(depth.comb_loops, delay.comb_loops);
         let mut truncated = depth.truncated || delay.truncated;
         let comb_loops = depth.comb_loops;
@@ -998,11 +1022,14 @@ impl Analysis {
             truncated = true;
         }
         paths.sort_by(|a, b| compare_path_entries(a, b, sort));
-        PathsResponse {
-            paths,
-            comb_loops,
-            truncated,
-        }
+        (
+            PathsResponse {
+                paths,
+                comb_loops,
+                truncated,
+            },
+            reconstructed_nodes,
+        )
     }
 
     /// Like [`Analysis::paths`], but delay-costs each path with a caller-supplied
@@ -1046,6 +1073,7 @@ impl Analysis {
             &computation,
             PATH_RECONSTRUCTION_NODE_BUDGET,
         )
+        .response
     }
 
     fn paths_with_computation(
@@ -1055,7 +1083,7 @@ impl Analysis {
         to: Option<NodeId>,
         computation: &PathComputation<'_>,
         reconstruction_node_budget: usize,
-    ) -> PathsResponse {
+    ) -> PathSelection {
         let sort = computation.sort;
         let target_delay = |target: &EndpointTarget| {
             self.path_delay_ns(graph, target, computation.node_delay, computation.model)
@@ -1180,17 +1208,20 @@ impl Analysis {
         paths.sort_by(|a, b| compare_path_entries(a, b, sort));
         let grouped_count = paths.len();
         paths.truncate(limit);
-        PathsResponse {
-            paths,
-            comb_loops: self
-                .comb_loops
-                .iter()
-                .map(|id| graph.node_ref_name(*id))
-                .collect(),
-            truncated: route_clipped
-                || reconstructed_candidates < candidates.len()
-                || candidates.len() < total_targets
-                || grouped_count > limit,
+        PathSelection {
+            response: PathsResponse {
+                paths,
+                comb_loops: self
+                    .comb_loops
+                    .iter()
+                    .map(|id| graph.node_ref_name(*id))
+                    .collect(),
+                truncated: route_clipped
+                    || reconstructed_candidates < candidates.len()
+                    || candidates.len() < total_targets
+                    || grouped_count > limit,
+            },
+            reconstructed_nodes: reconstruction_node_budget - reconstruction_budget,
         }
     }
 
@@ -4662,7 +4693,7 @@ mod tests {
         assert_eq!(groups.len(), paths.paths.len());
         assert!(reconstructed_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
 
-        let variants = analysis.path_variants_with_model(
+        let (variants, variant_reconstruction_work) = analysis.path_variants_with_model_and_work(
             &graph,
             &DelayModel::generic(),
             500,
@@ -4672,6 +4703,8 @@ mod tests {
         let variant_nodes: usize = variants.paths.iter().map(|path| path.nodes.len()).sum();
         assert!(variants.truncated);
         assert!(variant_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
+        assert!(variant_reconstruction_work > PATH_RECONSTRUCTION_NODE_BUDGET / 2);
+        assert!(variant_reconstruction_work <= PATH_RECONSTRUCTION_NODE_BUDGET);
     }
 
     #[test]
