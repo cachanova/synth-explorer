@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
   controlRoleForPin,
   fitViewportToContent,
+  hydrateLayoutResult,
   interpretResult,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
@@ -12,6 +13,7 @@ import {
   panViewport,
   placementForLayout,
   preserveViewportAnchor,
+  prepareLayoutInput,
   toElkGraph,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -97,7 +99,7 @@ describe('schematic layout sizing', () => {
       ],
       truncated: false,
     }
-    const graph = toElkGraph(sub)
+    const graph = toElkGraph(prepareLayoutInput(sub))
     expect(graph.children?.map(({ width, height }) => ({ width, height }))).toEqual([
       nodeDimensions(sub.nodes[0]),
       nodeDimensions(sub.nodes[1]),
@@ -118,7 +120,7 @@ describe('schematic layout sizing', () => {
       ],
       truncated: false,
     }
-    const graph = toElkGraph(sub)
+    const graph = toElkGraph(prepareLayoutInput(sub))
     const reg = graph.children?.find((c) => c.id === '2')
     expect(reg?.ports?.map((p) => p.id)).toEqual(['2#in', '2#out'])
     expect(reg?.layoutOptions?.['elk.portConstraints']).toBe('FIXED_POS')
@@ -161,7 +163,7 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
 
-    const elk = toElkGraph(sub)
+    const elk = toElkGraph(prepareLayoutInput(sub))
     const ram = elk.children?.find((child) => child.id === '4')
     expect(ram?.ports?.map((port) => port.id)).toEqual([
       '4#i:ADDR',
@@ -172,7 +174,7 @@ describe('schematic layout sizing', () => {
     expect(ram?.height).toBe(75)
     expect(ram?.ports?.map((port) => port.y)).toEqual([15.5, 31, 46.5, 31])
 
-    const laidOut = interpretResult(sub, {
+    const laidOut = hydrateLayoutResult(sub, interpretResult(prepareLayoutInput(sub), {
       id: 'root',
       width: 500,
       height: 220,
@@ -184,7 +186,7 @@ describe('schematic layout sizing', () => {
         { id: '5', x: 420, y: 90, width: 74, height: 34 },
       ],
       edges: [],
-    })
+    }))
     expect(Object.fromEntries(
       laidOut.edges.slice(0, 3).map((edge) => [edge.edge.to_port, edge.points[1]]),
     )).toEqual({
@@ -234,7 +236,7 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
 
-    const graph = toElkGraph(sub)
+    const graph = toElkGraph(prepareLayoutInput(sub))
     const reg = graph.children?.find((child) => child.id === '3')
     const ports = new Map(reg?.ports?.map((port) => [port.id, port]))
 
@@ -245,7 +247,7 @@ describe('schematic layout sizing', () => {
     expect(ports.get('3#control:C')?.y).toBeCloseTo(58 * 0.72)
     expect(ports.get('3#control:R')?.y).toBeCloseTo(58 * 0.5)
 
-    const laidOut = interpretResult(sub, {
+    const laidOut = hydrateLayoutResult(sub, interpretResult(prepareLayoutInput(sub), {
       id: 'root',
       width: 260,
       height: 140,
@@ -255,7 +257,7 @@ describe('schematic layout sizing', () => {
         { id: '3', x: 160, y: 40, width: 92, height: 84 },
       ],
       edges: [],
-    })
+    }))
     expect(laidOut.edges[0].points[1]).toEqual({ x: 160, y: 40 + 58 * 0.72 })
     expect(laidOut.edges[1].points[1]).toEqual({ x: 160, y: 40 + 58 * 0.5 })
   })
@@ -336,7 +338,7 @@ describe('schematic layout sizing', () => {
       ],
     }
 
-    const laidOut = interpretResult(sub, root)
+    const laidOut = hydrateLayoutResult(sub, interpretResult(prepareLayoutInput(sub), root))
 
     expect(laidOut.edges.map(({ from, to }) => [from, to])).toEqual([
       [1, 3],
@@ -389,16 +391,19 @@ describe('schematic layout sizing', () => {
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
     const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
     expect(
-      toElkGraph(sub).layoutOptions?.['elk.layered.nodePlacement.strategy'],
+      toElkGraph(prepareLayoutInput(sub)).layoutOptions?.[
+        'elk.layered.nodePlacement.strategy'
+      ],
     ).toBe('NETWORK_SIMPLEX')
     expect(
-      toElkGraph(sub, 'BRANDES_KOEPF').layoutOptions?.[
+      toElkGraph(prepareLayoutInput(sub), 'BRANDES_KOEPF').layoutOptions?.[
         'elk.layered.nodePlacement.strategy'
       ],
     ).toBe('BRANDES_KOEPF')
-    expect(toElkGraph(sub).layoutOptions).not.toHaveProperty('elk.interactive')
-    expect(toElkGraph(sub).children?.[0]).not.toHaveProperty('x')
-    expect(toElkGraph(sub).children?.[0]).not.toHaveProperty('y')
+    const graph = toElkGraph(prepareLayoutInput(sub))
+    expect(graph.layoutOptions).not.toHaveProperty('elk.interactive')
+    expect(graph.children?.[0]).not.toHaveProperty('x')
+    expect(graph.children?.[0]).not.toHaveProperty('y')
   })
 
   it('enforces the 2000-node renderer cap before starting ELK', async () => {
@@ -435,41 +440,176 @@ describe('schematic layout sizing', () => {
     )
   })
 
-  it('drops an aborted layout without terminating the warm worker', async () => {
-    const requests: Array<{ id: number; graph: object }> = []
-    class FakeWorker {
-      static instance: FakeWorker | null = null
-      static constructed = 0
+  class FakeWorker {
+      static instances: FakeWorker[] = []
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: ErrorEvent) => void) | null = null
       terminate = vi.fn()
+      requests: Array<{
+        id: number
+        input: ReturnType<typeof prepareLayoutInput>
+        placement: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+      }> = []
 
       constructor() {
-        FakeWorker.instance = this
-        FakeWorker.constructed += 1
+        FakeWorker.instances.push(this)
       }
 
-      postMessage(request: { id: number; graph: object }) {
-        requests.push(request)
+      postMessage(request: FakeWorker['requests'][number]) {
+        this.requests.push(request)
       }
     }
+
+  const workerSubgraph = (): Subgraph => ({
+    nodes: [node(1, '$_AND_', { members: [1, 2], params: { secret: 'resident' } })],
+    edges: [],
+    truncated: false,
+  })
+
+  const geometry = {
+    nodes: [{ id: 1, x: 0, y: 0, width: 76, height: 66 }],
+    edges: [],
+    width: 76,
+    height: 66,
+  }
+
+  afterEach(() => {
+    FakeWorker.instances = []
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('sends compact layout input and terminates a superseded worker', async () => {
     vi.stubGlobal('Worker', FakeWorker)
-    const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
+    const sub = workerSubgraph()
     const controller = new AbortController()
 
     const superseded = layoutSubgraph(sub, controller.signal)
-    const instance = FakeWorker.instance!
+    const first = FakeWorker.instances[0]
+    expect(first.requests[0]).toEqual({
+      id: expect.any(Number),
+      input: prepareLayoutInput(sub),
+      placement: 'NETWORK_SIMPLEX',
+    })
+    expect(first.requests[0].input.nodes[0]).not.toHaveProperty('members')
+    expect(first.requests[0].input.nodes[0]).not.toHaveProperty('params')
     controller.abort()
     await expect(superseded).rejects.toMatchObject({ name: 'AbortError' })
-    expect(instance.terminate).not.toHaveBeenCalled()
+    expect(first.terminate).toHaveBeenCalledOnce()
 
     const current = layoutSubgraph(sub)
-    const request = requests.at(-1)!
-    instance.onmessage?.({
-      data: { id: request.id, ok: true, result: request.graph },
+    const second = FakeWorker.instances[1]
+    const request = second.requests[0]
+    second.onmessage?.({
+      data: { id: request.id, ok: true, result: geometry },
     } as MessageEvent)
-    await expect(current).resolves.toMatchObject({ nodes: expect.any(Array) })
-    expect(FakeWorker.constructed).toBe(1)
+    const result = await current
+    expect(result.nodes[0].node).toBe(sub.nodes[0])
+    expect(FakeWorker.instances).toHaveLength(2)
+    second.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('retries a failed tight layout with the same compact input', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const pendingLayout = layoutSubgraph(sub)
+    const instance = FakeWorker.instances[0]
+    const first = instance.requests[0]
+    instance.onmessage?.({
+      data: { id: first.id, ok: false, error: 'stack overflow' },
+    } as MessageEvent)
+    await vi.waitFor(() => expect(instance.requests).toHaveLength(2))
+    const retry = instance.requests[1]
+    expect(retry.placement).toBe('BRANDES_KOEPF')
+    expect(retry.input).toEqual(first.input)
+    instance.onmessage?.({
+      data: { id: retry.id, ok: true, result: geometry },
+    } as MessageEvent)
+    await expect(pendingLayout).resolves.toMatchObject({ width: 76, height: 66 })
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('recovers from a worker crash using a fresh worker', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pendingLayout = layoutSubgraph(workerSubgraph())
+    const first = FakeWorker.instances[0]
+    first.onerror?.({ message: 'worker crashed' } as ErrorEvent)
+    await vi.waitFor(() => expect(FakeWorker.instances).toHaveLength(2))
+    const replacement = FakeWorker.instances[1]
+    expect(replacement.requests[0].placement).toBe('BRANDES_KOEPF')
+    replacement.onmessage?.({
+      data: { id: replacement.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await expect(pendingLayout).resolves.toMatchObject({ width: 76 })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('reuses the warm worker after an independent successful layout', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const firstLayout = layoutSubgraph(workerSubgraph())
+    const instance = FakeWorker.instances[0]
+    instance.onmessage?.({
+      data: { id: instance.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await firstLayout
+
+    const secondLayout = layoutSubgraph(workerSubgraph())
+    expect(FakeWorker.instances).toHaveLength(1)
+    expect(instance.requests).toHaveLength(2)
+    instance.onmessage?.({
+      data: { id: instance.requests[1].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await secondLayout
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('times out without retrying and lets the next layout use a fresh worker', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('Worker', FakeWorker)
+    const timedOut = layoutSubgraph(workerSubgraph())
+    const first = FakeWorker.instances[0]
+    const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
+      name: 'LayoutTimeoutError',
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await timeoutExpectation
+    expect(first.requests).toHaveLength(1)
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const current = layoutSubgraph(workerSubgraph())
+    const replacement = FakeWorker.instances[1]
+    replacement.onmessage?.({
+      data: { id: replacement.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await expect(current).resolves.toMatchObject({ width: 76 })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('rejects every pending request when the shared worker times out', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('Worker', FakeWorker)
+    const firstLayout = layoutSubgraph(workerSubgraph())
+    const secondLayout = layoutSubgraph(workerSubgraph())
+    const firstExpectation = expect(firstLayout).rejects.toMatchObject({
+      name: 'LayoutTimeoutError',
+    })
+    const secondExpectation = expect(secondLayout).rejects.toMatchObject({
+      name: 'LayoutTimeoutError',
+    })
+    const instance = FakeWorker.instances[0]
+    expect(instance.requests).toHaveLength(2)
+
+    await vi.advanceTimersByTimeAsync(10_000)
+    await Promise.all([firstExpectation, secondExpectation])
+    expect(instance.terminate).toHaveBeenCalledOnce()
+
+    const replacementLayout = layoutSubgraph(workerSubgraph())
+    const replacement = FakeWorker.instances[1]
+    replacement.onmessage?.({
+      data: { id: replacement.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await replacementLayout
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 })
 

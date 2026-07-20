@@ -61,18 +61,28 @@ if (typeof sandbox.onmessage !== 'function' && typeof sandbox.self.onmessage !==
   )
   process.exit(1)
 }
-// --- drive the worker protocol with a real layered-layout request ---
-const graph = {
-  id: 'root',
-  layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT' },
-  children: [
-    { id: '1', width: 80, height: 46 },
-    { id: '2', width: 80, height: 46 },
-    { id: '3', width: 80, height: 46 },
+// --- drive the worker protocol with the compact, bounded input sent by the UI ---
+const input = {
+  nodes: [
+    { id: 1, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false },
+    { id: 2, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false },
+    { id: 3, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false },
   ],
   edges: [
-    { id: 'e0', sources: ['1'], targets: ['2'] },
-    { id: 'e1', sources: ['2'], targets: ['3'] },
+    {
+      from: 1,
+      to: 2,
+      fromPort: 'Y',
+      toPort: 'A',
+      control: false,
+    },
+    {
+      from: 2,
+      to: 3,
+      fromPort: 'Y',
+      toPort: 'A',
+      control: false,
+    },
   ],
 }
 
@@ -81,7 +91,7 @@ const graph = {
 // browser worker structuredClone delivers same-realm objects anyway.
 vm.runInContext(
   `(self.onmessage ?? globalThis.onmessage)({ data: JSON.parse(${JSON.stringify(
-    JSON.stringify({ id: 42, graph }),
+    JSON.stringify({ id: 42, input, placement: 'NETWORK_SIMPLEX' }),
   )}) })`,
   sandbox,
 )
@@ -103,11 +113,14 @@ if (!msg.ok) {
 }
 const res = msg.result
 const allPlaced =
-  Array.isArray(res.children) &&
-  res.children.length === 3 &&
-  res.children.every((c) => typeof c.x === 'number' && typeof c.y === 'number')
+  Array.isArray(res.nodes) &&
+  res.nodes.length === 3 &&
+  res.nodes.every((node) => typeof node.x === 'number' && typeof node.y === 'number')
 const routed =
-  Array.isArray(res.edges) && res.edges.every((e) => e.sections?.length > 0)
+  Array.isArray(res.edges) &&
+  res.edges.length === 2 &&
+  res.edges.every((edge) => edge.points?.length > 1) &&
+  res.edges.map((edge) => edge.inputIndex).join(',') === '0,1'
 
 if (msg.id !== 42 || !allPlaced || !routed || !(res.width > 0)) {
   console.error('FAIL: layout result malformed:', JSON.stringify(res).slice(0, 400))
@@ -115,9 +128,9 @@ if (msg.id !== 42 || !allPlaced || !routed || !(res.width > 0)) {
 }
 
 console.log(
-  `PASS: ${workerFile} constructed ELK and returned a layered layout ` +
-    `(root ${res.width}x${res.height}, children at x=${res.children
-      .map((c) => c.x)
+  `PASS: ${workerFile} prepared compact graph input, constructed ELK, and returned compact geometry ` +
+    `(root ${res.width}x${res.height}, nodes at x=${res.nodes
+      .map((node) => node.x)
       .join(',')})`,
 )
 

@@ -36,6 +36,34 @@ export interface LaidOutGraph {
   height: number
 }
 
+export interface LayoutInputNode {
+  id: number
+  baseWidth: number
+  baseHeight: number
+  controlHeight: number
+  register: boolean
+}
+
+export interface LayoutInputEdge {
+  from: number
+  to: number
+  fromPort: string
+  toPort: string
+  control: boolean
+}
+
+export interface LayoutInput {
+  nodes: LayoutInputNode[]
+  edges: LayoutInputEdge[]
+}
+
+export interface LayoutGeometry {
+  nodes: Array<Omit<LaidOutNode, 'node'>>
+  edges: Array<{ inputIndex: number; points: Point[] }>
+  width: number
+  height: number
+}
+
 export interface ViewportTransform {
   x: number
   y: number
@@ -214,7 +242,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
   return { width, height }
 }
 
-/** Build the ELK graph description from a Subgraph. */
+/** Build the ELK graph description from compact layout input. */
 // NETWORK_SIMPLEX gives the tightest alignment but recurses in elkjs and blows
 // the stack on very deep DAGs (e.g. a wide adder tree). BRANDES_KOEPF is the
 // robust fallback: slightly looser, never overflows. layoutSubgraph retries
@@ -297,7 +325,7 @@ interface PinCatalog {
   outgoingIndex: Map<number, Map<string, number>>
 }
 
-function collectPinCatalog(edges: readonly GraphEdge[]): PinCatalog {
+function collectPinCatalog(edges: readonly LayoutInputEdge[]): PinCatalog {
   const incomingSets = new Map<number, Set<string>>()
   const outgoingSets = new Map<number, Set<string>>()
   const add = (map: Map<number, Set<string>>, id: number, pin: string) => {
@@ -309,8 +337,8 @@ function collectPinCatalog(edges: readonly GraphEdge[]): PinCatalog {
     pins.add(pin)
   }
   for (const edge of edges) {
-    add(outgoingSets, edge.from, edge.from_port)
-    add(incomingSets, edge.to, edge.to_port)
+    add(outgoingSets, edge.from, edge.fromPort)
+    add(incomingSets, edge.to, edge.toPort)
   }
   const build = (sets: Map<number, Set<string>>) => {
     const names = new Map<number, string[]>()
@@ -333,57 +361,78 @@ function collectPinCatalog(edges: readonly GraphEdge[]): PinCatalog {
 }
 
 function dimensionsForPins(
-  node: GraphNode,
+  node: LayoutInputNode,
   incoming: number,
   outgoing: number,
 ): { width: number; height: number } {
-  const base = nodeDimensions(node)
-  if (isRegKind(node)) return base
+  if (node.register) return { width: node.baseWidth, height: node.baseHeight }
   const pinRows = Math.max(incoming, outgoing)
-  const controlHeight = controlsFor(node).length * CONTROL_ROW_HEIGHT
   return {
-    width: base.width,
-    height: Math.max(base.height, (pinRows + 1) * PIN_ROW_HEIGHT + controlHeight),
+    width: node.baseWidth,
+    height: Math.max(
+      node.baseHeight,
+      (pinRows + 1) * PIN_ROW_HEIGHT + node.controlHeight,
+    ),
   }
 }
 
-function pinBodyHeight(node: GraphNode, height: number): number {
-  return Math.max(1, height - controlsFor(node).length * CONTROL_ROW_HEIGHT)
+function pinBodyHeight(node: LayoutInputNode, height: number): number {
+  return Math.max(1, height - node.controlHeight)
+}
+
+export function prepareLayoutInput(sub: Subgraph): LayoutInput {
+  return {
+    nodes: sub.nodes.map((node) => {
+      const { width, height } = nodeDimensions(node)
+      return {
+        id: node.id,
+        baseWidth: width,
+        baseHeight: height,
+        controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
+        register: isRegKind(node),
+      }
+    }),
+    edges: sub.edges.map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      fromPort: edge.from_port,
+      toPort: edge.to_port,
+      control: edge.control === true,
+    })),
+  }
 }
 
 export function toElkGraph(
-  sub: Subgraph,
+  input: LayoutInput,
   nodePlacement: NodePlacement = 'NETWORK_SIMPLEX',
 ): ElkNode {
-  assertRenderableSubgraph(sub)
-
   // Distinct input/output pin names per node, so every component's edges route
   // to spread-out pins on the west/east sides instead of collapsing to the box
   // centre. Sorted for a stable top-to-bottom pin order.
-  const pins = collectPinCatalog(sub.edges)
+  const pins = collectPinCatalog(input.edges)
   const inPins = pins.incoming
   const outPins = pins.outgoing
 
-  const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
   const controlPins = new Map<number, Map<string, ControlRole>>()
-  for (const edge of sub.edges) {
+  for (const edge of input.edges) {
     if (!edge.control) continue
     const node = nodeById.get(edge.to)
-    if (!node || !isRegKind(node)) continue
+    if (!node?.register) continue
     let pins = controlPins.get(edge.to)
     if (!pins) {
       pins = new Map()
       controlPins.set(edge.to, pins)
     }
-    pins.set(edge.to_port, controlRoleForPin(edge.to_port))
+    pins.set(edge.toPort, controlRoleForPin(edge.toPort))
   }
 
   const regIds = new Set<number>()
-  const children: ElkNode[] = sub.nodes.map((n) => {
+  const children: ElkNode[] = input.nodes.map((n) => {
     const ins = inPins.get(n.id) ?? []
     const outs = outPins.get(n.id) ?? []
     const { width, height } = dimensionsForPins(n, ins.length, outs.length)
-    if (isRegKind(n)) {
+    if (n.register) {
       regIds.add(n.id)
       // Fixed D/control (west) and Q (east) ports keep every visible register
       // connection on its real schematic pin.
@@ -447,21 +496,25 @@ export function toElkGraph(
   })
 
   const pinId = (
-    map: Map<number, string[]>,
+    map: Map<number, Map<string, number>>,
     id: number,
     pin: string,
     prefix: 'i' | 'o',
-  ): string => (map.get(id)?.includes(pin) ? `${id}#${prefix}:${pin}` : String(id))
+  ): string => (map.get(id)?.has(pin) ? `${id}#${prefix}:${pin}` : String(id))
 
-  const edges: ElkExtendedEdge[] = sub.edges.map((e, i) => ({
+  const edges: ElkExtendedEdge[] = input.edges.map((e, i) => ({
     id: `e${i}`,
-    sources: [regIds.has(e.from) ? `${e.from}#out` : pinId(outPins, e.from, e.from_port, 'o')],
+    sources: [
+      regIds.has(e.from)
+        ? `${e.from}#out`
+        : pinId(pins.outgoingIndex, e.from, e.fromPort, 'o'),
+    ],
     targets: [
       regIds.has(e.to)
         ? e.control
-          ? `${e.to}#control:${e.to_port}`
+          ? `${e.to}#control:${e.toPort}`
           : `${e.to}#in`
-        : pinId(inPins, e.to, e.to_port, 'i'),
+        : pinId(pins.incomingIndex, e.to, e.toPort, 'i'),
     ],
   }))
 
@@ -495,12 +548,11 @@ function assertRenderableSubgraph(sub: Subgraph): void {
   }
 }
 
-export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
-  const byId = new Map<number, GraphNode>()
-  for (const n of sub.nodes) byId.set(n.id, n)
-  const pins = collectPinCatalog(sub.edges)
+export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeometry {
+  const byId = new Map(input.nodes.map((node) => [node.id, node]))
+  const pins = collectPinCatalog(input.edges)
 
-  const nodes: LaidOutNode[] = (root.children ?? []).map((c) => {
+  const nodes: LayoutGeometry['nodes'] = (root.children ?? []).map((c) => {
     const id = Number(c.id)
     const node = byId.get(id)!
     const fallback = dimensionsForPins(
@@ -514,7 +566,6 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       y: c.y ?? 0,
       width: c.width ?? fallback.width,
       height: c.height ?? fallback.height,
-      node,
     }
   })
 
@@ -525,21 +576,22 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
     const match = /^e(\d+)$/.exec(edge.id)
     if (match) routedByInputIndex.set(Number(match[1]), edge)
   }
-  const fallbackPoint = (id: number, output: boolean, edge: GraphEdge): Point => {
+  const fallbackPoint = (id: number, output: boolean, edge: LayoutInputEdge): Point => {
     const laidOut = laidOutById.get(id)
     if (!laidOut) return { x: 0, y: 0 }
-    const register = isRegKind(laidOut.node)
+    const node = byId.get(id)
+    if (!node) return { x: 0, y: 0 }
     const registerYFraction = output
       ? REG_DATA_OUT_Y_FRAC
       : edge.control
-        ? registerControlYFraction(controlRoleForPin(edge.to_port))
+        ? registerControlYFraction(controlRoleForPin(edge.toPort))
         : REG_DATA_IN_Y_FRAC
-    if (!register) {
+    if (!node.register) {
       const names = output ? pins.outgoing.get(id) : pins.incoming.get(id)
       const positions = output ? pins.outgoingIndex.get(id) : pins.incomingIndex.get(id)
-      const pin = output ? edge.from_port : edge.to_port
+      const pin = output ? edge.fromPort : edge.toPort
       const index = positions?.get(pin)
-      const height = pinBodyHeight(laidOut.node, laidOut.height)
+      const height = pinBodyHeight(node, laidOut.height)
       return {
         x: laidOut.x + (output ? laidOut.width : 0),
         y: laidOut.y + (index == null || names == null
@@ -552,8 +604,8 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       y: laidOut.y + Math.min(laidOut.height, REG_BODY_HEIGHT) * registerYFraction,
     }
   }
-  const edges: LaidOutEdge[] = sub.edges.map((src, i) => {
-    const routed = routedByInputIndex.get(i)
+  const edges: LayoutGeometry['edges'] = input.edges.map((edge, inputIndex) => {
+    const routed = routedByInputIndex.get(inputIndex)
     const points: Point[] = []
     const section = routed?.sections?.[0]
     if (section) {
@@ -565,15 +617,13 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
       // is especially important for grouped register D inputs: without the
       // fallback the driver cone and register render as disconnected islands.
       points.push(
-        fallbackPoint(src.from, true, src),
-        fallbackPoint(src.to, false, src),
+        fallbackPoint(edge.from, true, edge),
+        fallbackPoint(edge.to, false, edge),
       )
     }
     return {
-      from: src.from,
-      to: src.to,
+      inputIndex,
       points,
-      edge: src,
     }
   })
 
@@ -585,11 +635,29 @@ export function interpretResult(sub: Subgraph, root: ElkNode): LaidOutGraph {
   }
 }
 
+export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): LaidOutGraph {
+  const byId = new Map(sub.nodes.map((node) => [node.id, node]))
+  return {
+    nodes: geometry.nodes.map((laidOut) => {
+      const node = byId.get(laidOut.id)
+      if (!node) throw new Error(`layout returned unknown node ${laidOut.id}`)
+      return { ...laidOut, node }
+    }),
+    edges: geometry.edges.map(({ inputIndex, points }) => {
+      const edge = sub.edges[inputIndex]
+      if (!edge) throw new Error(`layout returned unknown edge ${inputIndex}`)
+      return { from: edge.from, to: edge.to, points, edge }
+    }),
+    width: geometry.width,
+    height: geometry.height,
+  }
+}
+
 let worker: Worker | null = null
 let seq = 0
 const pending = new Map<
   number,
-  { resolve: (g: ElkNode) => void; reject: (e: Error) => void }
+  { resolve: (g: LayoutGeometry) => void; reject: (e: Error) => void }
 >()
 export const LAYOUT_DEADLINE_MS = 10_000
 
@@ -637,21 +705,25 @@ function getWorker(): Worker {
   return w
 }
 
-/** Lay out a Subgraph in the worker. Rejects before worker/SVG work at either cap. */
-function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
+/** Lay out and adapt a Subgraph in the worker. */
+function runLayout(
+  input: LayoutInput,
+  placement: NodePlacement,
+  signal?: AbortSignal,
+): Promise<LayoutGeometry> {
   const w = getWorker()
   const id = ++seq
-  return new Promise<ElkNode>((resolve, reject) => {
+  return new Promise<LayoutGeometry>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
     }
     let timeout: ReturnType<typeof setTimeout> | undefined
     const onAbort = () => {
-      const entry = pending.get(id)
-      if (!entry) return
-      pending.delete(id)
-      entry.reject(abortError())
+      if (!pending.has(id)) return
+      // ELK cannot cancel an in-flight layout. Terminating prevents a stale,
+      // superseded job from monopolising the singleton ahead of its replacement.
+      terminateWorker(w, abortError())
     }
     const cleanup = () => {
       signal?.removeEventListener('abort', onAbort)
@@ -672,7 +744,7 @@ function runLayout(graph: ElkNode, signal?: AbortSignal): Promise<ElkNode> {
       () => terminateWorker(w, layoutTimeoutError()),
       LAYOUT_DEADLINE_MS,
     )
-    const req: ElkRequest = { id, graph }
+    const req: ElkRequest = { id, input, placement }
     w.postMessage(req)
   })
 }
@@ -697,20 +769,22 @@ export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
 ): Promise<LaidOutGraph> {
+  assertRenderableSubgraph(sub)
+  const input = prepareLayoutInput(sub)
   const placement = placementForLayout(sub)
-  let result: ElkNode
+  let geometry: LayoutGeometry
   if (placement === 'BRANDES_KOEPF') {
-    result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
+    geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
   } else {
     try {
-      result = await runLayout(toElkGraph(sub, 'NETWORK_SIMPLEX'), signal)
+      geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
     } catch (error) {
       // Never retry an aborted (superseded) request.
       if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
         throw error
       }
-      result = await runLayout(toElkGraph(sub, 'BRANDES_KOEPF'), signal)
+      geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
     }
   }
-  return interpretResult(sub, result)
+  return hydrateLayoutResult(sub, geometry)
 }
