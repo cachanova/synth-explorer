@@ -12,3 +12,13 @@ export function boundaryFaninRequest(
     rootPortBit,
   }
 }
+
+export function boundaryPathPinSelection(
+  endpointKind: string,
+  endpointPort: string,
+  bits: number[],
+) {
+  return endpointKind === 'blackbox'
+    ? { rootPort: endpointPort, rootPortBits: bits }
+    : {}
+}

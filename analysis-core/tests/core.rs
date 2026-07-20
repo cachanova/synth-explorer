@@ -91,6 +91,7 @@ fn cone_options(max_nodes: usize) -> ConeOptions<'static> {
         show_infrastructure: false,
         root_port: None,
         root_port_bit: None,
+        root_port_bits: None,
     }
 }
 
@@ -288,6 +289,7 @@ fn cone_stops_at_boundary_nodes() {
                 show_infrastructure: false,
                 root_port: None,
                 root_port_bit: None,
+                root_port_bits: None,
             },
             None,
         )
@@ -322,6 +324,7 @@ fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
         show_infrastructure: false,
         root_port: None,
         root_port_bit: None,
+        root_port_bits: None,
     };
     let envelope = analysis.envelope(&graph, &roots, options, None).unwrap();
     assert!(!envelope.truncated);
@@ -559,6 +562,7 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
                 show_infrastructure: false,
                 root_port: Some("ADDR"),
                 root_port_bit: None,
+                root_port_bits: None,
             },
             None,
         )
@@ -613,6 +617,50 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
             .nodes
             .iter()
             .all(|node| node.node.name != "addr[0]")
+    );
+
+    let addr_path_cohort = analysis
+        .cone(
+            &graph,
+            ram.id,
+            ConeOptions {
+                root_port: Some("ADDR"),
+                root_port_bits: Some(&[1]),
+                ..cone_options(100)
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        addr_path_cohort
+            .nodes
+            .iter()
+            .any(|node| node.node.name == "addr[1]")
+    );
+    assert!(
+        addr_path_cohort
+            .nodes
+            .iter()
+            .all(|node| node.node.name != "addr[0]")
+    );
+
+    let tied_cone = analysis
+        .cone(
+            &graph,
+            ram.id,
+            ConeOptions {
+                root_port: Some("TIED"),
+                ..cone_options(100)
+            },
+            None,
+        )
+        .unwrap();
+    assert!(tied_cone.edges.iter().any(|edge| edge.to_port == "TIED"));
+    assert!(
+        tied_cone
+            .nodes
+            .iter()
+            .any(|node| matches!(node.node.kind, ApiNodeKind::Const))
     );
 }
 
@@ -831,6 +879,7 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
                 show_infrastructure: false,
                 root_port: None,
                 root_port_bit: None,
+                root_port_bits: None,
             },
             None,
         )

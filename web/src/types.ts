@@ -254,6 +254,7 @@ export interface BoundaryEndpoint {
   src?: string
   worst_depth: number
   bits: EndpointBit[]
+  bits_truncated: boolean
 }
 
 export interface EndpointsResponse {

@@ -51,6 +51,7 @@ import {
   flagsForModeTransition,
   type ModeFlagMemory,
 } from './lib/flagRegistry'
+import { boundaryPathPinSelection } from './lib/endpointCone'
 import type {
   DesignFile,
   Example,
@@ -78,6 +79,7 @@ export interface ConeGraphRequest {
   highlight: number[]
   rootPort?: string
   rootPortBit?: number
+  rootPortBits?: number[]
   nonce: number // force re-render even if identical request
 }
 
@@ -216,6 +218,7 @@ export interface Store {
     highlight?: number[]
     rootPort?: string
     rootPortBit?: number
+    rootPortBits?: number[]
   }) => void
   openControlCone: (opts: {
     node: number
@@ -843,6 +846,7 @@ export function StoreProvider({
       highlight?: number[]
       rootPort?: string
       rootPortBit?: number
+      rootPortBits?: number[]
     }) => {
       if (analysisStateRef.current !== 'current') return
       cancelSourceProbe()
@@ -864,6 +868,7 @@ export function StoreProvider({
         highlight: opts.highlight ?? [],
         rootPort: opts.rootPort,
         rootPortBit: opts.rootPortBit,
+        rootPortBits: opts.rootPortBits,
         nonce: nextNonce(),
       })
       setActiveTab('graph')
@@ -885,7 +890,7 @@ export function StoreProvider({
         path.endpoint_kind === 'blackbox' ? `.${path.endpoint_port}` : ''
       } (depth ${path.depth})`,
       highlight: path.nodes.map((n) => n.id),
-      rootPort: path.endpoint_kind === 'blackbox' ? path.endpoint_port : undefined,
+      ...boundaryPathPinSelection(path.endpoint_kind, path.endpoint_port, path.bits),
       nonce: nextNonce(),
     })
     setActiveTab('graph')

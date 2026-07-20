@@ -229,6 +229,7 @@ pub struct BoundaryEndpoint {
     pub src: Option<String>,
     pub worst_depth: u32,
     pub bits: Vec<EndpointBit>,
+    pub bits_truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, DeepSizeOf)]
@@ -870,6 +871,9 @@ impl Analysis {
             hide_control: options.hide_control && !control,
             hide_const: options.hide_const,
             show_infrastructure: false,
+            root_port: None,
+            root_port_bit: None,
+            root_port_bits: None,
         };
         let selected_grouping = options.group_vectors.then_some(grouping);
         let mut graph = match probe.direction {
@@ -1742,6 +1746,7 @@ impl Analysis {
                         }
                         examined_edges += 1;
                     }
+                    let mut selected_root_pin = false;
                     if included_roots.len() == 1
                         && included_roots.contains(&frame.id)
                         && let Some(root_port) = options.root_port
@@ -1754,11 +1759,17 @@ impl Analysis {
                             || options.root_port_bit.is_some_and(|bit| {
                                 traversal.dir == ConeDir::Fanin && edge.to_port_bit != bit
                             })
+                            || options.root_port_bits.is_some_and(|bits| {
+                                traversal.dir == ConeDir::Fanin && !bits.contains(&edge.to_port_bit)
+                            })
                         {
                             continue;
                         }
+                        selected_root_pin = true;
                     }
-                    if should_hide_edge(graph, edge, options.hide_control, options.hide_const) {
+                    if !selected_root_pin
+                        && should_hide_edge(graph, edge, options.hide_control, options.hide_const)
+                    {
                         continue;
                     }
                     if !edge_set.contains(&edge_idx)
@@ -2489,6 +2500,8 @@ pub struct ConeOptions<'a> {
     pub root_port: Option<&'a str>,
     /// Further restrict `root_port` to one bit when the endpoint is expanded.
     pub root_port_bit: Option<u32>,
+    /// Restrict `root_port` to the bit cohort represented by a grouped path.
+    pub root_port_bits: Option<&'a [u32]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3280,7 +3293,7 @@ fn discover_endpoints(
             continue;
         }
         let mut port_indices: HashMap<&str, usize> = HashMap::new();
-        let mut seen_port_bits: HashMap<(&str, u32), Option<(usize, usize)>> = HashMap::new();
+        let mut seen_port_bits: HashMap<(&str, u32), (usize, usize)> = HashMap::new();
         for edge_idx in &graph.incoming[node.id as usize] {
             let edge = &graph.edges[*edge_idx];
             if edge.control {
@@ -3300,6 +3313,7 @@ fn discover_endpoints(
                     src: node.src.clone(),
                     worst_depth: 0,
                     bits: Vec::new(),
+                    bits_truncated: false,
                 });
                 port_indices.insert(edge.to_port.as_str(), index);
                 Some(index)
@@ -3315,12 +3329,11 @@ fn discover_endpoints(
                 let key = (edge.to_port.as_str(), edge.to_port_bit);
                 match seen_port_bits.entry(key) {
                     std::collections::hash_map::Entry::Occupied(stored) => {
-                        if let Some((stored_endpoint, stored_bit)) = *stored.get() {
-                            boundaries[stored_endpoint].bits[stored_bit].depth =
-                                boundaries[stored_endpoint].bits[stored_bit]
-                                    .depth
-                                    .max(depth);
-                        }
+                        let (stored_endpoint, stored_bit) = *stored.get();
+                        boundaries[stored_endpoint].bits[stored_bit].depth =
+                            boundaries[stored_endpoint].bits[stored_bit]
+                                .depth
+                                .max(depth);
                     }
                     std::collections::hash_map::Entry::Vacant(slot) => {
                         if boundary_bit_count < MAX_BOUNDARY_ENDPOINT_BITS {
@@ -3330,10 +3343,10 @@ fn discover_endpoints(
                                 node_id: node.id,
                                 depth,
                             });
-                            slot.insert(Some((index, stored_bit)));
+                            slot.insert((index, stored_bit));
                             boundary_bit_count += 1;
                         } else {
-                            slot.insert(None);
+                            boundaries[index].bits_truncated = true;
                             boundaries_truncated = true;
                         }
                     }
@@ -5431,6 +5444,7 @@ mod tests {
                 to: 1,
                 from_port: "a".to_owned(),
                 to_port: "A".to_owned(),
+                to_port_bit: bit as u32,
                 bit: Some(bit as u32),
                 net_name: "wide".to_owned(),
                 control: false,
@@ -5476,6 +5490,7 @@ mod tests {
                 to: 1,
                 from_port: "1'b0".to_owned(),
                 to_port: "A".to_owned(),
+                to_port_bit: bit as u32,
                 bit: Some(bit as u32),
                 net_name: "hidden".to_owned(),
                 control: false,
@@ -5842,6 +5857,7 @@ mod tests {
                 to,
                 from_port: from_port.to_owned(),
                 to_port: to_port.to_owned(),
+                to_port_bit: 0,
                 bit: Some(index as u32),
                 net_name: format!("n{index}"),
                 control: false,
@@ -6037,6 +6053,9 @@ mod tests {
                     hide_control: true,
                     hide_const: true,
                     show_infrastructure: true,
+                    root_port: None,
+                    root_port_bit: None,
+                    root_port_bits: None,
                 },
                 None,
             )
@@ -6178,6 +6197,68 @@ mod tests {
         assert!(analysis.endpoint_targets_truncated);
         assert_eq!(analysis.stats.max_depth, 1);
         assert!(analysis.paths(&graph, 1, None).truncated);
+    }
+
+    #[test]
+    fn boundary_bit_catalog_is_bounded_and_marks_partial_ports() {
+        let graph = boundary_bit_cap_graph();
+        let analysis = Analysis::new(&graph, vec!["boundary_bit_cap.sv".to_owned()]);
+        let wide = analysis
+            .endpoints
+            .boundaries
+            .iter()
+            .find(|endpoint| endpoint.port == "WIDE")
+            .unwrap();
+        assert_eq!(wide.width, MAX_BOUNDARY_ENDPOINT_BITS + 1);
+        assert_eq!(wide.bits.len(), MAX_BOUNDARY_ENDPOINT_BITS);
+        assert!(wide.bits_truncated);
+        let late = analysis
+            .endpoints
+            .boundaries
+            .iter()
+            .find(|endpoint| endpoint.port == "LATE")
+            .unwrap();
+        assert_eq!(late.width, 1);
+        assert!(late.bits.is_empty());
+        assert!(late.bits_truncated);
+        assert!(analysis.endpoints.boundaries_truncated);
+        assert!(analysis.endpoint_targets_truncated);
+    }
+
+    fn boundary_bit_cap_graph() -> Graph {
+        let nodes = vec![port_node(0, "in", PortDirection::Input), boundary_node(1)];
+        let mut edges = Vec::with_capacity(MAX_BOUNDARY_ENDPOINT_BITS + 2);
+        let mut outgoing = vec![Vec::new(); 2];
+        let mut incoming = vec![Vec::new(); 2];
+        for bit in 0..=MAX_BOUNDARY_ENDPOINT_BITS as u32 {
+            let index = edges.len();
+            edges.push(Edge {
+                from: 0,
+                to: 1,
+                from_port: "in".to_owned(),
+                to_port: "WIDE".to_owned(),
+                to_port_bit: bit,
+                bit: Some(bit),
+                net_name: "wide".to_owned(),
+                control: false,
+            });
+            outgoing[0].push(index);
+            incoming[1].push(index);
+        }
+        let index = edges.len();
+        edges.push(Edge {
+            from: 0,
+            to: 1,
+            from_port: "in".to_owned(),
+            to_port: "LATE".to_owned(),
+            to_port_bit: 0,
+            bit: Some(MAX_BOUNDARY_ENDPOINT_BITS as u32 + 1),
+            net_name: "late".to_owned(),
+            control: false,
+        });
+        outgoing[0].push(index);
+        incoming[1].push(index);
+        graph_from_parts("boundary_bit_cap", nodes, edges, outgoing, incoming)
     }
 
     fn boundary_cap_graph() -> Graph {
@@ -6833,6 +6914,7 @@ mod tests {
                 to: 1,
                 from_port: "a".to_owned(),
                 to_port: "A".to_owned(),
+                to_port_bit: 0,
                 bit: Some(0),
                 net_name: "a".to_owned(),
                 control: false,
@@ -6842,6 +6924,7 @@ mod tests {
                 to: 2,
                 from_port: "Y".to_owned(),
                 to_port: "y".to_owned(),
+                to_port_bit: 0,
                 bit: Some(1),
                 net_name: "y".to_owned(),
                 control: false,

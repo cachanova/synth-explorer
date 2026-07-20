@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { EndpointsResponse } from '../../types'
-import { boundaryFaninRequest } from '../../lib/endpointCone'
+import { boundaryFaninRequest, boundaryPathPinSelection } from '../../lib/endpointCone'
 
 let endpointsData: EndpointsResponse
 
@@ -48,6 +48,14 @@ describe('Endpoints result completeness', () => {
     })
   })
 
+  it('preserves the selected boundary path bit cohort in graph requests', () => {
+    expect(boundaryPathPinSelection('blackbox', 'ADDR', [1, 3])).toEqual({
+      rootPort: 'ADDR',
+      rootPortBits: [1, 3],
+    })
+    expect(boundaryPathPinSelection('register', 'D', [0])).toEqual({})
+  })
+
   it('renders every logical endpoint instead of stopping at 100 rows', () => {
     endpointsData = {
       registers: [],
@@ -86,6 +94,7 @@ describe('Endpoints result completeness', () => {
             { bit: 0, node_id: 42, depth: 2 },
             { bit: 1, node_id: 42, depth: 3 },
           ],
+          bits_truncated: false,
         },
         {
           name: 'memory',
@@ -95,6 +104,7 @@ describe('Endpoints result completeness', () => {
           width: 1,
           worst_depth: 1,
           bits: [{ bit: 0, node_id: 42, depth: 1 }],
+          bits_truncated: false,
         },
       ],
       boundaries_truncated: false,
@@ -107,5 +117,30 @@ describe('Endpoints result completeness', () => {
     expect(markup).toContain('memory.WE')
     expect(markup).toContain('Memory input')
     expect(markup).not.toContain('UNUSED')
+  })
+
+  it('marks a connected boundary port whose bit details were capped', () => {
+    endpointsData = {
+      registers: [],
+      inputs: [],
+      outputs: [],
+      boundaries: [{
+        name: 'memory',
+        node_id: 42,
+        cell_type: 'RAM32M',
+        port: 'LATE',
+        width: 1,
+        worst_depth: 2,
+        bits: [],
+        bits_truncated: true,
+      }],
+      boundaries_truncated: true,
+    }
+
+    const markup = renderToStaticMarkup(<Endpoints />)
+
+    expect(markup).toContain('memory.LATE')
+    expect(markup).toContain('0+')
+    expect(markup).toContain('Additional connected bits omitted by the safety limit')
   })
 })

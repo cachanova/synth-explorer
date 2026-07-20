@@ -62,6 +62,8 @@ struct ConeQuery {
     group_vectors: Option<bool>,
     root_port: Option<String>,
     root_port_bit: Option<u32>,
+    #[serde(default)]
+    root_port_bits: Vec<u32>,
 }
 
 #[derive(Default, Deserialize)]
@@ -240,6 +242,8 @@ impl AnalysisSession {
                     show_infrastructure: query.show_infrastructure.unwrap_or(false),
                     root_port: query.root_port.as_deref(),
                     root_port_bit: query.root_port_bit,
+                    root_port_bits: (!query.root_port_bits.is_empty())
+                        .then_some(query.root_port_bits.as_slice()),
                 },
                 grouping,
             )

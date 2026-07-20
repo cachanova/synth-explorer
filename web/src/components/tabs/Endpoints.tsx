@@ -557,7 +557,6 @@ function BoundaryRow({
         className={`clickable${open ? ' expanded' : ''}`}
         role="row"
         onClick={() =>
-          endpoint.bits.length > 0 &&
           onOpen({
             ...boundaryFaninRequest(endpoint.node_id, `${name} (fanin)`, endpoint.port),
             highlight: [endpoint.node_id],
@@ -567,10 +566,16 @@ function BoundaryRow({
       >
         <td role="cell">
           <span className="mono">{name}</span>
-          <ExpandButton open={open} onToggle={onToggle} />
+          {endpoint.bits.length > 0 && <ExpandButton open={open} onToggle={onToggle} />}
         </td>
         <td role="cell"><span className="tag">{boundaryKind(endpoint)}</span></td>
-        <td role="cell" className="num">{endpoint.bits.length}</td>
+        <td
+          role="cell"
+          className="num"
+          title={endpoint.bits_truncated ? 'Additional connected bits omitted by the safety limit' : undefined}
+        >
+          {endpoint.bits.length}{endpoint.bits_truncated ? '+' : ''}
+        </td>
         <td role="cell"><span className="tag">{displayCellType(endpoint.cell_type)}</span></td>
         <td role="cell" className="num" title={`Worst structural depth into ${endpoint.port}`}>
           <span className="depth-chip">{endpoint.worst_depth}</span>
