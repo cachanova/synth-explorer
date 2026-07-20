@@ -299,6 +299,84 @@ Removing per-node ref callbacks was also tested separately and did not produce
 a reliable improvement.
 
 These optimizations improve the existing bounded viewer but do not by
-themselves justify raising the 2,000-node cap. The next render target is the
-per-node hover/focus state and handler count, followed by measured zoom-level
-detail culling.
+themselves justify raising the 2,000-node cap. The delegated-interaction and
+zoom-level detail stages measured next retain that bound as well.
+
+## Delegated schematic interactions
+
+- Date: 2026-07-20
+- Control: `ff9ac81bf3fccdcc19c26a2e1f6d7a9677fc3991`
+- Browser: Chromium `148.0.7778.96`, headless at 1440×900
+- Trials: seven alternating production-build trials per graph and variant
+- Traffic: zero application API requests, failed requests, console errors,
+  page errors, and assertion failures
+
+The candidate removed seven function-valued React event props and two local
+state hooks from every schematic node. Click, double-click, focus, and keyboard
+actions are handled at the SVG boundary; four native viewport listeners update
+a small pin-label overlay for the unique selected, hovered, or focused nodes.
+
+| Metric | 480 nodes / 1,392 edges | 2,000 nodes / 3,960 edges |
+| --- | ---: | ---: |
+| Per-node React handler props | 3,360 → 0 | 14,000 → 0 |
+| CDP listener records | 1,150 → 194 (-83.1%) | 4,190 → 194 (-95.4%) |
+| Initial retained heap | 5.83 → 5.43 MiB (-6.9%) | 17.77 → 16.18 MiB (-9.0%) |
+| Click to selected | 108.3 → 108.0 ms (-0.3%) | 383.0 → 336.1 ms (-12.2%) |
+| Hover to pins visible | 8.2 → 10.6 ms | 13.5 → 13.9 ms |
+
+React's root delegation remained at 139 native registrations in both variants.
+The old nodes had one native click listener each, not seven native listeners;
+the other per-node handlers were React props. The CDP listener-record metric
+includes React and browser records and is therefore reported separately from
+native-listener attribution.
+
+All 28 trials preserved exact node, edge, DOM, SVG, geometry, role, accessible
+label, and roving-tab-stop contracts. Hover/focus pins, selection, expansion,
+control actions, keyboard navigation, and real pointer pan also passed. The
+no-selection DOM was unchanged. Visible pins add at most three transient
+wrapper elements, and the renderer bundle increased 1,522 bytes raw and 319
+bytes gzip. Aggregate and renderer RSS were effectively flat.
+
+Initial render timings were noisy under concurrent Chromium load: the
+2,000-node median was directionally faster, while the 480-node median was
+slower. No general initial-render or hover-speed claim is supported. The
+repeatable benefit is constant interaction-listener state and lower retained
+JavaScript heap at the existing cap.
+
+### Zoom-level detail culling
+
+The LOD candidate stored one imperative `data-detail-level` on the SVG viewport
+instead of keeping zoom scale in React state. Overview detail below nominal
+scale 0.40 hides unreadable node text, operator/control/register labels, bus
+labels, and decorative symbol detail. Compact detail from 0.40 to 0.75 restores
+primary labels and glyphs; full detail at 0.75 and above restores everything.
+Hysteresis uses 0.35/0.45 and 0.65/0.80 boundaries, and richer detail returns
+after 160 ms of zoom inactivity. Selected and focused nodes always restore
+their labels, register pins, and controls. Outlines, edge paths, arrows, titles,
+and transient pin overlays remain at every level.
+
+Three fresh-context initial-render trials per variant and nine interleaved
+motion samples per 480/2,000-node fixture produced these medians:
+
+| 2,000-node metric | Full | Compact | Overview |
+| --- | ---: | ---: | ---: |
+| React render and commit | 1,630.3 ms | 1,387.6 ms (-14.9%) | 1,249.3 ms (-23.4%) |
+| Commit to visible | 742.8 ms | 416.1 ms (-44.0%) | 222.1 ms (-70.1%) |
+| Main task | 3,151.2 ms | 2,357.0 ms (-25.2%) | 2,290.5 ms (-27.3%) |
+| Layout | 978.6 ms | 438.2 ms (-55.2%) | 471.2 ms (-51.8%) |
+| Ten-frame fit motion | 3,227.6 ms | 1,745.7 ms (-45.9%) | 981.3 ms (-69.6%) |
+| Aggregate RSS delta | 250.7 MiB | 227.4 MiB (-9.3%) | 218.1 MiB (-13.0%) |
+
+At 480 nodes, fit motion fell 44.8% in compact mode and 65.0% in overview.
+Every tier retained the same DOM and SVG nodes, geometry, paths, arrow markers,
+titles, hit targets, and JavaScript heap. `display: none` produced the sustained
+gain; `visibility: hidden` improved motion only 28.1%, and `opacity: 0` only
+3.3%. Removing arrows was neutral or worse and lost explicit direction.
+
+A sparse 3,000-node / 5,960-edge overview probe reduced renderer commit plus
+visible time 46.7%, long-task total 46.3%, selection 46.9%, zoom 74.8%, and
+page/process RSS growth 18.0%. It still took 10.34 seconds to become visible,
+had an 814 ms largest main-thread task, retained 33,017 SVG and 50,857 DOM
+elements, and used approximately 1.03 GiB across Chromium processes. This is
+not dense-edge safety evidence. `MAX_SUBGRAPH_NODES` and
+`MAX_GRAPH_RENDER_NODES` therefore remain 2,000; removing either cap is rejected.

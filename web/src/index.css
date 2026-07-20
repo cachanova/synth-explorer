@@ -1792,6 +1792,48 @@ th.sortable:hover {
 .g-node-body:focus-visible .g-symbol-outline {
   filter: drop-shadow(0 0 3px var(--accent));
 }
+.g-viewport[data-detail-level='compact'] .g-node-name,
+.g-viewport[data-detail-level='compact'] .g-reg-type,
+.g-viewport[data-detail-level='compact'] .g-boundary-badge,
+.g-viewport[data-detail-level='compact'] .g-group-badge,
+.g-viewport[data-detail-level='compact'] .g-bus-label,
+.g-viewport[data-detail-level='compact'] .g-reg-pins,
+.g-viewport[data-detail-level='compact'] .g-control-labels,
+.g-viewport[data-detail-level='overview'] .g-node-name,
+.g-viewport[data-detail-level='overview'] .g-reg-type,
+.g-viewport[data-detail-level='overview'] .g-boundary-badge,
+.g-viewport[data-detail-level='overview'] .g-group-badge,
+.g-viewport[data-detail-level='overview'] .g-bus-label,
+.g-viewport[data-detail-level='overview'] .g-reg-pins,
+.g-viewport[data-detail-level='overview'] .g-control-labels,
+.g-viewport[data-detail-level='overview'] .g-node-label,
+.g-viewport[data-detail-level='overview'] .g-operator-glyph,
+.g-viewport[data-detail-level='overview'] .g-symbol-detail,
+.g-viewport[data-detail-level='overview'] .g-symbol-stack {
+  display: none;
+}
+.g-viewport[data-detail-level] .g-node-body.selected .g-node-label,
+.g-viewport[data-detail-level] .g-node-body.selected .g-node-name,
+.g-viewport[data-detail-level] .g-node-body.selected .g-reg-type,
+.g-viewport[data-detail-level] .g-node-body.selected .g-operator-glyph,
+.g-viewport[data-detail-level] .g-node-body.selected .g-symbol-detail,
+.g-viewport[data-detail-level] .g-node-body.selected .g-symbol-stack,
+.g-viewport[data-detail-level] .g-node-body.selected .g-boundary-badge,
+.g-viewport[data-detail-level] .g-node-body.selected .g-group-badge,
+.g-viewport[data-detail-level] .g-node-body.selected .g-reg-pins,
+.g-viewport[data-detail-level] .g-node-body.selected .g-control-labels,
+.g-viewport[data-detail-level] .g-node-body:focus .g-node-label,
+.g-viewport[data-detail-level] .g-node-body:focus .g-node-name,
+.g-viewport[data-detail-level] .g-node-body:focus .g-reg-type,
+.g-viewport[data-detail-level] .g-node-body:focus .g-operator-glyph,
+.g-viewport[data-detail-level] .g-node-body:focus .g-symbol-detail,
+.g-viewport[data-detail-level] .g-node-body:focus .g-symbol-stack,
+.g-viewport[data-detail-level] .g-node-body:focus .g-boundary-badge,
+.g-viewport[data-detail-level] .g-node-body:focus .g-group-badge,
+.g-viewport[data-detail-level] .g-node-body:focus .g-reg-pins,
+.g-viewport[data-detail-level] .g-node-body:focus .g-control-labels {
+  display: inline;
+}
 .g-symbol-outline {
   transition: stroke 100ms ease, fill 100ms ease;
 }
@@ -1821,6 +1863,9 @@ th.sortable:hover {
   pointer-events: none;
 }
 .g-pin-labels {
+  pointer-events: none;
+}
+.g-pin-overlay {
   pointer-events: none;
 }
 .g-pin-labels line {
