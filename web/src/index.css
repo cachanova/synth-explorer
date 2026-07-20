@@ -1276,6 +1276,9 @@ table.grid th {
   top: 0;
   background: var(--bg);
 }
+table.grid th.num {
+  text-align: right;
+}
 table.grid td {
   padding: 5px 8px;
   border-bottom: 1px solid var(--bg-3);

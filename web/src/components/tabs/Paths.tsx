@@ -24,6 +24,14 @@ import type {
 import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { VirtualTable } from '../VirtualTable'
+import {
+  nextPathSort,
+  sortDirectionArrow,
+  sortDirectionLabel,
+  sortPaths,
+  type PathSortKey,
+  type PathSortState,
+} from './pathSorting'
 
 interface RouteVariant {
   index: number
@@ -38,7 +46,10 @@ export function Paths() {
   const id = store.design?.design_id ?? null
   const designMode = store.design?.mode
   const resolvedProfile = store.design?.delay_profile
-  const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
+  const [sort, setSort] = useState<PathSortState>({
+    key: 'depth',
+    direction: 'desc',
+  })
   // Cost per-path delays from the same per-design resolved view as the timing
   // panel. The tab remounts on switch, so persisted settings are read here.
   const timing = useMemo(() => {
@@ -51,19 +62,26 @@ export function Paths() {
     }
   }, [designMode, resolvedProfile])
   const timingHidden = timing?.hidden ?? true
-  const effectiveSort = timingHidden ? 'depth' : sortBy
   const { data, loading, error } = useDesignData(
     id,
-    (designId) => getPaths(designId, { sort: effectiveSort, ...timing?.request }),
-    JSON.stringify({ sort: effectiveSort, ...timing?.request }),
+    // Keep route reconstruction independent of the table's presentation sort.
+    // Otherwise switching columns changes which path variants the analysis
+    // returns instead of reordering one complete result set.
+    (designId) => getPaths(designId, { sort: 'depth', ...timing?.request }),
+    JSON.stringify({ sort: 'depth', ...timing?.request }),
   )
   const [open, setOpen] = useState<number | null>(null)
   useEffect(() => setOpen(null), [id])
-  // The server ranks, truncates, and reconstructs routes in the requested
-  // order (sort=depth|delay), so the response is rendered as-is — a client
-  // re-sort could only reorder the survivors of the wrong ranking.
-  const sortedPaths = useMemo(() => data?.paths ?? [], [data])
+  const sortedPaths = useMemo(
+    () => sortPaths(data?.paths ?? [], sort),
+    [data, sort],
+  )
   const variants = useMemo(() => routeVariants(sortedPaths), [sortedPaths])
+
+  const selectSort = (key: PathSortKey) => {
+    setSort((current) => nextPathSort(current, key))
+    setOpen(null)
+  }
 
   if (!store.design) return <div className="empty-state">No design yet.</div>
   if (loading && !data) return <div className="empty-state">Loading paths…</div>
@@ -99,32 +117,28 @@ export function Paths() {
             : ['4%', '7%', '10%', '14%', '18%', '18%', '18%', '11%']
         }
         getRowKey={(index) => pathKey(sortedPaths[index])}
-        resetKey={effectiveSort}
+        resetKey={`${sort.key}:${sort.direction}`}
         header={
           <>
             <th role="columnheader" className="num">#</th>
             <th
               role="columnheader"
               className="num sortable"
-              onClick={() => {
-                setSortBy('depth')
-                setOpen(null)
-              }}
+              aria-sort={sort.key === 'depth' ? sortDirectionLabel(sort.direction) : 'none'}
+              onClick={() => selectSort('depth')}
               title="Sort by structural depth"
             >
-              Depth{effectiveSort === 'depth' ? ' ▾' : ''}
+              Depth{sort.key === 'depth' ? sortDirectionArrow(sort.direction) : ''}
             </th>
             {!timingHidden && (
               <th
                 role="columnheader"
                 className="num sortable"
-                onClick={() => {
-                  setSortBy('delay')
-                  setOpen(null)
-                }}
-                title="Rank paths by estimated delay"
+                aria-sort={sort.key === 'delay' ? sortDirectionLabel(sort.direction) : 'none'}
+                onClick={() => selectSort('delay')}
+                title="Sort by estimated delay"
               >
-                Est. delay{effectiveSort === 'delay' ? ' ▾' : ''}
+                Est. delay{sort.key === 'delay' ? sortDirectionArrow(sort.direction) : ''}
               </th>
             )}
             <th role="columnheader">Class</th>

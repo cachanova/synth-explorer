@@ -217,6 +217,43 @@ test('supports persistent manual synthesis and a configurable delay', async ({ p
   expect(apiRequests).toEqual([])
 })
 
+test('sorts every reported path without changing the result set', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('round_robin_arbiter')
+    await page.getByLabel('Mode').selectOption('xilinx')
+  })
+  await page.getByRole('tab', { name: 'Paths', exact: true }).click()
+
+  const title = page.getByText(/^Longest logical path variants \(\d+\)$/)
+  await expect(title).toBeVisible()
+  const initialTitle = await title.textContent()
+  const depthHeader = page.getByRole('columnheader', { name: /^Depth/ })
+  const delayHeader = page.getByRole('columnheader', { name: /^Est\. delay/ })
+  const visibleDelays = () =>
+    page.locator('.virtual-grid-row tr.clickable td:nth-child(3)').evaluateAll((cells) =>
+      cells.map((cell) => Number.parseFloat(cell.textContent ?? '')),
+    )
+
+  expect(await depthHeader.evaluate((cell) => getComputedStyle(cell).textAlign)).toBe('right')
+  expect(
+    await page.locator('.virtual-grid-row tr.clickable td:nth-child(2)').first()
+      .evaluate((cell) => getComputedStyle(cell).textAlign),
+  ).toBe('right')
+
+  await delayHeader.click()
+  await expect(delayHeader).toHaveAttribute('aria-sort', 'descending')
+  await expect(title).toHaveText(initialTitle ?? '')
+  const descending = await visibleDelays()
+  expect(descending).toEqual([...descending].sort((left, right) => right - left))
+
+  await delayHeader.click()
+  await expect(delayHeader).toHaveAttribute('aria-sort', 'ascending')
+  await expect(title).toHaveText(initialTitle ?? '')
+  const ascending = await visibleDelays()
+  expect(ascending).toEqual([...ascending].sort((left, right) => left - right))
+})
+
 test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
