@@ -136,11 +136,18 @@ describe('Paths table sorting', () => {
     { ...path(3), depth: 2, estimated_delay_ns: 0.43 },
   ]
 
-  it('sorts the same complete result set in either direction', () => {
-    expect(sortPaths(paths, { key: 'delay', direction: 'desc' }).map((item) => item.depth))
-      .toEqual([2, 1, 3])
-    expect(sortPaths(paths, { key: 'delay', direction: 'asc' }).map((item) => item.depth))
-      .toEqual([3, 1, 2])
+  it('sorts the same reported result set in either direction', () => {
+    const delayDescending = sortPaths(paths, { key: 'delay', direction: 'desc' })
+    const delayAscending = sortPaths(paths, { key: 'delay', direction: 'asc' })
+
+    expect(delayDescending.map((item) => item.depth)).toEqual([2, 1, 3])
+    expect(delayAscending.map((item) => item.depth)).toEqual([3, 1, 2])
+    expect(sortPaths(paths, { key: 'depth', direction: 'desc' }).map((item) => item.depth))
+      .toEqual([3, 2, 1])
+    expect(sortPaths(paths, { key: 'depth', direction: 'asc' }).map((item) => item.depth))
+      .toEqual([1, 2, 3])
+    expect(new Set(delayDescending)).toEqual(new Set(paths))
+    expect(new Set(delayAscending)).toEqual(new Set(paths))
     expect(paths.map((item) => item.depth)).toEqual([1, 3, 2])
   })
 

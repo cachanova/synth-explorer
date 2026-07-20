@@ -8,6 +8,11 @@ export interface PathSortState {
   direction: SortDirection
 }
 
+export const DEFAULT_PATH_SORT: PathSortState = {
+  key: 'depth',
+  direction: 'desc',
+}
+
 export function nextPathSort(
   current: PathSortState | null,
   key: PathSortKey,

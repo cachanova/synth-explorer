@@ -177,7 +177,7 @@ impl AnalysisSession {
             Some("delay") if !hides_delay => PathSort::Delay,
             _ => PathSort::Depth,
         };
-        let mut response = self.design.analysis.paths_with_model(
+        let mut response = self.design.analysis.path_variants_with_model(
             &self.design.graph,
             &effective,
             query
