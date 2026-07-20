@@ -177,16 +177,27 @@ impl AnalysisSession {
             Some("delay") if !hides_delay => PathSort::Delay,
             _ => PathSort::Depth,
         };
-        let mut response = self.design.analysis.path_variants_with_model(
-            &self.design.graph,
-            &effective,
-            query
-                .limit
-                .unwrap_or(MAX_PATH_RESULTS)
-                .min(MAX_PATH_RESULTS),
-            query.to,
-            sort,
-        );
+        let limit = query
+            .limit
+            .unwrap_or(MAX_PATH_RESULTS)
+            .min(MAX_PATH_RESULTS);
+        let mut response = if hides_delay {
+            self.design.analysis.paths_with_model(
+                &self.design.graph,
+                &effective,
+                limit,
+                query.to,
+                PathSort::Depth,
+            )
+        } else {
+            self.design.analysis.path_variants_with_model(
+                &self.design.graph,
+                &effective,
+                limit,
+                query.to,
+                sort,
+            )
+        };
         if hides_delay {
             for path in &mut response.paths {
                 path.estimated_delay_ns = None;
