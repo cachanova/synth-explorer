@@ -83,8 +83,15 @@ is laid out speculatively. Large schematics use ELK's robust
 `BRANDES_KOEPF` placement with measured thoroughness 4; the small-graph
 `NETWORK_SIMPLEX` output remains unchanged. In the browser, the memoized edge
 layer stores relevance directly on edge paths and bus labels instead of adding
-one wrapper element per edge. The GHDL worker follows the same reuse policy
-while creating a fresh Ada/WebAssembly instance per run.
+one wrapper element per edge. Node click, expansion, focus, keyboard, and
+pointer interactions are delegated at the SVG boundary. A small overlay owns
+the four transient pointer/focus listeners and renders pin labels only for the
+unique selected, hovered, or focused nodes, so handler and hook state do not
+grow with graph size. The viewport also owns an imperatively updated detail
+level: unreadable text and decorative SVG detail use CSS `display: none` at low
+scales, with hysteresis, idle restoration, and full detail for selected or
+focused nodes. Zoom frames do not enter React state. The GHDL worker follows
+the same reuse policy while creating a fresh Ada/WebAssembly instance per run.
 
 ## Timing model
 

@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
 } from 'react'
 import {
   canonicalPinNames,
@@ -105,6 +106,40 @@ interface PinchState {
   distance: number
   transform: ViewportTransform
   moved: boolean
+}
+
+type SchematicDetailLevel = 'overview' | 'compact' | 'full'
+
+const DETAIL_LEVEL_RANK: Record<SchematicDetailLevel, number> = {
+  overview: 0,
+  compact: 1,
+  full: 2,
+}
+const DETAIL_RESTORE_IDLE_MS = 160
+
+function initialDetailLevel(scale: number): SchematicDetailLevel {
+  if (scale < 0.4) return 'overview'
+  if (scale < 0.75) return 'compact'
+  return 'full'
+}
+
+function nextDetailLevel(
+  scale: number,
+  current: SchematicDetailLevel,
+): SchematicDetailLevel {
+  if (current === 'overview') {
+    if (scale >= 0.8) return 'full'
+    if (scale >= 0.45) return 'compact'
+    return 'overview'
+  }
+  if (current === 'compact') {
+    if (scale < 0.35) return 'overview'
+    if (scale >= 0.8) return 'full'
+    return 'compact'
+  }
+  if (scale < 0.35) return 'overview'
+  if (scale < 0.65) return 'compact'
+  return 'full'
 }
 
 function nodeVisual(
@@ -535,13 +570,8 @@ interface SchematicNodeProps {
   pins: NodePins
   interactive: boolean
   tabIndex: 0 | -1
-  suppressClick: { current: boolean }
   onNodeElement: (nodeId: number, element: SVGGElement | null) => void
-  onSelect: (node: GraphNode | null) => void
-  onFocusNode: (nodeId: number) => void
-  onNavigateNode: (nodeId: number, key: GraphNavigationKey) => void
   onControlSelect?: (control: ControlRef, node: GraphNode) => void
-  onExpand?: (node: GraphNode) => void
 }
 
 type GraphNavigationKey =
@@ -561,8 +591,6 @@ const GRAPH_NAVIGATION_KEYS = new Set<string>([
   'End',
 ])
 
-// Hover state belongs to one node, so revealing pin labels never reconciles
-// the parent GraphView's thousands of nodes and edges.
 const SchematicNode = memo(function SchematicNode({
   laidOutNode,
   rootId,
@@ -573,16 +601,9 @@ const SchematicNode = memo(function SchematicNode({
   pins,
   interactive,
   tabIndex,
-  suppressClick,
   onNodeElement,
-  onSelect,
-  onFocusNode,
-  onNavigateNode,
   onControlSelect,
-  onExpand,
 }: SchematicNodeProps) {
-  const [hovered, setHovered] = useState(false)
-  const [focused, setFocused] = useState(false)
   const node = laidOutNode.node
   const kind = symbolKind(node, portDirection)
   const visual = nodeVisual(node, kind, rootId, highlighted)
@@ -590,7 +611,6 @@ const SchematicNode = memo(function SchematicNode({
   const controls = controlsFor(node)
   const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
-  const showPins = (selected || hovered || focused) && node.kind !== 'port'
   const title = name && name !== nodeLabel(node)
     ? `${nodeLabel(node)} — ${name}`
     : nodeLabel(node)
@@ -612,42 +632,6 @@ const SchematicNode = memo(function SchematicNode({
           ? `${title}. Enter to inspect details and controls; Shift+Enter to expand.`
           : undefined
       }
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onFocus={interactive ? () => {
-        setFocused(true)
-        onFocusNode(node.id)
-      } : undefined}
-      onBlur={interactive ? () => setFocused(false) : undefined}
-      onClick={interactive ? (event) => {
-        event.stopPropagation()
-        if (suppressClick.current) {
-          suppressClick.current = false
-          return
-        }
-        if (document.activeElement !== event.currentTarget) onFocusNode(node.id)
-        onSelect(node)
-      } : undefined}
-      onDoubleClick={interactive && onExpand ? (event) => {
-        event.stopPropagation()
-        onExpand(node)
-      } : undefined}
-      onKeyDown={interactive ? (event) => {
-        if (GRAPH_NAVIGATION_KEYS.has(event.key)) {
-          event.preventDefault()
-          event.stopPropagation()
-          onNavigateNode(node.id, event.key as GraphNavigationKey)
-          return
-        }
-        if (event.key !== 'Enter' && event.key !== ' ') return
-        event.preventDefault()
-        event.stopPropagation()
-        if (event.key === 'Enter' && event.shiftKey && onExpand) {
-          onExpand(node)
-          return
-        }
-        onSelect(node)
-      } : undefined}
     >
       <title>{title}</title>
       <SchematicOutline
@@ -673,13 +657,6 @@ const SchematicNode = memo(function SchematicNode({
           bodyHeight={bodyHeight}
         />
       )}
-      {showPins && kind !== 'reg' && kind !== 'latch' && (
-        <PinLabels
-          pins={pins}
-          width={laidOutNode.width}
-          height={bodyHeight}
-        />
-      )}
       {controls.length > 0 && (
         <ControlLabels
           node={node}
@@ -690,6 +667,114 @@ const SchematicNode = memo(function SchematicNode({
       )}
     </g>
   )
+})
+
+function graphNodeElement(
+  target: EventTarget | null,
+  boundary: Element,
+): SVGGElement | null {
+  if (!(target instanceof Element)) return null
+  const node = target.closest<SVGGElement>('.g-node-body')
+  return node && boundary.contains(node) ? node : null
+}
+
+function graphNodeId(element: SVGGElement | null): number | null {
+  const value = element?.dataset.graphNodeId
+  if (value == null) return null
+  const nodeId = Number(value)
+  return Number.isFinite(nodeId) ? nodeId : null
+}
+
+interface SchematicPinOverlaysProps {
+  viewportRef: RefObject<SVGGElement | null>
+  nodeById: Map<number, LaidOutNode>
+  pinsById: Map<number, NodePins>
+  portDirection: Map<number, PortDirection>
+  selectedId: number | null
+}
+
+// Pointer and focus events bubble through one viewport listener. Only this
+// small overlay reconciles when transient pin labels move between nodes.
+const SchematicPinOverlays = memo(function SchematicPinOverlays({
+  viewportRef,
+  nodeById,
+  pinsById,
+  portDirection,
+  selectedId,
+}: SchematicPinOverlaysProps) {
+  const [hoveredElement, setHoveredElement] = useState<SVGGElement | null>(null)
+  const [focusedElement, setFocusedElement] = useState<SVGGElement | null>(null)
+
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+
+    const onPointerOver = (event: PointerEvent) => {
+      const node = graphNodeElement(event.target, viewport)
+      const previous = graphNodeElement(event.relatedTarget, viewport)
+      if (node !== previous) setHoveredElement(node)
+    }
+    const onPointerOut = (event: PointerEvent) => {
+      const node = graphNodeElement(event.target, viewport)
+      const next = graphNodeElement(event.relatedTarget, viewport)
+      if (node !== next) setHoveredElement(next)
+    }
+    const onFocusIn = (event: FocusEvent) => {
+      setFocusedElement(graphNodeElement(event.target, viewport))
+    }
+    const onFocusOut = (event: FocusEvent) => {
+      setFocusedElement(graphNodeElement(event.relatedTarget, viewport))
+    }
+
+    viewport.addEventListener('pointerover', onPointerOver)
+    viewport.addEventListener('pointerout', onPointerOut)
+    viewport.addEventListener('focusin', onFocusIn)
+    viewport.addEventListener('focusout', onFocusOut)
+    return () => {
+      viewport.removeEventListener('pointerover', onPointerOver)
+      viewport.removeEventListener('pointerout', onPointerOut)
+      viewport.removeEventListener('focusin', onFocusIn)
+      viewport.removeEventListener('focusout', onFocusOut)
+    }
+  }, [viewportRef])
+
+  const transientIds = [
+    selectedId,
+    graphNodeId(hoveredElement),
+    graphNodeId(focusedElement),
+  ]
+  const renderedIds = new Set<number>()
+
+  return transientIds.map((nodeId) => {
+    if (nodeId == null || renderedIds.has(nodeId)) return null
+    renderedIds.add(nodeId)
+    const laidOutNode = nodeById.get(nodeId)
+    if (!laidOutNode || laidOutNode.node.kind === 'port') return null
+    const kind = symbolKind(
+      laidOutNode.node,
+      portDirection.get(nodeId) ?? 'input',
+    )
+    if (kind === 'reg' || kind === 'latch') return null
+    const bodyHeight = Math.max(
+      1,
+      laidOutNode.height - controlsFor(laidOutNode.node).length * 13,
+    )
+    return (
+      <g
+        key={nodeId}
+        className="g-pin-overlay"
+        transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
+        data-graph-node-id={nodeId}
+        aria-hidden="true"
+      >
+        <PinLabels
+          pins={pinsById.get(nodeId) ?? EMPTY_NODE_PINS}
+          width={laidOutNode.width}
+          height={bodyHeight}
+        />
+      </g>
+    )
+  })
 })
 
 interface SchematicEdgesProps {
@@ -807,6 +892,8 @@ export const GraphView = memo(function GraphView({
   const rovingNodeId = useRef<number | null>(null)
   const nodeElements = useRef(new Map<number, SVGGElement>())
   const programmaticFocusNodeId = useRef<number | null>(null)
+  const detailLevel = useRef<SchematicDetailLevel | null>(null)
+  const detailRestoreTimer = useRef<number | null>(null)
 
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
@@ -852,13 +939,49 @@ export const GraphView = memo(function GraphView({
     return { nodeById, pinsById, portDirection }
   }, [graph])
 
+  const clearDetailRestore = useCallback(() => {
+    if (detailRestoreTimer.current == null) return
+    window.clearTimeout(detailRestoreTimer.current)
+    detailRestoreTimer.current = null
+  }, [])
+
+  const applyDetailLevel = useCallback((next: SchematicDetailLevel) => {
+    detailLevel.current = next
+    viewportRef.current?.setAttribute('data-detail-level', next)
+  }, [])
+
   // The graph can contain thousands of SVG elements. Keep pointer-frequency
   // pan/zoom updates outside React so moving the viewport only mutates this
-  // outer group instead of reconciling every edge and node.
+  // outer group instead of reconciling every edge and node. Less detail applies
+  // immediately; restoring richer labels waits until the gesture is idle so a
+  // 2,000-node style/layout transition never lands in the middle of a frame.
   const applyTransform = useCallback((next: ViewportTransform) => {
     transformRef.current = next
     viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
-  }, [])
+
+    const current = detailLevel.current
+    if (current == null) {
+      applyDetailLevel(initialDetailLevel(next.k))
+      return
+    }
+    const desired = nextDetailLevel(next.k, current)
+    clearDetailRestore()
+    if (DETAIL_LEVEL_RANK[desired] <= DETAIL_LEVEL_RANK[current]) {
+      if (desired !== current) applyDetailLevel(desired)
+      return
+    }
+    detailRestoreTimer.current = window.setTimeout(() => {
+      detailRestoreTimer.current = null
+      const activeLevel = detailLevel.current
+      if (activeLevel == null) return
+      const idleLevel = nextDetailLevel(transformRef.current.k, activeLevel)
+      if (DETAIL_LEVEL_RANK[idleLevel] > DETAIL_LEVEL_RANK[activeLevel]) {
+        applyDetailLevel(idleLevel)
+      }
+    }, DETAIL_RESTORE_IDLE_MS)
+  }, [applyDetailLevel, clearDetailRestore])
+
+  useEffect(() => clearDetailRestore, [clearDetailRestore])
 
   const rovingTabStopId = interactive
     ? metadata.nodeById.has(rovingNodeId.current ?? Number.NaN)
@@ -998,6 +1121,48 @@ export const GraphView = memo(function GraphView({
       if (best) focusGraphNode(best.id)
     },
     [focusGraphNode, graph.nodes, metadata.nodeById],
+  )
+
+  const acceptNodeTargetFocus = useCallback(
+    (target: EventTarget | null, boundary: Element) => {
+      if (!interactive) return
+      const nodeId = graphNodeId(graphNodeElement(target, boundary))
+      if (nodeId != null) acceptGraphNodeFocus(nodeId)
+    },
+    [acceptGraphNodeFocus, interactive],
+  )
+
+  const selectNodeTarget = useCallback(
+    (event: React.MouseEvent<SVGSVGElement>) => {
+      if (suppressClick.current) {
+        suppressClick.current = false
+        return
+      }
+      if (!interactive) return
+      const nodeElement = graphNodeElement(event.target, event.currentTarget)
+      const nodeId = graphNodeId(nodeElement)
+      const laidOutNode = nodeId == null ? null : metadata.nodeById.get(nodeId)
+      if (nodeElement && nodeId != null && laidOutNode) {
+        event.stopPropagation()
+        if (document.activeElement !== nodeElement) acceptGraphNodeFocus(nodeId)
+        onSelect(laidOutNode.node)
+        return
+      }
+      if (event.target === event.currentTarget) onSelect(null)
+    },
+    [acceptGraphNodeFocus, interactive, metadata.nodeById, onSelect],
+  )
+
+  const expandNodeTarget = useCallback(
+    (event: React.MouseEvent<SVGSVGElement>) => {
+      if (!interactive || !onExpand) return
+      const nodeId = graphNodeId(graphNodeElement(event.target, event.currentTarget))
+      const laidOutNode = nodeId == null ? null : metadata.nodeById.get(nodeId)
+      if (!laidOutNode) return
+      event.stopPropagation()
+      onExpand(laidOutNode.node)
+    },
+    [interactive, metadata.nodeById, onExpand],
   )
 
   const fit = useCallback(() => {
@@ -1260,12 +1425,19 @@ export const GraphView = memo(function GraphView({
   }, [applyTransform, cancelPan, finishPan])
 
   useEffect(() => {
-    if (active) return
+    if (active) {
+      // Deactivation cancels any pending richer-detail restore. Re-evaluate the
+      // preserved transform when the tab returns so a user-adjusted viewport
+      // cannot remain stuck at the lower tier that was active mid-gesture.
+      applyTransform(transformRef.current)
+      return
+    }
     panState.current = null
     pinchState.current = null
     suppressClick.current = false
+    clearDetailRestore()
     svgRef.current?.classList.remove('panning')
-  }, [active])
+  }, [active, applyTransform, clearDetailRestore])
 
   const zoomBy = useCallback((factor: number) => {
     userAdjusted.current = true
@@ -1279,6 +1451,27 @@ export const GraphView = memo(function GraphView({
 
   const onViewportKeyDown = useCallback(
     (event: React.KeyboardEvent<SVGSVGElement>) => {
+      const nodeId = interactive
+        ? graphNodeId(graphNodeElement(event.target, event.currentTarget))
+        : null
+      const laidOutNode = nodeId == null ? null : metadata.nodeById.get(nodeId)
+      if (nodeId != null && laidOutNode) {
+        if (GRAPH_NAVIGATION_KEYS.has(event.key)) {
+          event.preventDefault()
+          event.stopPropagation()
+          navigateGraphNode(nodeId, event.key as GraphNavigationKey)
+          return
+        }
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        event.stopPropagation()
+        if (event.key === 'Enter' && event.shiftKey && onExpand) {
+          onExpand(laidOutNode.node)
+          return
+        }
+        onSelect(laidOutNode.node)
+        return
+      }
       if (event.target !== event.currentTarget) return
       const step = event.shiftKey ? 80 : 32
       let handled = true
@@ -1315,7 +1508,16 @@ export const GraphView = memo(function GraphView({
       event.preventDefault()
       event.stopPropagation()
     },
-    [applyTransform, fit, zoomBy],
+    [
+      applyTransform,
+      fit,
+      interactive,
+      metadata.nodeById,
+      navigateGraphNode,
+      onExpand,
+      onSelect,
+      zoomBy,
+    ],
   )
 
   useEffect(() => {
@@ -1337,17 +1539,13 @@ export const GraphView = memo(function GraphView({
         tabIndex={0}
         onWheel={onWheel}
         onKeyDown={onViewportKeyDown}
+        onFocus={(event) => acceptNodeTargetFocus(event.target, event.currentTarget)}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={finishPointer}
         onPointerCancel={cancelPan}
-        onClick={(event) => {
-          if (suppressClick.current) {
-            suppressClick.current = false
-            return
-          }
-          if (interactive && event.target === event.currentTarget) onSelect(null)
-        }}
+        onClick={selectNodeTarget}
+        onDoubleClick={expandNodeTarget}
       >
         <defs>
           <marker
@@ -1374,7 +1572,11 @@ export const GraphView = memo(function GraphView({
           </marker>
         </defs>
 
-        <g ref={viewportRef}>
+        <g
+          ref={viewportRef}
+          className="g-viewport"
+          data-detail-level="overview"
+        >
           <SchematicEdges
             edges={graph.edges}
             nodeById={metadata.nodeById}
@@ -1395,15 +1597,18 @@ export const GraphView = memo(function GraphView({
               pins={metadata.pinsById.get(laidOutNode.id) ?? EMPTY_NODE_PINS}
               interactive={interactive}
               tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
-              suppressClick={suppressClick}
               onNodeElement={setNodeElement}
-              onSelect={onSelect}
-              onFocusNode={acceptGraphNodeFocus}
-              onNavigateNode={navigateGraphNode}
               onControlSelect={onControlSelect}
-              onExpand={onExpand}
             />
           ))}
+
+          <SchematicPinOverlays
+            viewportRef={viewportRef}
+            nodeById={metadata.nodeById}
+            pinsById={metadata.pinsById}
+            portDirection={metadata.portDirection}
+            selectedId={selectedId}
+          />
         </g>
       </svg>
 

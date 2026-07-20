@@ -549,12 +549,68 @@ test('renders and resizes the browser-produced graph without resetting user zoom
 
   const rovingNode = page.locator('.g-node-body[tabindex="0"]')
   await expect(rovingNode).toHaveCount(1)
+  const orderedNodeIds = await page.locator('.g-node-body').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')),
+  )
   const initialNode = await rovingNode.getAttribute('data-graph-node-id')
   await rovingNode.focus()
   await rovingNode.press('ArrowRight')
   await expect
     .poll(() => page.locator('.g-node-body[tabindex="0"]').getAttribute('data-graph-node-id'))
     .not.toBe(initialNode)
+  await page.locator('.g-node-body[tabindex="0"]').press('End')
+  await expect(page.locator('.g-node-body[tabindex="0"]')).toHaveAttribute(
+    'data-graph-node-id',
+    orderedNodeIds.at(-1) ?? '',
+  )
+  await page.locator('.g-node-body[tabindex="0"]').press('Home')
+  await expect(page.locator('.g-node-body[tabindex="0"]')).toHaveAttribute(
+    'data-graph-node-id',
+    orderedNodeIds[0] ?? '',
+  )
+
+  const transientPinNode = page.locator(
+    '.g-node-body:not(.g-symbol-port-in):not(.g-symbol-port-out):not(.g-symbol-reg):not(.g-symbol-latch)',
+  ).first()
+  await transientPinNode.hover()
+  await expect(page.locator('.g-pin-overlay')).toHaveCount(1)
+  await transientPinNode.focus()
+  await page.mouse.move(0, 0)
+  await expect(page.locator('.g-pin-overlay')).toHaveCount(1)
+  await svg.focus()
+  await expect(page.locator('.g-pin-overlay')).toHaveCount(0)
+  await transientPinNode.focus()
+  await transientPinNode.press('Enter')
+  await expect(transientPinNode).toHaveClass(/selected/)
+  await transientPinNode.press('Escape')
+  await expect(transientPinNode).not.toHaveClass(/selected/)
+  await transientPinNode.press(' ')
+  await expect(transientPinNode).toHaveClass(/selected/)
+  await transientPinNode.press('Escape')
+  await expect(transientPinNode).not.toHaveClass(/selected/)
+  await transientPinNode.click()
+  await expect(transientPinNode).toHaveClass(/selected/)
+  await svg.dispatchEvent('click')
+  await expect(transientPinNode).not.toHaveClass(/selected/)
+  await page.mouse.move(0, 0)
+  await svg.focus()
+  await expect(page.locator('.g-pin-overlay')).toHaveCount(0)
+
+  const beforePan = await viewport.getAttribute('transform')
+  const panOrigin = await transientPinNode.boundingBox()
+  expect(panOrigin).not.toBeNull()
+  await page.mouse.move(
+    (panOrigin?.x ?? 0) + (panOrigin?.width ?? 0) / 2,
+    (panOrigin?.y ?? 0) + (panOrigin?.height ?? 0) / 2,
+  )
+  await page.mouse.down()
+  await page.mouse.move(
+    (panOrigin?.x ?? 0) + (panOrigin?.width ?? 0) / 2 + 24,
+    (panOrigin?.y ?? 0) + (panOrigin?.height ?? 0) / 2 + 18,
+  )
+  await page.mouse.up()
+  await expect.poll(() => viewport.getAttribute('transform')).not.toBe(beforePan)
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
 
   const beforeZoom = await viewport.getAttribute('transform')
   await page.getByTitle('Zoom in').click()
@@ -571,6 +627,80 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
     })
     .toBeLessThan(1)
+
+  await svg.dispatchEvent('wheel', { deltaY: -5000 })
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
+  await svg.dispatchEvent('wheel', { deltaY: 1300 })
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
+  await svg.dispatchEvent('wheel', { deltaY: 300 })
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('overview')
+  const labelNode = page.locator('.g-node-body:has(.g-node-label)').first()
+  const nodeLabel = labelNode.locator('.g-node-label').first()
+  await expect(nodeLabel).toHaveCSS('display', 'none')
+  await labelNode.focus()
+  await expect(nodeLabel).not.toHaveCSS('display', 'none')
+  await svg.focus()
+  await expect(nodeLabel).toHaveCSS('display', 'none')
+
+  const detailedNode = page.locator('.g-node-body:has(.g-symbol-detail)').first()
+  const symbolDetail = detailedNode.locator('.g-symbol-detail').first()
+  await expect(detailedNode).toHaveCount(1)
+  await detailedNode.dispatchEvent('click')
+  await expect(detailedNode).toHaveClass(/selected/)
+  await svg.focus()
+  await expect(symbolDetail).not.toHaveCSS('display', 'none')
+  await svg.dispatchEvent('click')
+  await expect(symbolDetail).toHaveCSS('display', 'none')
+
+  const zoomToScale = async (targetScale: number) => {
+    await svg.evaluate((element, target) => {
+      const transform = element.querySelector(':scope > g')?.getAttribute('transform') ?? ''
+      const current = Number(/scale\(([^)]+)\)/.exec(transform)?.[1])
+      if (!Number.isFinite(current) || current <= 0) {
+        throw new Error(`Could not read viewport scale from ${transform}`)
+      }
+      element.dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaY: -Math.log(target / current) / 0.0016,
+      }))
+    }, targetScale)
+  }
+
+  // Overview keeps its tier inside the 0.35-0.45 hysteresis band. Restoring
+  // richer detail at 0.5 waits until the viewport has been idle for 160 ms.
+  await zoomToScale(0.42)
+  expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
+  await zoomToScale(0.5)
+  expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
+
+  // Compact likewise remains stable inside the 0.65-0.80 band, then restores
+  // full detail only after the richer transition has been idle.
+  await zoomToScale(0.72)
+  expect(await viewport.getAttribute('data-detail-level')).toBe('compact')
+  await zoomToScale(0.85)
+  expect(await viewport.getAttribute('data-detail-level')).toBe('compact')
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
+  await expect(nodeLabel).not.toHaveCSS('display', 'none')
+
+  // Leaving the tab cancels the pending restore; returning must reschedule it
+  // against the preserved user transform rather than stranding overview LOD.
+  await zoomToScale(0.3)
+  expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
+  await zoomToScale(0.85)
+  expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
+
+  const controlLabel = page.locator('.g-control-label.clickable').first()
+  await expect(controlLabel).toBeVisible()
+  const beforeControlNodeCount = await page.locator('.g-node-body').count()
+  await controlLabel.dispatchEvent('pointerdown')
+  await controlLabel.dispatchEvent('click')
+  await expect.poll(() => page.locator('.g-node-body').count()).not.toBe(beforeControlNodeCount)
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
   expect(apiRequests).toEqual([])
 })
 
@@ -701,6 +831,29 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expandableBoundary.focus()
   await expandableBoundary.press('Shift+Enter')
   await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(focusedNodeCount)
+
+  await page.evaluate(() => {
+    const requests =
+      (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+    requests.length = 0
+  })
+  await expandableBoundary.dispatchEvent('dblclick')
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const requests =
+          (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+        return requests.filter(
+          (request) =>
+            request != null &&
+            typeof request === 'object' &&
+            !Array.isArray(request) &&
+            (request as Record<string, unknown>).kind === 'query' &&
+            (request as Record<string, unknown>).method === 'cone',
+        ).length
+      }),
+    )
+    .toBe(2)
 
   await focus.uncheck()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)

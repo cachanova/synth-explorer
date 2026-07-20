@@ -78,6 +78,9 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('<text x="8" y="18.5">ADDR</text>')
     expect(markup).toContain('<text x="8" y="34">WDATA</text>')
     expect(markup).toContain('<text x="8" y="49.5">WE</text>')
+    expect(markup).toMatch(
+      /<g class="g-pin-overlay"[^>]*data-graph-node-id="4"/,
+    )
   })
 
   it('renders only the grouped count and no decorative LUT separators', () => {
