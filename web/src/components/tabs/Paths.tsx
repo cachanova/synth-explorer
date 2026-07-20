@@ -24,6 +24,15 @@ import type {
 import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
 import { VirtualTable } from '../VirtualTable'
+import {
+  DEFAULT_PATH_SORT,
+  nextPathSort,
+  sortDirectionArrow,
+  sortDirectionLabel,
+  sortPaths,
+  type PathSortKey,
+  type PathSortState,
+} from './pathSorting'
 
 interface RouteVariant {
   index: number
@@ -38,7 +47,8 @@ export function Paths() {
   const id = store.design?.design_id ?? null
   const designMode = store.design?.mode
   const resolvedProfile = store.design?.delay_profile
-  const [sortBy, setSortBy] = useState<'depth' | 'delay'>('depth')
+  const [sort, setSort] = useState<PathSortState | null>(null)
+  const activeSort = sort ?? DEFAULT_PATH_SORT
   // Cost per-path delays from the same per-design resolved view as the timing
   // panel. The tab remounts on switch, so persisted settings are read here.
   const timing = useMemo(() => {
@@ -51,19 +61,26 @@ export function Paths() {
     }
   }, [designMode, resolvedProfile])
   const timingHidden = timing?.hidden ?? true
-  const effectiveSort = timingHidden ? 'depth' : sortBy
   const { data, loading, error } = useDesignData(
     id,
-    (designId) => getPaths(designId, { sort: effectiveSort, ...timing?.request }),
-    JSON.stringify({ sort: effectiveSort, ...timing?.request }),
+    // Keep route reconstruction independent of the table's presentation sort.
+    // Otherwise switching columns changes which path variants the analysis
+    // returns instead of reordering one stable reported result set.
+    (designId) => getPaths(designId, { sort: 'depth', ...timing?.request }),
+    JSON.stringify({ sort: 'depth', ...timing?.request }),
   )
   const [open, setOpen] = useState<number | null>(null)
   useEffect(() => setOpen(null), [id])
-  // The server ranks, truncates, and reconstructs routes in the requested
-  // order (sort=depth|delay), so the response is rendered as-is — a client
-  // re-sort could only reorder the survivors of the wrong ranking.
-  const sortedPaths = useMemo(() => data?.paths ?? [], [data])
+  const sortedPaths = useMemo(
+    () => sortPaths(data?.paths ?? [], activeSort),
+    [activeSort, data],
+  )
   const variants = useMemo(() => routeVariants(sortedPaths), [sortedPaths])
+
+  const selectSort = (key: PathSortKey) => {
+    setSort((current) => nextPathSort(current, key))
+    setOpen(null)
+  }
 
   if (!store.design) return <div className="empty-state">No design yet.</div>
   if (loading && !data) return <div className="empty-state">Loading paths…</div>
@@ -99,32 +116,44 @@ export function Paths() {
             : ['4%', '7%', '10%', '14%', '18%', '18%', '18%', '11%']
         }
         getRowKey={(index) => pathKey(sortedPaths[index])}
-        resetKey={effectiveSort}
+        resetKey={`${activeSort.key}:${activeSort.direction}`}
         header={
           <>
             <th role="columnheader" className="num">#</th>
             <th
               role="columnheader"
               className="num sortable"
-              onClick={() => {
-                setSortBy('depth')
-                setOpen(null)
-              }}
+              aria-sort={
+                activeSort.key === 'depth'
+                  ? sortDirectionLabel(activeSort.direction)
+                  : 'none'
+              }
+              onClick={() => selectSort('depth')}
               title="Sort by structural depth"
             >
-              Depth{effectiveSort === 'depth' ? ' ▾' : ''}
+              Depth{
+                activeSort.key === 'depth'
+                  ? sortDirectionArrow(activeSort.direction)
+                  : ''
+              }
             </th>
             {!timingHidden && (
               <th
                 role="columnheader"
                 className="num sortable"
-                onClick={() => {
-                  setSortBy('delay')
-                  setOpen(null)
-                }}
-                title="Rank paths by estimated delay"
+                aria-sort={
+                  activeSort.key === 'delay'
+                    ? sortDirectionLabel(activeSort.direction)
+                    : 'none'
+                }
+                onClick={() => selectSort('delay')}
+                title="Sort by estimated delay"
               >
-                Est. delay{effectiveSort === 'delay' ? ' ▾' : ''}
+                Est. delay{
+                  activeSort.key === 'delay'
+                    ? sortDirectionArrow(activeSort.direction)
+                    : ''
+                }
               </th>
             )}
             <th role="columnheader">Class</th>
@@ -139,6 +168,7 @@ export function Paths() {
           return (
             <PathRow
               index={index}
+              pathId={pathKey(path)}
               path={path}
               variant={variants[index]}
               showTiming={!timingHidden}
@@ -255,6 +285,7 @@ export function OutputAliasName({ alias }: { alias: OutputAlias }) {
 
 function PathRow({
   index,
+  pathId,
   path,
   variant,
   showTiming,
@@ -263,6 +294,7 @@ function PathRow({
   onShow,
 }: {
   index: number
+  pathId: string
   path: TimingPath
   variant: RouteVariant
   showTiming: boolean
@@ -272,7 +304,12 @@ function PathRow({
 }) {
   return (
     <>
-      <tr role="row" className={`clickable${open ? ' expanded' : ''}`} onClick={onToggle}>
+      <tr
+        role="row"
+        data-path-key={pathId}
+        className={`clickable${open ? ' expanded' : ''}`}
+        onClick={onToggle}
+      >
         <td role="cell" className="num faint">{index + 1}</td>
         <td role="cell" className="num">
           <span className="depth-chip">{path.depth}</span>

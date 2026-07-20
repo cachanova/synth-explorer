@@ -177,16 +177,27 @@ impl AnalysisSession {
             Some("delay") if !hides_delay => PathSort::Delay,
             _ => PathSort::Depth,
         };
-        let mut response = self.design.analysis.paths_with_model(
-            &self.design.graph,
-            &effective,
-            query
-                .limit
-                .unwrap_or(MAX_PATH_RESULTS)
-                .min(MAX_PATH_RESULTS),
-            query.to,
-            sort,
-        );
+        let limit = query
+            .limit
+            .unwrap_or(MAX_PATH_RESULTS)
+            .min(MAX_PATH_RESULTS);
+        let mut response = if hides_delay {
+            self.design.analysis.paths_with_model(
+                &self.design.graph,
+                &effective,
+                limit,
+                query.to,
+                PathSort::Depth,
+            )
+        } else {
+            self.design.analysis.path_variants_with_model(
+                &self.design.graph,
+                &effective,
+                limit,
+                query.to,
+                sort,
+            )
+        };
         if hides_delay {
             for path in &mut response.paths {
                 path.estimated_delay_ns = None;
@@ -371,4 +382,126 @@ fn profile_name(profile: DelayProfile) -> &'static str {
 
 fn js_error(message: impl AsRef<str>) -> JsValue {
     JsValue::from_str(message.as_ref())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+    use synth_explorer_analysis::analysis::PathsResponse;
+
+    const PRECOMPUTED: &str = include_str!(
+        "../../web/public/precomputed/37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8.json"
+    );
+
+    fn session(mode: &str, profile: &str) -> AnalysisSession {
+        let fixture: serde_json::Value =
+            serde_json::from_str(PRECOMPUTED).expect("precomputed fixture parses");
+        let output = &fixture["output"];
+        let files =
+            serde_json::to_string(&fixture["input"]["files"]).expect("fixture files serialize");
+        AnalysisSession::new(
+            "test",
+            output["netlistJson"]
+                .as_str()
+                .expect("netlist JSON is present"),
+            output["sourceNetlistJson"]
+                .as_str()
+                .expect("source netlist JSON is present"),
+            &files,
+            mode,
+            profile,
+        )
+        .expect("fixture session builds")
+    }
+
+    fn path_identities(json: &str) -> BTreeSet<(String, Vec<u64>)> {
+        let response: serde_json::Value = serde_json::from_str(json).expect("paths JSON parses");
+        response["paths"]
+            .as_array()
+            .expect("paths is an array")
+            .iter()
+            .map(|path| {
+                let endpoint = path["endpoint_group"]
+                    .as_str()
+                    .expect("endpoint group is a string")
+                    .to_owned();
+                let nodes = path["nodes"]
+                    .as_array()
+                    .expect("nodes is an array")
+                    .iter()
+                    .map(|node| node["id"].as_u64().expect("node id is numeric"))
+                    .collect();
+                (endpoint, nodes)
+            })
+            .collect()
+    }
+
+    fn response_identities(response: &PathsResponse) -> BTreeSet<(String, Vec<u64>)> {
+        response
+            .paths
+            .iter()
+            .map(|path| {
+                (
+                    path.endpoint_group.clone(),
+                    path.nodes.iter().map(|node| u64::from(node.id)).collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hidden_timing_paths_stay_depth_only_without_delay_values() {
+        let session = session("gates", "generic");
+        let depth_only = session.design.analysis.paths_with_model(
+            &session.design.graph,
+            &session.design.delay_model,
+            MAX_PATH_RESULTS,
+            None,
+            PathSort::Depth,
+        );
+        let response = session
+            .paths_json(r#"{"sort":"delay"}"#)
+            .expect("paths query succeeds");
+        let json: serde_json::Value = serde_json::from_str(&response).expect("paths JSON parses");
+        let paths = json["paths"].as_array().expect("paths is an array");
+
+        assert!(!paths.is_empty());
+        assert!(
+            paths
+                .iter()
+                .all(|path| path.get("estimated_delay_ns").is_none())
+        );
+        assert_eq!(path_identities(&response), response_identities(&depth_only));
+    }
+
+    #[test]
+    fn visible_timing_sorts_share_the_canonical_route_set() {
+        let session = session("gates", "series7");
+        let depth_only = session.design.analysis.paths_with_model(
+            &session.design.graph,
+            &session.design.delay_model,
+            MAX_PATH_RESULTS,
+            None,
+            PathSort::Depth,
+        );
+        let depth = session
+            .paths_json(r#"{"sort":"depth"}"#)
+            .expect("depth query succeeds");
+        let delay = session
+            .paths_json(r#"{"sort":"delay"}"#)
+            .expect("delay query succeeds");
+        let json: serde_json::Value = serde_json::from_str(&depth).expect("paths JSON parses");
+        let paths = json["paths"].as_array().expect("paths is an array");
+
+        assert!(!paths.is_empty());
+        assert!(
+            paths
+                .iter()
+                .all(|path| path["estimated_delay_ns"].is_number())
+        );
+        assert_eq!(path_identities(&depth), path_identities(&delay));
+        assert!(path_identities(&depth).is_superset(&response_identities(&depth_only)));
+        assert!(path_identities(&depth).len() > depth_only.paths.len());
+    }
 }

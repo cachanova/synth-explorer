@@ -580,6 +580,7 @@ struct EndpointTarget {
     bit: usize,
 }
 
+#[derive(Clone, Copy)]
 struct PathComputation<'a> {
     model: &'a DelayModel,
     sort: PathSort,
@@ -587,6 +588,11 @@ struct PathComputation<'a> {
     depth_path_delay: &'a [f64],
     delay_pred: &'a [Option<usize>],
     delay_startpoint: &'a [Option<NodeId>],
+}
+
+struct PathSelection {
+    response: PathsResponse,
+    reconstructed_nodes: usize,
 }
 
 #[derive(Debug, Clone, Default, DeepSizeOf)]
@@ -919,6 +925,113 @@ impl Analysis {
         self.paths_with_model(graph, &self.delay_model, limit, to, PathSort::Depth)
     }
 
+    /// Structural route variants selected by both depth and delay, with
+    /// `sort` affecting presentation order only. The union stays bounded by
+    /// `limit` and reports truncation when either selection or the union is
+    /// clipped.
+    pub fn path_variants_with_model(
+        &self,
+        graph: &Graph,
+        model: &DelayModel,
+        limit: usize,
+        to: Option<NodeId>,
+        sort: PathSort,
+    ) -> PathsResponse {
+        self.path_variants_with_model_and_work(graph, model, limit, to, sort)
+            .0
+    }
+
+    fn path_variants_with_model_and_work(
+        &self,
+        graph: &Graph,
+        model: &DelayModel,
+        limit: usize,
+        to: Option<NodeId>,
+        sort: PathSort,
+    ) -> (PathsResponse, usize) {
+        let recomputed;
+        let (node_delay, depth_path_delay, delay_pred, delay_startpoint) =
+            if *model == self.delay_model {
+                (
+                    &self.node_delay,
+                    &self.depth_path_delay,
+                    &self.delay_pred,
+                    &self.delay_startpoint,
+                )
+            } else {
+                recomputed = compute_depths(graph, &self.comb_loop_set, model);
+                (
+                    &recomputed.node_delay,
+                    &recomputed.depth_path_delay,
+                    &recomputed.delay_pred,
+                    &recomputed.delay_startpoint,
+                )
+            };
+        let depth_computation = PathComputation {
+            model,
+            sort: PathSort::Depth,
+            node_delay,
+            depth_path_delay,
+            delay_pred,
+            delay_startpoint,
+        };
+        let delay_computation = PathComputation {
+            sort: PathSort::Delay,
+            ..depth_computation
+        };
+        let depth_budget = PATH_RECONSTRUCTION_NODE_BUDGET / 2;
+        let delay_budget = PATH_RECONSTRUCTION_NODE_BUDGET - depth_budget;
+        let depth_selection =
+            self.paths_with_computation(graph, limit, to, &depth_computation, depth_budget);
+        let delay_selection =
+            self.paths_with_computation(graph, limit, to, &delay_computation, delay_budget);
+        let reconstructed_nodes =
+            depth_selection.reconstructed_nodes + delay_selection.reconstructed_nodes;
+        debug_assert!(reconstructed_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
+        let depth = depth_selection.response;
+        let delay = delay_selection.response;
+        debug_assert_eq!(depth.comb_loops, delay.comb_loops);
+        let mut truncated = depth.truncated || delay.truncated;
+        let comb_loops = depth.comb_loops;
+        let mut grouped: BTreeMap<_, PathEntry> = BTreeMap::new();
+
+        for path in depth.paths.into_iter().chain(delay.paths) {
+            let signature = path.nodes.iter().map(|node| node.id).collect::<Vec<_>>();
+            let key = (
+                path.endpoint_group.clone(),
+                path.endpoint_kind,
+                path.class,
+                path.depth,
+                path.endpoint_port.clone(),
+                signature,
+            );
+            if let Some(existing) = grouped.get_mut(&key) {
+                existing.bits.extend(path.bits);
+                existing.bits.sort_unstable();
+                existing.bits.dedup();
+                merge_output_aliases(&mut existing.output_aliases, path.output_aliases);
+            } else {
+                grouped.insert(key, path);
+            }
+        }
+
+        let mut paths: Vec<PathEntry> = grouped.into_values().collect();
+        paths.sort_by(compare_path_membership);
+        if paths.len() > limit {
+            paths.truncate(limit);
+            truncated = true;
+        }
+        paths.sort_by(|a, b| compare_path_entries(a, b, sort));
+        (
+            PathsResponse {
+                paths,
+                comb_loops,
+                truncated,
+            },
+            reconstructed_nodes,
+        )
+    }
+
     /// Like [`Analysis::paths`], but delay-costs each path with a caller-supplied
     /// model (e.g. a client's retune), so per-path delays track the overview.
     pub fn paths_with_model(
@@ -953,8 +1066,27 @@ impl Analysis {
                 delay_startpoint: &recomputed.delay_startpoint,
             }
         };
+        self.paths_with_computation(
+            graph,
+            limit,
+            to,
+            &computation,
+            PATH_RECONSTRUCTION_NODE_BUDGET,
+        )
+        .response
+    }
+
+    fn paths_with_computation(
+        &self,
+        graph: &Graph,
+        limit: usize,
+        to: Option<NodeId>,
+        computation: &PathComputation<'_>,
+        reconstruction_node_budget: usize,
+    ) -> PathSelection {
+        let sort = computation.sort;
         let target_delay = |target: &EndpointTarget| {
-            self.path_delay_ns(graph, target, computation.node_delay, model)
+            self.path_delay_ns(graph, target, computation.node_delay, computation.model)
                 .unwrap_or(f64::NEG_INFINITY)
         };
         let compare_rank = |a: &EndpointTarget, b: &EndpointTarget| match sort {
@@ -1037,7 +1169,7 @@ impl Analysis {
         let alias_lookup = build_alias_lookup(&self.endpoints, &candidate_alias_keys);
         let mut grouped: BTreeMap<PathGroupKey, PathEntry> = BTreeMap::new();
         let mut route_clipped = false;
-        let mut reconstruction_budget = PATH_RECONSTRUCTION_NODE_BUDGET;
+        let mut reconstruction_budget = reconstruction_node_budget;
         let mut reconstructed_candidates = 0;
         for target in &candidates {
             if reconstruction_budget < 2 {
@@ -1046,7 +1178,7 @@ impl Analysis {
             }
             let per_path_cap = PATH_NODE_CAP.min(reconstruction_budget);
             let (path, clipped, consumed_nodes) =
-                self.path_for_target(graph, target, per_path_cap, &alias_lookup, &computation);
+                self.path_for_target(graph, target, per_path_cap, &alias_lookup, computation);
             reconstruction_budget = reconstruction_budget.saturating_sub(consumed_nodes);
             reconstructed_candidates += 1;
             route_clipped |= clipped;
@@ -1073,39 +1205,23 @@ impl Analysis {
             }
         }
         let mut paths: Vec<PathEntry> = grouped.into_values().collect();
-        paths.sort_by(|a, b| {
-            let tie_break = || {
-                a.endpoint_group.cmp(&b.endpoint_group).then_with(|| {
-                    a.bits
-                        .first()
-                        .copied()
-                        .unwrap_or_default()
-                        .cmp(&b.bits.first().copied().unwrap_or_default())
-                })
-            };
-            match sort {
-                PathSort::Depth => Reverse(a.depth).cmp(&Reverse(b.depth)).then_with(tie_break),
-                PathSort::Delay => b
-                    .estimated_delay_ns
-                    .unwrap_or(f64::NEG_INFINITY)
-                    .total_cmp(&a.estimated_delay_ns.unwrap_or(f64::NEG_INFINITY))
-                    .then_with(|| Reverse(a.depth).cmp(&Reverse(b.depth)))
-                    .then_with(tie_break),
-            }
-        });
+        paths.sort_by(|a, b| compare_path_entries(a, b, sort));
         let grouped_count = paths.len();
         paths.truncate(limit);
-        PathsResponse {
-            paths,
-            comb_loops: self
-                .comb_loops
-                .iter()
-                .map(|id| graph.node_ref_name(*id))
-                .collect(),
-            truncated: route_clipped
-                || reconstructed_candidates < candidates.len()
-                || candidates.len() < total_targets
-                || grouped_count > limit,
+        PathSelection {
+            response: PathsResponse {
+                paths,
+                comb_loops: self
+                    .comb_loops
+                    .iter()
+                    .map(|id| graph.node_ref_name(*id))
+                    .collect(),
+                truncated: route_clipped
+                    || reconstructed_candidates < candidates.len()
+                    || candidates.len() < total_targets
+                    || grouped_count > limit,
+            },
+            reconstructed_nodes: reconstruction_node_budget - reconstruction_budget,
         }
     }
 
@@ -1758,6 +1874,45 @@ fn compare_target_rank(a: &EndpointTarget, b: &EndpointTarget) -> Ordering {
         .then_with(|| a.bit.cmp(&b.bit))
         .then_with(|| a.endpoint.cmp(&b.endpoint))
         .then_with(|| a.endpoint_port.cmp(&b.endpoint_port))
+}
+
+fn compare_path_entries(a: &PathEntry, b: &PathEntry, sort: PathSort) -> Ordering {
+    let tie_break = || compare_path_identity(a, b);
+    match sort {
+        PathSort::Depth => Reverse(a.depth).cmp(&Reverse(b.depth)).then_with(tie_break),
+        PathSort::Delay => b
+            .estimated_delay_ns
+            .unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&a.estimated_delay_ns.unwrap_or(f64::NEG_INFINITY))
+            .then_with(|| Reverse(a.depth).cmp(&Reverse(b.depth)))
+            .then_with(tie_break),
+    }
+}
+
+fn compare_path_membership(a: &PathEntry, b: &PathEntry) -> Ordering {
+    Reverse(a.depth)
+        .cmp(&Reverse(b.depth))
+        .then_with(|| {
+            b.estimated_delay_ns
+                .unwrap_or(f64::NEG_INFINITY)
+                .total_cmp(&a.estimated_delay_ns.unwrap_or(f64::NEG_INFINITY))
+        })
+        .then_with(|| compare_path_identity(a, b))
+}
+
+fn compare_path_identity(a: &PathEntry, b: &PathEntry) -> Ordering {
+    a.endpoint_group
+        .cmp(&b.endpoint_group)
+        .then_with(|| a.endpoint_kind.cmp(&b.endpoint_kind))
+        .then_with(|| a.class.cmp(&b.class))
+        .then_with(|| a.endpoint_port.cmp(&b.endpoint_port))
+        .then_with(|| a.bits.cmp(&b.bits))
+        .then_with(|| {
+            a.nodes
+                .iter()
+                .map(|node| node.id)
+                .cmp(b.nodes.iter().map(|node| node.id))
+        })
 }
 
 fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass {
@@ -3971,6 +4126,117 @@ mod tests {
     }
 
     #[test]
+    fn path_variants_keep_one_route_set_across_presentation_sorts() {
+        let graph = divergent_depth_delay_graph();
+        let mut model = DelayModel::generic();
+        model.lut_ps = 1_000.0;
+        model.cell_ps = 1.0;
+        model.net_base_ps = 0.0;
+        model.net_per_fanout_ps = 0.0;
+        let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
+
+        let depth = analysis.path_variants_with_model(&graph, &model, 8, None, PathSort::Depth);
+        let delay = analysis.path_variants_with_model(&graph, &model, 8, None, PathSort::Delay);
+        let identities = |response: &PathsResponse| {
+            response
+                .paths
+                .iter()
+                .map(|path| {
+                    (
+                        path.endpoint_group.clone(),
+                        path.nodes.iter().map(|node| node.id).collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<HashSet<_>>()
+        };
+
+        assert_eq!(identities(&depth), identities(&delay));
+        let slow_routes: Vec<_> = depth
+            .paths
+            .iter()
+            .filter(|path| path.endpoint_group == "slow_output")
+            .collect();
+        assert_eq!(slow_routes.len(), 2);
+        assert!(
+            slow_routes
+                .iter()
+                .any(|path| path.nodes.iter().any(|node| node.id == 2))
+        );
+        assert!(
+            slow_routes
+                .iter()
+                .any(|path| path.nodes.iter().any(|node| node.id == 4))
+        );
+        assert!(
+            depth
+                .paths
+                .windows(2)
+                .all(|pair| pair[0].depth >= pair[1].depth)
+        );
+        assert!(delay.paths.windows(2).all(|pair| {
+            pair[0].estimated_delay_ns.unwrap_or(f64::NEG_INFINITY)
+                >= pair[1].estimated_delay_ns.unwrap_or(f64::NEG_INFINITY)
+        }));
+
+        let bounded_depth =
+            analysis.path_variants_with_model(&graph, &model, 2, None, PathSort::Depth);
+        let bounded_delay =
+            analysis.path_variants_with_model(&graph, &model, 2, None, PathSort::Delay);
+        assert!(bounded_depth.truncated);
+        assert!(bounded_delay.truncated);
+        assert_eq!(identities(&bounded_depth), identities(&bounded_delay));
+        assert_eq!(bounded_depth.paths.len(), 2);
+        assert_eq!(bounded_delay.paths.len(), 2);
+        assert_eq!(
+            bounded_depth
+                .paths
+                .iter()
+                .map(|path| path.endpoint_group.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["deep_output", "slow_output"]),
+        );
+        assert!(
+            bounded_depth
+                .paths
+                .windows(2)
+                .all(|pair| pair[0].depth >= pair[1].depth)
+        );
+        assert!(bounded_delay.paths.windows(2).all(|pair| {
+            pair[0].estimated_delay_ns.unwrap_or(f64::NEG_INFINITY)
+                >= pair[1].estimated_delay_ns.unwrap_or(f64::NEG_INFINITY)
+        }));
+    }
+
+    #[test]
+    fn path_variant_union_keeps_same_shape_routes_with_distinct_nodes() {
+        let graph = same_shape_divergent_delay_graph();
+        let mut model = DelayModel::generic();
+        model.cell_ps = 1.0;
+        model.net_base_ps = 0.0;
+        model.net_per_fanout_ps = 100.0;
+        let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
+
+        let variants = analysis.path_variants_with_model(&graph, &model, 32, None, PathSort::Depth);
+        let output_routes: Vec<_> = variants
+            .paths
+            .iter()
+            .filter(|path| path.endpoint_group == "out")
+            .collect();
+
+        assert_eq!(output_routes.len(), 2);
+        assert!(
+            output_routes
+                .iter()
+                .any(|path| path.nodes.iter().any(|node| node.id == 2))
+        );
+        assert!(
+            output_routes
+                .iter()
+                .any(|path| path.nodes.iter().any(|node| node.id == 4))
+        );
+    }
+
+    #[test]
     fn endpoint_truncation_follows_the_requested_sort() {
         let graph = divergent_depth_delay_graph();
         let mut model = DelayModel::generic();
@@ -4426,6 +4692,19 @@ mod tests {
         assert!(paths.paths.len() < 400);
         assert_eq!(groups.len(), paths.paths.len());
         assert!(reconstructed_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
+
+        let (variants, variant_reconstruction_work) = analysis.path_variants_with_model_and_work(
+            &graph,
+            &DelayModel::generic(),
+            500,
+            None,
+            PathSort::Depth,
+        );
+        let variant_nodes: usize = variants.paths.iter().map(|path| path.nodes.len()).sum();
+        assert!(variants.truncated);
+        assert!(variant_nodes <= PATH_RECONSTRUCTION_NODE_BUDGET);
+        assert!(variant_reconstruction_work > PATH_RECONSTRUCTION_NODE_BUDGET / 2);
+        assert!(variant_reconstruction_work <= PATH_RECONSTRUCTION_NODE_BUDGET);
     }
 
     #[test]
@@ -4708,6 +4987,43 @@ mod tests {
             incoming[to as usize].push(edge_idx);
         }
         graph_from_parts("divergent", nodes, edges, outgoing, incoming)
+    }
+
+    fn same_shape_divergent_delay_graph() -> Graph {
+        let mut nodes = vec![
+            port_node(0, "depth_in", PortDirection::Input),
+            port_node(1, "delay_in", PortDirection::Input),
+            combinational_node(2, "$and", None),
+            combinational_node(3, "$and", None),
+            combinational_node(4, "$and", None),
+            combinational_node(5, "$and", None),
+            combinational_node(6, "$and", None),
+            port_node(7, "out", PortDirection::Output),
+        ];
+        for index in 0..8 {
+            nodes.push(port_node(
+                (8 + index) as NodeId,
+                &format!("fanout_{index}"),
+                PortDirection::Output,
+            ));
+        }
+        for node in &mut nodes {
+            if node.kind == NodeKind::PortBit {
+                node.port_bit = Some(0);
+            }
+        }
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); nodes.len()];
+        let mut incoming = vec![Vec::new(); nodes.len()];
+        for (from, to) in [(0, 2), (2, 3), (3, 6), (1, 4), (4, 5), (5, 6), (6, 7)] {
+            let bit = edges.len() as u32;
+            add_test_edge(&mut edges, &mut outgoing, &mut incoming, from, to, bit);
+        }
+        for to in 8..16 {
+            let bit = edges.len() as u32;
+            add_test_edge(&mut edges, &mut outgoing, &mut incoming, 4, to, bit);
+        }
+        graph_from_parts("same_shape_divergent", nodes, edges, outgoing, incoming)
     }
 
     fn port_node(id: NodeId, name: &str, direction: PortDirection) -> Node {

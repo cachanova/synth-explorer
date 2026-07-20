@@ -217,6 +217,75 @@ test('supports persistent manual synthesis and a configurable delay', async ({ p
   expect(apiRequests).toEqual([])
 })
 
+test('sorts every reported path without changing the result set', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('round_robin_arbiter')
+    await page.getByLabel('Mode').selectOption('xilinx')
+  })
+  await page.getByRole('tab', { name: 'Paths', exact: true }).click()
+
+  const title = page.getByText(/^Longest logical path variants \(\d+\)$/)
+  await expect(title).toBeVisible()
+  const initialTitle = await title.textContent()
+  const depthHeader = page.getByRole('columnheader', { name: /^Depth/ })
+  const delayHeader = page.getByRole('columnheader', { name: /^Est\. delay/ })
+  const rows = page.locator('.virtual-grid-row tr.clickable')
+  const visiblePathKeys = () =>
+    rows.evaluateAll((elements) =>
+      elements.map((element) => element.getAttribute('data-path-key')).sort(),
+    )
+  const visibleDepths = () =>
+    rows.locator('td:nth-child(2)').evaluateAll((cells) =>
+      cells.map((cell) => Number.parseInt(cell.textContent ?? '', 10)),
+    )
+  const visibleDelays = () =>
+    rows.locator('td:nth-child(3)').evaluateAll((cells) =>
+      cells.map((cell) => Number.parseFloat(cell.textContent ?? '')),
+    )
+
+  const reportedCount = Number.parseInt(initialTitle?.match(/\((\d+)\)/)?.[1] ?? '', 10)
+  const initialKeys = await visiblePathKeys()
+  expect(initialKeys).toHaveLength(reportedCount)
+  for (const column of [1, 2, 3]) {
+    const header = page.getByRole('columnheader').nth(column - 1)
+    const cell = rows.locator(`td:nth-child(${column})`).first()
+    expect(await header.evaluate((element) => getComputedStyle(element).textAlign)).toBe('right')
+    expect(await cell.evaluate((element) => getComputedStyle(element).textAlign)).toBe('right')
+    const headerBox = await header.boundingBox()
+    const cellBox = await cell.boundingBox()
+    expect(Math.abs((headerBox?.x ?? 0) - (cellBox?.x ?? 0))).toBeLessThanOrEqual(1)
+    expect(Math.abs((headerBox?.width ?? 0) - (cellBox?.width ?? 0))).toBeLessThanOrEqual(1)
+  }
+
+  await depthHeader.click()
+  await expect(depthHeader).toHaveAttribute('aria-sort', 'descending')
+  await expect(title).toHaveText(initialTitle ?? '')
+  expect(await visiblePathKeys()).toEqual(initialKeys)
+  const depthDescending = await visibleDepths()
+  expect(depthDescending).toEqual([...depthDescending].sort((left, right) => right - left))
+
+  await depthHeader.click()
+  await expect(depthHeader).toHaveAttribute('aria-sort', 'ascending')
+  expect(await visiblePathKeys()).toEqual(initialKeys)
+  const depthAscending = await visibleDepths()
+  expect(depthAscending).toEqual([...depthAscending].sort((left, right) => left - right))
+
+  await delayHeader.click()
+  await expect(delayHeader).toHaveAttribute('aria-sort', 'descending')
+  await expect(title).toHaveText(initialTitle ?? '')
+  expect(await visiblePathKeys()).toEqual(initialKeys)
+  const descending = await visibleDelays()
+  expect(descending).toEqual([...descending].sort((left, right) => right - left))
+
+  await delayHeader.click()
+  await expect(delayHeader).toHaveAttribute('aria-sort', 'ascending')
+  await expect(title).toHaveText(initialTitle ?? '')
+  expect(await visiblePathKeys()).toEqual(initialKeys)
+  const ascending = await visibleDelays()
+  expect(ascending).toEqual([...ascending].sort((left, right) => left - right))
+})
+
 test('coalesces a typing burst into one synthesis of the newest input', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')

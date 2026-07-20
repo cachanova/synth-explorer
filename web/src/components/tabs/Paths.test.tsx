@@ -62,6 +62,7 @@ vi.mock('../../useStore', () => ({
 }))
 
 import { Paths } from './Paths'
+import { nextPathSort, sortPaths } from './pathSorting'
 
 function path(index: number): TimingPath {
   const startpoint = { id: index * 2, kind: 'port' as const, name: `input-${index}` }
@@ -125,5 +126,39 @@ describe('Paths result completeness', () => {
 
     expect(new Set(virtualKeys)).toHaveProperty('size', 2)
     expect(markup.match(/<tr[^>]*class="clickable"/g)).toHaveLength(2)
+  })
+})
+
+describe('Paths table sorting', () => {
+  const paths = [
+    { ...path(1), depth: 1, estimated_delay_ns: 0.41 },
+    { ...path(2), depth: 3, estimated_delay_ns: 0.31 },
+    { ...path(3), depth: 2, estimated_delay_ns: 0.43 },
+  ]
+
+  it('sorts the same reported result set in either direction', () => {
+    const delayDescending = sortPaths(paths, { key: 'delay', direction: 'desc' })
+    const delayAscending = sortPaths(paths, { key: 'delay', direction: 'asc' })
+
+    expect(delayDescending.map((item) => item.depth)).toEqual([2, 1, 3])
+    expect(delayAscending.map((item) => item.depth)).toEqual([3, 1, 2])
+    expect(sortPaths(paths, { key: 'depth', direction: 'desc' }).map((item) => item.depth))
+      .toEqual([3, 2, 1])
+    expect(sortPaths(paths, { key: 'depth', direction: 'asc' }).map((item) => item.depth))
+      .toEqual([1, 2, 3])
+    expect(new Set(delayDescending)).toEqual(new Set(paths))
+    expect(new Set(delayAscending)).toEqual(new Set(paths))
+    expect(paths.map((item) => item.depth)).toEqual([1, 3, 2])
+  })
+
+  it('starts a newly selected column descending, then alternates direction', () => {
+    const first = nextPathSort(null, 'delay')
+    const second = nextPathSort(first, 'delay')
+    const third = nextPathSort(second, 'delay')
+
+    expect(first).toEqual({ key: 'delay', direction: 'desc' })
+    expect(second).toEqual({ key: 'delay', direction: 'asc' })
+    expect(third).toEqual({ key: 'delay', direction: 'desc' })
+    expect(nextPathSort(third, 'depth')).toEqual({ key: 'depth', direction: 'desc' })
   })
 })
