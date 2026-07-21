@@ -5,6 +5,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::env;
 use std::fmt::Write as _;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
@@ -34,6 +35,14 @@ const PART_MARKER: &str = "SYNTH_EXPLORER_PART\t";
 const NETLIST_MARKER_NAME: &str = "netlist-complete.marker";
 const TIMING_METADATA_NAME: &str = "vivado-timing.tsv";
 const TIMING_REPORT_NAME: &str = "vivado-timing.rpt";
+#[cfg(target_os = "linux")]
+const VIVADO_LINUX_LIBRARY_CANDIDATES: &[&str] = &[
+    "lib/lnx64.o/Ubuntu/24",
+    "lib/lnx64.o/Ubuntu/22",
+    "lib/lnx64.o/Rhel/10",
+    "lib/lnx64.o/Rhel/9",
+    "lib/lnx64.o/SuSE",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VivadoPart {
@@ -439,6 +448,7 @@ fn validation(message: impl Into<String>) -> BridgeError {
 pub async fn preflight_vivado(vivado_bin: &Path) -> Result<BridgeStatus, BridgeError> {
     let mut version_command = Command::new(vivado_bin);
     version_command.arg("-version").kill_on_drop(true);
+    apply_vivado_environment(&mut version_command, vivado_bin);
     let output = timeout(PREFLIGHT_TIMEOUT, version_command.output())
         .await
         .map_err(|_| {
@@ -464,11 +474,15 @@ pub async fn preflight_vivado(vivado_bin: &Path) -> Result<BridgeStatus, BridgeE
     let script = temp.path().join("catalog.tcl");
     fs::write(
         &script,
-        "foreach part [lsort [get_parts]] {\n\
-         \tputs \"SYNTH_EXPLORER_PART\\t$part\\t[get_property FAMILY $part]\\t[get_property SPEED $part]\"\n\
-         }\n",
+        "set synth_explorer_catalog_fp [open {catalog.tsv} w]\n\
+         foreach part [lsort [get_parts]] {\n\
+         \tputs $synth_explorer_catalog_fp \"SYNTH_EXPLORER_PART\\t$part\\t[get_property FAMILY $part]\\t[get_property SPEED $part]\"\n\
+         }\n\
+         close $synth_explorer_catalog_fp\n",
     )
     .await?;
+    let catalog_path = temp.path().join("catalog.tsv");
+    let console_path = temp.path().join("vivado-catalog-console.log");
     let mut command = Command::new(vivado_bin);
     command
         .args([
@@ -482,20 +496,17 @@ pub async fn preflight_vivado(vivado_bin: &Path) -> Result<BridgeStatus, BridgeE
         .arg(&script)
         .current_dir(temp.path())
         .kill_on_drop(true);
-    let output = timeout(PREFLIGHT_TIMEOUT, command.output())
-        .await
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Vivado part catalog check timed out",
-            )
-        })??;
-    if !output.status.success() {
-        return Err(BridgeError::Vivado {
-            log: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+    apply_vivado_environment(&mut command, vivado_bin);
+    let status = run_command(&mut command, PREFLIGHT_TIMEOUT, &console_path).await;
+    let log = read_log_tail(&console_path).await.unwrap_or_default();
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(_) => return Err(BridgeError::Vivado { log }),
+        Err(CommandFailure::Timeout) => return Err(BridgeError::Timeout { log }),
+        Err(CommandFailure::Io(error)) => return Err(BridgeError::Io(error)),
     }
-    let parts = parse_part_catalog(&String::from_utf8_lossy(&output.stdout))?;
+    let catalog = fs::read_to_string(catalog_path).await.unwrap_or_default();
+    let parts = parse_part_catalog_with_diagnostic(&catalog, &log)?;
     Ok(BridgeStatus {
         protocol_version: PROTOCOL_VERSION,
         bridge_version: env!("CARGO_PKG_VERSION"),
@@ -513,7 +524,15 @@ fn parse_version_banner(output: &str) -> Option<&str> {
     })
 }
 
+#[cfg(test)]
 fn parse_part_catalog(output: &str) -> Result<Vec<VivadoPart>, BridgeError> {
+    parse_part_catalog_with_diagnostic(output, "")
+}
+
+fn parse_part_catalog_with_diagnostic(
+    output: &str,
+    diagnostic: &str,
+) -> Result<Vec<VivadoPart>, BridgeError> {
     let mut parts = output
         .lines()
         .filter_map(|line| line.trim().strip_prefix(PART_MARKER))
@@ -536,9 +555,96 @@ fn parse_part_catalog(output: &str) -> Result<Vec<VivadoPart>, BridgeError> {
     parts.sort_by(|left, right| (&left.family, &left.name).cmp(&(&right.family, &right.name)));
     parts.dedup_by(|left, right| left.name == right.name);
     if parts.is_empty() {
+        let output = output.trim();
+        let output = if output.is_empty() {
+            diagnostic.trim()
+        } else {
+            output
+        };
+        let output = log_tail(output);
+        if !output.is_empty() {
+            return Err(validation(format!(
+                "Vivado returned no part catalog. Output:\n{output}"
+            )));
+        }
         return Err(validation("Vivado returned an empty part catalog"));
     }
     Ok(parts)
+}
+
+fn log_tail(output: &str) -> &str {
+    if output.len() <= LOG_TAIL_LIMIT {
+        return output;
+    }
+    let mut start = output.len() - LOG_TAIL_LIMIT;
+    while !output.is_char_boundary(start) {
+        start += 1;
+    }
+    &output[start..]
+}
+
+#[cfg(target_os = "linux")]
+fn apply_vivado_environment(command: &mut Command, vivado_bin: &Path) {
+    let Some(value) =
+        vivado_linux_library_path(vivado_bin, env::var_os("LD_LIBRARY_PATH").as_deref())
+    else {
+        return;
+    };
+    command.env("LD_LIBRARY_PATH", value);
+}
+
+#[cfg(target_os = "linux")]
+fn vivado_linux_library_path(
+    vivado_bin: &Path,
+    existing: Option<&std::ffi::OsStr>,
+) -> Option<std::ffi::OsString> {
+    let lib_dir = bundled_vivado_linux_lib_dir(vivado_bin)?;
+    let mut paths = vec![lib_dir];
+    if let Some(existing) = existing {
+        paths.extend(env::split_paths(existing));
+    }
+    env::join_paths(paths).ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_vivado_environment(_command: &mut Command, _vivado_bin: &Path) {}
+
+#[cfg(target_os = "linux")]
+fn bundled_vivado_linux_lib_dir(vivado_bin: &Path) -> Option<PathBuf> {
+    bundled_vivado_linux_lib_dir_with_path(vivado_bin, env::var_os("PATH").as_deref())
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_vivado_linux_lib_dir_with_path(
+    vivado_bin: &Path,
+    path_env: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let executable = resolve_executable_path(vivado_bin, path_env)?;
+    let root = executable.parent()?.parent()?;
+    VIVADO_LINUX_LIBRARY_CANDIDATES
+        .iter()
+        .map(|relative| root.join(relative))
+        .find(|dir| dir.join("libncurses.so.5").is_file() && dir.join("libtinfo.so.5").is_file())
+}
+
+#[cfg(target_os = "linux")]
+fn resolve_executable_path(
+    vivado_bin: &Path,
+    path_env: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    let candidate = if vivado_bin.components().count() > 1 {
+        vivado_bin.to_path_buf()
+    } else {
+        let name = vivado_bin.as_os_str();
+        if name.is_empty() {
+            return None;
+        }
+        env::split_paths(path_env?).find_map(|dir| {
+            let candidate = dir.join(name);
+            candidate.is_file().then_some(candidate)
+        })?
+    };
+    Some(std::fs::canonicalize(&candidate).unwrap_or(candidate))
 }
 
 async fn run_vivado(
@@ -570,6 +676,7 @@ async fn run_vivado(
         .arg(&tcl_path)
         .current_dir(temp.path())
         .kill_on_drop(true);
+    apply_vivado_environment(&mut command, vivado_bin);
     let status = run_command(&mut command, VIVADO_TIMEOUT, &console_path).await;
     let log = combined_log(&[&vivado_log_path, &console_path]).await;
     match status {
@@ -916,7 +1023,7 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt;
     use tower::ServiceExt;
 
@@ -1077,21 +1184,123 @@ mod tests {
         assert!(types < core);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vivado_environment_resolves_bundled_linux_compatibility_libraries() {
+        let temp = TempDir::new().unwrap();
+        let executable = temp.path().join("Vivado/bin/vivado");
+        let lib_dir = temp.path().join("Vivado/lib/lnx64.o/Ubuntu/24");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(&executable, "").unwrap();
+        std::fs::write(lib_dir.join("libncurses.so.5"), "").unwrap();
+        std::fs::write(lib_dir.join("libtinfo.so.5"), "").unwrap();
+
+        assert_eq!(bundled_vivado_linux_lib_dir(&executable), Some(lib_dir));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vivado_environment_resolves_bare_path_and_symlinked_executable() {
+        let temp = TempDir::new().unwrap();
+        let executable = temp.path().join("Vivado/bin/vivado");
+        let lib_dir = temp.path().join("Vivado/lib/lnx64.o/Ubuntu/24");
+        let path_dir = temp.path().join("path-bin");
+        let symlink = path_dir.join("vivado");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::create_dir_all(&path_dir).unwrap();
+        std::fs::write(&executable, "").unwrap();
+        std::fs::write(lib_dir.join("libncurses.so.5"), "").unwrap();
+        std::fs::write(lib_dir.join("libtinfo.so.5"), "").unwrap();
+        std::os::unix::fs::symlink(&executable, &symlink).unwrap();
+
+        assert_eq!(
+            bundled_vivado_linux_lib_dir_with_path(Path::new("vivado"), Some(path_dir.as_os_str())),
+            Some(lib_dir)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn vivado_environment_prepends_bundled_libraries_before_inherited_paths() {
+        let temp = TempDir::new().unwrap();
+        let executable = temp.path().join("Vivado/bin/vivado");
+        let lib_dir = temp.path().join("Vivado/lib/lnx64.o/Ubuntu/24");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(&executable, "").unwrap();
+        std::fs::write(lib_dir.join("libncurses.so.5"), "").unwrap();
+        std::fs::write(lib_dir.join("libtinfo.so.5"), "").unwrap();
+
+        let value = vivado_linux_library_path(
+            &executable,
+            Some(std::ffi::OsStr::new("/existing/one:/existing/two")),
+        )
+        .unwrap();
+        assert_eq!(
+            env::split_paths(&value).collect::<Vec<_>>(),
+            vec![
+                lib_dir,
+                PathBuf::from("/existing/one"),
+                PathBuf::from("/existing/two"),
+            ]
+        );
+    }
+
+    #[test]
+    fn part_catalog_reports_non_marker_vivado_output() {
+        let output = "application-specific initialization failed: couldn't load file \"libxv_commontasks.so\": libncurses.so.5: cannot open shared object file";
+        let error = parse_part_catalog(output).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!("Vivado returned no part catalog. Output:\n{output}")
+        );
+    }
+
+    #[test]
+    fn part_catalog_error_keeps_only_bounded_output_tail() {
+        let output = format!("head{}", "x".repeat(LOG_TAIL_LIMIT + 128));
+        let error = parse_part_catalog(&output).unwrap_err().to_string();
+
+        assert!(!error.contains("head"));
+        assert!(error.ends_with(&"x".repeat(LOG_TAIL_LIMIT)));
+    }
+
+    #[test]
+    fn part_catalog_reports_empty_vivado_output() {
+        let error = parse_part_catalog("").unwrap_err();
+
+        assert_eq!(error.to_string(), "Vivado returned an empty part catalog");
+    }
+
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn fake_vivado_runs_preflight_and_synthesis_as_child_processes() {
         let temp = TempDir::new().unwrap();
-        let executable = temp.path().join("fake-vivado");
+        let executable = temp.path().join("Vivado/bin/vivado");
+        let lib_dir = temp.path().join("Vivado/lib/lnx64.o/Ubuntu/24");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("libncurses.so.5"), "").unwrap();
+        std::fs::write(lib_dir.join("libtinfo.so.5"), "").unwrap();
         fs::write(
             &executable,
-            r#"#!/bin/sh
+            format!(
+                r#"#!/bin/sh
+first=${{LD_LIBRARY_PATH%%:*}}
+if [ "$first" != "{lib_dir}" ]; then
+  echo 'Vivado support library path was not first' >&2
+  exit 7
+fi
 if [ "$1" = "-version" ]; then
   echo 'Vivado v2026.1 (64-bit)'
   exit 0
 fi
 case "$*" in
   *catalog.tcl*)
-    printf 'SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\t-1\n'
+    printf 'SYNTH_EXPLORER_PART\txc7a35tcpg236-1\tartix7\t-1\n' > catalog.tsv
     ;;
   *)
     printf 'fake synthesis complete\n'
@@ -1102,6 +1311,8 @@ case "$*" in
     ;;
 esac
 "#,
+                lib_dir = lib_dir.display()
+            ),
         )
         .await
         .unwrap();
