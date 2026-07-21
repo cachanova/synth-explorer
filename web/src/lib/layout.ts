@@ -326,6 +326,9 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 // with it when the premium strategy fails.
 export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
 export const REDUCED_THOROUGHNESS_NODE_THRESHOLD = 700
+export const DENSE_LAYOUT_NODE_THRESHOLD = 500
+export const REDUCED_THOROUGHNESS_EDGE_DENSITY = 2.5
+export const DENSE_LONGEST_PATH_EDGE_DENSITY = 4
 
 // A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
 // triangle lower-west, and the data output (Q) at the east. These fractions of
@@ -595,6 +598,15 @@ export function toElkGraph(
         : pinId(pins.incomingIndex, e.to, e.toPort, 'i'),
     ],
   }))
+  const edgeDensity = input.edges.length / Math.max(1, input.nodes.length)
+  const useDenseFastPath =
+    nodePlacement === 'BRANDES_KOEPF' &&
+    input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
+    edgeDensity >= REDUCED_THOROUGHNESS_EDGE_DENSITY
+  const useDenseLayering =
+    nodePlacement === 'BRANDES_KOEPF' &&
+    input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
+    edgeDensity >= DENSE_LONGEST_PATH_EDGE_DENSITY
 
   return {
     id: 'root',
@@ -609,14 +621,19 @@ export function toElkGraph(
       'elk.layered.nodePlacement.strategy': nodePlacement,
       ...(nodePlacement === 'BRANDES_KOEPF'
         ? {
-            // Below this boundary, the extra crossing-minimization pass pays
-            // for itself on several grouped schematics. At 700+ nodes the
-            // reduced pass count is materially faster and improved geometry
-            // across the validated real dense fixtures.
+            // Dense circuit graphs spend disproportionately more time in
+            // repeated layered sweeps. Use the lower-cost path only where
+            // topology makes it robust; sparse/grouped graphs retain the
+            // higher-quality passes selected by graph size.
             'elk.layered.thoroughness':
-              input.nodes.length >= REDUCED_THOROUGHNESS_NODE_THRESHOLD
+              useDenseFastPath
+                ? '1'
+                : input.nodes.length >= REDUCED_THOROUGHNESS_NODE_THRESHOLD
                 ? '3'
                 : '4',
+            ...(useDenseLayering
+              ? { 'elk.layered.layering.strategy': 'LONGEST_PATH' }
+              : {}),
           }
         : {}),
     },

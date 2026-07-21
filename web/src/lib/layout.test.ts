@@ -4,6 +4,8 @@ import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
   clearLayoutGeometryCache,
   controlRoleForPin,
+  DENSE_LAYOUT_NODE_THRESHOLD,
+  DENSE_LONGEST_PATH_EDGE_DENSITY,
   fitViewportToContent,
   hydrateLayoutResult,
   interpretResult,
@@ -18,6 +20,7 @@ import {
   prewarmLayoutWorker,
   preserveViewportAnchor,
   prepareLayoutInput,
+  REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   toElkGraph,
   viewportTransformAttribute,
@@ -178,6 +181,85 @@ describe('schematic layout sizing', () => {
         'elk.layered.thoroughness'
       ],
     ).toBe('3')
+  })
+
+  it('uses the benchmarked fast path only for sufficiently dense BK layouts', () => {
+    const denseInput = {
+      nodes: Array.from({ length: DENSE_LAYOUT_NODE_THRESHOLD }, (_, id) => ({
+        id,
+        baseWidth: 62,
+        baseHeight: 46,
+        controlHeight: 0,
+        register: false,
+      })),
+      edges: Array.from(
+        {
+          length: Math.ceil(
+            DENSE_LAYOUT_NODE_THRESHOLD * DENSE_LONGEST_PATH_EDGE_DENSITY,
+          ),
+        },
+        (_, index) => ({
+          from: index % (DENSE_LAYOUT_NODE_THRESHOLD / 2),
+          to: DENSE_LAYOUT_NODE_THRESHOLD / 2 +
+            (index % (DENSE_LAYOUT_NODE_THRESHOLD / 2)),
+          fromPort: `Y${index}`,
+          toPort: `A${index}`,
+          control: false,
+        }),
+      ),
+    }
+    const dense = toElkGraph(denseInput, 'BRANDES_KOEPF').layoutOptions
+    expect(dense?.['elk.layered.thoroughness']).toBe('1')
+    expect(dense?.['elk.layered.layering.strategy']).toBe('LONGEST_PATH')
+
+    const mediumDenseInput = {
+      ...denseInput,
+      edges: denseInput.edges.slice(
+        0,
+        Math.ceil(
+          DENSE_LAYOUT_NODE_THRESHOLD * REDUCED_THOROUGHNESS_EDGE_DENSITY,
+        ),
+      ),
+    }
+    const mediumDense = toElkGraph(
+      mediumDenseInput,
+      'BRANDES_KOEPF',
+    ).layoutOptions
+    expect(mediumDense?.['elk.layered.thoroughness']).toBe('1')
+    expect(mediumDense?.['elk.layered.layering.strategy']).toBeUndefined()
+
+    const belowDensity = toElkGraph(
+      {
+        ...denseInput,
+        edges: denseInput.edges.slice(
+          0,
+          DENSE_LAYOUT_NODE_THRESHOLD * REDUCED_THOROUGHNESS_EDGE_DENSITY - 1,
+        ),
+      },
+      'BRANDES_KOEPF',
+    ).layoutOptions
+    expect(belowDensity?.['elk.layered.thoroughness']).toBe('4')
+    expect(belowDensity?.['elk.layered.layering.strategy']).toBeUndefined()
+
+    const smallDense = toElkGraph(
+      {
+        nodes: denseInput.nodes.slice(0, 10),
+        edges: Array.from({ length: 40 }, (_, index) => ({
+          from: index % 5,
+          to: 5 + (index % 5),
+          fromPort: `Y${index}`,
+          toPort: `A${index}`,
+          control: false,
+        })),
+      },
+      'BRANDES_KOEPF',
+    ).layoutOptions
+    expect(smallDense?.['elk.layered.thoroughness']).toBe('4')
+    expect(smallDense?.['elk.layered.layering.strategy']).toBeUndefined()
+
+    const tightPlacement = toElkGraph(denseInput, 'NETWORK_SIMPLEX').layoutOptions
+    expect(tightPlacement?.['elk.layered.thoroughness']).toBeUndefined()
+    expect(tightPlacement?.['elk.layered.layering.strategy']).toBeUndefined()
   })
 
   it('routes flip-flop data edges to D and Q ports, not the box centre', () => {
