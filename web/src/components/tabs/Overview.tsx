@@ -75,7 +75,7 @@ export function Overview() {
 
       <div className="cards">
         <Card k="Top" v={design.top} small />
-        <Card k="Synth tool" v={design.tool === 'vivado' ? 'Vivado (local)' : 'Yosys (browser)'} small />
+        <Card k="Synth tool" v={design.tool === 'vivado' ? 'Vivado' : 'Yosys'} small />
         {design.target && <Card k="Target" v={design.target} small />}
         <Card k="Mode" v={displayMode(design.mode)} small />
         <Card k="Cells" v={stats.num_cells} />

@@ -23,6 +23,8 @@ curl -fsSL https://synthexplorer.dev/vivado | env VIVADO_BIN=/opt/Xilinx/Vivado/
 
 You can also download the Windows or Linux binary from the
 [latest Synth Explorer release](https://github.com/cachanova/synth-explorer/releases/latest).
+The Linux release binary is built as a static `x86_64-unknown-linux-musl`
+executable so it does not depend on the host machine's glibc version.
 
 Linux:
 
@@ -39,7 +41,7 @@ Windows PowerShell, opened from the Vivado command prompt so `vivado.bat` is on
 .\synth-explorer-vivado-bridge-windows-x86_64.exe --vivado vivado.bat
 ```
 
-In Synth Explorer, choose **Vivado (local)** from **Engine** in a current
+In Synth Explorer, choose **Vivado** from **Engine** in a current
 Chromium-based browser, then click **Connect local Vivado**. Keep the terminal
 open while using Vivado.
 
@@ -70,6 +72,14 @@ cargo run --release -p synth-explorer-vivado-bridge -- \
 Use `--allow-origin http://localhost:4173` for a different local preview origin.
 The defaults allow the production site. Add an explicit `--allow-origin` for
 local previews.
+
+For the most portable Linux binary:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+cargo build --release --locked -p synth-explorer-vivado-bridge \
+  --target x86_64-unknown-linux-musl
+```
 
 ## Security and limits
 

@@ -49,11 +49,11 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   await page.getByLabel('Synthesis engine').selectOption('vivado')
 
   await expect(page.getByLabel('Synthesis engine')).toHaveValue('vivado')
-  await page.getByRole('button', { name: 'Run Vivado' }).click()
+  await page.getByRole('button', { name: 'Synthesize' }).click()
   await page.getByRole('tab', { name: 'Overview' }).click()
 
   const overview = page.getByRole('tabpanel', { name: 'Overview' })
-  await expect(overview.getByText('Vivado (local)', { exact: true })).toBeVisible()
+  await expect(overview.getByText('Vivado', { exact: true })).toBeVisible()
   await expect(overview.getByText('xc7a35tcpg236-1', { exact: true })).toBeVisible()
   await expect(overview.getByText('Xilinx', { exact: true })).toBeVisible()
   await expect.poll(() => synthesisRequest).not.toBeNull()

@@ -334,6 +334,45 @@ describe('GraphView LUT labels', () => {
     )
   })
 
+  it('truncates long register names to the allocated node width', () => {
+    const longName = 'with_stages.shift_data_reg_next[3]'
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 1,
+            x: 0,
+            y: 0,
+            width: 182,
+            height: 71,
+            node: {
+              id: 1,
+              kind: 'cell',
+              name: longName,
+              cell_type: 'FDRE',
+              seq: true,
+              register: true,
+            },
+          }],
+          edges: [],
+          width: 182,
+          height: 71,
+        }}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).not.toContain(`>${longName}</text>`)
+    expect(markup).toContain('with_stages.shift_da…')
+  })
+
   it('exposes one roving node tab stop regardless of graph size', () => {
     const markup = renderToStaticMarkup(
       <GraphView

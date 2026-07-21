@@ -179,8 +179,8 @@ export const MODE_LABELS: { value: Mode; label: string }[] = [
 ]
 
 export const SYNTH_TOOL_LABELS: { value: SynthTool; label: string }[] = [
-  { value: 'yosys', label: 'Yosys (browser)' },
-  { value: 'vivado', label: 'Vivado (local)' },
+  { value: 'yosys', label: 'Yosys' },
+  { value: 'vivado', label: 'Vivado' },
 ]
 
 // Xilinx target families (synth_xilinx -family). Determines carry (CARRY4 vs

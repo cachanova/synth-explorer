@@ -261,16 +261,16 @@ export function Toolbar() {
           </button>
           <button
             type="button"
-            className="primary"
+            className="primary synthesize-button"
             disabled={store.synthesizing || !store.top.trim()}
             onClick={() => void store.synthesize()}
             title={store.top.trim() ? 'Run synthesis in local Vivado' : 'Enter the top module or entity first'}
           >
             {store.synthesizing ? (
               <span className="synth-button-content">
-                <BubbleLoader size={16} tone="mono" /> Running Vivado…
+                <BubbleLoader size={16} tone="mono" /> Synthesizing…
               </span>
-            ) : 'Run Vivado'}
+            ) : 'Synthesize'}
           </button>
         </>
       )}

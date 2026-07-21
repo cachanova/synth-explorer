@@ -28,12 +28,21 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install 1.97.1 --profile minimal
 
-      - name: Build bridge
+      - name: Install Linux static target
+        if: runner.os == 'Linux'
+        run: rustup target add x86_64-unknown-linux-musl --toolchain 1.97.1
+
+      - name: Build Linux bridge
+        if: runner.os == 'Linux'
+        run: cargo build --release --locked -p synth-explorer-vivado-bridge --target x86_64-unknown-linux-musl
+
+      - name: Build Windows bridge
+        if: runner.os == 'Windows'
         run: cargo build --release --locked -p synth-explorer-vivado-bridge
 
       - name: Stage Linux binary
         if: runner.os == 'Linux'
-        run: cp target/release/synth-explorer-vivado-bridge ${{ matrix.asset }}
+        run: cp target/x86_64-unknown-linux-musl/release/synth-explorer-vivado-bridge ${{ matrix.asset }}
 
       - name: Generate Linux checksum
         if: runner.os == 'Linux'

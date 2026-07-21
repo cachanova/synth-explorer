@@ -56,7 +56,7 @@ installation is required for the default browser-local flow.
 
 ## Optional local Vivado
 
-The website contains the complete setup guide: select **Vivado (local)** from
+The website contains the complete setup guide: select **Vivado** from
 the Engine menu. The short version is:
 
 1. Install and license Vivado on the computer that will run synthesis.
@@ -65,7 +65,7 @@ the Engine menu. The short version is:
    [latest release](https://github.com/cachanova/synth-explorer/releases/latest).
 3. If Vivado is not already on `PATH`, run AMD's `settings64.sh` first or pass
    `VIVADO_BIN=/path/to/Vivado/bin/vivado`.
-4. In a current Chromium-based browser, select **Vivado (local)** and click
+4. In a current Chromium-based browser, select **Vivado** and click
    **Connect local Vivado**. Allow loopback access when the browser asks.
 
 For a remote Vivado host, start the connector on the licensed Linux or Windows

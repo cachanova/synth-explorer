@@ -2,6 +2,14 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
+  synthTool: 'yosys' as 'yosys' | 'vivado',
+  vivadoStatus: null as null | {
+    protocol_version: number
+    bridge_version: string
+    vivado_version: string
+    parts: Array<{ name: string; family: string; speed: string }>
+  },
+  vivadoTarget: '',
   autoSynthesize: true,
   synthesizing: false,
 }))
@@ -14,14 +22,14 @@ vi.mock('../useStore', () => ({
       loadExample: vi.fn(),
       top: '',
       setTop: vi.fn(),
-      synthTool: 'yosys',
+      synthTool: state.synthTool,
       setSynthTool: vi.fn(),
       mode: 'gates',
       setMode: vi.fn(),
       extraArgs: '',
       setExtraArgs: vi.fn(),
-      vivadoStatus: null,
-      vivadoTarget: '',
+      vivadoStatus: state.vivadoStatus,
+      vivadoTarget: state.vivadoTarget,
       setVivadoTarget: vi.fn(),
       vivadoExtraArgs: '',
       setVivadoExtraArgs: vi.fn(),
@@ -37,6 +45,9 @@ import { Toolbar } from './Toolbar'
 
 describe('Toolbar synthesis action', () => {
   beforeEach(() => {
+    state.synthTool = 'yosys'
+    state.vivadoStatus = null
+    state.vivadoTarget = ''
     state.autoSynthesize = true
     state.synthesizing = false
   })
@@ -57,5 +68,18 @@ describe('Toolbar synthesis action', () => {
 
     expect(markup).toContain('disabled=""')
     expect(markup).toContain('>Synthesizing…<')
+  })
+
+  it('keeps Vivado manual even when automatic Yosys synthesis is enabled', () => {
+    state.synthTool = 'vivado'
+    state.vivadoStatus = {
+      protocol_version: 1,
+      bridge_version: '0.1.0-test',
+      vivado_version: 'Vivado v2026.1',
+      parts: [{ name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' }],
+    }
+    state.vivadoTarget = 'xc7a35tcpg236-1'
+
+    expect(renderToStaticMarkup(<Toolbar />)).toContain('>Synthesize<')
   })
 })
