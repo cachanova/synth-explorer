@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
     ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, PathSort, SourceSelectionOptions,
     SourceSelectionRange, TimingEstimate,
@@ -356,9 +357,16 @@ impl AnalysisSession {
     ) -> Result<Vec<u32>, JsValue> {
         let base = self.design.graph.nodes.len() as u32;
         let mut roots = Vec::new();
+        let mut requested_seen = HashSet::new();
+        let mut roots_seen = HashSet::new();
         for &id in requested {
+            if !requested_seen.insert(id) {
+                continue;
+            }
             if id < base {
-                roots.push(id);
+                if roots_seen.insert(id) {
+                    roots.push(id);
+                }
                 continue;
             }
             let group = grouping
@@ -367,7 +375,13 @@ impl AnalysisSession {
                         .and_then(|group_id| partition.groups.get(group_id as usize))
                 })
                 .ok_or_else(|| js_error("unknown node"))?;
-            roots.extend(group.members.iter().copied());
+            roots.extend(
+                group
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|member| roots_seen.insert(*member)),
+            );
         }
         Ok(roots)
     }
@@ -568,5 +582,13 @@ mod tests {
                 .iter()
                 .all(|node| node["id"].as_u64().is_some_and(|id| id < u64::from(base)))
         );
+
+        let once = session
+            .resolve_projection_roots(&[synthetic_id], Some(&session.design.grouping))
+            .expect("one synthetic root resolves");
+        let repeated = session
+            .resolve_projection_roots(&vec![synthetic_id; 200], Some(&session.design.grouping))
+            .expect("repeated synthetic roots resolve");
+        assert_eq!(repeated, once, "duplicate requests must not amplify roots");
     }
 }
