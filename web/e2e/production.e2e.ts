@@ -606,7 +606,10 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const transientPinNode = page.locator(
     '.g-node-body:not(.g-symbol-port-in):not(.g-symbol-port-out):not(.g-symbol-reg):not(.g-symbol-latch)',
   ).first()
+  const expectedNodeTitle = await transientPinNode.getAttribute('data-node-tooltip')
+  expect(expectedNodeTitle).not.toBeNull()
   await transientPinNode.hover()
+  await expect(page.getByRole('tooltip')).toHaveText(expectedNodeTitle ?? '')
   await expect(page.locator('.g-pin-overlay')).toHaveCount(1)
   await transientPinNode.focus()
   await page.mouse.move(0, 0)
@@ -681,6 +684,8 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const beforeZoom = await viewport.getAttribute('transform')
   await page.getByTitle('Zoom in').click()
   await expect.poll(() => viewport.getAttribute('transform')).not.toBe(beforeZoom)
+  for (let step = 0; step < 6; step += 1) await svg.press('Shift+ArrowLeft')
+  await page.waitForTimeout(200)
   const userTransform = await viewport.getAttribute('transform')
 
   const initialWidth = (await stage.boundingBox())?.width ?? 0
@@ -693,6 +698,33 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       return Math.abs((stageBox?.width ?? 0) - (svgBox?.width ?? 0))
     })
     .toBeLessThan(1)
+  await page.setViewportSize({ width: 1600, height: 680 })
+  await expect.poll(async () => (await stage.boundingBox())?.width ?? 0).toBeGreaterThan(initialWidth + 100)
+  await expect.poll(() => viewport.getAttribute('transform')).toBe(userTransform)
+  await expect.poll(() => page.evaluate(() => {
+    const stage = document.querySelector('.graph-stage')
+    const viewport = document.querySelector('.g-viewport')
+    if (!(stage instanceof HTMLElement) || !(viewport instanceof SVGGElement)) return null
+    const stageRect = stage.getBoundingClientRect()
+    const expected = viewport.dataset.detailLevel === 'overview'
+      ? []
+      : [...viewport.querySelectorAll<SVGGElement>('.g-node-body')]
+          .filter((node) => {
+            const rect = node.getBoundingClientRect()
+            return (
+              rect.right >= stageRect.left - 96 &&
+              rect.left <= stageRect.right + 96 &&
+              rect.bottom >= stageRect.top - 96 &&
+              rect.top <= stageRect.bottom + 96
+            )
+          })
+          .map((node) => node.dataset.graphNodeId)
+          .sort()
+    const actual = [...viewport.querySelectorAll<SVGGElement>('[data-node-detail-id]')]
+      .map((node) => node.dataset.nodeDetailId)
+      .sort()
+    return JSON.stringify(actual) === JSON.stringify(expected)
+  })).toBe(true)
 
   await svg.dispatchEvent('wheel', { deltaY: -5000 })
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
@@ -700,23 +732,29 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
   await svg.dispatchEvent('wheel', { deltaY: 300 })
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('overview')
-  const labelNode = page.locator('.g-node-body:has(.g-node-label)').first()
-  const nodeLabel = labelNode.locator('.g-node-label').first()
-  await expect(nodeLabel).toHaveCSS('display', 'none')
+  await expect(page.locator('.g-node-details')).toHaveCount(0)
+  const labelNode = page.locator('.g-node-body.g-symbol-reg, .g-node-body.g-symbol-latch').first()
+  const labelNodeId = await labelNode.getAttribute('data-graph-node-id')
+  expect(labelNodeId).not.toBeNull()
+  const labelDetails = page.locator(
+    `.g-node-details[data-node-detail-id="${labelNodeId}"]`,
+  )
+  const nodeLabel = labelDetails.locator('.g-node-label').first()
   await labelNode.focus()
-  await expect(nodeLabel).not.toHaveCSS('display', 'none')
+  await expect(labelDetails).toHaveClass(/force-full/)
+  await expect(nodeLabel).toBeVisible()
   await svg.focus()
-  await expect(nodeLabel).toHaveCSS('display', 'none')
+  await expect(labelDetails).toHaveCount(0)
 
-  const detailedNode = page.locator('.g-node-body:has(.g-symbol-detail)').first()
-  const symbolDetail = detailedNode.locator('.g-symbol-detail').first()
-  await expect(detailedNode).toHaveCount(1)
+  const detailedNode = labelNode
+  const symbolDetail = labelDetails.locator('.g-symbol-detail').first()
   await detailedNode.dispatchEvent('click')
   await expect(detailedNode).toHaveClass(/selected/)
   await svg.focus()
-  await expect(symbolDetail).not.toHaveCSS('display', 'none')
+  await expect(labelDetails).toHaveClass(/force-full/)
+  await expect(symbolDetail).toBeVisible()
   await svg.dispatchEvent('click')
-  await expect(symbolDetail).toHaveCSS('display', 'none')
+  await expect(labelDetails).toHaveCount(0)
 
   const zoomToScale = async (targetScale: number) => {
     await svg.evaluate((element, target) => {
@@ -740,6 +778,9 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await zoomToScale(0.5)
   expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
+  await expect(page.locator('.g-node-details')).not.toHaveCount(0)
+  await expect(page.locator('.g-node-details .g-reg-pins')).toHaveCount(0)
+  await expect(page.locator('.g-node-details .g-control-labels')).toHaveCount(0)
 
   // Compact likewise remains stable inside the 0.65-0.80 band, then restores
   // full detail only after the richer transition has been idle.
@@ -748,7 +789,9 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await zoomToScale(0.85)
   expect(await viewport.getAttribute('data-detail-level')).toBe('compact')
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
-  await expect(nodeLabel).not.toHaveCSS('display', 'none')
+  await svg.press('0')
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
+  await expect(page.locator('.g-node-details .g-node-label').first()).toBeVisible()
 
   // Leaving the tab cancels the pending restore; returning must reschedule it
   // against the preserved user transform rather than stranding overview LOD.
@@ -760,13 +803,19 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
 
+  await zoomToScale(0.3)
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('overview')
+  const controlNode = page.locator('.g-node-body.g-symbol-reg, .g-node-body.g-symbol-latch').first()
+  await controlNode.focus()
+  await controlNode.press('Enter')
   const controlLabel = page.locator('.g-control-label.clickable').first()
   await expect(controlLabel).toBeVisible()
   const beforeControlNodeCount = await page.locator('.g-node-body').count()
-  await controlLabel.dispatchEvent('pointerdown')
-  await controlLabel.dispatchEvent('click')
+  await controlLabel.click()
   await expect.poll(() => page.locator('.g-node-body').count()).not.toBe(beforeControlNodeCount)
   await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
+  await expect(viewport).toHaveAttribute('data-detail-level', 'overview')
+  await expect(page.locator('.g-node-details')).toHaveCount(0)
   expect(apiRequests).toEqual([])
 })
 
@@ -852,6 +901,9 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   const dimmedNodes = page.locator('.g-node-body[data-relevant="0"]')
   await expect.poll(() => dimmedNodes.count()).toBeGreaterThan(0)
   await expect(dimmedNodes.first()).toHaveCSS('opacity', '0.25')
+  const dimmedNodeDetails = page.locator('.g-node-details[data-relevant="0"]')
+  await expect.poll(() => dimmedNodeDetails.count()).toBeGreaterThan(0)
+  await expect(dimmedNodeDetails.first()).toHaveCSS('opacity', '0.25')
   const dimmedEdges = page.locator('.g-edge[data-relevant="0"]')
   await expect.poll(() => dimmedEdges.count()).toBeGreaterThan(0)
   expect(

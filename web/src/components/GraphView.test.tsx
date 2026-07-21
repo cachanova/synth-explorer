@@ -541,6 +541,66 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('double-click')
     expect(markup).toContain('Esc clears')
   })
+
+  it('keeps overview graphs to accessible node shells while selected nodes retain detail', () => {
+    const graph = {
+      nodes: [1, 2, 3].map((id) => ({
+        id,
+        x: id * 3_000,
+        y: id * 2_000,
+        width: 84,
+        height: 67,
+        node: {
+          id,
+          kind: 'cell' as const,
+          name: `node-${id}`,
+          cell_type: 'FDRE',
+          seq: true,
+          register: true,
+          controls: [{
+            role: 'clock' as const,
+            pin: 'C',
+            net_name: 'clk',
+            driver_id: 10,
+            fanout: 3,
+          }],
+        },
+      })),
+      edges: [],
+      width: 10_000,
+      height: 8_000,
+    }
+    const renderGraph = (selectedId: number | null) => renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={selectedId}
+        interactive
+        onSelect={() => undefined}
+        onControlSelect={() => undefined}
+        active
+        fitNonce={0}
+      />,
+    )
+
+    const overviewMarkup = renderGraph(null)
+    expect(overviewMarkup.match(/class="g-node-body/g)).toHaveLength(3)
+    expect(overviewMarkup.match(/data-node-tooltip="FDRE — node-/g)).toHaveLength(3)
+    expect(overviewMarkup).not.toContain('<title>')
+    expect(overviewMarkup).not.toContain('class="g-node-label g-reg-name"')
+    expect(overviewMarkup).not.toContain('class="g-symbol-detail"')
+    expect(overviewMarkup).not.toContain('class="g-symbol-stack"')
+    expect(overviewMarkup).not.toContain('class="g-reg-pins"')
+    expect(overviewMarkup).not.toContain('class="g-control-labels"')
+
+    const selectedMarkup = renderGraph(2)
+    expect(selectedMarkup.match(/class="g-node-label g-reg-name"/g)).toHaveLength(1)
+    expect(selectedMarkup.match(/class="g-symbol-detail"/g)).toHaveLength(1)
+    expect(selectedMarkup.match(/class="g-reg-pins"/g)).toHaveLength(1)
+    expect(selectedMarkup.match(/class="g-control-labels"/g)).toHaveLength(1)
+  })
 })
 
 function laidOutEdge(from: number, to: number, netName: string) {

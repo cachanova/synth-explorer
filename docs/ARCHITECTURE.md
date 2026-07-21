@@ -109,14 +109,19 @@ path, title, and accessibility-tree symbol for every edge. The edge layer
 instead exposes one concise accessible connection summary; keyboard users
 inspect connectivity through the existing node buttons and fanin/fanout
 actions. Node click, expansion, focus, keyboard, and pointer interactions are
-delegated at the SVG boundary. A small overlay owns
-the four transient pointer/focus listeners and renders pin labels only for the
-unique selected, hovered, or focused nodes, so handler and hook state do not
-grow with graph size. The viewport also owns an imperatively updated detail
-level: unreadable text and decorative SVG detail use CSS `display: none` at low
-scales, with hysteresis, idle restoration, and full detail for selected or
-focused nodes. Zoom frames do not enter React state. The GHDL worker follows
-the same reuse policy while creating a fresh Ada/WebAssembly instance per run.
+delegated at the SVG boundary. Every node keeps one stable, memoized,
+accessible outline shell, while rich labels, pins, controls, and grouped-symbol
+decoration render in a separate overlay only for nodes intersecting the
+viewport plus overscan. Compact overlays omit full-only content instead of
+mounting it hidden. Selected and focused nodes always receive full detail, and
+one delegated node tooltip replaces per-node SVG title children. A second
+small overlay owns the transient pointer/focus listeners and renders pin labels
+only for the unique selected, hovered, or focused nodes, so handler and hook
+state do not grow with graph size. The viewport detail level retains
+hysteresis and idle restoration; pan and zoom frames remain outside React
+state, and visible overlay IDs refresh only after the gesture is idle. The GHDL
+worker follows the same reuse policy while creating a fresh
+Ada/WebAssembly instance per run.
 
 ## Timing
 
