@@ -592,6 +592,236 @@ a:hover {
 .synthesize-button {
   min-height: 28px;
 }
+
+.synth-button-content {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vivado-setup-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, #000 66%, transparent);
+}
+
+.vivado-setup-dialog {
+  width: min(720px, 100%);
+  max-height: min(780px, calc(100vh - 48px));
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--bg-1);
+  box-shadow: 0 24px 80px color-mix(in srgb, #000 48%, transparent);
+}
+
+.vivado-setup-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.vivado-setup-heading h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+}
+
+.vivado-setup-heading p {
+  margin: 0;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.vivado-setup-close {
+  min-width: 32px;
+  padding: 2px 8px;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.vivado-steps {
+  display: grid;
+  gap: 16px;
+  margin: 22px 0;
+  padding-left: 24px;
+}
+
+.vivado-steps li {
+  padding-left: 6px;
+}
+
+.vivado-steps li > strong,
+.vivado-steps li > span {
+  display: block;
+}
+
+.vivado-steps li > span {
+  margin-top: 3px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.vivado-steps details code {
+  display: block;
+}
+
+.vivado-steps details code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 11px;
+  user-select: all;
+}
+
+.vivado-steps details {
+  margin-top: 8px;
+  color: var(--text-dim);
+}
+
+.vivado-steps details code {
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--bg-2);
+}
+
+.vivado-download-panel {
+  display: grid;
+  justify-items: start;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.vivado-download-panel > span,
+.vivado-platform-note,
+.vivado-remote-instructions p {
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.vivado-download-panel code {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.vivado-download-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vivado-download {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  background: var(--bg-2);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.vivado-download.primary {
+  border-color: transparent;
+  color: #fff;
+  background: var(--accent-dim);
+}
+
+.vivado-download:hover {
+  background: color-mix(in srgb, var(--accent-dim) 86%, #000);
+}
+
+.vivado-download:not(.primary):hover {
+  background: var(--bg-3);
+}
+
+.vivado-connect-button {
+  width: 100%;
+  padding-block: 8px;
+}
+
+.vivado-connect-error {
+  margin: 10px 0 0;
+  color: var(--danger, #e66);
+  font-size: 12px;
+}
+
+.vivado-remote-instructions {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.vivado-remote-instructions > summary {
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vivado-remote-step {
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-2);
+}
+
+.vivado-remote-step span,
+.vivado-remote-step code {
+  display: block;
+}
+
+.vivado-remote-step span {
+  margin-bottom: 5px;
+  color: var(--text-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.vivado-remote-step code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 11px;
+  user-select: all;
+}
+
+.vivado-connected-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 22px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-2));
+}
+
+.vivado-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.vivado-connected-card strong,
+.vivado-connected-card span {
+  display: block;
+}
+
+.vivado-connected-card span {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
 .field {
   display: flex;
   flex-direction: column;

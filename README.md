@@ -10,9 +10,12 @@ endpoint, fanin, fanout, or source location.
 
 [Try Synth Explorer in your browser](https://www.synthexplorer.dev/)
 
-Synthesis and analysis run locally in the browser. RTL is not uploaded to an
-application server. Successful synthesis artifacts are cached only in that
-browser profile and can be cleared from the settings menu.
+Yosys synthesis and all analysis run locally in the browser. An optional
+loopback connector can run Vivado installed on the same computer or through an
+SSH tunnel to a licensed remote machine. RTL is never
+uploaded to a Synth Explorer application server. Successful synthesis artifacts
+are cached only in that browser profile and can be cleared from the settings
+menu.
 
 ## Features
 
@@ -27,6 +30,8 @@ browser profile and can be cleared from the settings menu.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and jump from synthesized cells to source.
 - Reuse identical RTL + tool-setting results from a bounded IndexedDB cache.
+- Connect the website to a loopback-only local Vivado connector, select from that
+  installation's real part catalog, and explore the resulting vendor netlist.
 
 > [!IMPORTANT]
 > Synth Explorer reports structural estimates from a synthesized netlist,
@@ -47,7 +52,27 @@ npm run dev
 ```
 
 Open <http://localhost:5173>. No backend process, native Yosys, or Vivado
-installation is required for the application.
+installation is required for the default browser-local flow.
+
+## Optional local Vivado
+
+The website contains the complete setup guide: select **Vivado** from
+the Engine menu. The short version is:
+
+1. Install and license Vivado on the computer that will run synthesis.
+2. On Linux, run `curl -fsSL https://synthexplorer.dev/vivado | sh`; or download
+   the Windows/Linux connector from the
+   [latest release](https://github.com/cachanova/synth-explorer/releases/latest).
+3. If Vivado is not already on `PATH`, run AMD's `settings64.sh` first or pass
+   `VIVADO_BIN=/path/to/Vivado/bin/vivado`.
+4. In a current Chromium-based browser, select **Vivado** and click
+   **Connect local Vivado**. Allow loopback access when the browser asks.
+
+For a remote Vivado host, start the connector on the licensed Linux or Windows
+machine, then run `ssh -N -L 32123:127.0.0.1:32123 user@vivado-host` from the
+laptop. The connector binds only to `127.0.0.1`, accepts only explicit Synth
+Explorer origins, and permits one Vivado run at a time. See
+[`vivado-bridge/`](vivado-bridge/) for CLI and source-build instructions.
 
 ## Repository layout
 
@@ -59,11 +84,12 @@ installation is required for the application.
 | [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
 | [`tools/ghdl-wasm/`](tools/ghdl-wasm/) | Reproducible project-owned GHDL synthesis WebAssembly build |
 | [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
+| [`vivado-bridge/`](vivado-bridge/) | Loopback-only bridge from the static website to a user's local Vivado |
 | [`docs/`](docs/) | Architecture, migration record, and benchmarks |
 
 Production is the static `web/dist/` output. Vercel serves it through its CDN;
-there are no Functions, API routes, databases, persistent volumes, or hosted
-EDA tools.
+there are no Functions, hosted API routes, databases, persistent volumes, or
+hosted EDA tools.
 
 ## Development checks
 

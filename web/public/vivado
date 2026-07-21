@@ -1,0 +1,56 @@
+#!/bin/sh
+set -eu
+
+asset_name="synth-explorer-vivado-bridge-linux-x86_64"
+release_base="https://github.com/cachanova/synth-explorer/releases/latest/download"
+
+need() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "Synth Explorer Vivado connector needs '$1' on PATH." >&2
+    exit 1
+  fi
+}
+
+need curl
+need install
+need mktemp
+need sha256sum
+
+if [ "${XDG_CACHE_HOME:-}" != "" ]; then
+  cache_root=$XDG_CACHE_HOME
+elif [ "${HOME:-}" != "" ]; then
+  cache_root=$HOME/.cache
+else
+  cache_root=${TMPDIR:-/tmp}
+fi
+
+cache_dir="$cache_root/synth-explorer"
+bridge="$cache_dir/$asset_name"
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/synth-explorer-vivado.XXXXXX")
+
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT HUP INT TERM
+
+mkdir -p "$cache_dir"
+curl -fsSL "$release_base/$asset_name" -o "$tmp_dir/$asset_name"
+curl -fsSL "$release_base/$asset_name.sha256" -o "$tmp_dir/$asset_name.sha256"
+(cd "$tmp_dir" && sha256sum -c "$asset_name.sha256")
+install -m 700 "$tmp_dir/$asset_name" "$bridge"
+
+if [ "${VIVADO_BIN:-}" != "" ]; then
+  vivado=$VIVADO_BIN
+elif command -v vivado >/dev/null 2>&1; then
+  vivado=$(command -v vivado)
+elif [ "${XILINX_VIVADO:-}" != "" ] && [ -x "$XILINX_VIVADO/bin/vivado" ]; then
+  vivado="$XILINX_VIVADO/bin/vivado"
+else
+  echo "Vivado was not found." >&2
+  echo "Run AMD's settings64.sh first, or pass the exact executable:" >&2
+  echo "  curl -fsSL https://synthexplorer.dev/vivado | env VIVADO_BIN=/path/to/Vivado/bin/vivado sh" >&2
+  exit 1
+fi
+
+echo "Starting Synth Explorer Vivado connector with: $vivado"
+exec "$bridge" --vivado "$vivado" "$@"

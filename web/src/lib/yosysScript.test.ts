@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Mode, SynthesizeRequest } from '../types'
 import {
+  buildVivadoNormalizeScript,
   buildYosysScript,
   defaultDelayProfile,
   validateSynthesisRequest,
@@ -117,5 +118,41 @@ describe('browser Yosys script', () => {
       'ultrascale_plus',
     )
     expect(defaultDelayProfile(validateSynthesisRequest(request('gates')))).toBe('generic')
+  })
+
+  it('validates local Vivado identity and builds one fixed normalizer script', () => {
+    const input = validateSynthesisRequest({
+      ...request('xilinx', '-retiming'),
+      tool: 'vivado',
+      target: 'xc7a35tcpg236-1',
+      vivado_family: 'artix7',
+      vivado_speed: '-1',
+      vivado_version: 'Vivado v2026.1; bridge 0.1.0',
+    })
+    expect(input.tool).toBe('vivado')
+    expect(defaultDelayProfile(input)).toBe('series7')
+    expect(buildVivadoNormalizeScript('top')).toBe(
+      'read_verilog -lib /share/xilinx/cells_sim.v\n' +
+        'read_verilog -lib /share/xilinx/cells_xtra.v\n' +
+        'read_verilog vivado-netlist.v\n' +
+        'hierarchy -check -top top\n' +
+        'flatten\nselect -clear\nselect top\n' +
+        'write_json -selected netlist.json\n',
+    )
+    expect(() => buildVivadoNormalizeScript('top; exec')).toThrow('invalid top')
+  })
+
+  it('rejects incomplete or overriding local Vivado requests', () => {
+    expect(() => validateSynthesisRequest({ ...request('xilinx'), tool: 'vivado' })).toThrow(
+      'installed target',
+    )
+    expect(() => validateSynthesisRequest({
+      ...request('xilinx', '-part other'),
+      tool: 'vivado',
+      target: 'xc7a35tcpg236-1',
+      vivado_family: 'artix7',
+      vivado_speed: '-1',
+      vivado_version: 'Vivado v2026.1',
+    })).toThrow('dedicated fields')
   })
 })

@@ -9,14 +9,24 @@ import {
   WASI,
 } from '@bjorn3/browser_wasi_shim'
 import type { MemoryHandling, ValidatedSynthesis } from '../lib/yosysScript'
-import { buildYosysScript } from '../lib/yosysScript'
+import { buildVivadoNormalizeScript, buildYosysScript } from '../lib/yosysScript'
 import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 import { unpackTar } from '../lib/tar'
 
-interface Request {
+interface SynthesisRequest {
+  kind?: 'synthesis'
   input: ValidatedSynthesis
   memory: MemoryHandling
 }
+
+interface VivadoNormalizeRequest {
+  kind: 'vivado-normalize'
+  netlist: string
+  sourceNetlistJson: string
+  top: string
+}
+
+type Request = SynthesisRequest | VivadoNormalizeRequest
 
 export interface YosysWorkerResult {
   netlistJson: string
@@ -82,12 +92,24 @@ void loadShare().catch(() => {})
 
 async function run(request: Request): Promise<YosysWorkerResult> {
   const [module, share] = await Promise.all([loadModule(), loadShare()])
+  const vivado = request.kind === 'vivado-normalize'
   const root = new Map<string, Directory | File>([
     ['share', share],
     ['tmp', new Directory([['yosys-abc-000000', new Directory([])]])],
-    ['script.ys', textFile(buildYosysScript(request.input, request.memory))],
+    [
+      'script.ys',
+      textFile(
+        vivado
+          ? buildVivadoNormalizeScript(request.top)
+          : buildYosysScript(request.input, request.memory),
+      ),
+    ],
   ])
-  for (const source of request.input.files) root.set(source.name, textFile(source.content))
+  if (vivado) {
+    root.set('vivado-netlist.v', textFile(request.netlist))
+  } else {
+    for (const source of request.input.files) root.set(source.name, textFile(source.content))
+  }
 
   const stdout: string[] = []
   const stderr: string[] = []
@@ -114,7 +136,9 @@ async function run(request: Request): Promise<YosysWorkerResult> {
   const log = readText(preopen, 'log.txt') ?? [...stdout, ...stderr].join('\n')
   if (exitCode !== 0) throw new YosysFailure('yosys failed', log)
   const netlistJson = readText(preopen, 'netlist.json')
-  const sourceNetlistJson = readText(preopen, 'source-netlist.json')
+  const sourceNetlistJson = vivado
+    ? request.sourceNetlistJson
+    : readText(preopen, 'source-netlist.json')
   if (!netlistJson || !sourceNetlistJson) {
     throw new YosysFailure('yosys did not produce both netlists', log)
   }

@@ -1,12 +1,14 @@
 # Architecture
 
 Synth Explorer is a static, browser-local RTL exploration application. Vercel
-delivers files from `web/dist/`; after those files are loaded, synthesis,
-analysis, caching, and graph interaction require no server requests.
+delivers files from `web/dist/`. The default Yosys synthesis path, analysis,
+caching, and graph interaction require no application server. An explicitly
+paired optional path can call Vivado through a loopback-only service running on
+the user's computer.
 
 ## Runtime flow
 
-1. React waits for 250 ms without an input change, then validates the files,
+1. For Yosys, React waits for 250 ms without an input change, then validates the files,
    top, synthesis mode, and visible mode-specific flags. A newer edit cancels
    obsolete work instead of allowing a stale result to land.
 2. A SHA-256 key covers the cache schema, pinned frontend/tool versions,
@@ -28,14 +30,26 @@ analysis, caching, and graph interaction require no server requests.
    messages. Results are bounded before crossing the worker boundary.
 8. elkjs lays out bounded subgraphs in its own worker.
 
-There is no HTTP API, application server, remote design identifier, account,
-or shared design store. The twelve-character design ID shown in the UI is only
-a display prefix of the full local cache digest.
+Local Vivado is a manual branch after validation. The user starts
+`synth-explorer-vivado-bridge`, pairs the current tab with its ephemeral code,
+and selects a family plus speed grade from the installation's authoritative
+part catalog. The browser sends the RTL, explicit top, concrete resolved part,
+and validated `synth_design` arguments to `http://127.0.0.1:32123`. The bridge
+invokes Vivado directly with argv and a generated Tcl file, then returns
+structural Verilog. The existing Yosys worker normalizes that netlist and the
+existing analysis worker owns every downstream query. No hosted service sees
+the RTL or result.
+
+There is no hosted HTTP API, application server, remote design identifier,
+account, or shared design store. The optional HTTP protocol exists only on the
+user's loopback interface. The twelve-character design ID shown in the UI is
+only a display prefix of the full local cache digest.
 
 ## Canonical implementations
 
-- `web/src/lib/yosysScript.ts` is the only synthesis-script builder. Both the
-  browser worker and local calibration CLI use it.
+- `web/src/lib/yosysScript.ts` is the only Yosys script builder, including the
+  Vivado-netlist normalization script.
+- `vivado-bridge/` is the only runtime Vivado executor and Tcl builder.
 - `web/src/lib/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
 - `analysis-core/` is the only netlist/graph and source-selection analysis
   implementation.
@@ -45,7 +59,8 @@ a display prefix of the full local cache digest.
   that same synthesis path after exact key and contract validation.
 
 No remote fallback, shadow Yosys runner, disabled backend, or hosted Vivado path
-exists in production.
+exists in production. Local Vivado is selected explicitly and never replaces a
+failed browser Yosys run.
 
 ## Cache and resource bounds
 
@@ -66,7 +81,9 @@ The editor workspace is a single versioned record containing only editable
 synthesis inputs. Derived analysis state is not restored across page loads.
 
 GHDL has a 30-second wall timeout. Yosys has a 60-second wall timeout and
-128 MiB combined netlist-output limit.
+128 MiB combined netlist-output limit. The Vivado bridge accepts at most 4 MiB
+of source, returns at most 64 MiB of structural Verilog, caps logs at 64 KiB,
+allows one run at a time, and has a five-minute wall timeout.
 The application runs only one requested synthesis at a time. A completed
 worker is reused so its streamed, compiled Yosys module and unpacked resources
 stay warm; cancellation or a worker failure terminates it and immediately
@@ -98,7 +115,8 @@ the same reuse policy while creating a fresh Ada/WebAssembly instance per run.
 Timing values are structural, pre-place-and-route estimates. They are not
 timing closure and contain no placed or routed interconnect. Coefficients may be
 recalibrated locally against external tools, including a separately licensed
-Vivado installation, but vendor tools and reports are not runtime dependencies.
+Vivado installation. Vivado is a runtime dependency only when the user
+explicitly selects the optional local engine.
 
 ## Deployment
 

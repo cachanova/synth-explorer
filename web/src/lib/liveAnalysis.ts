@@ -1,5 +1,5 @@
-import type { DesignFile, Mode, SynthesizeRequest } from '../types'
-import { buildSynthesizeRequest } from './synthesize'
+import type { DesignFile, Mode, SynthesizeRequest, SynthTool } from '../types'
+import { buildSynthesizeRequest, type VivadoRequestTarget } from './synthesize'
 
 export interface SourceSelection {
   file: string
@@ -51,8 +51,10 @@ export function synthesisInput(
   mode: Mode,
   extraArgs: string,
   revision = 0,
+  tool: SynthTool = 'yosys',
+  vivado?: VivadoRequestTarget,
 ): SynthesisInput {
-  const request = buildSynthesizeRequest(files, top, mode, extraArgs)
+  const request = buildSynthesizeRequest(files, top, mode, extraArgs, tool, vivado)
   return { request, key: JSON.stringify(request), revision }
 }
 

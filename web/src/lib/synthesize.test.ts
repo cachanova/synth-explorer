@@ -46,4 +46,23 @@ describe('buildSynthesizeRequest', () => {
       extra_args: '-family xcup -retime',
     })
   })
+
+  it('includes the exact local Vivado producer and resolved part', () => {
+    expect(buildSynthesizeRequest(files, 'top', 'gates', '-retiming', 'vivado', {
+      name: 'xc7a35tcpg236-1',
+      family: 'artix7',
+      speed: '-1',
+      version: 'Vivado v2026.1; bridge 0.1.0',
+    })).toEqual({
+      files,
+      top: 'top',
+      tool: 'vivado',
+      mode: 'xilinx',
+      target: 'xc7a35tcpg236-1',
+      vivado_family: 'artix7',
+      vivado_speed: '-1',
+      vivado_version: 'Vivado v2026.1; bridge 0.1.0',
+      extra_args: '-retiming',
+    })
+  })
 })

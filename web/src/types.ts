@@ -80,6 +80,8 @@ export type Mode =
   | 'ecp5'
   | 'xilinx'
 
+export type SynthTool = 'yosys' | 'vivado'
+
 // synth_xilinx -family target; selects carry/BRAM/DSP primitives.
 export type XilinxFamily = 'xc7' | 'xcup' | 'xcu' | 'xc6s' | 'xc6v'
 
@@ -91,8 +93,26 @@ export interface DesignFile {
 export interface SynthesizeRequest {
   files: DesignFile[]
   top?: string // omitted -> yosys -auto-top
+  tool?: SynthTool // omitted -> browser-local Yosys
   mode: Mode
+  target?: string // concrete installed part, required for local Vivado
+  vivado_family?: string
+  vivado_speed?: string
+  vivado_version?: string // cache identity from the local connector preflight
   extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
+}
+
+export interface VivadoPart {
+  name: string
+  family: string
+  speed: string
+}
+
+export interface VivadoBridgeStatus {
+  protocol_version: number
+  bridge_version: string
+  vivado_version: string
+  parts: VivadoPart[]
 }
 
 export interface Stats {
@@ -191,9 +211,10 @@ export interface TimingResponse {
 export interface SynthesizeResponse {
   design_id: string // content hash; identical input returns the same id
   top: string // resolved top module
-  tool: 'yosys'
+  tool: SynthTool
   mode: string
   delay_profile: DelayProfile // resolved per-design timing family
+  target?: string
   stats: Stats
   warnings: string[]
   log: string // yosys log (tail, capped)

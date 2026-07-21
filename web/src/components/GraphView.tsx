@@ -323,7 +323,7 @@ function NodeContents({
   name: string | null
 }) {
   const label = nodeLabel(node)
-  const maxChars = Math.max(4, Math.floor(width / 6.2))
+  const maxChars = Math.max(4, Math.floor((width - 24) / 7.2))
   const primaryHeight = kind === 'reg' ? Math.min(height, 58) : height
 
   const badgeText = groupBadgeText(node)
