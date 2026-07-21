@@ -60,7 +60,7 @@ describe('precomputed synthesis identity', () => {
       target: 'xc7a35tcpg236-1',
       vivadoFamily: 'artix7',
       vivadoSpeed: '-1',
-      vivadoVersion: 'Vivado v2026.1; bridge 0.1.0',
+      vivadoVersion: 'Vivado v2026.1; bridge 0.2.0',
     }
     expect(synthesisProducer(vivadoInput)).toBe(
       `vivado-${vivadoInput.vivadoVersion}+normalizer-${YOSYS_VERSION}`,
@@ -78,6 +78,74 @@ describe('precomputed synthesis identity', () => {
         ...input,
         files: [{ name: 'design.sv', content: 'module changed; endmodule' }],
       }),
+    ).toBe(false)
+  })
+
+  it('validates cached Vivado timing shape', async () => {
+    const vivadoInput: ValidatedSynthesis = {
+      ...input,
+      tool: 'vivado',
+      mode: 'xilinx',
+      target: 'xc7a35tcpg236-1',
+      vivadoFamily: 'artix7',
+      vivadoSpeed: '-1',
+      vivadoVersion: 'Vivado v2026.1; bridge 0.2.0',
+    }
+    const key = await synthesisKey(vivadoInput)
+    const withTiming: SynthesisArtifact = {
+      ...artifact(key),
+      input: vivadoInput,
+      producer: synthesisProducer(vivadoInput),
+      output: {
+        ...artifact(key).output,
+        vivadoTiming: {
+          data_path_delay_ns: 4.016,
+          logic_delay_ns: 3.216,
+          net_delay_ns: 0.8,
+          logic_levels: 2,
+          slack_ns: -0.125,
+          startpoint: 'q_reg/C',
+          endpoint: 'q',
+          path_group: 'clk',
+          corner: 'Slow',
+          delay_type: 'max',
+          report: 'Timing Report',
+        },
+      },
+    }
+
+    expect(isValidSynthesisArtifact(withTiming, key, vivadoInput)).toBe(true)
+    expect(
+      isValidSynthesisArtifact(
+        {
+          ...withTiming,
+          output: {
+            ...withTiming.output,
+            vivadoTiming: {
+              ...withTiming.output.vivadoTiming,
+              corner: 7,
+            },
+          },
+        },
+        key,
+        vivadoInput,
+      ),
+    ).toBe(false)
+    expect(
+      isValidSynthesisArtifact(
+        {
+          ...withTiming,
+          output: {
+            ...withTiming.output,
+            vivadoTiming: {
+              ...withTiming.output.vivadoTiming,
+              data_path_delay_ns: -1,
+            },
+          },
+        },
+        key,
+        vivadoInput,
+      ),
     ).toBe(false)
   })
 })

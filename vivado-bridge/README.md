@@ -3,6 +3,8 @@
 This small loopback service lets `https://synthexplorer.dev` run synthesis in a
 Vivado installation on the same computer as the browser. It is optional; Yosys
 and analysis remain browser-local without it.
+The connector also returns Vivado's bounded post-synthesis
+`report_timing -max_paths 1 -delay_type max` output for the synthesized design.
 
 ## Run a release binary
 
@@ -41,7 +43,7 @@ Windows PowerShell, opened from the Vivado command prompt so `vivado.bat` is on
 .\synth-explorer-vivado-bridge-windows-x86_64.exe --vivado vivado.bat
 ```
 
-In Synth Explorer, choose **Vivado** from **Engine** in a current
+In Synth Explorer, choose **Vivado** from **Tool** in a current
 Chromium-based browser, then click **Connect local Vivado**. Keep the terminal
 open while using Vivado.
 
@@ -89,7 +91,8 @@ cargo build --release --locked -p synth-explorer-vivado-bridge \
 - Source filenames, top, target, and `synth_design` tokens are validated before
   a Tcl script is generated; inputs are never interpolated into a shell command.
 - Source input is capped at 4 MiB, the returned structural netlist at 64 MiB,
-  logs at 64 KiB, runtime at five minutes, and concurrency at one synthesis.
+  timing reports at 256 KiB, logs at 64 KiB, runtime at five minutes, and
+  concurrency at one synthesis.
 - The concrete target must exist in the part catalog returned by the local
   Vivado installation.
 

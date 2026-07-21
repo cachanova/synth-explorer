@@ -47,19 +47,21 @@ export function Paths() {
   const id = store.design?.design_id ?? null
   const designMode = store.design?.mode
   const resolvedProfile = store.design?.delay_profile
+  const synthTool = store.design?.tool
   const [sort, setSort] = useState<PathSortState | null>(null)
   const activeSort = sort ?? DEFAULT_PATH_SORT
   // Cost per-path delays from the same per-design resolved view as the timing
   // panel. The tab remounts on switch, so persisted settings are read here.
   const timing = useMemo(() => {
     const settings = loadTimingSettings()
+    if (synthTool === 'vivado') return { request: {}, hidden: true }
     if (!resolvedProfile) return null
     const view = resolveTimingView(settings, designMode, resolvedProfile)
     return {
       request: timingRequestForView(settings, view),
       hidden: !view.showTiming,
     }
-  }, [designMode, resolvedProfile])
+  }, [designMode, resolvedProfile, synthTool])
   const timingHidden = timing?.hidden ?? true
   const { data, loading, error } = useDesignData(
     id,

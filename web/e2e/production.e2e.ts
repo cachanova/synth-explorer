@@ -221,7 +221,7 @@ test('sorts every reported path without changing the result set', async ({ page 
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('round_robin_arbiter')
-    await page.getByLabel('Mode').selectOption('xilinx')
+    await page.getByLabel('Platform').selectOption('xilinx')
   })
   await page.getByRole('tab', { name: 'Paths', exact: true }).click()
 
@@ -327,7 +327,7 @@ test('cancels obsolete Yosys work and commits only the newest edit', async ({ pa
 
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('handshake_controller')
-    await page.getByLabel('Mode').selectOption('xilinx')
+    await page.getByLabel('Platform').selectOption('xilinx')
     await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
     const graphLoader = page.locator('.graph-loading-indicator')
     await expect(graphLoader).toHaveCount(1)
@@ -375,7 +375,7 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
   const flags = page.getByLabel('Synthesis flags')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('reg_mux')
-    await page.getByLabel('Mode').selectOption('xilinx')
+    await page.getByLabel('Platform').selectOption('xilinx')
   })
   await expect(flags).toHaveValue('-narrowcarry 8 -nowidelut -noiopad')
 

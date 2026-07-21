@@ -38,11 +38,13 @@ import type {
 export class ApiRequestError extends Error {
   status: number
   log?: string
-  constructor(message: string, status: number, log?: string) {
+  kind?: SynthesisFailureKind
+  constructor(message: string, status: number, log?: string, kind?: SynthesisFailureKind) {
     super(message)
     this.name = 'ApiRequestError'
     this.status = status
     this.log = log
+    this.kind = kind
   }
 }
 
@@ -56,7 +58,12 @@ export async function synthesize(
     if (error instanceof DOMException && error.name === 'AbortError') throw error
     if (error instanceof ApiRequestError) throw error
     if (error instanceof LocalSynthesisError) {
-      throw new ApiRequestError(error.message, statusForFailureKind(error.kind), error.log)
+      throw new ApiRequestError(
+        error.message,
+        statusForFailureKind(error.kind),
+        error.log,
+        error.kind,
+      )
     }
     if (error instanceof EngineLoadError) {
       throw new ApiRequestError(error.message, statusForFailureKind('load'))
@@ -68,6 +75,7 @@ export async function synthesize(
 function statusForFailureKind(kind: SynthesisFailureKind | undefined): number {
   if (kind === 'load') return 503
   if (kind === 'timeout') return 504
+  if (kind === 'bridge') return 503
   return 400
 }
 
@@ -168,7 +176,7 @@ export function getExamples(): Promise<ExamplesResponse> {
   return Promise.resolve(bundledExamples())
 }
 
-export const MODE_LABELS: { value: Mode; label: string }[] = [
+export const PLATFORM_LABELS: { value: Mode; label: string }[] = [
   { value: 'rtl', label: 'RTL (word-level)' },
   { value: 'gates', label: 'Generic gates' },
   { value: 'lut4', label: 'Generic LUT4 metric' },

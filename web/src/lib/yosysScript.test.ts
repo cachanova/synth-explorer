@@ -127,7 +127,7 @@ describe('browser Yosys script', () => {
       target: 'xc7a35tcpg236-1',
       vivado_family: 'artix7',
       vivado_speed: '-1',
-      vivado_version: 'Vivado v2026.1; bridge 0.1.0',
+      vivado_version: 'Vivado v2026.1; bridge 0.2.0',
     })
     expect(input.tool).toBe('vivado')
     expect(defaultDelayProfile(input)).toBe('series7')

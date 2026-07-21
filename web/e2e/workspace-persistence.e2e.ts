@@ -32,7 +32,7 @@ test('restores source files and synthesis inputs across reloads', async ({ page 
   await page.getByTitle('Add file').click()
   await replaceEditorText(page, 'module helper; endmodule')
   await page.getByLabel('Top module').fill('restored')
-  await page.getByLabel('Mode').selectOption('lut4')
+  await page.getByLabel('Platform').selectOption('lut4')
   await page.getByLabel('Synthesis flags').fill('-noabc')
 
   await page.waitForTimeout(350)
@@ -43,7 +43,7 @@ test('restores source files and synthesis inputs across reloads', async ({ page 
     'true',
   )
   await expect(page.getByLabel('Top module')).toHaveValue('restored')
-  await expect(page.getByLabel('Mode')).toHaveValue('lut4')
+  await expect(page.getByLabel('Platform')).toHaveValue('lut4')
   await expect(page.getByLabel('Synthesis flags')).toHaveValue('-noabc')
   expect(await editorText(page)).toContain('module helper; endmodule')
 
@@ -55,7 +55,7 @@ test('warns before reset, remembers opt-out, and exposes the preference in setti
   await replaceEditorText(page, 'module disposable; endmodule')
   await page.getByTitle('Add file').click()
   await page.getByLabel('Top module').fill('disposable')
-  await page.getByLabel('Mode').selectOption('lut4')
+  await page.getByLabel('Platform').selectOption('lut4')
   await page.getByLabel('Synthesis flags').fill('-noabc')
 
   await page.getByRole('button', { name: 'Reset editor' }).click()
@@ -75,7 +75,7 @@ test('warns before reset, remembers opt-out, and exposes the preference in setti
   await expect(page.getByRole('tab', { name: /^file1\.sv/ })).toHaveCount(0)
   expect(await editorText(page)).toContain('module top')
   await expect(page.getByLabel('Top module')).toHaveValue('')
-  await expect(page.getByLabel('Mode')).toHaveValue('lut4')
+  await expect(page.getByLabel('Platform')).toHaveValue('lut4')
   await expect(page.getByLabel('Synthesis flags')).toHaveValue('-noabc')
 
   await page.getByRole('button', { name: 'Reset editor' }).click()

@@ -34,10 +34,10 @@ menu.
   installation's real part catalog, and explore the resulting vendor netlist.
 
 > [!IMPORTANT]
-> Synth Explorer reports structural estimates from a synthesized netlist,
-> including unit-delay depth and a rough pre-place-and-route delay estimate. It
-> does not perform timing closure. Use nextpnr, OpenSTA, Vivado, or Quartus for
-> routed timing analysis.
+> Yosys/browser flows report structural estimates from a synthesized netlist.
+> The optional Vivado flow uses Vivado's own post-synthesis `report_timing`
+> output for the timing card. Neither path performs place-and-route timing
+> closure inside Synth Explorer.
 
 ## Quick start
 
@@ -57,7 +57,7 @@ installation is required for the default browser-local flow.
 ## Optional local Vivado
 
 The website contains the complete setup guide: select **Vivado** from
-the Engine menu. The short version is:
+the Tool menu. The short version is:
 
 1. Install and license Vivado on the computer that will run synthesis.
 2. On Linux, run `curl -fsSL https://synthexplorer.dev/vivado | sh`; or download

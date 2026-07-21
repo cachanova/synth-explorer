@@ -214,6 +214,7 @@ export interface Store {
     message: string
     log?: string
     status?: number
+    kind?: 'load' | 'timeout' | 'bridge'
     diagnostic?: SynthesisDiagnostic
   } | null
 
@@ -730,6 +731,16 @@ export function StoreProvider({
     [markInputChanged],
   )
 
+  const clearVivadoConnection = useCallback((options: { markChanged?: boolean } = {}) => {
+    vivadoStatusRef.current = null
+    setVivadoStatus(null)
+    if (synthToolRef.current === 'vivado') {
+      synthToolRef.current = 'yosys'
+      setSynthToolState('yosys')
+      if (options.markChanged !== false) markInputChanged()
+    }
+  }, [markInputChanged])
+
   const connectVivado = useCallback(async () => {
     try {
       const status = await connectVivadoBridge()
@@ -755,14 +766,8 @@ export function StoreProvider({
   }, [])
 
   const disconnectVivado = useCallback(() => {
-    vivadoStatusRef.current = null
-    setVivadoStatus(null)
-    if (synthToolRef.current === 'vivado') {
-      synthToolRef.current = 'yosys'
-      setSynthToolState('yosys')
-      markInputChanged()
-    }
-  }, [markInputChanged])
+    clearVivadoConnection()
+  }, [clearVivadoConnection])
 
   const setMode = useCallback(
     (value: Mode) => {
@@ -886,11 +891,15 @@ export function StoreProvider({
               message: err.message,
               log: err.log,
               status: err.status,
+              kind: err.kind,
               diagnostic: firstYosysSourceError(
                 err.log,
                 running.request.files.map((file) => file.name),
               ),
             })
+            if (running.request.tool === 'vivado' && err.kind === 'bridge') {
+              clearVivadoConnection({ markChanged: false })
+            }
             // Preserve the last valid design and graph. Their input key remains
             // unchanged, so source cross-probing stays disabled while stale.
           }
@@ -914,7 +923,7 @@ export function StoreProvider({
       synthesisRunningRef.current = false
       setSynthesizing(false)
     }
-  }, [materializeCurrentInput, nextNonce])
+  }, [clearVivadoConnection, materializeCurrentInput, nextNonce])
 
   useEffect(() => {
     if (

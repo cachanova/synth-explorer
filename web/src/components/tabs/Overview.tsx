@@ -1,6 +1,7 @@
 import { displayCellType } from '../../lib/prettyType'
 import { formatSynthesisDelay } from '../../lib/synthesisSettings'
-import type { CellCategoryCounts } from '../../types'
+import { fmaxMhz } from '../../lib/timing'
+import type { CellCategoryCounts, VivadoTimingReport } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { TimingModel } from '../TimingModel'
 import { Card } from '../Card'
@@ -26,7 +27,7 @@ function displayMode(mode: string): string {
   }
 }
 
-export function ModeName({ mode }: { mode: string }) {
+export function PlatformName({ mode }: { mode: string }) {
   return displayMode(mode)
 }
 
@@ -75,9 +76,9 @@ export function Overview() {
 
       <div className="cards">
         <Card k="Top" v={design.top} small />
-        <Card k="Synth tool" v={design.tool === 'vivado' ? 'Vivado' : 'Yosys'} small />
+        <Card k="Tool" v={design.tool === 'vivado' ? 'Vivado' : 'Yosys'} small />
         {design.target && <Card k="Target" v={design.target} small />}
-        <Card k="Mode" v={displayMode(design.mode)} small />
+        <Card k="Platform" v={displayMode(design.mode)} small />
         <Card k="Cells" v={stats.num_cells} />
         <Card k="Reg bits" v={stats.num_register_bits} />
         <Card k="Reg groups" v={stats.num_register_groups} />
@@ -100,10 +101,12 @@ export function Overview() {
         <Card k="Input → output" v={depthValue(stats.depths.input_to_output)} />
       </div>
 
-      {/* Every non-RTL design gets the timing controls. Generic gates/LUT modes
-          need the profile selector even while auto deliberately withholds all
-          timing figures. */}
-      {design.mode !== 'rtl' && (
+      {design.tool === 'vivado' ? (
+        <VivadoTiming timing={design.vivado_timing} />
+      ) : design.mode !== 'rtl' && (
+        /* Every non-RTL Yosys design gets the timing controls. Generic
+           gates/LUT modes need the profile selector even while auto deliberately
+           withholds all timing figures. */
         <TimingModel
           key={design.design_id}
           designId={design.design_id}
@@ -161,12 +164,73 @@ export function Overview() {
         </>
       )}
 
-      <div className="section-title">Yosys diagnostics</div>
+      <div className="section-title">
+        {design.tool === 'vivado' ? 'Synthesis diagnostics' : 'Yosys diagnostics'}
+      </div>
       <details className="collapsible">
         <summary>Show synthesis log ({design.log.split('\n').length} lines)</summary>
         <pre>{design.log}</pre>
       </details>
     </div>
+  )
+}
+
+function VivadoTiming({ timing }: { timing?: VivadoTimingReport }) {
+  return (
+    <>
+      <div className="section-title">Vivado timing report</div>
+      {timing ? (
+        <>
+          <div className="cards">
+            <Card
+              k="Data path delay"
+              v={`${timing.data_path_delay_ns.toFixed(2)} ns`}
+              accent
+            />
+            <Card
+              k="Path Fmax"
+              v={timing.data_path_delay_ns > 0
+                ? `${fmaxMhz(timing.data_path_delay_ns).toFixed(0)} MHz`
+                : '—'}
+            />
+            <Card k="Logic delay" v={timing.logic_delay_ns != null ? `${timing.logic_delay_ns.toFixed(2)} ns` : '—'} />
+            <Card k="Route delay" v={timing.net_delay_ns != null ? `${timing.net_delay_ns.toFixed(2)} ns` : '—'} />
+            <Card k="Slack" v={timing.slack_ns != null ? `${timing.slack_ns.toFixed(2)} ns` : '—'} />
+            <Card k="Requirement" v={timing.requirement_ns != null ? `${timing.requirement_ns.toFixed(2)} ns` : '—'} />
+            <Card k="Logic levels" v={timing.logic_levels ?? '—'} />
+          </div>
+          <div className="caveat" style={{ marginTop: 8 }}>
+            From Vivado <code>report_timing -max_paths 1 -delay_type max</code> after synthesis. This is still pre-place-and-route unless the local flow is extended with implementation constraints.
+          </div>
+          <dl className="timing-path-summary">
+            <div>
+              <dt>Startpoint</dt>
+              <dd>{timing.startpoint}</dd>
+            </div>
+            <div>
+              <dt>Endpoint</dt>
+              <dd>{timing.endpoint}</dd>
+            </div>
+            <div>
+              <dt>Path group</dt>
+              <dd>{timing.path_group ?? '—'}</dd>
+            </div>
+            <div>
+              <dt>Corner</dt>
+              <dd>{[timing.corner, timing.delay_type].filter(Boolean).join(' / ') || '—'}</dd>
+            </div>
+          </dl>
+          <details className="collapsible">
+            <summary>Show Vivado timing report ({timing.report.split('\n').length} lines)</summary>
+            <pre>{timing.report}</pre>
+          </details>
+        </>
+      ) : (
+        <div className="empty-state">
+          Vivado did not report a max timing path for this synthesized netlist.
+        </div>
+      )}
+    </>
   )
 }
 

@@ -52,7 +52,7 @@ describe('buildSynthesizeRequest', () => {
       name: 'xc7a35tcpg236-1',
       family: 'artix7',
       speed: '-1',
-      version: 'Vivado v2026.1; bridge 0.1.0',
+      version: 'Vivado v2026.1; bridge 0.2.0',
     })).toEqual({
       files,
       top: 'top',
@@ -61,7 +61,7 @@ describe('buildSynthesizeRequest', () => {
       target: 'xc7a35tcpg236-1',
       vivado_family: 'artix7',
       vivado_speed: '-1',
-      vivado_version: 'Vivado v2026.1; bridge 0.1.0',
+      vivado_version: 'Vivado v2026.1; bridge 0.2.0',
       extra_args: '-retiming',
     })
   })

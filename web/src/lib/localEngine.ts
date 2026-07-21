@@ -132,6 +132,7 @@ async function synthesizeLocallyWithFallback(
           )
           generatedOutput = {
             ...generatedOutput,
+            vivadoTiming: vivado.timing,
             log: joinLogs(
               ghdlLog ? `GHDL:\n${ghdlLog}` : '',
               `Vivado:\n${vivado.log}`,
@@ -141,7 +142,11 @@ async function synthesizeLocallyWithFallback(
           ghdlLog = ''
         } catch (error) {
           if (error instanceof VivadoBridgeError) {
-            throw new LocalSynthesisError(error.message, error.log ?? '')
+            throw new LocalSynthesisError(
+              error.message,
+              error.log ?? '',
+              error.status === 0 ? 'bridge' : undefined,
+            )
           }
           throw error
         }
@@ -217,6 +222,7 @@ async function synthesizeLocallyWithFallback(
     stats: summary.stats,
     warnings: summary.warnings,
     log: output.log,
+    vivado_timing: output.vivadoTiming,
     memories_abstracted: memoriesAbstracted || undefined,
   }
 }
@@ -482,7 +488,7 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
-export type SynthesisFailureKind = 'load' | 'timeout'
+export type SynthesisFailureKind = 'load' | 'timeout' | 'bridge'
 
 export class LocalSynthesisError extends Error {
   readonly log: string

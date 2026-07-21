@@ -5,6 +5,7 @@ import {
   YOSYS_VERSION,
 } from './yosysScript'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
+import type { VivadoTimingReport } from '../types'
 
 const databaseName = 'synth-explorer'
 const storeName = 'syntheses'
@@ -43,6 +44,7 @@ export async function synthesisKey(input: ValidatedSynthesis): Promise<string> {
           vivadoFamily: input.vivadoFamily,
           vivadoSpeed: input.vivadoSpeed,
           vivadoVersion: input.vivadoVersion,
+          vivadoTiming: 1,
         }
       : {}),
     mode: input.mode,
@@ -147,7 +149,8 @@ function estimateBytes(record: SynthesisArtifactInput) {
     (sourceBytes +
       record.output.netlistJson.length +
       record.output.sourceNetlistJson.length +
-      record.output.log.length)
+      record.output.log.length +
+      JSON.stringify(record.output.vivadoTiming ?? '').length)
   )
 }
 
@@ -216,8 +219,54 @@ function isStructurallyValidArtifact(
     candidate.output !== null &&
     typeof candidate.output.netlistJson === 'string' &&
     typeof candidate.output.sourceNetlistJson === 'string' &&
-    typeof candidate.output.log === 'string'
+    typeof candidate.output.log === 'string' &&
+    (
+      candidate.output.vivadoTiming === undefined ||
+      isVivadoTimingReport(candidate.output.vivadoTiming)
+    )
   )
+}
+
+function isVivadoTimingReport(value: unknown): value is VivadoTimingReport {
+  if (typeof value !== 'object' || value === null) return false
+  const candidate = value as Partial<VivadoTimingReport>
+  return (
+    nonNegativeFiniteNumber(candidate.data_path_delay_ns) &&
+    typeof candidate.startpoint === 'string' &&
+    typeof candidate.endpoint === 'string' &&
+    typeof candidate.report === 'string' &&
+    optionalNonNegativeFiniteNumber(candidate.logic_delay_ns) &&
+    optionalNonNegativeFiniteNumber(candidate.net_delay_ns) &&
+    optionalFiniteNumber(candidate.slack_ns) &&
+    optionalNonNegativeFiniteNumber(candidate.requirement_ns) &&
+    (
+      candidate.logic_levels === undefined ||
+      (
+        typeof candidate.logic_levels === 'number' &&
+        Number.isInteger(candidate.logic_levels) &&
+        candidate.logic_levels >= 0
+      )
+    ) &&
+    optionalString(candidate.path_group) &&
+    optionalString(candidate.corner) &&
+    optionalString(candidate.delay_type)
+  )
+}
+
+function optionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || (typeof value === 'number' && Number.isFinite(value))
+}
+
+function nonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+function optionalNonNegativeFiniteNumber(value: unknown): boolean {
+  return value === undefined || nonNegativeFiniteNumber(value)
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
 }
 
 async function deleteRecord(database: IDBDatabase, key: string): Promise<void> {

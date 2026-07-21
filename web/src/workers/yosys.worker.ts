@@ -12,6 +12,7 @@ import type { MemoryHandling, ValidatedSynthesis } from '../lib/yosysScript'
 import { buildVivadoNormalizeScript, buildYosysScript } from '../lib/yosysScript'
 import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 import { unpackTar } from '../lib/tar'
+import type { VivadoTimingReport } from '../types'
 
 interface SynthesisRequest {
   kind?: 'synthesis'
@@ -32,6 +33,7 @@ export interface YosysWorkerResult {
   netlistJson: string
   sourceNetlistJson: string
   log: string
+  vivadoTiming?: VivadoTimingReport
 }
 
 type WorkerResponse =

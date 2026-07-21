@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { TimingPath } from '../../types'
 import { StaleResultsChip } from '../StaleResultsChip'
-import { ModeName } from './Overview'
+import { PlatformName } from './Overview'
 import {
   BitCohort,
   OutputAliasName,
@@ -12,13 +12,13 @@ import {
 
 describe('analysis surface labels', () => {
   it('labels generic LUT modes as metrics rather than target fabrics', () => {
-    expect(renderToStaticMarkup(<ModeName mode="lut6" />)).toBe(
+    expect(renderToStaticMarkup(<PlatformName mode="lut6" />)).toBe(
       'Generic LUT6 metric',
     )
   })
 
   it('labels Xilinx mode without repeating the selected synthesis tool', () => {
-    expect(renderToStaticMarkup(<ModeName mode="xilinx" />)).toBe('Xilinx')
+    expect(renderToStaticMarkup(<PlatformName mode="xilinx" />)).toBe('Xilinx')
   })
 
   it('formats grouped path bits as descending cohorts', () => {

@@ -73,7 +73,7 @@ function withoutFlagValue(t: string[], flag: string): string[] {
 }
 
 /** Remove the given flags from the string. Value-taking flags also drop the
- *  value token that follows them. Used to clear mode-specific flags on a mode
+ *  value token that follows them. Used to clear platform-specific flags on a platform
  *  switch. Unknown/free-form tokens are left untouched. */
 export function stripFlags(
   flags: string,

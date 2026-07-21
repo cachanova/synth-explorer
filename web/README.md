@@ -47,10 +47,10 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
   has paired Verilog/SystemVerilog and VHDL variants selected with the toolbar
   language toggle.
 
-The editor workspace (open source files, active file, top, mode, and flags) is
-saved in IndexedDB and restored after a refresh. The trash button resets that
+The editor workspace (open source files, active file, top, platform, and flags)
+is saved in IndexedDB and restored after a refresh. The trash button resets that
 workspace to the default `design.sv` while preserving the selected synthesis
-mode and flags; its confirmation can be disabled in the warning and re-enabled
+platform and flags; its confirmation can be disabled in the warning and re-enabled
 from Settings. The file-tab toolbar can load one or more local `.v`, `.sv`,
 `.svh`, `.vhd`, or `.vhdl` files, save the active file, or save every open file
 to a chosen directory. When the browser does not expose native file-save
@@ -60,12 +60,12 @@ keep the resulting workspace within 128 files, 16 MiB per imported file, and
 32 MiB total to keep browser memory bounded.
 
 Completed synthesis results use a separate browser cache keyed by the exact
-validated RTL, top, mode, flags, relevant tool versions, and artifact schema. Both stores
+validated RTL, top, platform, flags, relevant tool versions, and artifact schema. Both stores
 are local to one browser profile and are not synced to an account. The synthesis
 cache can be removed independently from the settings menu.
 
 On a cache miss, an exact default/example gate-mode input may use its immutable
-precomputed artifact from the Vercel edge. Any source, top, mode, flags, Yosys
+precomputed artifact from the Vercel edge. Any source, top, platform, flags, Yosys
 version, or schema change produces a different key and runs local Yosys as
 usual. The downloaded result is validated and then enters the same IndexedDB
 cache path as a locally generated result.

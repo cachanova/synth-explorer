@@ -4,16 +4,24 @@ import { SynthIcon } from './BubbleLoader'
 const KIND_BY_STATUS: Record<number, string> = {
   400: 'Synthesis failed',
   422: 'Validation error',
-  503: 'Engine failed to load',
+  503: 'Tool failed to load',
   504: 'Timeout',
 }
+
+const KIND_BY_FAILURE = {
+  bridge: 'Vivado bridge disconnected',
+  load: 'Tool failed to load',
+  timeout: 'Timeout',
+} as const
 
 export function ErrorStrip() {
   const err = useStore((store) => store.error)
   if (!err) return null
   const diagnostic = err.diagnostic
 
-  const kind = (err.status && KIND_BY_STATUS[err.status]) || 'Error'
+  const kind = err.kind
+    ? KIND_BY_FAILURE[err.kind]
+    : (err.status && KIND_BY_STATUS[err.status]) || 'Error'
   const summary = `${kind}${err.status ? ` (${err.status})` : ''}: ${err.message}`
 
   return (
