@@ -1990,10 +1990,22 @@ th.sortable:hover {
   stroke: var(--accent);
   stroke-width: 2.2;
 }
+.g-edge-arrows {
+  fill: var(--border-strong);
+  stroke: none;
+  pointer-events: none;
+}
+.g-edge-arrows.control {
+  opacity: 0.65;
+}
+.g-edge-arrows.hl {
+  fill: var(--accent);
+}
 .graph-stage-wrap[data-focus='off'] [data-relevant='0'] {
   opacity: 0.25;
 }
-.graph-stage-wrap[data-focus='off'] .g-edge.control[data-relevant='0'] {
+.graph-stage-wrap[data-focus='off'] .g-edge.control[data-relevant='0'],
+.graph-stage-wrap[data-focus='off'] .g-edge-arrows.control[data-relevant='0'] {
   opacity: 0.1625;
 }
 .graph-stage-wrap[data-focus='on'] [data-relevant='0'] {
@@ -2010,6 +2022,21 @@ th.sortable:hover {
   stroke: var(--bg-1);
   stroke-width: 2.5px;
   stroke-linejoin: round;
+  pointer-events: none;
+}
+.g-edge-tooltip {
+  position: absolute;
+  z-index: 6;
+  max-width: 260px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-1) 96%, transparent);
+  box-shadow: 0 4px 16px color-mix(in srgb, var(--bg) 55%, transparent);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.35;
   pointer-events: none;
 }
 .g-node-label {

@@ -101,9 +101,15 @@ window and finish before the first design layout request. No design-sized graph
 is laid out speculatively. Large schematics use ELK's robust
 `BRANDES_KOEPF` placement with measured thoroughness 4; the small-graph
 `NETWORK_SIMPLEX` output remains unchanged. In the browser, the memoized edge
-layer stores relevance directly on edge paths and bus labels instead of adding
-one wrapper element per edge. Node click, expansion, focus, keyboard, and
-pointer interactions are delegated at the SVG boundary. A small overlay owns
+layer groups routes into at most 16 SVG paths by control, bus, highlight, and
+relevance style. Arrowheads are equivalent batched triangle geometry, while bus
+labels stay individually positioned. A small spatial index resolves the exact
+connection under the pointer and renders one delegated net tooltip, avoiding a
+path, title, and accessibility-tree symbol for every edge. The edge layer
+instead exposes one concise accessible connection summary; keyboard users
+inspect connectivity through the existing node buttons and fanin/fanout
+actions. Node click, expansion, focus, keyboard, and pointer interactions are
+delegated at the SVG boundary. A small overlay owns
 the four transient pointer/focus listeners and renders pin labels only for the
 unique selected, hovered, or focused nodes, so handler and hook state do not
 grow with graph size. The viewport also owns an imperatively updated detail

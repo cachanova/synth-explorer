@@ -183,7 +183,7 @@ describe('GraphView LUT labels', () => {
     expect(markup).toMatch(
       /<text class="g-bus-label"[^>]*data-relevant="0"[^>]*>2<\/text>/,
     )
-    expect(markup).toContain('<title>context_edge (2 bits): Y→A</title>')
+    expect(markup).not.toContain('<title>context_edge (2 bits): Y→A</title>')
     expect(markup).not.toContain('g-edge-wrap')
     expect(markup).toMatch(/g-node-body[^>]*\bhl\b/)
   })
@@ -204,20 +204,130 @@ describe('GraphView LUT labels', () => {
       <GraphView {...props} extendOverlayToBoundaryNets />,
     )
 
-    const edgeTags = markup.match(/<path class="g-edge[^"]*"[^>]*>/g) ?? []
-    expect(edgeTags).toHaveLength(4)
-    expect(edgeTags[0]).toContain('class="g-edge hl"')
-    expect(edgeTags[1]).toContain('class="g-edge hl"')
-    expect(edgeTags[2]).toContain('class="g-edge"')
-    expect(edgeTags[2]).not.toContain('class="g-edge hl"')
-    expect(edgeTags[3]).toContain('class="g-edge hl"')
+    const edgeTags = markup.match(
+      /<path class="g-edge(?: [^"]*)?"[^>]*data-edge-count="\d+"[^>]*>/g,
+    ) ?? []
+    expect(edgeTags).toHaveLength(2)
+    expect(edgeTags.find((tag) => tag.includes('class="g-edge hl"'))).toContain(
+      'data-edge-count="3"',
+    )
+    expect(edgeTags.find((tag) => tag.includes('class="g-edge"'))).toContain(
+      'data-edge-count="1"',
+    )
 
     const pathMarkup = renderToStaticMarkup(<GraphView {...props} />)
-    const pathEdgeTags = pathMarkup.match(/<path class="g-edge[^"]*"[^>]*>/g) ?? []
-    expect(pathEdgeTags[0]).not.toContain('class="g-edge hl"')
-    expect(pathEdgeTags[1]).not.toContain('class="g-edge hl"')
-    expect(pathEdgeTags[2]).not.toContain('class="g-edge hl"')
-    expect(pathEdgeTags[3]).toContain('class="g-edge hl"')
+    const pathEdgeTags = pathMarkup.match(
+      /<path class="g-edge(?: [^"]*)?"[^>]*data-edge-count="\d+"[^>]*>/g,
+    ) ?? []
+    expect(pathEdgeTags).toHaveLength(2)
+    expect(pathEdgeTags.find((tag) => tag.includes('class="g-edge hl"'))).toContain(
+      'data-edge-count="1"',
+    )
+    expect(pathEdgeTags.find((tag) => tag.includes('class="g-edge"'))).toContain(
+      'data-edge-count="3"',
+    )
+  })
+
+  it('batches edge geometry and exposes one accessible connection-layer summary', () => {
+    const graph = boundaryHighlightGraph()
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set([2, 5])}
+        relevantIds={new Set([1, 2, 3, 4, 5])}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+        extendOverlayToBoundaryNets
+      />,
+    )
+
+    const edgeBatches = markup.match(
+      /<path class="g-edge(?: [^"]*)?"[^>]*data-edge-count="\d+"[^>]*>/g,
+    ) ?? []
+    expect(edgeBatches.length).toBeLessThan(graph.edges.length)
+    expect(
+      edgeBatches.reduce((count, tag) => {
+        const batchCount = /data-edge-count="(\d+)"/.exec(tag)?.[1]
+        return count + Number(batchCount ?? 0)
+      }, 0),
+    ).toBe(graph.edges.length)
+    const arrowBatches = markup.match(
+      /<path class="g-edge-arrows[^"]*"[^>]*data-arrow-count="\d+"[^>]*>/g,
+    ) ?? []
+    expect(
+      arrowBatches.reduce((count, tag) => {
+        const batchCount = /data-arrow-count="(\d+)"/.exec(tag)?.[1]
+        return count + Number(batchCount ?? 0)
+      }, 0),
+    ).toBe(graph.edges.length)
+    expect(markup).toContain(
+      'aria-label="4 schematic connections. Inspect nodes for accessible fanin and fanout details."',
+    )
+  })
+
+  it('recreates terminal markers from the last non-zero segment and fallback route', () => {
+    const edge = (points: Array<{ x: number; y: number }>, netName: string) => ({
+      from: 1,
+      to: 2,
+      points,
+      edge: {
+        from: 1,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'A',
+        net_name: netName,
+        bits: [1],
+      },
+    })
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 10,
+              height: 10,
+              node: { id: 1, kind: 'cell', name: 'from', cell_type: 'BUF' },
+            },
+            {
+              id: 2,
+              x: 100,
+              y: 0,
+              width: 10,
+              height: 10,
+              node: { id: 2, kind: 'cell', name: 'to', cell_type: 'BUF' },
+            },
+          ],
+          edges: [
+            edge([{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 50, y: 0 }], 'repeated'),
+            edge([{ x: 20, y: 20 }, { x: 20, y: 20 }], 'degenerate'),
+            edge([], 'fallback'),
+          ],
+          width: 110,
+          height: 20,
+        }}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('data-edge-count="3"')
+    expect(markup).toContain('data-arrow-count="2"')
+    expect(markup).toContain('M 10 5 L 100 5')
+    expect(markup).toContain('M 41.81 4.55 L 50.91 0 L 41.81 -4.55 Z')
+    expect(markup).toContain('M 91.81 9.55 L 100.91 5 L 91.81 0.4500000000000002 Z')
   })
 
   it('does not render a generated driving-net suffix as a node subtitle', () => {
@@ -332,6 +442,8 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain(
       'class="g-reg-pin g-reg-ctrl-pin" x="9" y="32">R</text>',
     )
+    expect(markup).toContain('class="g-edge control"')
+    expect(markup).toContain('class="g-edge-arrows control"')
   })
 
   it('truncates long register names to the allocated node width', () => {
