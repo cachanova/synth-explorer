@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
 import {
+  clearLayoutGeometryCache,
   controlRoleForPin,
   fitViewportToContent,
   hydrateLayoutResult,
   interpretResult,
+  LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
   NETWORK_SIMPLEX_NODE_LIMIT,
@@ -489,8 +491,8 @@ describe('schematic layout sizing', () => {
       }
     }
 
-  const workerSubgraph = (): Subgraph => ({
-    nodes: [node(1, '$_AND_', { members: [1, 2], params: { secret: 'resident' } })],
+  const workerSubgraph = (id = 1): Subgraph => ({
+    nodes: [node(id, '$_AND_', { members: [1, 2], params: { secret: 'resident' } })],
     edges: [],
     truncated: false,
   })
@@ -503,6 +505,7 @@ describe('schematic layout sizing', () => {
   }
 
   afterEach(() => {
+    clearLayoutGeometryCache()
     FakeWorker.instances = []
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -567,6 +570,100 @@ describe('schematic layout sizing', () => {
     second.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
+  it('reuses completed geometry for an equivalent fresh subgraph', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const firstSubgraph = workerSubgraph()
+    const firstLayout = layoutSubgraph(firstSubgraph)
+    const instance = FakeWorker.instances[0]
+    instance.onmessage?.({
+      data: { id: instance.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await firstLayout
+
+    const equivalent = workerSubgraph()
+    equivalent.nodes[0] = { ...equivalent.nodes[0], src: 'current.sv:9.1-9.2' }
+    const cached = await layoutSubgraph(equivalent)
+
+    expect(instance.requests).toHaveLength(1)
+    expect(cached.nodes[0].node).toBe(equivalent.nodes[0])
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('does not reuse geometry when compact layout input changes', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const firstLayout = layoutSubgraph(workerSubgraph())
+    const instance = FakeWorker.instances[0]
+    instance.onmessage?.({
+      data: { id: instance.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await firstLayout
+
+    const changed = workerSubgraph(2)
+    const changedLayout = layoutSubgraph(changed)
+    expect(instance.requests).toHaveLength(2)
+    expect(instance.requests[1].input.nodes[0].id).toBe(2)
+    instance.onmessage?.({
+      data: {
+        id: instance.requests[1].id,
+        ok: true,
+        result: {
+          ...geometry,
+          nodes: [{ ...geometry.nodes[0], id: 2 }],
+        },
+      },
+    } as MessageEvent)
+    await expect(changedLayout).resolves.toMatchObject({ width: 76 })
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('keeps cached hits abortable without starting worker work', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const firstLayout = layoutSubgraph(workerSubgraph())
+    const instance = FakeWorker.instances[0]
+    instance.onmessage?.({
+      data: { id: instance.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await firstLayout
+
+    const controller = new AbortController()
+    controller.abort()
+    await expect(layoutSubgraph(workerSubgraph(), controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    })
+    expect(instance.requests).toHaveLength(1)
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('evicts least-recently-used geometry at the entry bound', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    for (let id = 1; id <= LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1; id += 1) {
+      const pendingLayout = layoutSubgraph(workerSubgraph(id))
+      const instance = FakeWorker.instances[0]
+      const request = instance.requests.at(-1)!
+      instance.onmessage?.({
+        data: {
+          id: request.id,
+          ok: true,
+          result: {
+            ...geometry,
+            nodes: [{ ...geometry.nodes[0], id }],
+          },
+        },
+      } as MessageEvent)
+      await pendingLayout
+    }
+
+    const instance = FakeWorker.instances[0]
+    const firstAgain = layoutSubgraph(workerSubgraph(1))
+    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 2)
+    const request = instance.requests.at(-1)!
+    instance.onmessage?.({
+      data: { id: request.id, ok: true, result: geometry },
+    } as MessageEvent)
+    await firstAgain
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
   it('retries a failed tight layout with the same compact input', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const sub = workerSubgraph()
@@ -611,11 +708,18 @@ describe('schematic layout sizing', () => {
     } as MessageEvent)
     await firstLayout
 
-    const secondLayout = layoutSubgraph(workerSubgraph())
+    const secondLayout = layoutSubgraph(workerSubgraph(2))
     expect(FakeWorker.instances).toHaveLength(1)
     expect(instance.requests).toHaveLength(2)
     instance.onmessage?.({
-      data: { id: instance.requests[1].id, ok: true, result: geometry },
+      data: {
+        id: instance.requests[1].id,
+        ok: true,
+        result: {
+          ...geometry,
+          nodes: [{ ...geometry.nodes[0], id: 2 }],
+        },
+      },
     } as MessageEvent)
     await secondLayout
     instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
