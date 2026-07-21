@@ -556,6 +556,32 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       ),
     )
     .toBe(exactCounts.edges)
+
+  const initialLayoutRequests = await page.evaluate(
+    () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+  )
+  await page.getByLabel('group buses').uncheck()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+      ),
+    )
+    .toBe(initialLayoutRequests + 1)
+  await expect(page.locator('.g-node-body')).not.toHaveCount(exactCounts.nodes)
+  const ungroupedLayoutRequests = initialLayoutRequests + 1
+
+  await page.getByLabel('group buses').check()
+  await expect(page.locator('.g-node-body')).toHaveCount(exactCounts.nodes)
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+      ),
+    )
+    .toBe(ungroupedLayoutRequests)
   await expect(page.locator('.g-edge-wrap')).toHaveCount(0)
   const accessibility = await page.context().newCDPSession(page)
   const { nodes: accessibilityNodes } = await accessibility.send(

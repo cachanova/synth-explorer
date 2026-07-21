@@ -857,20 +857,29 @@ export async function layoutSubgraph(
   const cacheKey = layoutGeometryKey(input, placement)
   const cached = cachedLayoutGeometry(cacheKey)
   if (cached) return hydrateLayoutResult(sub, cached)
-  let geometry: LayoutGeometry
   if (placement === 'BRANDES_KOEPF') {
-    geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-  } else {
-    try {
-      geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
-    } catch (error) {
-      // Never retry an aborted (superseded) request.
-      if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
-        throw error
-      }
-      geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    }
+    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
+    cacheLayoutGeometry(cacheKey, geometry)
+    return hydrateLayoutResult(sub, geometry)
   }
-  cacheLayoutGeometry(cacheKey, geometry)
-  return hydrateLayoutResult(sub, geometry)
+  try {
+    const geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
+    cacheLayoutGeometry(cacheKey, geometry)
+    return hydrateLayoutResult(sub, geometry)
+  } catch (error) {
+    // Never retry an aborted (superseded) request.
+    if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
+      throw error
+    }
+    // A tight layout can fail because of either this topology or transient
+    // worker infrastructure. Keep robust fallback geometry under its actual
+    // placement so the next equivalent request still retries the preferred
+    // tight placement, while a repeat topology failure can reuse the fallback.
+    const fallbackKey = layoutGeometryKey(input, 'BRANDES_KOEPF')
+    const cachedFallback = cachedLayoutGeometry(fallbackKey)
+    if (cachedFallback) return hydrateLayoutResult(sub, cachedFallback)
+    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
+    cacheLayoutGeometry(fallbackKey, geometry)
+    return hydrateLayoutResult(sub, geometry)
+  }
 }
