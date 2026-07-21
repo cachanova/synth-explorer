@@ -40,7 +40,7 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
   including bounded source-selection projections.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
 - `src/lib/vivadoBridge.ts` is the only HTTP client and talks exclusively to
-  the explicitly paired service at `127.0.0.1`.
+  the explicitly started connector at `127.0.0.1`.
 - `public/precomputed/` contains content-addressed gate-mode artifacts for the
   default design and bundled examples; `src/data/precomputedManifest.json`
   limits which exact input keys may use them.

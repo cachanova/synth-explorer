@@ -47,7 +47,7 @@ describe('buildSynthesizeRequest', () => {
     })
   })
 
-  it('includes the exact paired Vivado producer and resolved part', () => {
+  it('includes the exact local Vivado producer and resolved part', () => {
     expect(buildSynthesizeRequest(files, 'top', 'gates', '-retiming', 'vivado', {
       name: 'xc7a35tcpg236-1',
       family: 'artix7',

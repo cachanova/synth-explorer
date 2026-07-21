@@ -193,7 +193,6 @@ export interface Store {
   setVivadoExtraArgs: (args: string) => void
   connectVivado: () => Promise<boolean>
   disconnectVivado: () => void
-  synthesize: () => Promise<void>
   loadExample: (variant: ExampleVariant) => void
   confirmWorkspaceReset: boolean
   setConfirmWorkspaceReset: (enabled: boolean) => void
@@ -1140,7 +1139,6 @@ export function StoreProvider({
       setVivadoExtraArgs,
       connectVivado,
       disconnectVivado,
-      synthesize: requestSynthesis,
       loadExample,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
@@ -1211,7 +1209,6 @@ export function StoreProvider({
       setAutoSynthesize,
       setAutoSynthesisDelayMs,
       synthesizing,
-      requestSynthesis,
       design,
       analysisState,
       error,

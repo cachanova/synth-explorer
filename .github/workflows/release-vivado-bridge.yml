@@ -35,16 +35,29 @@ jobs:
         if: runner.os == 'Linux'
         run: cp target/release/synth-explorer-vivado-bridge ${{ matrix.asset }}
 
+      - name: Generate Linux checksum
+        if: runner.os == 'Linux'
+        run: sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
+
       - name: Stage Windows binary
         if: runner.os == 'Windows'
         shell: pwsh
         run: Copy-Item target/release/synth-explorer-vivado-bridge.exe ${{ matrix.asset }}
 
+      - name: Generate Windows checksum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.asset }}").Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.asset }}" | Set-Content -NoNewline "${{ matrix.asset }}.sha256"
+
       - name: Upload release asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.asset }}
-          path: ${{ matrix.asset }}
+          path: |
+            ${{ matrix.asset }}
+            ${{ matrix.asset }}.sha256
           if-no-files-found: error
 
   release:

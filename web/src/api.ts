@@ -1,5 +1,5 @@
 // Browser-local analysis facade. Yosys and all analysis stay in browser workers.
-// The optional Vivado path talks only to the explicitly paired loopback bridge.
+// The optional Vivado path talks only to the explicitly started loopback connector.
 
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import { bundledExamples } from './lib/examples'

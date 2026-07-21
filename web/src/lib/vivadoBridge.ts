@@ -6,8 +6,6 @@ import type {
 const BRIDGE_ORIGIN = 'http://127.0.0.1:32123'
 export const VIVADO_BRIDGE_PROTOCOL = 1
 
-let pairingCode = ''
-
 interface LoopbackRequestInit extends RequestInit {
   targetAddressSpace?: 'loopback'
 }
@@ -31,12 +29,8 @@ export class VivadoBridgeError extends Error {
   }
 }
 
-export async function connectVivadoBridge(code: string): Promise<VivadoBridgeStatus> {
-  const normalized = code.trim().toLowerCase()
-  if (!/^[0-9a-f]{32}$/.test(normalized)) {
-    throw new VivadoBridgeError('Pairing code must be 32 hexadecimal characters')
-  }
-  const status = await request<VivadoBridgeStatus>('/v1/status', normalized)
+export async function connectVivadoBridge(): Promise<VivadoBridgeStatus> {
+  const status = await request<VivadoBridgeStatus>('/v1/status')
   if (status.protocol_version !== VIVADO_BRIDGE_PROTOCOL) {
     throw new VivadoBridgeError(
       `Bridge protocol ${status.protocol_version} is not supported by this website`,
@@ -45,12 +39,7 @@ export async function connectVivadoBridge(code: string): Promise<VivadoBridgeSta
   if (!status.parts.length) {
     throw new VivadoBridgeError('Vivado did not report any installed target devices')
   }
-  pairingCode = normalized
   return status
-}
-
-export function disconnectVivadoBridge(): void {
-  pairingCode = ''
 }
 
 export async function synthesizeWithVivadoBridge(
@@ -62,8 +51,7 @@ export async function synthesizeWithVivadoBridge(
   },
   signal?: AbortSignal,
 ): Promise<BridgeSynthesisResponse> {
-  if (!pairingCode) throw new VivadoBridgeError('Connect the local Vivado bridge first')
-  return request<BridgeSynthesisResponse>('/v1/synthesize', pairingCode, {
+  return request<BridgeSynthesisResponse>('/v1/synthesize', {
     method: 'POST',
     signal,
     body: JSON.stringify({
@@ -77,7 +65,6 @@ export async function synthesizeWithVivadoBridge(
 
 async function request<T>(
   path: string,
-  code: string,
   init: RequestInit = {},
 ): Promise<T> {
   let response: Response
@@ -88,7 +75,6 @@ async function request<T>(
       targetAddressSpace: 'loopback',
       headers: {
         'Content-Type': 'application/json',
-        'X-Synth-Explorer-Token': code,
         ...init.headers,
       },
     } as LoopbackRequestInit)

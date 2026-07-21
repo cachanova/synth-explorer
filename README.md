@@ -10,8 +10,9 @@ endpoint, fanin, fanout, or source location.
 
 [Try Synth Explorer in your browser](https://www.synthexplorer.dev/)
 
-Yosys synthesis and all analysis run locally in the browser. An optional paired
-loopback bridge can run Vivado installed on the same computer. RTL is never
+Yosys synthesis and all analysis run locally in the browser. An optional
+loopback connector can run Vivado installed on the same computer or through an
+SSH tunnel to a licensed remote machine. RTL is never
 uploaded to a Synth Explorer application server. Successful synthesis artifacts
 are cached only in that browser profile and can be cleared from the settings
 menu.
@@ -29,7 +30,7 @@ menu.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and jump from synthesized cells to source.
 - Reuse identical RTL + tool-setting results from a bounded IndexedDB cache.
-- Pair the website with a loopback-only local Vivado bridge, select from that
+- Connect the website to a loopback-only local Vivado connector, select from that
   installation's real part catalog, and explore the resulting vendor netlist.
 
 > [!IMPORTANT]
@@ -58,18 +59,20 @@ installation is required for the default browser-local flow.
 The website contains the complete setup guide: select **Vivado (local)** from
 the Engine menu. The short version is:
 
-1. Install and license Vivado on the computer running the browser.
-2. Download `synth-explorer-vivado-bridge` for Windows or Linux from the
+1. Install and license Vivado on the computer that will run synthesis.
+2. On Linux, run `curl -fsSL https://synthexplorer.dev/vivado | sh`; or download
+   the Windows/Linux connector from the
    [latest release](https://github.com/cachanova/synth-explorer/releases/latest).
-3. Run the bridge from a Vivado-enabled terminal, optionally passing
-   `--vivado /path/to/vivado`.
-4. In a current Chromium-based browser, paste the printed pairing code into the
-   website and allow loopback access when the browser asks.
+3. If Vivado is not already on `PATH`, run AMD's `settings64.sh` first or pass
+   `VIVADO_BIN=/path/to/Vivado/bin/vivado`.
+4. In a current Chromium-based browser, select **Vivado (local)** and click
+   **Connect local Vivado**. Allow loopback access when the browser asks.
 
-The bridge binds only to `127.0.0.1`, accepts only explicit Synth Explorer
-origins, requires a new random pairing code each time it starts, and permits
-one Vivado run at a time. See [`vivado-bridge/`](vivado-bridge/) for CLI and
-source-build instructions.
+For a remote Vivado host, start the connector on the licensed Linux or Windows
+machine, then run `ssh -N -L 32123:127.0.0.1:32123 user@vivado-host` from the
+laptop. The connector binds only to `127.0.0.1`, accepts only explicit Synth
+Explorer origins, and permits one Vivado run at a time. See
+[`vivado-bridge/`](vivado-bridge/) for CLI and source-build instructions.
 
 ## Repository layout
 

@@ -98,7 +98,7 @@ export interface SynthesizeRequest {
   target?: string // concrete installed part, required for local Vivado
   vivado_family?: string
   vivado_speed?: string
-  vivado_version?: string // cache identity from the paired bridge preflight
+  vivado_version?: string // cache identity from the local connector preflight
   extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
 }
 

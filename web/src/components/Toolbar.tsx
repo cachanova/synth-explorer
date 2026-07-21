@@ -175,7 +175,10 @@ export function Toolbar() {
           onChange={(event) => {
             const tool = event.target.value as SynthTool
             if (tool === 'vivado' && !store.vivadoStatus) {
-              setSetupOpen(true)
+              void store.connectVivado().then((connected) => {
+                if (connected) store.setSynthTool('vivado')
+                else setSetupOpen(true)
+              })
               return
             }
             store.setSynthTool(tool)

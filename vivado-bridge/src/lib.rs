@@ -3,7 +3,6 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -12,6 +11,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 use thiserror::Error;
@@ -23,7 +23,6 @@ use tokio::time::timeout;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:32123";
 pub const PROTOCOL_VERSION: u32 = 1;
-const TOKEN_HEADER: &str = "x-synth-explorer-token";
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const NETLIST_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
 const REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
@@ -123,25 +122,24 @@ struct ErrorResponse {
 #[derive(Clone)]
 pub struct AppState {
     status: Arc<BridgeStatus>,
-    token: Arc<str>,
     allowed_origins: Arc<HashSet<String>>,
     vivado_bin: Arc<PathBuf>,
     running: Arc<Semaphore>,
+    website_seen: Arc<AtomicBool>,
 }
 
 impl AppState {
     pub fn new(
         status: BridgeStatus,
-        token: String,
         allowed_origins: impl IntoIterator<Item = String>,
         vivado_bin: PathBuf,
     ) -> Self {
         Self {
             status: Arc::new(status),
-            token: Arc::from(token),
             allowed_origins: Arc::new(allowed_origins.into_iter().collect()),
             vivado_bin: Arc::new(vivado_bin),
             running: Arc::new(Semaphore::new(1)),
+            website_seen: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -163,10 +161,13 @@ async fn preflight(State(state): State<AppState>, headers: HeaderMap) -> Respons
 }
 
 async fn status(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let origin = match authorize(&state, &headers) {
+    let origin = match allowed_origin(&state, &headers) {
         Ok(origin) => origin,
         Err(error) => return error.into_response(),
     };
+    if !state.website_seen.swap(true, Ordering::Relaxed) {
+        println!("Website connected: {origin}");
+    }
     with_cors(Json(state.status.as_ref().clone()).into_response(), origin)
 }
 
@@ -175,7 +176,7 @@ async fn synthesize(
     headers: HeaderMap,
     Json(request): Json<SynthesisRequest>,
 ) -> Response {
-    let origin = match authorize(&state, &headers) {
+    let origin = match allowed_origin(&state, &headers) {
         Ok(origin) => origin,
         Err(error) => return error.into_response(),
     };
@@ -199,7 +200,18 @@ async fn synthesize(
             );
         }
     };
+    println!(
+        "Vivado synthesis started: top={} target={}",
+        validated.top, validated.target
+    );
     let result = run_vivado(&state.vivado_bin, &validated).await;
+    match &result {
+        Ok(_) => println!("Vivado synthesis completed: top={}", validated.top),
+        Err(error) => eprintln!(
+            "Vivado synthesis failed: top={} error={error}",
+            validated.top
+        ),
+    }
     drop(permit);
     with_cors(
         match result {
@@ -252,34 +264,6 @@ fn allowed_origin<'a>(
     }
 }
 
-fn authorize<'a>(state: &AppState, headers: &'a HeaderMap) -> Result<&'a str, AuthFailure<'a>> {
-    let origin = allowed_origin(state, headers)?;
-    let supplied = headers
-        .get(TOKEN_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    if constant_time_eq(supplied.as_bytes(), state.token.as_bytes()) {
-        Ok(origin)
-    } else {
-        Err(AuthFailure {
-            status: StatusCode::UNAUTHORIZED,
-            message: "invalid Vivado bridge pairing code",
-            origin: Some(origin),
-        })
-    }
-}
-
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    let mut difference = left.len() ^ right.len();
-    for index in 0..left.len().max(right.len()) {
-        difference |= usize::from(
-            left.get(index).copied().unwrap_or_default()
-                ^ right.get(index).copied().unwrap_or_default(),
-        );
-    }
-    difference == 0
-}
-
 fn with_cors(mut response: Response, origin: &str) -> Response {
     let headers = response.headers_mut();
     if let Ok(value) = HeaderValue::from_str(origin) {
@@ -291,7 +275,7 @@ fn with_cors(mut response: Response, origin: &str) -> Response {
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("Content-Type, X-Synth-Explorer-Token"),
+        HeaderValue::from_static("Content-Type"),
     );
     headers.insert(
         HeaderName::from_static("access-control-allow-private-network"),
@@ -421,12 +405,6 @@ fn parse_extra_args(value: Option<&str>) -> Result<Vec<String>, BridgeError> {
 
 fn validation(message: impl Into<String>) -> BridgeError {
     BridgeError::Validation(message.into())
-}
-
-pub fn pairing_code() -> String {
-    let mut bytes = [0_u8; 16];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub async fn preflight_vivado(vivado_bin: &Path) -> Result<BridgeStatus, BridgeError> {
@@ -770,14 +748,13 @@ mod tests {
                 vivado_version: "Vivado v2026.1".to_owned(),
                 parts: vec![part()],
             },
-            "pairing-code".to_owned(),
             ["https://synthexplorer.dev".to_owned()],
             PathBuf::from("vivado"),
         )
     }
 
     #[tokio::test]
-    async fn status_requires_both_allowed_origin_and_pairing_code() {
+    async fn status_requires_allowed_origin_without_a_pairing_code() {
         let app = app(state());
         let denied = app
             .clone()
@@ -785,7 +762,6 @@ mod tests {
                 Request::builder()
                     .uri("/v1/status")
                     .header(header::ORIGIN, "https://evil.example")
-                    .header(TOKEN_HEADER, "pairing-code")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -793,26 +769,11 @@ mod tests {
             .unwrap();
         assert_eq!(denied.status(), StatusCode::FORBIDDEN);
 
-        let unauthorized = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/status")
-                    .header(header::ORIGIN, "https://synthexplorer.dev")
-                    .header(TOKEN_HEADER, "wrong")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-
         let allowed = app
             .oneshot(
                 Request::builder()
                     .uri("/v1/status")
                     .header(header::ORIGIN, "https://synthexplorer.dev")
-                    .header(TOKEN_HEADER, "pairing-code")
                     .body(Body::empty())
                     .unwrap(),
             )

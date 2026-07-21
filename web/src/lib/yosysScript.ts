@@ -71,7 +71,7 @@ export function validateSynthesisRequest(
       throw new Error('Vivado synthesis requires the target speed grade')
     }
     if (!request.vivado_version?.trim()) {
-      throw new Error('Vivado synthesis requires the paired tool version')
+      throw new Error('Vivado synthesis requires the local tool version')
     }
     if (extraArgs.some((arg) => arg === '-top' || arg === '-part' || arg.startsWith('-top=') || arg.startsWith('-part='))) {
       throw new Error('Vivado top and part must use the dedicated fields')

@@ -16,9 +16,10 @@ const structuralNetlist = [
   '',
 ].join('\n')
 
-test('pairs with loopback Vivado and analyzes its returned netlist in browser workers', async ({ page }) => {
+test('connects to loopback Vivado and analyzes its returned netlist in browser workers', async ({ page }) => {
   let synthesisRequest: Record<string, unknown> | null = null
   await page.route('http://127.0.0.1:32123/v1/status', async (route) => {
+    expect(route.request().headers()['x-synth-explorer-token']).toBeUndefined()
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -30,6 +31,7 @@ test('pairs with loopback Vivado and analyzes its returned netlist in browser wo
     })
   })
   await page.route('http://127.0.0.1:32123/v1/synthesize', async (route) => {
+    expect(route.request().headers()['x-synth-explorer-token']).toBeUndefined()
     synthesisRequest = route.request().postDataJSON() as Record<string, unknown>
     await route.fulfill({
       contentType: 'application/json',
@@ -45,8 +47,6 @@ test('pairs with loopback Vivado and analyzes its returned netlist in browser wo
   await page.goto('/')
   await page.getByLabel('Top module/entity').fill('top')
   await page.getByLabel('Synthesis engine').selectOption('vivado')
-  await page.getByLabel('Pairing code').fill('0123456789abcdef0123456789abcdef')
-  await page.getByRole('button', { name: 'Connect local Vivado' }).click()
 
   await expect(page.getByLabel('Synthesis engine')).toHaveValue('vivado')
   await page.getByRole('button', { name: 'Run Vivado' }).click()
