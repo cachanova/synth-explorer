@@ -898,6 +898,27 @@ test('stacks mapped primitives from one inferred memory when buses are grouped',
   expect(apiRequests).toEqual([])
 })
 
+test('stacks DFF-mapped rows from one inferred memory in generic gates', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+    await page.getByLabel('Platform').selectOption('gates')
+  })
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const groupedMemory = page.locator(
+    '.g-node-body.g-symbol-memory[data-member-count]',
+  )
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(groupedMemory).toHaveAttribute(
+    'data-node-tooltip',
+    'MEM — memory [16×16]',
+  )
+  await expect(groupedMemory).toHaveAttribute('data-member-count', '256')
+  expect(apiRequests).toEqual([])
+})
+
 test('source selections and Focus use the in-browser Rust analysis worker', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []

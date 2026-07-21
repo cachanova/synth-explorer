@@ -65,9 +65,10 @@ impl AnalysisDesign {
         analysis.extend_source_ranges(ranges, source_ranges_truncated);
         analysis.set_procedural_targets(procedural_targets);
         analysis.set_source_probe_hints(probe_hints);
-        let memory_arrays = memory_arrays_from_source(&graph, source_netlist, source_top);
-        let grouping =
-            GroupPartition::build(&graph, &analysis.endpoints().registers, memory_arrays);
+        let registers = &analysis.endpoints().registers;
+        let memory_arrays =
+            memory_arrays_from_source(&graph, source_netlist, source_top, registers);
+        let grouping = GroupPartition::build(&graph, registers, memory_arrays);
 
         Ok(Self {
             graph,

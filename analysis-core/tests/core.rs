@@ -282,7 +282,7 @@ fn vivado_memory_matching_prefers_the_longest_logical_reg_prefix() {
     let (top, module) = select_top(&final_netlist, None).unwrap();
     let graph = Graph::from_netlist(&final_netlist, top, module).unwrap();
 
-    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top");
+    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
 
     assert_eq!(arrays.len(), 1);
     assert_eq!(arrays[0].name, "foo_regbank");
@@ -323,7 +323,7 @@ fn memory_matching_keeps_identical_child_arrays_in_separate_groups() {
     let (top, module) = select_top(&final_netlist, None).unwrap();
     let graph = Graph::from_netlist(&final_netlist, top, module).unwrap();
 
-    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top");
+    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
 
     assert_eq!(arrays.len(), 2);
     assert_eq!(arrays[0].name, "u0.memory");

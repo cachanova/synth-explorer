@@ -1,5 +1,6 @@
-//! Deterministic bit-parallel grouping for schematic projections. Register vectors come straight from the
-//! endpoint analysis; combinational cells are grouped by bounded partition
+//! Deterministic bit-parallel grouping for schematic projections. Logical
+//! memories claim their mapped primitives before remaining register vectors;
+//! combinational cells are grouped by bounded partition
 //! refinement plus a final 1:1 bit-correspondence check so that only true
 //! bit-parallel structures collapse (carry chains and shared-bit fanin never
 //! group). Logical memories seed from the provenance netlist. Every step is
@@ -53,17 +54,17 @@ const MAX_REFINEMENT_ROUNDS: usize = 8;
 
 impl GroupPartition {
     /// Near-linear: bounded partition refinement (max 8 rounds) + 1:1 check.
-    /// Register groups seed from the endpoint analysis; each refinement round
-    /// costs O(edges) and hashes full signatures to class ids, so no all-pairs
-    /// comparison ever happens.
+    /// Memory and register groups seed from source and endpoint analysis; each
+    /// refinement round costs O(edges) and hashes full signatures to class ids,
+    /// so no all-pairs comparison ever happens.
     pub fn build(
         graph: &Graph,
         registers: &[RegisterGroup],
         memories: Vec<MemoryArray>,
     ) -> GroupPartition {
         let mut partition = GroupPartition::default();
-        seed_register_groups(&mut partition, registers);
         seed_memory_groups(&mut partition, graph, memories);
+        seed_register_groups(&mut partition, registers);
 
         let comb: Vec<NodeId> = graph
             .nodes
@@ -128,6 +129,7 @@ pub fn memory_arrays_from_source(
     graph: &Graph,
     source_netlist: &YosysNetlist,
     source_top: &str,
+    registers: &[RegisterGroup],
 ) -> Vec<MemoryArray> {
     #[derive(Debug)]
     struct LogicalMemory {
@@ -219,11 +221,34 @@ pub fn memory_arrays_from_source(
         }
     }
 
+    // Generic gate mapping lowers a memory to auto-named DFFs. Endpoint
+    // analysis recovers stable row aliases such as `memory[7]`; reconnect
+    // those rows to their source logical array.
+    for register in registers {
+        let mut candidate = register.name.as_str();
+        let mut matched = None;
+        loop {
+            let parent = strip_bit_suffix(candidate);
+            if parent == candidate {
+                break;
+            }
+            candidate = parent;
+            if let Some(index) = logical_by_name.get(candidate) {
+                matched = Some(*index);
+                break;
+            }
+        }
+        if let Some(index) = matched {
+            members[index].extend(register.bits.iter().map(|bit| bit.node_id));
+        }
+    }
+
     logical
         .into_iter()
         .zip(members)
         .filter_map(|(memory, mut members)| {
             members.sort_unstable();
+            members.dedup();
             (members.len() >= 2).then_some(MemoryArray {
                 name: memory.name,
                 width: memory.width,
@@ -272,11 +297,12 @@ fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: V
             .iter()
             .filter_map(|id| graph.nodes[*id as usize].cell_type.as_deref())
             .collect();
-        let cell_type = if cell_types.len() == 1 {
-            cell_types.first().copied().unwrap_or("$mem").to_owned()
-        } else {
-            "$mem".to_owned()
-        };
+        let cell_type =
+            if cell_types.len() == 1 && cell_types.first().copied().is_some_and(is_memory_type) {
+                cell_types.first().copied().unwrap_or("$mem").to_owned()
+            } else {
+                "$mem".to_owned()
+            };
         let group_id = partition.groups.len() as GroupId;
         for &member in &members {
             partition.group_of.insert(member, group_id);
@@ -605,7 +631,7 @@ mod tests {
     use super::*;
     use crate::analysis::{Analysis, EndpointBit};
     use crate::graph::{CellInfo, Edge, Node};
-    use crate::netlist::{PortDirection, YosysBit};
+    use crate::netlist::{PortDirection, YosysBit, parse_value};
     use std::collections::HashSet;
 
     fn port_bit(id: NodeId, port: &str, bit: usize, width: usize, dir: PortDirection) -> Node {
@@ -899,6 +925,38 @@ mod tests {
         assert_eq!(partition.group_of.len(), 16);
         assert_eq!(partition.group_of[&1], 0);
         assert_eq!(partition.group_of[&16], 1);
+    }
+
+    #[test]
+    fn logical_memory_claims_dff_mapped_rows_before_register_grouping() {
+        let graph = graph_from_nodes(
+            "top",
+            (0..4)
+                .map(|id| dff_cell(id, &format!("$auto$ff${id}")))
+                .collect(),
+        );
+        let registers = vec![
+            register_group("memory[0]", &[(0, 0), (1, 1)]),
+            register_group("memory[1]", &[(0, 2), (1, 3)]),
+        ];
+        let source_netlist = parse_value(serde_json::json!({
+            "modules": { "top": {
+                "attributes": { "top": "1" },
+                "memories": {
+                    "memory": { "width": 2, "start_offset": 0, "size": 2 }
+                }
+            } }
+        }))
+        .unwrap();
+
+        let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &registers);
+        let partition = GroupPartition::build(&graph, &registers, memories);
+
+        assert_eq!(partition.groups.len(), 1);
+        assert_eq!(partition.groups[0].kind, GroupKind::Memory);
+        assert_eq!(partition.groups[0].members, vec![0, 1, 2, 3]);
+        assert_eq!(partition.groups[0].label, "memory [2×2]");
+        assert_eq!(partition.groups[0].cell_type, "$mem");
     }
 
     #[test]
