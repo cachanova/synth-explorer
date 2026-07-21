@@ -222,6 +222,16 @@ export function nodeSublabel(node: NodeRef): string | null {
   if (node.kind !== 'cell' || !node.name) return null
   if (isHiddenName(node.name)) return null
 
+  // Vivado names inferred implementation cells after the package-facing
+  // buffer they feed, even when the cell itself is a LUT or carry primitive:
+  // `one_hot_OBUF[23]_inst_i_6_2`. Keep the useful RTL signal/bit and discard
+  // the implementation plumbing, mirroring how Yosys auto names are hidden.
+  const vivadoImplementationType = /^(?:LUT[1-6](?:_2)?|CARRY[48]|MUXF[789]|MUXCY|XORCY|FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?|SRL(?:16E|C32E)|RAMB\w*|URAM\w*|DSP48\w*)$/i
+  const vivado = vivadoImplementationType.test(node.cell_type ?? '')
+    ? /^(.*?)_(?:IOBUF|IBUF|OBUF)(\[[^\]]+\])?_inst(?:_i(?:_\d+)*)?$/i.exec(node.name)
+    : null
+  if (vivado) return `${vivado[1]}${vivado[2] ?? ''}`
+
   const groupWidth = (node as GraphNode).width ?? 0
   if (groupWidth >= 2 && node.name === `${nodeLabel(node)} ×${groupWidth}`) {
     return `×${groupWidth}`

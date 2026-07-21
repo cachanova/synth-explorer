@@ -11,6 +11,7 @@ const valid = {
   top: 'top',
   mode: 'xilinx',
   extraArgs: '-family xc7',
+  vivadoExtraArgs: '-mode default -max_dsp 0',
 }
 
 describe('stored workspace validation', () => {
@@ -21,7 +22,17 @@ describe('stored workspace validation', () => {
       top: 'top',
       mode: 'xilinx',
       extraArgs: '-family xc7',
+      vivadoExtraArgs: '-mode default -max_dsp 0',
     })
+  })
+
+  it('migrates older workspaces to the visible Vivado default', () => {
+    const { vivadoExtraArgs: _omitted, ...legacy } = valid
+    expect(parseStoredWorkspace(legacy)?.vivadoExtraArgs).toBe('-mode out_of_context')
+  })
+
+  it('preserves explicit removal of the Vivado default', () => {
+    expect(parseStoredWorkspace({ ...valid, vivadoExtraArgs: '' })?.vivadoExtraArgs).toBe('')
   })
 
   it('rejects stale schemas and malformed inputs', () => {

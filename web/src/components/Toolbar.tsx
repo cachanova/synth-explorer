@@ -5,6 +5,7 @@ import type { ExampleLanguage, Mode, SynthTool, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 import { BubbleLoader } from './BubbleLoader'
 import { FlagsMenu } from './FlagsMenu'
+import { VIVADO_FLAG_REGISTRY } from '../lib/flagRegistry'
 import { VivadoSetupDialog } from './VivadoSetupDialog'
 
 interface FamilyBucket {
@@ -248,10 +249,17 @@ export function Toolbar() {
               {speeds.map((speed) => <option key={speed} value={speed}>{speed}</option>)}
             </select>
           </label>
+          <FlagsMenu
+            definitions={VIVADO_FLAG_REGISTRY}
+            label="Flags"
+            flags={store.vivadoExtraArgs}
+            onChange={store.setVivadoExtraArgs}
+          />
           <label className="field grow">
             <span>Vivado flags</span>
             <input
               placeholder="optional synth_design flags"
+              title="The exact additional flags passed to Vivado synth_design."
               value={store.vivadoExtraArgs}
               onChange={(event) => store.setVivadoExtraArgs(event.target.value)}
             />

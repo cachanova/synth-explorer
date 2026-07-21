@@ -32,6 +32,109 @@ interface SelectFlagDef extends BaseFlagDef {
 
 export type FlagDef = BooleanFlagDef | IntegerFlagDef | SelectFlagDef
 
+// Curated from Vivado 2026.1 `help -args synth_design`. Keep this to stable,
+// architecture-neutral synthesis controls; top, part, and full flattening are
+// owned by the connector's dedicated fields/invariant and must not be repeated.
+export const VIVADO_FLAG_REGISTRY: FlagDef[] = [
+  {
+    flag: '-mode',
+    label: 'Design mode',
+    description: 'Choose logic-only out-of-context or Vivado\'s package-facing default synthesis.',
+    value: 'select',
+    defaultValue: 'out_of_context',
+    choices: ['out_of_context', 'default'],
+    defaultOn: true,
+    defaultReason: 'Matches the clean fabric-only boundary used by Yosys.',
+  },
+  {
+    flag: '-directive',
+    label: 'Synthesis directive',
+    description: 'Choose Vivado\'s high-level area, performance, power, or routability strategy.',
+    value: 'select',
+    defaultValue: 'default',
+    choices: [
+      'default',
+      'RuntimeOptimized',
+      'AreaOptimized_high',
+      'AreaOptimized_medium',
+      'AlternateRoutability',
+      'AreaMapLargeShiftRegToBRAM',
+      'AreaMultThresholdDSP',
+      'FewerCarryChains',
+      'PerformanceOptimized',
+      'LogicCompaction',
+      'PowerOptimized_high',
+      'PowerOptimized_medium',
+    ],
+  },
+  {
+    flag: '-gated_clock_conversion',
+    label: 'Gated-clock conversion',
+    description: 'Convert eligible gated clocks into flip-flop clock enables.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['off', 'on', 'auto'],
+  },
+  { flag: '-no_lc', label: 'No LUT combining', description: 'Do not combine LUT pairs into dual-output LUTs.' },
+  { flag: '-lut_cascade', label: 'LUT cascading', description: 'Use dedicated LUT cascade connections to trade area for delay.' },
+  {
+    flag: '-shreg_min_size',
+    label: 'Minimum SRL length',
+    description: 'Minimum register-chain length eligible for SRL mapping.',
+    value: 'int',
+    defaultValue: '3',
+    min: 1,
+  },
+  {
+    flag: '-fsm_extraction',
+    label: 'FSM encoding',
+    description: 'Control finite-state-machine extraction and encoding.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'off', 'one_hot', 'sequential', 'johnson', 'gray', 'user_encoding'],
+  },
+  {
+    flag: '-srl_style',
+    label: 'SRL implementation',
+    description: 'Choose how static shift-register chains use SRLs and endpoint registers.',
+    value: 'select',
+    defaultValue: 'srl',
+    choices: ['register', 'srl', 'srl_reg', 'reg_srl', 'reg_srl_reg'],
+  },
+  { flag: '-keep_equivalent_registers', label: 'Keep equivalent registers', description: 'Prevent registers driven by identical logic from being merged.' },
+  {
+    flag: '-resource_sharing',
+    label: 'Resource sharing',
+    description: 'Control sharing of compatible arithmetic operators.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'on', 'off'],
+  },
+  {
+    flag: '-cascade_dsp',
+    label: 'DSP cascading',
+    description: 'Control how adders that sum DSP outputs are implemented.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'tree', 'force'],
+  },
+  { flag: '-max_bram', label: 'Maximum BRAM', description: 'Limit inferred block RAMs; -1 lets Vivado choose.', value: 'int', defaultValue: '-1', min: -1 },
+  { flag: '-max_uram', label: 'Maximum UltraRAM', description: 'Limit inferred UltraRAMs; -1 lets Vivado choose.', value: 'int', defaultValue: '-1', min: -1 },
+  { flag: '-max_dsp', label: 'Maximum DSP', description: 'Limit inferred DSP blocks; -1 lets Vivado choose.', value: 'int', defaultValue: '-1', min: -1 },
+  {
+    flag: '-global_retiming',
+    label: 'Global retiming',
+    description: 'Move registers across combinational logic to improve intra-clock performance.',
+    value: 'select',
+    defaultValue: 'auto',
+    choices: ['auto', 'on', 'off'],
+  },
+  { flag: '-no_srlextract', label: 'No SRL extraction', description: 'Keep shift-register chains as ordinary registers.' },
+  { flag: '-no_timing_driven', label: 'No timing-driven synthesis', description: 'Disable timing-driven synthesis optimization.' },
+  { flag: '-sfcu', label: 'Single compilation unit', description: 'Compile Verilog sources as one compilation unit.' },
+  { flag: '-assert', label: 'Evaluate VHDL assertions', description: 'Evaluate VHDL assertions and fail synthesis on severity failure.' },
+]
+
 // Curated, per-mode synthesis flags. Every entry was validated against the
 // production yosys (0.67) — several flags listed in older `help` output are
 // rejected there, so this list is deliberately narrower than the full man page.
@@ -171,14 +274,23 @@ export function stripInvalidFlags(flags: string, mode: Mode): string {
  *  visible flags string, so the user can see and remove them (nothing is
  *  injected out of band). */
 export function flagsForModeChange(flags: string, mode: Mode): string {
-  let next = stripInvalidFlags(flags, mode)
-  for (const definition of flagsForMode(mode)) {
+  return applyDefaults(stripInvalidFlags(flags, mode), flagsForMode(mode))
+}
+
+function applyDefaults(flags: string, definitions: readonly FlagDef[]): string {
+  let next = flags
+  for (const definition of definitions) {
     if (!definition.defaultOn || hasFlag(next, definition.flag)) continue
     next = definition.value
       ? setFlagValue(next, definition.flag, definition.defaultValue)
       : toggleFlag(next, definition.flag, true)
   }
   return next
+}
+
+/** Apply visible Vivado defaults without touching unknown free-form tokens. */
+export function flagsForVivadoChange(flags: string): string {
+  return applyDefaults(flags, VIVADO_FLAG_REGISTRY)
 }
 
 export type ModeFlagMemory = Partial<Record<Mode, string>>

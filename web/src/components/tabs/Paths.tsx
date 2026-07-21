@@ -393,7 +393,7 @@ function Hop({ node, last }: { node: NodeRef; last: boolean }) {
       <span className={`hop${node.register === true || (node.register == null && node.seq) ? ' seq' : ''}`}>
         <span className="t">{label}</span>
         {(name || node.src) && (
-          <span className="n">
+          <span className="n" title={name && name !== node.name ? node.name : undefined}>
             {name}
             {name && node.src ? ' ' : ''}
             {node.src ? <SrcLink src={node.src} /> : null}

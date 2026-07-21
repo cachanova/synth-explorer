@@ -226,6 +226,12 @@ function nodeVisual(
   } else if (kind === 'memory') {
     fill = 'color-mix(in srgb, var(--amber) 8%, transparent)'
     stroke = 'var(--amber)'
+  } else if (kind === 'carry') {
+    fill = 'color-mix(in srgb, var(--green) 10%, transparent)'
+    stroke = 'var(--green)'
+  } else if (kind === 'dsp') {
+    fill = 'color-mix(in srgb, var(--amber) 10%, transparent)'
+    stroke = 'var(--amber)'
   } else if (isSpecialPrimitive(node)) {
     fill = 'color-mix(in srgb, var(--blue) 10%, transparent)'
     stroke = 'var(--blue)'
@@ -443,7 +449,7 @@ function NodeContents({
     )
   }
 
-  const isBox = kind === 'box' || kind === 'memory'
+  const isBox = kind === 'box' || kind === 'memory' || kind === 'carry' || kind === 'dsp'
   const showName = name && name !== label
   const labelY = isBox
     ? showName
@@ -676,7 +682,7 @@ const SchematicNode = memo(function SchematicNode({
   const name = nodeSublabel(node)
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
   const title = name && name !== nodeLabel(node)
-    ? `${nodeLabel(node)} — ${name}`
+    ? `${nodeLabel(node)} — ${name}${name !== node.name ? ` (${node.name})` : ''}`
     : nodeLabel(node)
 
   return (

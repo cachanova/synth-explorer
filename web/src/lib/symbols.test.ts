@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { GraphEdge, GraphNode, NodeRef } from '../types'
 import {
   arithGlyph,
+  boxBadge,
   bubbleAt,
   controlLabel,
   controlsFor,
@@ -62,13 +63,26 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('$mem_v2'))).toBe('memory')
     expect(symbolKind(cell('RAM32M'))).toBe('memory')
     expect(symbolKind(cell('RAMB36E2'))).toBe('memory')
-    expect(symbolKind(cell('CARRY4', { is_boundary: true }))).toBe('box')
+    expect(symbolKind(cell('CARRY4', { is_boundary: true }))).toBe('carry')
+    expect(symbolKind(cell('CARRY8'))).toBe('carry')
+    expect(symbolKind(cell('SB_CARRY'))).toBe('carry')
+    expect(symbolKind(cell('CCU2C'))).toBe('carry')
+    expect(symbolKind(cell('DSP48E2'))).toBe('dsp')
+    expect(symbolKind(cell('MULT18X18D'))).toBe('dsp')
+    expect(symbolKind(cell('SB_MAC16'))).toBe('dsp')
     expect(symbolKind(cell('mystery', { seq: true, is_boundary: true }))).toBe('box')
+  })
+
+  it('maps vendor carry-adjacent logic to the matching standard symbol', () => {
+    expect(symbolKind(cell('MUXCY'))).toBe('mux')
+    expect(symbolKind(cell('MUXF8'))).toBe('mux')
+    expect(symbolKind(cell('XORCY'))).toBe('xor')
   })
 
   it('identifies vendor-specific implementation primitives', () => {
     for (const primitive of [
       'CARRY4', 'SB_LUT4', 'TRELLIS_COMB', 'IBUF', 'LUT6', 'XORCY', 'MUXCY', 'INV',
+      'DSP48E2', 'MULT18X18D', 'SB_MAC16',
     ]) {
       expect(isSpecialPrimitive(cell(primitive)), primitive).toBe(true)
     }
@@ -114,9 +128,17 @@ describe('symbol geometry', () => {
       'mux',
       'port-in',
       'port-out',
+      'carry',
+      'dsp',
     ] as const) {
       expect(shapePath(kind, 72, 48)).toMatch(/^M /)
     }
+  })
+
+  it('uses primitive-family badges for hard blocks', () => {
+    expect(boxBadge(cell('CARRY8'))).toBe('CARRY')
+    expect(boxBadge(cell('DSP48E2'))).toBe('DSP')
+    expect(boxBadge(cell('RAMB36E2'))).toBe('MEM')
   })
 
   it('places output bubbles on inverted symbols', () => {

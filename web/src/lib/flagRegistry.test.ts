@@ -3,7 +3,9 @@ import {
   flagsForMode,
   flagsForModeChange,
   flagsForModeTransition,
+  flagsForVivadoChange,
   stripInvalidFlags,
+  VIVADO_FLAG_REGISTRY,
 } from './flagRegistry'
 
 describe('flagRegistry', () => {
@@ -13,6 +15,14 @@ describe('flagRegistry', () => {
     // ecp5 uses -noccu2, not -nocarry
     expect(flagsForMode('ecp5').some((d) => d.flag === '-nocarry')).toBe(false)
     expect(flagsForMode('rtl')).toEqual([])
+  })
+
+  it('exposes curated Vivado flags with logic-only synthesis visibly enabled by default', () => {
+    expect(VIVADO_FLAG_REGISTRY.some((d) => d.flag === '-directive')).toBe(true)
+    expect(VIVADO_FLAG_REGISTRY.some((d) => d.flag === '-global_retiming')).toBe(true)
+    expect(flagsForVivadoChange('')).toBe('-mode out_of_context')
+    expect(flagsForVivadoChange('-max_dsp 0')).toBe('-max_dsp 0 -mode out_of_context')
+    expect(flagsForVivadoChange('-mode default')).toBe('-mode default')
   })
 
   it('strips flags invalid for the new mode, keeping shared and free-form ones', () => {

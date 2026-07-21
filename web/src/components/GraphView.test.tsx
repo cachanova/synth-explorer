@@ -3,7 +3,44 @@ import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
 describe('GraphView LUT labels', () => {
-  it('uses a distinct color for special implementation primitives', () => {
+  it('preserves the raw Vivado instance identity in the node tooltip', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 1,
+            x: 0,
+            y: 0,
+            width: 98,
+            height: 58,
+            node: {
+              id: 1,
+              kind: 'cell',
+              name: 'one_hot_OBUF[3]_inst_i_1',
+              cell_type: 'CARRY4',
+            },
+          }],
+          edges: [],
+          width: 98,
+          height: 58,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain(
+      'data-node-tooltip="CARRY4 — one_hot[3] (one_hot_OBUF[3]_inst_i_1)"',
+    )
+  })
+
+  it('uses the carry-chain shape, badge, and color for carry primitives', () => {
     const markup = renderToStaticMarkup(
       <GraphView
         graph={{
@@ -30,8 +67,10 @@ describe('GraphView LUT labels', () => {
       />,
     )
 
-    expect(markup).toContain('stroke="var(--blue)"')
-    expect(markup).toContain('color-mix(in srgb, var(--blue) 10%, transparent)')
+    expect(markup).toContain('g-symbol-carry')
+    expect(markup).toContain('stroke="var(--green)"')
+    expect(markup).toContain('color-mix(in srgb, var(--green) 10%, transparent)')
+    expect(markup).toContain('>CARRY<')
   })
 
   it('draws primitive pin labels at the same canonical positions used by layout', () => {

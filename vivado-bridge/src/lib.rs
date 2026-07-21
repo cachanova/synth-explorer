@@ -1129,7 +1129,7 @@ mod tests {
                 ],
                 top: "top".to_owned(),
                 target: part().name.clone(),
-                extra_args: Some("-retiming".to_owned()),
+                extra_args: Some("-mode out_of_context -retiming".to_owned()),
             },
             &[part()],
         )
@@ -1143,7 +1143,7 @@ mod tests {
         assert!(!script.contains("read_verilog -sv {defs.svh}"));
         assert!(script.contains("read_verilog -sv {top.sv}"));
         assert!(script.contains(
-            "synth_design -top {top} -part {xc7a35tcpg236-1} -flatten_hierarchy full -retiming"
+            "synth_design -top {top} -part {xc7a35tcpg236-1} -flatten_hierarchy full -mode out_of_context -retiming"
         ));
         assert!(
             script.contains("report_timing -max_paths 1 -delay_type max -file {vivado-timing.rpt}")

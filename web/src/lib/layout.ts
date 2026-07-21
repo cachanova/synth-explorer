@@ -5,7 +5,7 @@ import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
 import type { ControlRole, GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
-import { groupBadgeText, nodeLabel } from './prettyType'
+import { groupBadgeText, nodeLabel, nodeSublabel } from './prettyType'
 import { controlLabel, controlsFor, symbolKind } from './symbols'
 
 export interface Point {
@@ -252,7 +252,7 @@ const PAD_X = 24
 
 function textWidth(node: GraphNode): number {
   const label = nodeLabel(node)
-  const name = node.name?.startsWith('$') ? '' : node.name ?? ''
+  const name = nodeSublabel(node) ?? ''
   const longest = Math.max(label.length, Math.min(name.length, 22))
   return Math.round(longest * CHAR_WIDTH + PAD_X)
 }
@@ -284,6 +284,10 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
         return { width: Math.max(92, contentWidth), height: 58 }
       case 'lut':
         return { width: Math.max(78, contentWidth), height: 54 }
+      case 'carry':
+        return { width: Math.max(98, contentWidth), height: 58 }
+      case 'dsp':
+        return { width: Math.max(112, contentWidth), height: 62 }
       case 'arith':
         return { width: Math.max(72, contentWidth), height: 54 }
       case 'memory':

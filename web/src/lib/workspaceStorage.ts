@@ -1,4 +1,5 @@
 import type { DesignFile, Mode } from '../types'
+import { flagsForVivadoChange } from './flagRegistry'
 
 const DATABASE_NAME = 'synth-explorer-workspace'
 const STORE_NAME = 'drafts'
@@ -28,6 +29,7 @@ export interface WorkspaceState {
   top: string
   mode: Mode
   extraArgs: string
+  vivadoExtraArgs: string
 }
 
 interface StoredWorkspace extends WorkspaceState {
@@ -67,7 +69,8 @@ export function parseStoredWorkspace(value: unknown): WorkspaceState | null {
     typeof record.top !== 'string' ||
     typeof record.mode !== 'string' ||
     !MODES.has(record.mode as Mode) ||
-    typeof record.extraArgs !== 'string'
+    typeof record.extraArgs !== 'string' ||
+    (record.vivadoExtraArgs !== undefined && typeof record.vivadoExtraArgs !== 'string')
   ) {
     return null
   }
@@ -78,6 +81,10 @@ export function parseStoredWorkspace(value: unknown): WorkspaceState | null {
     top: record.top,
     mode: record.mode as Mode,
     extraArgs: record.extraArgs,
+    vivadoExtraArgs:
+      typeof record.vivadoExtraArgs === 'string'
+        ? record.vivadoExtraArgs
+        : flagsForVivadoChange(''),
   }
 }
 
