@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Subgraph } from '../types'
-import { graphProjection } from './graphProjection'
+import { coneRootIds, graphProjection } from './graphProjection'
 
 const subgraph = (id: number): Subgraph => ({
   nodes: [{ id, kind: 'cell', name: `n${id}` }],
@@ -9,6 +9,18 @@ const subgraph = (id: number): Subgraph => ({
 })
 
 describe('graph projection', () => {
+  it('opens cones from the synthetic group id even for a large group', () => {
+    const node = {
+      id: 900,
+      kind: 'cell' as const,
+      name: 'memory [4096×64]',
+      cell_type: 'RAM64M',
+      members: Array.from({ length: 256 }, (_, index) => index),
+    }
+
+    expect(coneRootIds(node)).toEqual([900])
+  })
+
   it('keeps the full schematic identity across non-focus selections', () => {
     const full = subgraph(1)
 

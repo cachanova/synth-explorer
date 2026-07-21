@@ -5,7 +5,7 @@ use synth_explorer_analysis::analysis::{
 use synth_explorer_analysis::delay_model::DelayProfile;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
-use synth_explorer_analysis::grouping::{GroupKind, GroupPartition};
+use synth_explorer_analysis::grouping::{GroupKind, GroupPartition, memory_arrays_from_source};
 use synth_explorer_analysis::netlist::{parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
@@ -79,7 +79,7 @@ fn grouped_register_banks() -> (Graph, Analysis, GroupPartition) {
     let (top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     let analysis = Analysis::new(&graph, vec!["banks.sv".to_owned()]);
-    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, &[]);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, Vec::new());
     (graph, analysis, partition)
 }
 
@@ -255,6 +255,82 @@ fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
     assert_eq!(memory.node.register, Some(false));
     assert_eq!(memory.width, Some(3));
     assert_eq!(memory.members.as_deref().map(<[_]>::len), Some(3));
+}
+
+#[test]
+fn vivado_memory_matching_prefers_the_longest_logical_reg_prefix() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "foo_regbank_reg_0": { "type": "RAM32M" },
+                "foo_regbank_reg_1": { "type": "RAM32M" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "memories": {
+                "foo": { "width": 8, "start_offset": 0, "size": 32 },
+                "foo_regbank": { "width": 16, "start_offset": 0, "size": 64 }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&final_netlist, None).unwrap();
+    let graph = Graph::from_netlist(&final_netlist, top, module).unwrap();
+
+    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top");
+
+    assert_eq!(arrays.len(), 1);
+    assert_eq!(arrays[0].name, "foo_regbank");
+    assert_eq!(arrays[0].members.len(), 2);
+}
+
+#[test]
+fn memory_matching_keeps_identical_child_arrays_in_separate_groups() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "u0.memory.0.0": { "type": "RAM64M" },
+                "u0.memory.0.1": { "type": "RAM64M" },
+                "u1.memory.0.0": { "type": "RAM64M" },
+                "u1.memory.0.1": { "type": "RAM64M" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": {
+            "top": {
+                "attributes": { "top": "1" },
+                "cells": {
+                    "u0": { "type": "child" },
+                    "u1": { "type": "child" }
+                }
+            },
+            "child": {
+                "memories": {
+                    "memory": { "width": 16, "start_offset": 0, "size": 128 }
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&final_netlist, None).unwrap();
+    let graph = Graph::from_netlist(&final_netlist, top, module).unwrap();
+
+    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top");
+
+    assert_eq!(arrays.len(), 2);
+    assert_eq!(arrays[0].name, "u0.memory");
+    assert_eq!(arrays[0].members.len(), 2);
+    assert_eq!(arrays[1].name, "u1.memory");
+    assert_eq!(arrays[1].members.len(), 2);
+    assert_ne!(arrays[0].members, arrays[1].members);
 }
 
 #[test]

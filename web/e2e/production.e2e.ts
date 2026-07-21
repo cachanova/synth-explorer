@@ -875,8 +875,12 @@ test('stacks mapped primitives from one inferred memory when buses are grouped',
   )
   const memberCount = Number(await groupedMemory.getAttribute('data-member-count'))
   expect(memberCount).toBeGreaterThan(1)
+  const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
+  expect(groupedId).not.toBeNull()
   await groupedMemory.click()
-  await expect(page.locator('.g-symbol-stack')).toHaveCount(2)
+  await expect(
+    page.locator(`[data-node-stack-id="${groupedId}"] .g-symbol-stack`),
+  ).toHaveCount(memberCount >= 4 ? 2 : 1)
 
   await page.getByLabel('group buses').uncheck()
   await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)

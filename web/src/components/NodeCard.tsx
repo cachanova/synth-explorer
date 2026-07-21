@@ -1,6 +1,7 @@
 import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
-import { controlLabel, controlsFor } from '../lib/symbols'
+import { coneRootIds } from '../lib/graphProjection'
+import { controlLabel, controlsFor, symbolKind } from '../lib/symbols'
 import type { GraphNode } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 
@@ -30,6 +31,7 @@ export function NodeCard({
   const spans = designSrcSpans(node.src, store.files)
   const name = displayNodeName(node, drivingNet)
   const controls = controlsFor(node)
+  const groupedMemory = node.members != null && symbolKind(node) === 'memory'
 
   return (
     <div className="node-card">
@@ -48,14 +50,19 @@ export function NodeCard({
             <span className="v">{node.depth}</span>
           </>
         )}
-        {node.width != null && node.width >= 2 && (
+        {groupedMemory ? (
+          <>
+            <span className="k">primitives</span>
+            <span className="v">{node.members?.length}</span>
+          </>
+        ) : node.width != null && node.width >= 2 ? (
           <>
             <span className="k">width</span>
             <span className="v">{node.width}</span>
             <span className="k">members</span>
             <span className="v">{node.members?.length ?? node.width} bits</span>
           </>
-        )}
+        ) : null}
         {node.seq && (
           <>
             <span className="k">seq</span>
@@ -147,7 +154,7 @@ export function NodeCard({
         <button
           onClick={() =>
             store.openCone({
-              nodes: node.members ?? [node.id],
+              nodes: coneRootIds(node),
               dir: 'fanin',
               label: `${name} (fanin)`,
             })
@@ -158,7 +165,7 @@ export function NodeCard({
         <button
           onClick={() =>
             store.openCone({
-              nodes: node.members ?? [node.id],
+              nodes: coneRootIds(node),
               dir: 'fanout',
               label: `${name} (fanout)`,
             })
