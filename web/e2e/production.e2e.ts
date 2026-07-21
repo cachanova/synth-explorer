@@ -877,14 +877,21 @@ test('stacks mapped primitives from one inferred memory when buses are grouped',
   expect(memberCount).toBeGreaterThan(1)
   const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
   expect(groupedId).not.toBeNull()
-  await groupedMemory.click()
+  await expect(groupedMemory).toHaveAttribute('role', 'button')
+  await groupedMemory.focus()
+  await groupedMemory.press('Enter')
   await expect(
     page.locator(`[data-node-stack-id="${groupedId}"] .g-symbol-stack`),
   ).toHaveCount(memberCount >= 4 ? 2 : 1)
 
+  await page.getByRole('button', { name: 'Fanin cone' }).click()
+  await page.getByLabel('Focus').check()
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
   await page.getByLabel('group buses').uncheck()
   await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)
   await expect(page.locator('.g-node-body[data-member-count]')).toHaveCount(0)
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
 
   await page.getByLabel('group buses').check()
   await expect(groupedMemory).toHaveCount(1)

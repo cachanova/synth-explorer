@@ -226,7 +226,10 @@ impl AnalysisSession {
         let dir = ConeDir::parse(&query.dir)
             .ok_or_else(|| js_error("cone direction must be fanin or fanout"))?;
         let grouping = self.grouping(query.group_vectors);
-        let roots = self.resolve_projection_roots(&query.nodes, grouping)?;
+        // Synthetic group ids remain valid request roots when presentation is
+        // toggled back to raw nodes. Resolve through the canonical partition,
+        // then apply grouping only to the returned projection.
+        let roots = self.resolve_projection_roots(&query.nodes, Some(&self.design.grouping))?;
         let response = self
             .design
             .analysis
@@ -530,5 +533,40 @@ mod tests {
         assert_eq!(path_identities(&depth), path_identities(&delay));
         assert!(path_identities(&depth).is_superset(&response_identities(&depth_only)));
         assert!(path_identities(&depth).len() > depth_only.paths.len());
+    }
+
+    #[test]
+    fn synthetic_cone_root_survives_turning_grouping_off() {
+        let session = session("gates", "series7");
+        let base = session.design.graph.nodes.len() as u32;
+        let group_id = session
+            .design
+            .grouping
+            .groups
+            .iter()
+            .position(|group| group.members.len() >= 2)
+            .expect("fixture has a grouped vector") as u32;
+        let synthetic_id = base + group_id;
+        let response = session
+            .cone_json(
+                &serde_json::json!({
+                    "nodes": [synthetic_id],
+                    "dir": "fanin",
+                    "max_depth": 1,
+                    "max_nodes": 400,
+                    "group_vectors": false
+                })
+                .to_string(),
+            )
+            .expect("synthetic root resolves while the response is ungrouped");
+        let json: serde_json::Value = serde_json::from_str(&response).expect("cone JSON parses");
+        let nodes = json["nodes"].as_array().expect("nodes is an array");
+
+        assert!(!nodes.is_empty());
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node["id"].as_u64().is_some_and(|id| id < u64::from(base)))
+        );
     }
 }
