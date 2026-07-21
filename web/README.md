@@ -24,7 +24,6 @@ needs the bridge described in [`../vivado-bridge/`](../vivado-bridge/).
 | `npx tsc -b` | Type-check the application and workers |
 | `npm run build` | Produce the static `dist/` deployment |
 | `npm run test:e2e` | Build-independent Playwright checks against `PLAYWRIGHT_BASE_URL` or local preview |
-| `npm run benchmark:migration` | Compare pinned control and candidate deployments |
 | `npm run generate:precomputed` | Regenerate gate-mode artifacts for the default design and both language variants of every bundled example |
 | `npm run verify:precomputed` | Verify precomputed coverage, exact input keys, producer, schema, and artifact shape |
 
@@ -72,4 +71,4 @@ usual. The downloaded result is validated and then enters the same IndexedDB
 cache path as a locally generated result.
 
 See the [architecture](../docs/ARCHITECTURE.md) and
-[migration record](../docs/BROWSER_WASM_MIGRATION.md).
+[VHDL runtime](../docs/VHDL_GHDL.md).

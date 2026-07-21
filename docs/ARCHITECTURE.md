@@ -3,8 +3,8 @@
 Synth Explorer is a static, browser-local RTL exploration application. Vercel
 delivers files from `web/dist/`. The default Yosys synthesis path, analysis,
 caching, and graph interaction require no application server. An explicitly
-paired optional path can call Vivado through a loopback-only service running on
-the user's computer.
+selected optional path can call Vivado through a loopback-only service running
+on the user's computer.
 
 ## Runtime flow
 
@@ -31,14 +31,13 @@ the user's computer.
 8. elkjs lays out bounded subgraphs in its own worker.
 
 Local Vivado is a manual branch after validation. The user starts
-`synth-explorer-vivado-bridge`, pairs the current tab with its ephemeral code,
-and selects a family plus speed grade from the installation's authoritative
-part catalog. The browser sends the RTL, explicit top, concrete resolved part,
-and validated `synth_design` arguments to `http://127.0.0.1:32123`. The bridge
-invokes Vivado directly with argv and a generated Tcl file, then returns
-structural Verilog. The existing Yosys worker normalizes that netlist and the
-existing analysis worker owns every downstream query. No hosted service sees
-the RTL or result.
+`synth-explorer-vivado-bridge` with an exact-origin allowlist, then selects a
+family plus speed grade from the installation's authoritative part catalog. The
+browser sends the RTL, explicit top, concrete resolved part, and validated
+`synth_design` arguments to `http://127.0.0.1:32123`. The bridge invokes Vivado
+directly with argv and a generated Tcl file, then returns structural Verilog.
+The existing Yosys worker normalizes that netlist and the existing analysis
+worker owns every downstream query. No hosted service sees the RTL or result.
 
 There is no hosted HTTP API, application server, remote design identifier,
 account, or shared design store. The optional HTTP protocol exists only on the
