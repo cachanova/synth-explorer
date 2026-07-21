@@ -1,5 +1,4 @@
 import {
-  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -7,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type MutableRefObject,
   type RefObject,
 } from 'react'
 import {
@@ -46,6 +46,11 @@ import {
   type SymbolKind,
 } from '../lib/symbols'
 import type { ControlRef, ControlRole, GraphNode } from '../types'
+import {
+  EDGE_HIT_CELL_SIZE,
+  edgeHitCellKey,
+  edgeHitCellKeys,
+} from '../lib/edgeHitGrid'
 
 interface RegisterControlPin {
   pin: string
@@ -778,24 +783,145 @@ const SchematicPinOverlays = memo(function SchematicPinOverlays({
 })
 
 interface SchematicEdgesProps {
-  edges: LaidOutEdge[]
-  nodeById: Map<number, LaidOutNode>
-  relevantIds: Set<number>
-  overlayIds: Set<number>
-  extendOverlayToBoundaryNets: boolean
+  prepared: PreparedSchematicEdges
 }
 
-// Selection changes affect node state far more often than edge state. Keep the
-// complete edge layer outside those reconciliations, and avoid a host <g> per
-// edge: relevance can live on the path and optional bus label directly.
-const SchematicEdges = memo(function SchematicEdges({
+interface PreparedSchematicEdge {
+  index: number
+  points: Point[]
+  title: string
+  bits: number
+  isBus: boolean
+  relevant: boolean
+  control: boolean
+  highlighted: boolean
+  batchKey: string
+  mid: Point | null
+}
+
+interface SchematicEdgeBatch {
+  key: string
+  d: string
+  count: number
+  firstTitle: string
+  relevant: boolean
+  control: boolean
+  isBus: boolean
+  highlighted: boolean
+}
+
+interface SchematicArrowBatch {
+  key: string
+  d: string
+  count: number
+  relevant: boolean
+  control: boolean
+  highlighted: boolean
+}
+
+interface PreparedSchematicEdges {
+  edges: PreparedSchematicEdge[]
+  batches: SchematicEdgeBatch[]
+  arrows: SchematicArrowBatch[]
+}
+
+function edgeBatchKey(
+  relevant: boolean,
+  control: boolean,
+  isBus: boolean,
+  highlighted: boolean,
+): string {
+  return `${relevant ? 1 : 0}${control ? 1 : 0}${isBus ? 1 : 0}${highlighted ? 1 : 0}`
+}
+
+function edgeClassName(
+  control: boolean,
+  isBus: boolean,
+  highlighted: boolean,
+): string {
+  return `g-edge${control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
+}
+
+function edgePaintOrder(batch: {
+  relevant: boolean
+  control: boolean
+  isBus?: boolean
+  highlighted: boolean
+}): number {
+  // Paint context first and highlighted nets last. This makes the semantic
+  // overlay deterministic instead of depending on backend edge order.
+  return (
+    (batch.highlighted ? 8 : 0) +
+    (batch.relevant ? 4 : 0) +
+    (batch.control ? 2 : 0) +
+    (batch.isBus ? 1 : 0)
+  )
+}
+
+function edgeStrokeWidth(
+  edge: Pick<PreparedSchematicEdge, 'isBus' | 'highlighted'>,
+): number {
+  if (edge.highlighted) return 2.2
+  if (edge.isBus) return 2.4
+  return 1.3
+}
+
+function edgeArrowD(points: Point[], strokeWidth: number): string {
+  if (points.length < 2) return ''
+  const tipAnchor = points[points.length - 1]
+  let previousIndex = points.length - 2
+  while (
+    previousIndex >= 0 &&
+    points[previousIndex].x === tipAnchor.x &&
+    points[previousIndex].y === tipAnchor.y
+  ) {
+    previousIndex -= 1
+  }
+  if (previousIndex < 0) return ''
+  const previous = points[previousIndex]
+  const dx = tipAnchor.x - previous.x
+  const dy = tipAnchor.y - previous.y
+  const length = Math.hypot(dx, dy)
+  if (length === 0) return ''
+  const ux = dx / length
+  const uy = dy / length
+  const px = -uy
+  const py = ux
+
+  // Match the former marker: viewBox 0 0 10 10, ref 9 5, marker 7x7,
+  // markerUnits=strokeWidth. The triangle tip sits 0.7 stroke widths past the
+  // edge endpoint and its base 6.3 stroke widths behind it.
+  const tipX = tipAnchor.x + ux * 0.7 * strokeWidth
+  const tipY = tipAnchor.y + uy * 0.7 * strokeWidth
+  const baseX = tipAnchor.x - ux * 6.3 * strokeWidth
+  const baseY = tipAnchor.y - uy * 6.3 * strokeWidth
+  const halfWidth = 3.5 * strokeWidth
+  return [
+    `M ${baseX + px * halfWidth} ${baseY + py * halfWidth}`,
+    `L ${tipX} ${tipY}`,
+    `L ${baseX - px * halfWidth} ${baseY - py * halfWidth}`,
+    'Z',
+  ].join(' ')
+}
+
+function prepareSchematicEdges({
   edges,
   nodeById,
   relevantIds,
   overlayIds,
   extendOverlayToBoundaryNets,
-}: SchematicEdgesProps) {
-  return edges.map((laidOutEdge, index) => {
+}: {
+  edges: LaidOutEdge[]
+  nodeById: Map<number, LaidOutNode>
+  relevantIds: Set<number>
+  overlayIds: Set<number>
+  extendOverlayToBoundaryNets: boolean
+}): PreparedSchematicEdges {
+  const prepared: PreparedSchematicEdge[] = []
+  const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
+  const arrowBuilders = new Map<string, SchematicArrowBatch & { paths: string[] }>()
+
+  edges.forEach((laidOutEdge, index) => {
     const relevant =
       relevantIds.size === 0 ||
       (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
@@ -831,34 +957,382 @@ const SchematicEdges = memo(function SchematicEdges({
     }
     const bits = laidOutEdge.edge.bits.length
     const isBus = bits > 1
-    const className = `g-edge${laidOutEdge.edge.control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
+    const control = Boolean(laidOutEdge.edge.control)
+    const batchKey = edgeBatchKey(relevant, control, isBus, highlighted)
     const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
     const title = `${shortNetName(laidOutEdge.edge.net_name)} (${bits} bit${isBus ? 's' : ''}): ${laidOutEdge.edge.from_port}→${laidOutEdge.edge.to_port}`
-    return (
-      <Fragment key={index}>
-        <path
-          className={className}
-          d={pathD(points)}
-          markerEnd={`url(#${highlighted ? 'arrow-hl' : 'arrow'})`}
-          data-relevant={relevant ? 1 : 0}
-        >
-          <title>{title}</title>
-        </path>
-        {isBus && mid && (
-          <text
-            className="g-bus-label"
-            x={mid.x}
-            y={mid.y - 3}
-            textAnchor="middle"
-            aria-hidden="true"
-            data-relevant={relevant ? 1 : 0}
-          >
-            {bits}
-          </text>
-        )}
-      </Fragment>
-    )
+    const edge: PreparedSchematicEdge = {
+      index,
+      points,
+      title,
+      bits,
+      isBus,
+      relevant,
+      control,
+      highlighted,
+      batchKey,
+      mid,
+    }
+    prepared.push(edge)
+
+    let batch = batchBuilders.get(batchKey)
+    if (!batch) {
+      batch = {
+        key: batchKey,
+        d: '',
+        count: 0,
+        firstTitle: title,
+        relevant,
+        control,
+        isBus,
+        highlighted,
+        paths: [],
+      }
+      batchBuilders.set(batchKey, batch)
+    }
+    batch.count += 1
+    const line = pathD(points)
+    if (line) batch.paths.push(line)
+
+    const arrow = edgeArrowD(points, edgeStrokeWidth(edge))
+    if (arrow) {
+      const arrowKey = `${relevant ? 1 : 0}${control ? 1 : 0}${highlighted ? 1 : 0}`
+      let arrowBatch = arrowBuilders.get(arrowKey)
+      if (!arrowBatch) {
+        arrowBatch = {
+          key: arrowKey,
+          d: '',
+          count: 0,
+          relevant,
+          control,
+          highlighted,
+          paths: [],
+        }
+        arrowBuilders.set(arrowKey, arrowBatch)
+      }
+      arrowBatch.count += 1
+      arrowBatch.paths.push(arrow)
+    }
   })
+
+  const batches = [...batchBuilders.values()]
+    .map(({ paths, ...batch }) => ({ ...batch, d: paths.join(' ') }))
+    .sort((a, b) => edgePaintOrder(a) - edgePaintOrder(b))
+  const arrows = [...arrowBuilders.values()]
+    .map(({ paths, ...batch }) => ({ ...batch, d: paths.join(' ') }))
+    .sort((a, b) => edgePaintOrder(a) - edgePaintOrder(b))
+  return { edges: prepared, batches, arrows }
+}
+
+// Selection changes affect node state far more often than edge state. Keep the
+// complete edge layer outside those reconciliations, and batch equal semantic
+// styles into a bounded number of paths instead of mounting one path and title
+// for every connection.
+const SchematicEdges = memo(function SchematicEdges({ prepared }: SchematicEdgesProps) {
+  if (prepared.edges.length === 0) return null
+  return (
+    <g
+      className="g-edge-layer"
+      role="img"
+      aria-label={`${prepared.edges.length} schematic connection${prepared.edges.length === 1 ? '' : 's'}. Inspect nodes for accessible fanin and fanout details.`}
+    >
+      {prepared.batches.map((batch) => (
+        <path
+          key={batch.key}
+          className={edgeClassName(batch.control, batch.isBus, batch.highlighted)}
+          d={batch.d}
+          data-edge-batch={batch.key}
+          data-edge-count={batch.count}
+          data-first-edge-title={batch.firstTitle}
+          data-relevant={batch.relevant ? 1 : 0}
+          aria-hidden="true"
+        />
+      ))}
+      {prepared.arrows.map((batch) => (
+        <path
+          key={batch.key}
+          className={`g-edge-arrows${batch.control ? ' control' : ''}${batch.highlighted ? ' hl' : ''}`}
+          d={batch.d}
+          data-arrow-count={batch.count}
+          data-relevant={batch.relevant ? 1 : 0}
+          aria-hidden="true"
+        />
+      ))}
+      {prepared.edges.map((edge) => edge.isBus && edge.mid ? (
+        <text
+          key={edge.index}
+          className="g-bus-label"
+          x={edge.mid.x}
+          y={edge.mid.y - 3}
+          textAnchor="middle"
+          aria-hidden="true"
+          data-relevant={edge.relevant ? 1 : 0}
+        >
+          {edge.bits}
+        </text>
+      ) : null)}
+    </g>
+  )
+})
+
+const EDGE_HIT_TOLERANCE_PX = 7
+
+interface EdgeHitSegment {
+  id: number
+  edge: PreparedSchematicEdge
+  from: Point
+  to: Point
+}
+
+interface EdgeHitIndex {
+  batches: Map<string, Map<string, EdgeHitSegment[]>>
+}
+
+interface EdgeTooltipState {
+  edgeIndex: number
+  title: string
+  left: number
+  top: number
+}
+
+function buildEdgeHitIndex(edges: PreparedSchematicEdge[]): EdgeHitIndex {
+  const batches = new Map<string, Map<string, EdgeHitSegment[]>>()
+  let segmentId = 0
+  for (const edge of edges) {
+    let cells = batches.get(edge.batchKey)
+    if (!cells) {
+      cells = new Map()
+      batches.set(edge.batchKey, cells)
+    }
+    for (let pointIndex = 1; pointIndex < edge.points.length; pointIndex += 1) {
+      const from = edge.points[pointIndex - 1]
+      const to = edge.points[pointIndex]
+      if (from.x === to.x && from.y === to.y) continue
+      const segment: EdgeHitSegment = { id: segmentId, edge, from, to }
+      segmentId += 1
+      for (const key of edgeHitCellKeys(from, to)) {
+        const existing = cells.get(key)
+        if (existing) existing.push(segment)
+        else cells.set(key, [segment])
+      }
+    }
+  }
+  return { batches }
+}
+
+function pointSegmentDistanceSquared(point: Point, from: Point, to: Point): number {
+  const dx = to.x - from.x
+  const dy = to.y - from.y
+  const lengthSquared = dx * dx + dy * dy
+  if (lengthSquared === 0) {
+    const px = point.x - from.x
+    const py = point.y - from.y
+    return px * px + py * py
+  }
+  const projection = Math.max(
+    0,
+    Math.min(1, ((point.x - from.x) * dx + (point.y - from.y) * dy) / lengthSquared),
+  )
+  const closestX = from.x + projection * dx
+  const closestY = from.y + projection * dy
+  const px = point.x - closestX
+  const py = point.y - closestY
+  return px * px + py * py
+}
+
+function hitTestEdge(
+  index: EdgeHitIndex,
+  batchKey: string,
+  point: Point,
+  tolerance: number,
+): PreparedSchematicEdge | null {
+  const cells = index.batches.get(batchKey)
+  if (!cells) return null
+  const minCellX = Math.floor((point.x - tolerance) / EDGE_HIT_CELL_SIZE)
+  const maxCellX = Math.floor((point.x + tolerance) / EDGE_HIT_CELL_SIZE)
+  const minCellY = Math.floor((point.y - tolerance) / EDGE_HIT_CELL_SIZE)
+  const maxCellY = Math.floor((point.y + tolerance) / EDGE_HIT_CELL_SIZE)
+  const visitedSegments = new Set<number>()
+  const toleranceSquared = tolerance * tolerance
+  let best: { edge: PreparedSchematicEdge; distanceSquared: number } | null = null
+  for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
+    for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
+      for (const segment of cells.get(edgeHitCellKey(cellX, cellY)) ?? []) {
+        if (visitedSegments.has(segment.id)) continue
+        visitedSegments.add(segment.id)
+        const distanceSquared = pointSegmentDistanceSquared(
+          point,
+          segment.from,
+          segment.to,
+        )
+        if (distanceSquared > toleranceSquared) continue
+        if (
+          !best ||
+          distanceSquared < best.distanceSquared ||
+          (distanceSquared === best.distanceSquared && segment.edge.index > best.edge.index)
+        ) {
+          best = { edge: segment.edge, distanceSquared }
+        }
+      }
+    }
+  }
+  return best?.edge ?? null
+}
+
+const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
+  active,
+  edges,
+  stageRef,
+  svgRef,
+  viewportRef,
+  hideRef,
+}: {
+  active: boolean
+  edges: PreparedSchematicEdge[]
+  stageRef: RefObject<HTMLDivElement | null>
+  svgRef: RefObject<SVGSVGElement | null>
+  viewportRef: RefObject<SVGGElement | null>
+  hideRef: MutableRefObject<(() => void) | null>
+}) {
+  const hitIndexRef = useRef<{
+    edges: PreparedSchematicEdge[]
+    index: EdgeHitIndex
+  } | null>(null)
+  if (hitIndexRef.current?.edges !== edges) hitIndexRef.current = null
+  const [tooltip, setTooltip] = useState<EdgeTooltipState | null>(null)
+
+  useEffect(() => {
+    setTooltip(null)
+    if (!active) return
+    const svg = svgRef.current
+    const stage = stageRef.current
+    const viewport = viewportRef.current
+    if (!svg || !stage || !viewport) return
+    let frame: number | null = null
+    let idle: number | null = null
+    let pending: { clientX: number; clientY: number; batchKey: string } | null = null
+    let tooltipVisible = false
+    const ensureHitIndex = () => {
+      if (hitIndexRef.current?.edges === edges) return hitIndexRef.current.index
+      const index = buildEdgeHitIndex(edges)
+      hitIndexRef.current = { edges, index }
+      return index
+    }
+
+    // Building the geometry grid is linear in routed segments. Warm it only
+    // after the graph paints; the first pointer hit can still build it on
+    // demand if the browser has not reached an idle period yet.
+    if (typeof window.requestIdleCallback === 'function') {
+      idle = window.requestIdleCallback(ensureHitIndex, { timeout: 1_000 })
+    } else {
+      idle = window.setTimeout(ensureHitIndex, 0)
+    }
+
+    const hide = () => {
+      pending = null
+      if (frame != null) window.cancelAnimationFrame(frame)
+      frame = null
+      if (tooltipVisible) {
+        tooltipVisible = false
+        setTooltip(null)
+      }
+    }
+    hideRef.current = hide
+    const resolvePending = () => {
+      frame = null
+      const current = pending
+      pending = null
+      if (!current || svg.classList.contains('panning')) {
+        hide()
+        return
+      }
+      const matrix = viewport.getScreenCTM()
+      if (!matrix) {
+        hide()
+        return
+      }
+      const scale = Math.hypot(matrix.a, matrix.b)
+      if (!Number.isFinite(scale) || scale <= 0) {
+        hide()
+        return
+      }
+      const graphPoint = new DOMPoint(current.clientX, current.clientY).matrixTransform(
+        matrix.inverse(),
+      )
+      const edge = hitTestEdge(
+        ensureHitIndex(),
+        current.batchKey,
+        graphPoint,
+        EDGE_HIT_TOLERANCE_PX / scale,
+      )
+      if (!edge) {
+        hide()
+        return
+      }
+      const rect = stage.getBoundingClientRect()
+      const left = Math.min(
+        Math.max(8, current.clientX - rect.left + 12),
+        Math.max(8, rect.width - 272),
+      )
+      const top = Math.min(
+        Math.max(8, current.clientY - rect.top + 12),
+        Math.max(8, rect.height - 44),
+      )
+      tooltipVisible = true
+      setTooltip({ edgeIndex: edge.index, title: edge.title, left, top })
+    }
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') {
+        hide()
+        return
+      }
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('.g-node-body')) {
+        hide()
+        return
+      }
+      const edgePath = target?.closest<SVGPathElement>('.g-edge[data-edge-batch]')
+      const batchKey = edgePath?.dataset.edgeBatch
+      if (!edgePath || !batchKey || !svg.contains(edgePath)) {
+        hide()
+        return
+      }
+      pending = { clientX: event.clientX, clientY: event.clientY, batchKey }
+      if (frame == null) frame = window.requestAnimationFrame(resolvePending)
+    }
+
+    svg.addEventListener('pointermove', onPointerMove)
+    svg.addEventListener('pointerleave', hide)
+    svg.addEventListener('pointerdown', hide)
+    svg.addEventListener('wheel', hide)
+    return () => {
+      svg.removeEventListener('pointermove', onPointerMove)
+      svg.removeEventListener('pointerleave', hide)
+      svg.removeEventListener('pointerdown', hide)
+      svg.removeEventListener('wheel', hide)
+      if (hideRef.current === hide) hideRef.current = null
+      if (frame != null) window.cancelAnimationFrame(frame)
+      if (idle != null) {
+        if (typeof window.cancelIdleCallback === 'function') {
+          window.cancelIdleCallback(idle)
+        } else {
+          window.clearTimeout(idle)
+        }
+      }
+    }
+  }, [active, edges, hideRef, stageRef, svgRef, viewportRef])
+
+  if (!tooltip) return null
+  return (
+    <div
+      className="g-edge-tooltip"
+      role="tooltip"
+      data-edge-index={tooltip.edgeIndex}
+      style={{ left: tooltip.left, top: tooltip.top }}
+    >
+      {tooltip.title}
+    </div>
+  )
 })
 
 export const GraphView = memo(function GraphView({
@@ -878,6 +1352,7 @@ export const GraphView = memo(function GraphView({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
+  const hideEdgeTooltipRef = useRef<(() => void) | null>(null)
   const graphRef = useRef(graph)
   graphRef.current = graph
   const layoutHistory = useRef<{
@@ -938,6 +1413,22 @@ export const GraphView = memo(function GraphView({
     }
     return { nodeById, pinsById, portDirection }
   }, [graph])
+  const preparedEdges = useMemo(
+    () => prepareSchematicEdges({
+      edges: graph.edges,
+      nodeById: metadata.nodeById,
+      relevantIds,
+      overlayIds,
+      extendOverlayToBoundaryNets,
+    }),
+    [
+      extendOverlayToBoundaryNets,
+      graph.edges,
+      metadata.nodeById,
+      overlayIds,
+      relevantIds,
+    ],
+  )
 
   const clearDetailRestore = useCallback(() => {
     if (detailRestoreTimer.current == null) return
@@ -956,6 +1447,7 @@ export const GraphView = memo(function GraphView({
   // immediately; restoring richer labels waits until the gesture is idle so a
   // 2,000-node style/layout transition never lands in the middle of a frame.
   const applyTransform = useCallback((next: ViewportTransform) => {
+    hideEdgeTooltipRef.current?.()
     transformRef.current = next
     viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
 
@@ -1547,43 +2039,12 @@ export const GraphView = memo(function GraphView({
         onClick={selectNodeTarget}
         onDoubleClick={expandNodeTarget}
       >
-        <defs>
-          <marker
-            id="arrow"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--border-strong)" />
-          </marker>
-          <marker
-            id="arrow-hl"
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--accent)" />
-          </marker>
-        </defs>
-
         <g
           ref={viewportRef}
           className="g-viewport"
           data-detail-level="overview"
         >
-          <SchematicEdges
-            edges={graph.edges}
-            nodeById={metadata.nodeById}
-            relevantIds={relevantIds}
-            overlayIds={overlayIds}
-            extendOverlayToBoundaryNets={extendOverlayToBoundaryNets}
-          />
+          <SchematicEdges prepared={preparedEdges} />
 
           {graph.nodes.map((laidOutNode) => (
             <SchematicNode
@@ -1611,6 +2072,15 @@ export const GraphView = memo(function GraphView({
           />
         </g>
       </svg>
+
+      <SchematicEdgeTooltip
+        active={active}
+        edges={preparedEdges.edges}
+        stageRef={stageRef}
+        svgRef={svgRef}
+        viewportRef={viewportRef}
+        hideRef={hideEdgeTooltipRef}
+      />
 
       {interactive && (
         <div className="graph-shortcuts" role="note">

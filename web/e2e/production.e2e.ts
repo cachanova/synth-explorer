@@ -542,8 +542,42 @@ test('renders and resizes the browser-produced graph without resetting user zoom
     return { nodes: latest.input.nodes.length, edges: latest.input.edges.length }
   })
   await expect(page.locator('.g-node-body')).toHaveCount(exactCounts.nodes)
-  await expect(page.locator('.g-edge')).toHaveCount(exactCounts.edges)
+  await expect
+    .poll(() =>
+      page.locator('.g-edge').evaluateAll((paths) =>
+        paths.reduce((count, path) => count + Number(path.getAttribute('data-edge-count')), 0),
+      ),
+    )
+    .toBe(exactCounts.edges)
+  await expect
+    .poll(() =>
+      page.locator('.g-edge-arrows').evaluateAll((paths) =>
+        paths.reduce((count, path) => count + Number(path.getAttribute('data-arrow-count')), 0),
+      ),
+    )
+    .toBe(exactCounts.edges)
   await expect(page.locator('.g-edge-wrap')).toHaveCount(0)
+  const accessibility = await page.context().newCDPSession(page)
+  const { nodes: accessibilityNodes } = await accessibility.send(
+    'Accessibility.getFullAXTree',
+  )
+  expect(
+    accessibilityNodes
+      .filter((node) => node.role?.value === 'image')
+      .map((node) => node.name?.value)
+      .filter((name) => typeof name === 'string' && name.includes('schematic connection')),
+  ).toEqual([
+    `${exactCounts.edges} schematic connections. Inspect nodes for accessible fanin and fanout details.`,
+  ])
+  expect(
+    accessibilityNodes.filter(
+      (node) =>
+        node.role?.value === 'graphics-symbol' &&
+        typeof node.name?.value === 'string' &&
+        node.name.value.includes('→'),
+    ),
+  ).toHaveLength(0)
+  await accessibility.detach()
   await expect(page.getByLabel('Focus')).toBeChecked()
   await expect(page.getByLabel('Focus')).toBeEnabled()
 
@@ -590,6 +624,38 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await expect(transientPinNode).not.toHaveClass(/selected/)
   await transientPinNode.click()
   await expect(transientPinNode).toHaveClass(/selected/)
+  const tooltipEdge = page.locator('.g-edge').first()
+  const expectedEdgeTitle = await tooltipEdge.getAttribute('data-first-edge-title')
+  expect(expectedEdgeTitle).not.toBeNull()
+  const edgePoint = await tooltipEdge.evaluate((path) => {
+    const geometry = path as SVGPathElement
+    const point = geometry.getPointAtLength(Math.min(2, geometry.getTotalLength()))
+    const matrix = geometry.getScreenCTM()
+    if (!matrix) throw new Error('edge path has no screen transform')
+    const screen = new DOMPoint(point.x, point.y).matrixTransform(matrix)
+    return { x: screen.x, y: screen.y }
+  })
+  await page.mouse.move(edgePoint.x, edgePoint.y)
+  await expect(page.getByRole('tooltip')).toHaveText(expectedEdgeTitle ?? '')
+  const beforeKeyboardPan = await viewport.getAttribute('transform')
+  await svg.focus()
+  await svg.press('ArrowRight')
+  await expect.poll(() => viewport.getAttribute('transform')).not.toBe(beforeKeyboardPan)
+  await expect(page.getByRole('tooltip')).toHaveCount(0)
+  const movedEdgePoint = await tooltipEdge.evaluate((path) => {
+    const geometry = path as SVGPathElement
+    const point = geometry.getPointAtLength(Math.min(2, geometry.getTotalLength()))
+    const matrix = geometry.getScreenCTM()
+    if (!matrix) throw new Error('edge path has no screen transform')
+    const screen = new DOMPoint(point.x, point.y).matrixTransform(matrix)
+    return { x: screen.x, y: screen.y }
+  })
+  await page.mouse.move(movedEdgePoint.x, movedEdgePoint.y)
+  await expect(page.getByRole('tooltip')).toHaveText(expectedEdgeTitle ?? '')
+  await tooltipEdge.dispatchEvent('click')
+  await expect(transientPinNode).toHaveClass(/selected/)
+  await svg.dispatchEvent('wheel', { deltaY: 1 })
+  await expect(page.getByRole('tooltip')).toHaveCount(0)
   await svg.dispatchEvent('click')
   await expect(transientPinNode).not.toHaveClass(/selected/)
   await page.mouse.move(0, 0)
@@ -794,13 +860,19 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
       path.classList.add('g-edge', 'control')
       path.dataset.relevant = '0'
-      svg.append(path)
+      const arrows = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      arrows.classList.add('g-edge-arrows', 'control')
+      arrows.dataset.relevant = '0'
+      svg.append(path, arrows)
       stage.append(svg)
-      const opacity = getComputedStyle(path).opacity
+      const opacity = {
+        path: getComputedStyle(path).opacity,
+        arrows: getComputedStyle(arrows).opacity,
+      }
       svg.remove()
       return opacity
     }),
-  ).toBe('0.1625')
+  ).toEqual({ path: '0.1625', arrows: '0.1625' })
 
   await focus.check()
   await expect(focus).toBeChecked()
