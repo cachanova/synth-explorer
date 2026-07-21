@@ -18,6 +18,7 @@ import {
   prewarmLayoutWorker,
   preserveViewportAnchor,
   prepareLayoutInput,
+  REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   toElkGraph,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -123,7 +124,7 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
   })
 
-  it('reduces ELK thoroughness only on the robust large-graph placement path', () => {
+  it('reduces ELK thoroughness only on the robust very-large-graph path', () => {
     const input = prepareLayoutInput({
       nodes: [node(1, '$_AND_'), node(2, '$_OR_')],
       edges: [
@@ -149,6 +150,34 @@ describe('schematic layout sizing', () => {
         'elk.layered.thoroughness'
       ],
     ).toBe('4')
+
+    const belowBoundary = prepareLayoutInput({
+      nodes: Array.from(
+        { length: REDUCED_THOROUGHNESS_NODE_THRESHOLD - 1 },
+        (_, index) => node(index, '$_BUF_'),
+      ),
+      edges: [],
+      truncated: true,
+    })
+    expect(
+      toElkGraph(belowBoundary, 'BRANDES_KOEPF').layoutOptions?.[
+        'elk.layered.thoroughness'
+      ],
+    ).toBe('4')
+
+    const veryLarge = prepareLayoutInput({
+      nodes: Array.from(
+        { length: REDUCED_THOROUGHNESS_NODE_THRESHOLD },
+        (_, index) => node(index, '$_BUF_'),
+      ),
+      edges: [],
+      truncated: true,
+    })
+    expect(
+      toElkGraph(veryLarge, 'BRANDES_KOEPF').layoutOptions?.[
+        'elk.layered.thoroughness'
+      ],
+    ).toBe('3')
   })
 
   it('routes flip-flop data edges to D and Q ports, not the box centre', () => {

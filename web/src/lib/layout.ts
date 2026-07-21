@@ -325,6 +325,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 // robust fallback: slightly looser, never overflows. layoutSubgraph retries
 // with it when the premium strategy fails.
 export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+export const REDUCED_THOROUGHNESS_NODE_THRESHOLD = 700
 
 // A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
 // triangle lower-west, and the data output (Q) at the east. These fractions of
@@ -607,7 +608,16 @@ export function toElkGraph(
       'elk.layered.mergeEdges': 'true',
       'elk.layered.nodePlacement.strategy': nodePlacement,
       ...(nodePlacement === 'BRANDES_KOEPF'
-        ? { 'elk.layered.thoroughness': '4' }
+        ? {
+            // Below this boundary, the extra crossing-minimization pass pays
+            // for itself on several grouped schematics. At 700+ nodes the
+            // reduced pass count is materially faster and improved geometry
+            // across the validated real dense fixtures.
+            'elk.layered.thoroughness':
+              input.nodes.length >= REDUCED_THOROUGHNESS_NODE_THRESHOLD
+                ? '3'
+                : '4',
+          }
         : {}),
     },
     children,
