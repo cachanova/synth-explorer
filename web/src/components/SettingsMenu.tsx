@@ -84,7 +84,11 @@ function moveSegmentedRadio(
     [next]?.focus()
 }
 
-export function SettingsMenu() {
+export function SettingsMenu({
+  onOpenCapabilities,
+}: {
+  onOpenCapabilities: () => void
+}) {
   const { palette, mode, resolvedMode, setPalette, setMode } = useTheme()
   const store = useStore(
     ({
@@ -157,6 +161,19 @@ export function SettingsMenu() {
 
       {open && (
         <div className="settings-popover" id={menuId} role="dialog" aria-label="Settings">
+          <div className="settings-section">
+            <button
+              type="button"
+              className="settings-action"
+              onClick={() => {
+                setOpen(false)
+                onOpenCapabilities()
+              }}
+            >
+              Capabilities
+            </button>
+          </div>
+
           <div className="settings-section">
             <div className="settings-head">Appearance</div>
             <div className="seg" role="radiogroup" aria-label="Appearance mode">

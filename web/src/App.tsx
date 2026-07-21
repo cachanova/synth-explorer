@@ -2,11 +2,36 @@ import { useCallback, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/react'
 import { BrandMark } from './components/BrandMark'
+import { CapabilitiesDialog } from './components/CapabilitiesDialog'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
 import { SettingsMenu } from './components/SettingsMenu'
+import {
+  CAPABILITIES_VERSION,
+  initialCapabilitiesDialogMode,
+  loadCapabilitiesSeenVersion,
+  saveCapabilitiesSeenVersion,
+  type CapabilitiesDialogMode,
+} from './lib/capabilities'
 
 const REPOSITORY_URL = 'https://github.com/cachanova/synth-explorer'
+
+interface CapabilitiesState {
+  seenVersion: number
+  dialog: {
+    mode: CapabilitiesDialogMode
+    source: 'automatic' | 'manual'
+  } | null
+}
+
+function initialCapabilitiesState(): CapabilitiesState {
+  const seenVersion = loadCapabilitiesSeenVersion()
+  const mode = initialCapabilitiesDialogMode(seenVersion)
+  return {
+    seenVersion,
+    dialog: mode ? { mode, source: 'automatic' } : null,
+  }
+}
 
 function GitHubMark() {
   return (
@@ -26,6 +51,7 @@ function App() {
   const [mobileWorkspace, setMobileWorkspace] = useState<'editor' | 'analysis'>(
     'editor',
   )
+  const [capabilities, setCapabilities] = useState(initialCapabilitiesState)
   const dragging = useRef(false)
 
   const onDown = useCallback(() => {
@@ -44,6 +70,23 @@ function App() {
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+  }, [])
+
+  const openCapabilities = useCallback(() => {
+    setCapabilities((state) => ({
+      ...state,
+      dialog: { mode: 'full', source: 'manual' },
+    }))
+  }, [])
+
+  const closeCapabilities = useCallback(() => {
+    setCapabilities((state) => {
+      if (state.dialog?.source !== 'automatic') {
+        return { ...state, dialog: null }
+      }
+      saveCapabilitiesSeenVersion()
+      return { seenVersion: CAPABILITIES_VERSION, dialog: null }
+    })
   }, [])
 
   return (
@@ -66,7 +109,7 @@ function App() {
           <GitHubMark />
           <span>GitHub</span>
         </a>
-        <SettingsMenu />
+        <SettingsMenu onOpenCapabilities={openCapabilities} />
       </header>
       <nav className="mobile-workspace-nav" aria-label="Workspace views">
         <button
@@ -115,6 +158,18 @@ function App() {
           <RightPane />
         </div>
       </main>
+      {capabilities.dialog && (
+        <CapabilitiesDialog
+          mode={capabilities.dialog.mode}
+          seenVersion={capabilities.seenVersion}
+          showNewBadges={
+            capabilities.dialog.source === 'manual' &&
+            capabilities.dialog.mode === 'full' &&
+            capabilities.seenVersion < CAPABILITIES_VERSION
+          }
+          onClose={closeCapabilities}
+        />
+      )}
       <Analytics />
       <SpeedInsights />
     </div>
