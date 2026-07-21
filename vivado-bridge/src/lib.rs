@@ -22,15 +22,18 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:32123";
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const NETLIST_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
 const REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
 const SOURCE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
+const TIMING_REPORT_SIZE_LIMIT: u64 = 256 * 1024;
 const VIVADO_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(45);
 const PART_MARKER: &str = "SYNTH_EXPLORER_PART\t";
 const NETLIST_MARKER_NAME: &str = "netlist-complete.marker";
+const TIMING_METADATA_NAME: &str = "vivado-timing.tsv";
+const TIMING_REPORT_NAME: &str = "vivado-timing.rpt";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VivadoPart {
@@ -67,6 +70,32 @@ pub struct SynthesisResponse {
     pub target: String,
     pub netlist: String,
     pub log: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timing: Option<VivadoTimingReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct VivadoTimingReport {
+    pub data_path_delay_ns: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logic_delay_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_delay_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logic_levels: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slack_ns: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requirement_ns: Option<f64>,
+    pub startpoint: String,
+    pub endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub corner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay_type: Option<String>,
+    pub report: String,
 }
 
 #[derive(Debug, Error)]
@@ -521,7 +550,16 @@ async fn run_vivado(
         fs::write(temp.path().join(&file.name), &file.content).await?;
     }
     let tcl_path = temp.path().join("synthesize.tcl");
-    fs::write(&tcl_path, build_tcl(input, "vivado-netlist.v")).await?;
+    fs::write(
+        &tcl_path,
+        build_tcl(
+            input,
+            "vivado-netlist.v",
+            TIMING_METADATA_NAME,
+            TIMING_REPORT_NAME,
+        ),
+    )
+    .await?;
     let console_path = temp.path().join("vivado-console.log");
     let vivado_log_path = temp.path().join("vivado.log");
     let mut command = Command::new(vivado_bin);
@@ -546,15 +584,22 @@ async fn run_vivado(
     }
     let netlist_path = temp.path().join("vivado-netlist.v");
     let netlist = read_netlist(&netlist_path).await?;
+    let timing = read_timing(temp.path()).await?;
     Ok(SynthesisResponse {
         top: input.top.clone(),
         target: input.target.clone(),
         netlist,
         log,
+        timing,
     })
 }
 
-fn build_tcl(input: &ValidatedRequest, output: &str) -> String {
+fn build_tcl(
+    input: &ValidatedRequest,
+    output: &str,
+    timing_metadata: &str,
+    timing_report: &str,
+) -> String {
     let mut script = String::new();
     for file in &input.files {
         match Path::new(&file.name)
@@ -584,6 +629,59 @@ fn build_tcl(input: &ValidatedRequest, output: &str) -> String {
     writeln!(&mut script).unwrap();
     writeln!(
         &mut script,
+        "proc synth_explorer_prop {{object prop}} {{\n\
+         \tif {{[catch {{get_property $prop $object}} value]}} {{ return \"\" }}\n\
+         \treturn $value\n\
+         }}"
+    )
+    .unwrap();
+    writeln!(
+        &mut script,
+        "report_timing -max_paths 1 -delay_type max -file {{{timing_report}}}"
+    )
+    .unwrap();
+    writeln!(
+        &mut script,
+        "set synth_explorer_timing_fp [open {{{timing_metadata}}} w]"
+    )
+    .unwrap();
+    writeln!(
+        &mut script,
+        "set synth_explorer_timing_paths [get_timing_paths -max_paths 1 -delay_type max]"
+    )
+    .unwrap();
+    writeln!(
+        &mut script,
+        "if {{[llength $synth_explorer_timing_paths] > 0}} {{"
+    )
+    .unwrap();
+    writeln!(
+        &mut script,
+        "\tset synth_explorer_path [lindex $synth_explorer_timing_paths 0]"
+    )
+    .unwrap();
+    writeln!(
+        &mut script,
+        "\tputs $synth_explorer_timing_fp [join [list path \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path DATAPATH_DELAY] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path DATAPATH_LOGIC_DELAY] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path DATAPATH_NET_DELAY] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path LOGIC_LEVELS] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path SLACK] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path REQUIREMENT] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path STARTPOINT_PIN] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path ENDPOINT_PIN] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path GROUP] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path CORNER] \\\n\
+         \t\t[synth_explorer_prop $synth_explorer_path DELAY_TYPE]] \"\\t\"]"
+    )
+    .unwrap();
+    writeln!(&mut script, "}} else {{").unwrap();
+    writeln!(&mut script, "\tputs $synth_explorer_timing_fp none").unwrap();
+    writeln!(&mut script, "}}").unwrap();
+    writeln!(&mut script, "close $synth_explorer_timing_fp").unwrap();
+    writeln!(
+        &mut script,
         "write_verilog -force -mode funcsim {{{output}}}"
     )
     .unwrap();
@@ -602,6 +700,96 @@ async fn read_netlist(path: &Path) -> Result<String, BridgeError> {
     let body = &bytes[start..];
     let end = line_start_offset(body, b"`ifndef GLBL").unwrap_or(body.len());
     Ok(String::from_utf8_lossy(&body[..end]).into_owned())
+}
+
+async fn read_timing(dir: &Path) -> Result<Option<VivadoTimingReport>, BridgeError> {
+    let metadata = fs::read_to_string(dir.join(TIMING_METADATA_NAME)).await?;
+    let line = metadata
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| validation("Vivado timing metadata was empty"))?;
+    if line.trim() == "none" {
+        return Ok(None);
+    }
+    let fields = line.split('\t').collect::<Vec<_>>();
+    if fields.len() != 12 || fields[0] != "path" {
+        return Err(validation("Vivado returned invalid timing metadata"));
+    }
+    let report = read_timing_report(&dir.join(TIMING_REPORT_NAME)).await?;
+    Ok(Some(VivadoTimingReport {
+        data_path_delay_ns: required_finite_f64(fields[1], "data path delay")?,
+        logic_delay_ns: optional_finite_f64(fields[2], "logic delay")?,
+        net_delay_ns: optional_finite_f64(fields[3], "net delay")?,
+        logic_levels: optional_u32(fields[4], "logic levels")?,
+        slack_ns: optional_finite_f64(fields[5], "slack")?,
+        requirement_ns: optional_finite_f64(fields[6], "requirement")?,
+        startpoint: required_timing_text(fields[7], "startpoint")?,
+        endpoint: required_timing_text(fields[8], "endpoint")?,
+        path_group: optional_timing_text(fields[9]),
+        corner: optional_timing_text(fields[10]),
+        delay_type: optional_timing_text(fields[11]),
+        report,
+    }))
+}
+
+async fn read_timing_report(path: &Path) -> Result<String, BridgeError> {
+    let metadata = fs::metadata(path).await?;
+    if metadata.len() > TIMING_REPORT_SIZE_LIMIT {
+        return Err(validation("Vivado timing report exceeded 256 KiB"));
+    }
+    let bytes = fs::read(path).await?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn required_finite_f64(value: &str, label: &str) -> Result<f64, BridgeError> {
+    let parsed = value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| validation(format!("Vivado timing {label} was not numeric")))?;
+    if parsed.is_finite() && parsed >= 0.0 {
+        Ok(parsed)
+    } else {
+        Err(validation(format!("Vivado timing {label} was not finite")))
+    }
+}
+
+fn optional_finite_f64(value: &str, label: &str) -> Result<Option<f64>, BridgeError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let parsed = value
+        .parse::<f64>()
+        .map_err(|_| validation(format!("Vivado timing {label} was not numeric")))?;
+    if parsed.is_finite() {
+        Ok(Some(parsed))
+    } else {
+        Ok(None)
+    }
+}
+
+fn optional_u32(value: &str, label: &str) -> Result<Option<u32>, BridgeError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    value
+        .parse::<u32>()
+        .map(Some)
+        .map_err(|_| validation(format!("Vivado timing {label} was not numeric")))
+}
+
+fn required_timing_text(value: &str, label: &str) -> Result<String, BridgeError> {
+    optional_timing_text(value)
+        .ok_or_else(|| validation(format!("Vivado timing {label} was empty")))
+}
+
+fn optional_timing_text(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value == "(none)" {
+        return None;
+    }
+    Some(value.chars().take(512).collect())
 }
 
 fn line_start_offset(bytes: &[u8], marker: &[u8]) -> Option<usize> {
@@ -839,12 +1027,21 @@ mod tests {
             &[part()],
         )
         .unwrap();
-        let script = build_tcl(&input, "vivado-netlist.v");
+        let script = build_tcl(
+            &input,
+            "vivado-netlist.v",
+            "vivado-timing.tsv",
+            "vivado-timing.rpt",
+        );
         assert!(!script.contains("read_verilog -sv {defs.svh}"));
         assert!(script.contains("read_verilog -sv {top.sv}"));
         assert!(script.contains(
             "synth_design -top {top} -part {xc7a35tcpg236-1} -flatten_hierarchy full -retiming"
         ));
+        assert!(
+            script.contains("report_timing -max_paths 1 -delay_type max -file {vivado-timing.rpt}")
+        );
+        assert!(script.contains("get_timing_paths -max_paths 1 -delay_type max"));
         assert!(script.contains("write_verilog -force -mode funcsim {vivado-netlist.v}"));
     }
 
@@ -869,7 +1066,12 @@ mod tests {
             &[part()],
         )
         .unwrap();
-        let script = build_tcl(&input, "vivado-netlist.v");
+        let script = build_tcl(
+            &input,
+            "vivado-netlist.v",
+            "vivado-timing.tsv",
+            "vivado-timing.rpt",
+        );
         let types = script.find("read_vhdl -vhdl2008 {types.vhd}").unwrap();
         let core = script.find("read_vhdl -vhdl2008 {core.vhdl}").unwrap();
         assert!(types < core);
@@ -894,6 +1096,8 @@ case "$*" in
   *)
     printf 'fake synthesis complete\n'
     printf '\140timescale 1 ps / 1 ps\nmodule top; endmodule\n' > vivado-netlist.v
+    printf 'path\t4.016\t3.216\t0.800\t2\t\t\tq_reg[0]/C\tq[0]\t(none)\tSlow\tmax\n' > vivado-timing.tsv
+    printf 'Timing Report\n\nSlack:                    inf\n  Data Path Delay:        4.016ns  (logic 3.216ns route 0.800ns)\n' > vivado-timing.rpt
     : > netlist-complete.marker
     ;;
 esac
@@ -925,5 +1129,22 @@ esac
         let result = run_vivado(&executable, &input).await.unwrap();
         assert!(result.netlist.starts_with("`timescale 1 ps / 1 ps"));
         assert!(result.log.contains("fake synthesis complete"));
+        assert_eq!(
+            result.timing,
+            Some(VivadoTimingReport {
+                data_path_delay_ns: 4.016,
+                logic_delay_ns: Some(3.216),
+                net_delay_ns: Some(0.800),
+                logic_levels: Some(2),
+                slack_ns: None,
+                requirement_ns: None,
+                startpoint: "q_reg[0]/C".to_owned(),
+                endpoint: "q[0]".to_owned(),
+                path_group: None,
+                corner: Some("Slow".to_owned()),
+                delay_type: Some("max".to_owned()),
+                report: "Timing Report\n\nSlack:                    inf\n  Data Path Delay:        4.016ns  (logic 3.216ns route 0.800ns)\n".to_owned(),
+            })
+        );
     }
 }

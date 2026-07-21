@@ -40,7 +40,7 @@ export function TimingModel({
   fallbackBreakdown,
 }: {
   designId: string
-  // The design's synthesis mode (e.g. 'ecp5'), so the speed-grade select can
+  // The design's synthesis platform (e.g. 'ecp5'), so the speed-grade select can
   // label ECP5's real grade names even when the profile is 'auto'.
   designMode?: string
   // Synthesis-resolved family. Concrete FPGA designs lock to this value.

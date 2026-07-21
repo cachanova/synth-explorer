@@ -16,7 +16,7 @@ test('recovers after the analysis engine download fails', async ({ page }) => {
   // The initial automatic synthesis runs Yosys fine but cannot load the
   // analysis engine, and the failure is labeled as such (not "Validation").
   const errorStrip = page.locator('.error-strip')
-  await expect(errorStrip).toContainText('Engine failed to load (503)', {
+  await expect(errorStrip).toContainText('Tool failed to load (503)', {
     timeout: 90_000,
   })
 
@@ -41,7 +41,7 @@ test('recovers after the analysis worker script fails to load', async ({ page })
   await page.goto('/')
 
   const errorStrip = page.locator('.error-strip')
-  await expect(errorStrip).toContainText('Engine failed to load (503)', {
+  await expect(errorStrip).toContainText('Tool failed to load (503)', {
     timeout: 90_000,
   })
 

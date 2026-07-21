@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { MODE_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
+import { PLATFORM_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import type { ExampleLanguage, Mode, SynthTool, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
@@ -168,9 +168,9 @@ export function Toolbar() {
       </label>
 
       <label className="field">
-        <span>Engine</span>
+        <span>Tool</span>
         <select
-          aria-label="Synthesis engine"
+          aria-label="Synthesis tool"
           value={store.synthTool}
           onChange={(event) => {
             const tool = event.target.value as SynthTool
@@ -192,9 +192,9 @@ export function Toolbar() {
 
       {store.synthTool === 'yosys' && (
         <label className="field">
-          <span>Mode</span>
+          <span>Platform</span>
           <select value={store.mode} onChange={(event) => store.setMode(event.target.value as Mode)}>
-            {MODE_LABELS.map((mode) => (
+            {PLATFORM_LABELS.map((mode) => (
               <option key={mode.value} value={mode.value}>{mode.label}</option>
             ))}
           </select>
@@ -281,8 +281,8 @@ export function Toolbar() {
           <label className="field grow">
             <span>Synthesis flags</span>
             <input
-              placeholder="mode-specific, e.g. -noabc"
-              title="The exact flags passed to the selected Yosys synthesis command."
+              placeholder="platform-specific, e.g. -noabc"
+              title="The exact flags passed to the selected Yosys synthesis command for this platform."
               value={store.extraArgs}
               onChange={(event) => store.setExtraArgs(event.target.value)}
             />

@@ -1,10 +1,11 @@
 import type {
   DesignFile,
+  VivadoTimingReport,
   VivadoBridgeStatus,
 } from '../types'
 
 const BRIDGE_ORIGIN = 'http://127.0.0.1:32123'
-export const VIVADO_BRIDGE_PROTOCOL = 1
+export const VIVADO_BRIDGE_PROTOCOL = 2
 
 interface LoopbackRequestInit extends RequestInit {
   targetAddressSpace?: 'loopback'
@@ -15,6 +16,7 @@ interface BridgeSynthesisResponse {
   target: string
   netlist: string
   log: string
+  timing?: VivadoTimingReport
 }
 
 export class VivadoBridgeError extends Error {

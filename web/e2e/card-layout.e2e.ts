@@ -14,7 +14,7 @@ test('keeps long metadata values inside their stat cards', async ({ page }) => {
         </div>
       </div>
       <div class="card">
-        <div class="k">Synth tool</div>
+        <div class="k">Tool</div>
         <div class="v" style="font-size: 15px; font-family: var(--mono)">Yosys</div>
       </div>
     </div>

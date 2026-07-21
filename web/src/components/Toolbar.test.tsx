@@ -73,8 +73,8 @@ describe('Toolbar synthesis action', () => {
   it('keeps Vivado manual even when automatic Yosys synthesis is enabled', () => {
     state.synthTool = 'vivado'
     state.vivadoStatus = {
-      protocol_version: 1,
-      bridge_version: '0.1.0-test',
+      protocol_version: 2,
+      bridge_version: '0.2.0-test',
       vivado_version: 'Vivado v2026.1',
       parts: [{ name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' }],
     }

@@ -9,11 +9,11 @@ on the user's computer.
 ## Runtime flow
 
 1. For Yosys, React waits for 250 ms without an input change, then validates the files,
-   top, synthesis mode, and visible mode-specific flags. A newer edit cancels
+   top, synthesis platform, and visible platform-specific flags. A newer edit cancels
    obsolete work instead of allowing a stale result to land.
 2. A SHA-256 key covers the cache schema, pinned frontend/tool versions,
    validated input, and exact source text.
-3. IndexedDB returns a matching local artifact. On a miss, an exact gate-mode
+3. IndexedDB returns a matching local artifact. On a miss, an exact generic-gates
    default/example input may load a content-addressed precomputed artifact from
    the Vercel edge; otherwise a Web Lock coordinates one synthesis run across
    tabs.
@@ -31,13 +31,15 @@ on the user's computer.
 8. elkjs lays out bounded subgraphs in its own worker.
 
 Local Vivado is a manual branch after validation. The user starts
-`synth-explorer-vivado-bridge` with an exact-origin allowlist, then selects a
-family plus speed grade from the installation's authoritative part catalog. The
-browser sends the RTL, explicit top, concrete resolved part, and validated
-`synth_design` arguments to `http://127.0.0.1:32123`. The bridge invokes Vivado
-directly with argv and a generated Tcl file, then returns structural Verilog.
-The existing Yosys worker normalizes that netlist and the existing analysis
-worker owns every downstream query. No hosted service sees the RTL or result.
+`synth-explorer-vivado-bridge` with an exact-origin allowlist, authorizes
+browser loopback access, and selects a family plus speed grade from the
+installation's authoritative part catalog. The browser sends the RTL, explicit
+top, concrete resolved part, and validated `synth_design` arguments to
+`http://127.0.0.1:32123`. The bridge invokes Vivado directly with argv and a
+generated Tcl file, runs `report_timing -max_paths 1 -delay_type max`, then
+returns structural Verilog plus the bounded timing report. The existing Yosys
+worker normalizes that netlist and the existing analysis worker owns every
+downstream structural query. No hosted service sees the RTL or result.
 
 There is no hosted HTTP API, application server, remote design identifier,
 account, or shared design store. The optional HTTP protocol exists only on the
@@ -81,8 +83,9 @@ synthesis inputs. Derived analysis state is not restored across page loads.
 
 GHDL has a 30-second wall timeout. Yosys has a 60-second wall timeout and
 128 MiB combined netlist-output limit. The Vivado bridge accepts at most 4 MiB
-of source, returns at most 64 MiB of structural Verilog, caps logs at 64 KiB,
-allows one run at a time, and has a five-minute wall timeout.
+of source, returns at most 64 MiB of structural Verilog, caps timing reports at
+256 KiB, caps logs at 64 KiB, allows one run at a time, and has a five-minute
+wall timeout.
 The application runs only one requested synthesis at a time. A completed
 worker is reused so its streamed, compiled Yosys module and unpacked resources
 stay warm; cancellation or a worker failure terminates it and immediately
@@ -109,13 +112,19 @@ scales, with hysteresis, idle restoration, and full detail for selected or
 focused nodes. Zoom frames do not enter React state. The GHDL worker follows
 the same reuse policy while creating a fresh Ada/WebAssembly instance per run.
 
-## Timing model
+## Timing
 
-Timing values are structural, pre-place-and-route estimates. They are not
-timing closure and contain no placed or routed interconnect. Coefficients may be
-recalibrated locally against external tools, including a separately licensed
-Vivado installation. Vivado is a runtime dependency only when the user
-explicitly selects the optional local engine.
+Yosys/browser timing values are structural, pre-place-and-route estimates. They
+are not timing closure and contain no placed or routed interconnect.
+Coefficients may be recalibrated locally against external tools.
+
+Vivado designs do not use the browser timing model in the Overview or Paths
+tabs. The Overview timing card comes from Vivado's own post-synthesis
+`report_timing -max_paths 1 -delay_type max` result returned by the local
+connector. It is still pre-place-and-route unless the local Vivado flow is later
+extended with implementation constraints and placement/routing steps. Vivado is
+a runtime dependency only when the user explicitly selects the optional local
+tool.
 
 ## Deployment
 

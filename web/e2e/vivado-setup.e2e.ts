@@ -5,7 +5,7 @@ test('shows complete local Vivado setup and direct connection instructions in th
     await route.abort('connectionrefused')
   })
   await page.goto('/')
-  await page.getByLabel('Synthesis engine').selectOption('vivado')
+  await page.getByLabel('Synthesis tool').selectOption('vivado')
 
   const dialog = page.getByRole('dialog', { name: 'Use Vivado on this computer' })
   await expect(dialog).toBeVisible()

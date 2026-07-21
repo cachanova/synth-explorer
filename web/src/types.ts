@@ -99,7 +99,7 @@ export interface SynthesizeRequest {
   vivado_family?: string
   vivado_speed?: string
   vivado_version?: string // cache identity from the local connector preflight
-  extra_args?: string // mode-specific synthesis-pass flags; safe whitespace-separated tokens
+  extra_args?: string // platform-specific synthesis-pass flags; safe whitespace-separated tokens
 }
 
 export interface VivadoPart {
@@ -208,6 +208,21 @@ export interface TimingResponse {
   model: DelayModel // base coefficients used (pre speed-grade)
 }
 
+export interface VivadoTimingReport {
+  data_path_delay_ns: number
+  logic_delay_ns?: number
+  net_delay_ns?: number
+  logic_levels?: number
+  slack_ns?: number
+  requirement_ns?: number
+  startpoint: string
+  endpoint: string
+  path_group?: string
+  corner?: string
+  delay_type?: string
+  report: string
+}
+
 export interface SynthesizeResponse {
   design_id: string // content hash; identical input returns the same id
   top: string // resolved top module
@@ -218,6 +233,7 @@ export interface SynthesizeResponse {
   stats: Stats
   warnings: string[]
   log: string // yosys log (tail, capped)
+  vivado_timing?: VivadoTimingReport
   // true when a generic mode hit the sandbox memory limit and succeeded on a
   // retry that keeps inferred memories abstract ($mem_v2) instead of gates
   memories_abstracted?: boolean

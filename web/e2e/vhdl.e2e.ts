@@ -143,7 +143,7 @@ test('recovers after the GHDL engine download fails', async ({ page }) => {
   await page.goto('/')
   await page.getByLabel('Language').selectOption('vhdl')
   await page.getByLabel('Bundled example').selectOption('counter')
-  await expect(page.locator('.error-strip')).toContainText('Engine failed to load (503)', {
+  await expect(page.locator('.error-strip')).toContainText('Tool failed to load (503)', {
     timeout: 120_000,
   })
 

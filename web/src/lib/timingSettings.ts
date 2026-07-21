@@ -61,7 +61,7 @@ const ASIC_PROFILES: ProfileChoice[] = [
   'asap7',
 ]
 
-/** The profiles that make sense for a design's synthesis mode. A gates-mode
+/** The profiles that make sense for a design's synthesis platform. A gates platform
  *  netlist is generic gates headed for standard cells — FPGA LUT/carry presets
  *  don't describe it; an FPGA or LUT-mapped netlist is the reverse, so it gets
  *  no ASIC process nodes. Gates/LUT menus omit `generic`: `auto` is their
