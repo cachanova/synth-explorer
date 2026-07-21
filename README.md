@@ -85,7 +85,7 @@ Explorer origins, and permits one Vivado run at a time. See
 | [`tools/ghdl-wasm/`](tools/ghdl-wasm/) | Reproducible project-owned GHDL synthesis WebAssembly build |
 | [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
 | [`vivado-bridge/`](vivado-bridge/) | Loopback-only bridge from the static website to a user's local Vivado |
-| [`docs/`](docs/) | Architecture, migration record, and benchmarks |
+| [`docs/`](docs/) | Current architecture and runtime behavior |
 
 Production is the static `web/dist/` output. Vercel serves it through its CDN;
 there are no Functions, hosted API routes, databases, persistent volumes, or
@@ -115,9 +115,7 @@ before rebuilding the VHDL frontend and standard libraries.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Browser-local migration record](docs/BROWSER_WASM_MIGRATION.md)
-- [VHDL WebAssembly architecture](docs/VHDL_GHDL_FEASIBILITY.md)
-- [Migration benchmark results](docs/BROWSER_WASM_BENCHMARKS.md)
+- [VHDL runtime](docs/VHDL_GHDL.md)
 - [Web client](web/README.md)
 - [Local calibration](calibration/README.md)
 
