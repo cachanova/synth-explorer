@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
     parts: Array<{ name: string; family: string; speed: string }>
   },
   vivadoTarget: '',
+  vivadoExtraArgs: '-mode out_of_context',
   autoSynthesize: true,
   synthesizing: false,
 }))
@@ -31,7 +32,7 @@ vi.mock('../useStore', () => ({
       vivadoStatus: state.vivadoStatus,
       vivadoTarget: state.vivadoTarget,
       setVivadoTarget: vi.fn(),
-      vivadoExtraArgs: '',
+      vivadoExtraArgs: state.vivadoExtraArgs,
       setVivadoExtraArgs: vi.fn(),
       connectVivado: vi.fn(async () => false),
       disconnectVivado: vi.fn(),
@@ -48,6 +49,7 @@ describe('Toolbar synthesis action', () => {
     state.synthTool = 'yosys'
     state.vivadoStatus = null
     state.vivadoTarget = ''
+    state.vivadoExtraArgs = '-mode out_of_context'
     state.autoSynthesize = true
     state.synthesizing = false
   })
@@ -80,6 +82,9 @@ describe('Toolbar synthesis action', () => {
     }
     state.vivadoTarget = 'xc7a35tcpg236-1'
 
-    expect(renderToStaticMarkup(<Toolbar />)).toContain('>Synthesize<')
+    const markup = renderToStaticMarkup(<Toolbar />)
+    expect(markup).toContain('>Synthesize<')
+    expect(markup).toContain('flags-menu-trigger')
+    expect(markup).toContain('1 selected')
   })
 })

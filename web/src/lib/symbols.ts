@@ -21,6 +21,8 @@ export type SymbolKind =
   | 'reg'
   | 'latch'
   | 'lut'
+  | 'carry'
+  | 'dsp'
   | 'arith'
   | 'memory'
   | 'port-in'
@@ -136,7 +138,9 @@ const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAM(?:
 const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
 const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i
-const SPECIAL_PRIMITIVE_HINT = /^(?:SB_|TRELLIS_|CCU2C|CARRY|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:B|\d)|URAM|DP16KD|SPRAM|SRL(?:16E|C32E)|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)/i
+const CARRY_HINT = /^(?:CARRY[48]?|SB_CARRY|CCU2C)$/i
+const DSP_HINT = /^(?:DSP48\w*|MULT18X18D)$/i
+const SPECIAL_PRIMITIVE_HINT = /^(?:SB_|TRELLIS_|CCU2C|CARRY|DSP48|MULT18X18D|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:B|\d)|URAM|DP16KD|SPRAM|SRL(?:16E|C32E)|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)/i
 
 /** Vendor-specific implementation primitive, independent of its symbol shape. */
 export function isSpecialPrimitive(node: NodeRef): boolean {
@@ -162,6 +166,8 @@ export function symbolKind(
   if (node.register === true || (node.register !== false && REGISTER_HINT.test(token))) {
     return 'reg'
   }
+  if (CARRY_HINT.test(token)) return 'carry'
+  if (DSP_HINT.test(token)) return 'dsp'
   if (LUT_HINT.test(token)) return 'lut'
   if (MUX_TYPES.has(token) || /^MUX\d+$/.test(token)) return 'mux'
   if (/^NMUX\d*$/.test(token)) return 'nmux'
@@ -180,6 +186,7 @@ export function symbolKind(
     case 'NOR':
       return 'nor'
     case 'XOR':
+    case 'XORCY':
       return 'xor'
     case 'XNOR':
       return 'xnor'
@@ -245,6 +252,18 @@ export function shapePath(kind: SymbolKind, width: number, height: number): stri
       const inset = height * 0.18
       return `M 0 0 L ${bodyWidth} ${inset} L ${bodyWidth} ${height - inset} L 0 ${height} Z`
     }
+    case 'carry': {
+      const cut = Math.min(9, height * 0.18)
+      return (
+        `M ${cut} 0 L ${width - cut} 0 L ${width} ${cut} ` +
+        `L ${width} ${height - cut} L ${width - cut} ${height} ` +
+        `L ${cut} ${height} L 0 ${height - cut} L 0 ${cut} Z`
+      )
+    }
+    case 'dsp': {
+      const cut = Math.min(13, height * 0.22)
+      return `M 0 0 L ${width - cut} 0 L ${width} ${cut} L ${width} ${height} L 0 ${height} Z`
+    }
     case 'port-in': {
       const tip = Math.min(height * 0.45, width * 0.35)
       return `M 0 0 L ${width - tip} 0 L ${width} ${cy} L ${width - tip} ${height} L 0 ${height} Z`
@@ -291,6 +310,8 @@ export function registerClockPath(height: number, yFraction = 0.72): string {
 
 export function boxBadge(node: NodeRef): string {
   const kind = symbolKind(node)
+  if (kind === 'carry') return 'CARRY'
+  if (kind === 'dsp') return 'DSP'
   if (kind === 'memory') return 'MEM'
   if (isSpecialPrimitive(node)) return 'PRIM'
   return (node as GraphNode).is_boundary ? 'BOUNDARY' : 'CELL'

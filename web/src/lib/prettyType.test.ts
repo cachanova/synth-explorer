@@ -254,6 +254,21 @@ describe('nodeSublabel', () => {
     ).toBeNull()
   })
 
+  it('reduces Vivado implementation names to their RTL-facing signal', () => {
+    expect(nodeSublabel({
+      id: 2,
+      kind: 'cell',
+      name: 'one_hot_OBUF[23]_inst_i_6_2',
+      cell_type: 'LUT1',
+    })).toBe('one_hot[23]')
+    expect(nodeSublabel({
+      id: 3,
+      kind: 'cell',
+      name: 'valid_OBUF_inst_i_1',
+      cell_type: 'LUT2',
+    })).toBe('valid')
+  })
+
   it('reduces a grouped fallback name to its count', () => {
     const grouped: GraphNode = {
       id: 2,

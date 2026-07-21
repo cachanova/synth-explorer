@@ -49,6 +49,7 @@ import {
 } from './lib/synthesisSettings'
 import {
   flagsForModeTransition,
+  flagsForVivadoChange,
   type ModeFlagMemory,
 } from './lib/flagRegistry'
 import { boundaryPathPinSelection } from './lib/endpointCone'
@@ -294,7 +295,7 @@ export function StoreProvider({
   const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
   const [vivadoStatus, setVivadoStatus] = useState<VivadoBridgeStatus | null>(null)
   const [vivadoTarget, setVivadoTargetState] = useState('')
-  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState('')
+  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState(() => flagsForVivadoChange(''))
   const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
     loadResetConfirmationPreference,
   )

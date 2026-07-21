@@ -10,8 +10,14 @@ const structuralNetlist = [
   '  input wire sel,',
   '  output wire [7:0] q',
   ');',
-  "  LUT2 #(.INIT(4'h8)) q0_lut (.I0(a[0]), .I1(b[0]), .O(q[0]));",
-  '  assign q[7:1] = a[7:1];',
+  '  wire lut_o;',
+  '  wire [3:0] carry_co;',
+  "  LUT2 #(.INIT(4'h8)) one_hot_OBUF_inst_i_1 (.I0(a[0]), .I1(b[0]), .O(lut_o));",
+  '  CARRY4 \\one_hot_OBUF[3]_inst_i_1 (',
+  "    .CI(1'b0), .CYINIT(sel), .DI(a[3:0]), .S({b[3:1], lut_o}),",
+  '    .CO(carry_co), .O(q[3:0])',
+  '  );',
+  '  assign q[7:4] = a[7:4];',
   'endmodule',
   '',
 ].join('\n')
@@ -67,6 +73,15 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   await page.getByLabel('Synthesis tool').selectOption('vivado')
 
   await expect(page.getByLabel('Synthesis tool')).toHaveValue('vivado')
+  await expect(page.getByLabel('Vivado flags')).toHaveValue('-mode out_of_context')
+  await page.getByRole('button', { name: '1 selected ▾' }).click()
+  await page.getByPlaceholder('Search flags…').fill('retiming')
+  await expect(page.getByText('Global retiming', { exact: true })).toBeVisible()
+  await page.getByLabel('Enable -global_retiming').check()
+  await page.keyboard.press('Escape')
+  await expect(page.getByLabel('Vivado flags')).toHaveValue(
+    '-mode out_of_context -global_retiming auto',
+  )
   await page.getByRole('button', { name: 'Synthesize' }).click()
   await page.getByRole('tab', { name: 'Overview' }).click()
 
@@ -81,7 +96,14 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   expect(synthesisRequest).toMatchObject({
     top: 'top',
     target: 'xc7a35tcpg236-1',
+    extra_args: '-mode out_of_context -global_retiming auto',
   })
+
+  await page.getByRole('tab', { name: 'Schematic' }).click()
+  const carry = page.locator('.g-symbol-carry')
+  await expect(carry).toHaveCount(1)
+  await expect(carry).toHaveAttribute('data-node-tooltip', 'CARRY4 — one_hot[3]')
+  await expect(carry.locator('.g-symbol-outline')).toHaveAttribute('stroke', 'var(--green)')
 })
 
 test('marks Vivado disconnected when the bridge disappears during synthesis', async ({ page }) => {

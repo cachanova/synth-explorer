@@ -76,10 +76,14 @@ function isActive(flags: string, def: FlagDef): boolean {
  */
 export function FlagsMenu({
   mode,
+  definitions,
+  label = 'Flags',
   flags,
   onChange,
 }: {
-  mode: Mode
+  mode?: Mode
+  definitions?: readonly FlagDef[]
+  label?: string
   flags: string
   onChange: (flags: string) => void
 }) {
@@ -87,7 +91,10 @@ export function FlagsMenu({
   const [query, setQuery] = useState('')
   const ref = useRef<HTMLDivElement | null>(null)
 
-  const defs = flagsForMode(mode)
+  const defs = useMemo(
+    () => definitions ?? (mode ? flagsForMode(mode) : []),
+    [definitions, mode],
+  )
   const activeCount = useMemo(
     () => defs.filter((d) => isActive(flags, d)).length,
     [defs, flags],
@@ -133,7 +140,7 @@ export function FlagsMenu({
 
   return (
     <div className="field flags-menu" ref={ref}>
-      <span>Flags</span>
+      <span>{label}</span>
       <button
         type="button"
         className="flags-menu-trigger"

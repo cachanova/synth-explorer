@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
 describe('GraphView LUT labels', () => {
-  it('uses a distinct color for special implementation primitives', () => {
+  it('uses the carry-chain shape, badge, and color for carry primitives', () => {
     const markup = renderToStaticMarkup(
       <GraphView
         graph={{
@@ -30,8 +30,10 @@ describe('GraphView LUT labels', () => {
       />,
     )
 
-    expect(markup).toContain('stroke="var(--blue)"')
-    expect(markup).toContain('color-mix(in srgb, var(--blue) 10%, transparent)')
+    expect(markup).toContain('g-symbol-carry')
+    expect(markup).toContain('stroke="var(--green)"')
+    expect(markup).toContain('color-mix(in srgb, var(--green) 10%, transparent)')
+    expect(markup).toContain('>CARRY<')
   })
 
   it('draws primitive pin labels at the same canonical positions used by layout', () => {

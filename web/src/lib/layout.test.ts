@@ -42,6 +42,17 @@ describe('schematic layout sizing', () => {
     expect(nodeDimensions(node(1, '$_AND_'))).toEqual({ width: 76, height: 52 })
   })
 
+  it('gives carry and DSP primitives distinct hard-block proportions', () => {
+    expect(nodeDimensions(node(1, 'CARRY8'))).toEqual({ width: 98, height: 58 })
+    expect(nodeDimensions(node(2, 'DSP48E2'))).toEqual({ width: 112, height: 62 })
+  })
+
+  it('sizes Vivado implementation cells from the readable RTL-facing name', () => {
+    expect(nodeDimensions(node(1, 'LUT1', {
+      name: 'one_hot_OBUF[23]_inst_i_6_2',
+    }))).toEqual({ width: 103, height: 54 })
+  })
+
   it('reserves register space for compact control-net labels', () => {
     const plain = nodeDimensions(node(1, 'FDRE'))
     const controlledNode = node(2, 'FDRE')
