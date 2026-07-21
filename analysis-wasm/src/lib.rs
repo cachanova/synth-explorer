@@ -10,6 +10,9 @@ use synth_explorer_analysis::grouping::GroupPartition;
 use synth_explorer_analysis::netlist::{YosysNetlist, select_top};
 use wasm_bindgen::prelude::*;
 
+const MAX_PROJECTION_ROOTS: usize = MAX_SUBGRAPH_NODES / 2;
+const MAX_EXPANDED_GROUP_ROOTS: usize = 256;
+
 #[derive(Deserialize)]
 struct SourceFile {
     name: String,
@@ -363,6 +366,7 @@ impl AnalysisSession {
         let mut roots = Vec::new();
         let mut requested_seen = HashSet::new();
         let mut roots_seen = HashSet::new();
+        let mut requested_groups = Vec::new();
         let mut truncated = false;
         for &id in requested {
             if !requested_seen.insert(id) {
@@ -372,7 +376,7 @@ impl AnalysisSession {
                 if roots_seen.contains(&id) {
                     continue;
                 }
-                if roots.len() >= MAX_SUBGRAPH_NODES {
+                if roots.len() >= MAX_PROJECTION_ROOTS {
                     truncated = true;
                 } else {
                     roots_seen.insert(id);
@@ -386,16 +390,43 @@ impl AnalysisSession {
                         .and_then(|group_id| partition.groups.get(group_id as usize))
                 })
                 .ok_or_else(|| js_error("unknown node"))?;
+            requested_groups.push(group);
+        }
+
+        // Give every requested group one representative root before filling
+        // larger samples, leaving half the raw-node budget for traversal
+        // context around those roots.
+        let mut group_added = vec![0usize; requested_groups.len()];
+        for (index, group) in requested_groups.iter().enumerate() {
+            let Some(&member) = group
+                .members
+                .iter()
+                .find(|member| !roots_seen.contains(member))
+            else {
+                continue;
+            };
+            if roots.len() >= MAX_PROJECTION_ROOTS {
+                truncated = true;
+                continue;
+            }
+            roots_seen.insert(member);
+            roots.push(member);
+            group_added[index] = 1;
+        }
+        for (index, group) in requested_groups.iter().enumerate() {
             for &member in &group.members {
                 if roots_seen.contains(&member) {
                     continue;
                 }
-                if roots.len() >= MAX_SUBGRAPH_NODES {
+                if roots.len() >= MAX_PROJECTION_ROOTS
+                    || group_added[index] >= MAX_EXPANDED_GROUP_ROOTS
+                {
                     truncated = true;
                     break;
                 }
                 roots_seen.insert(member);
                 roots.push(member);
+                group_added[index] += 1;
             }
         }
         Ok((roots, truncated))
@@ -620,7 +651,7 @@ mod tests {
         let (bounded, bounded_truncated) = session
             .resolve_projection_roots(&[base], Some(&oversized))
             .expect("oversized synthetic root resolves within the raw-node cap");
-        assert_eq!(bounded.len(), MAX_SUBGRAPH_NODES);
+        assert_eq!(bounded.len(), MAX_EXPANDED_GROUP_ROOTS);
         assert!(bounded_truncated);
     }
 }

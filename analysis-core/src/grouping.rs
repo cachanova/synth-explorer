@@ -197,11 +197,17 @@ pub fn memory_arrays_from_source(
         }
         let raw_name = clean_name(&node.raw_name);
         let mut candidate = raw_name.as_str();
-        let mut matched = logical_by_name.get(candidate).copied().flatten();
+        let mut matched = None;
+        let mut ambiguous = false;
+        match logical_by_name.get(candidate).copied() {
+            Some(Some(index)) => matched = Some(index),
+            Some(None) => ambiguous = true,
+            None => {}
+        }
         // Yosys appends numeric implementation coordinates to the logical
         // memory path (`memory.0.0`). Only peel those generated suffixes: an
         // arbitrary hierarchy ancestor must never claim a primitive.
-        while matched.is_none() {
+        while matched.is_none() && !ambiguous {
             let Some((prefix, suffix)) = candidate.rsplit_once('.') else {
                 break;
             };
@@ -209,15 +215,23 @@ pub fn memory_arrays_from_source(
                 break;
             }
             candidate = prefix;
-            matched = logical_by_name.get(candidate).copied().flatten();
+            match logical_by_name.get(candidate).copied() {
+                Some(Some(index)) => matched = Some(index),
+                Some(None) => ambiguous = true,
+                None => {}
+            }
         }
-        if matched.is_none() {
+        if matched.is_none() && !ambiguous {
             // Vivado commonly maps `foo` to `foo_reg...`. Search from the
             // right so a logical `foo_regbank` wins over the shorter `foo`.
             for (offset, _) in raw_name.rmatch_indices("_reg") {
-                if let Some(index) = logical_by_name.get(&raw_name[..offset]).copied().flatten() {
-                    matched = Some(index);
-                    break;
+                match logical_by_name.get(&raw_name[..offset]).copied() {
+                    Some(Some(index)) => {
+                        matched = Some(index);
+                        break;
+                    }
+                    Some(None) => break,
+                    None => {}
                 }
             }
         }
@@ -231,14 +245,24 @@ pub fn memory_arrays_from_source(
     // those rows to their source logical array.
     for register in registers {
         let mut candidate = register.name.as_str();
-        let mut matched = logical_by_name.get(candidate).copied().flatten();
-        while matched.is_none() {
+        let mut matched = None;
+        let mut ambiguous = false;
+        match logical_by_name.get(candidate).copied() {
+            Some(Some(index)) => matched = Some(index),
+            Some(None) => ambiguous = true,
+            None => {}
+        }
+        while matched.is_none() && !ambiguous {
             let parent = strip_bit_suffix(candidate);
             if parent == candidate {
                 break;
             }
             candidate = parent;
-            matched = logical_by_name.get(candidate).copied().flatten();
+            match logical_by_name.get(candidate).copied() {
+                Some(Some(index)) => matched = Some(index),
+                Some(None) => ambiguous = true,
+                None => {}
+            }
         }
         if let Some(index) = matched {
             members[index].extend(register.bits.iter().map(|bit| bit.node_id));
@@ -1020,6 +1044,43 @@ mod tests {
         .unwrap();
 
         let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &registers);
+
+        assert!(memories.is_empty());
+    }
+
+    #[test]
+    fn ambiguous_physical_reg_prefix_does_not_fall_back_to_shorter_memory() {
+        let graph = graph_from_nodes(
+            "top",
+            (0..2)
+                .map(|id| {
+                    let mut node = comb_cell(id, "$mem_v2");
+                    node.name = format!("u.foo_reg_reg_{id}");
+                    node.raw_name = node.name.clone();
+                    node
+                })
+                .collect(),
+        );
+        let source_netlist = parse_value(serde_json::json!({
+            "modules": {
+                "top": {
+                    "attributes": { "top": "1" },
+                    "memories": {
+                        "\\u.foo": { "width": 1, "start_offset": 0, "size": 2 },
+                        "\\u.foo_reg": { "width": 1, "start_offset": 0, "size": 2 }
+                    },
+                    "cells": { "u": { "type": "child" } }
+                },
+                "child": {
+                    "memories": {
+                        "foo_reg": { "width": 1, "start_offset": 0, "size": 2 }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
 
         assert!(memories.is_empty());
     }

@@ -1900,9 +1900,10 @@ impl Analysis {
 
         // Logical memories are the highest-value grouping boundary and their
         // mapped DFFs may sort after thousands of helper cells. Reserve one
-        // unit and a bounded representative member sample for each memory so
-        // it cannot disappear merely because of raw graph order.
+        // member per memory before distributing larger samples, so neither raw
+        // graph order nor an earlier wide memory can make a later one vanish.
         if let Some(partition) = grouping {
+            let mut reserved_memories = Vec::new();
             for (group_id, group) in partition.groups.iter().enumerate() {
                 if group.kind != GroupKind::Memory {
                     continue;
@@ -1913,13 +1914,20 @@ impl Analysis {
                 }
                 let unit = base + group_id as u32;
                 seen_units.insert(unit);
+                if let Some(&first) = group.members.first() {
+                    seen.insert(first);
+                    reserved_memories.push((unit, group));
+                }
+            }
+            for (unit, group) in reserved_memories {
                 let take = group
                     .members
                     .len()
-                    .min(MAX_FULL_GROUP_MEMBERS)
+                    .saturating_sub(1)
+                    .min(MAX_FULL_GROUP_MEMBERS - 1)
                     .min(MAX_SUBGRAPH_NODES - seen.len());
-                seen.extend(group.members.iter().take(take).copied());
-                if take < group.members.len() {
+                seen.extend(group.members.iter().skip(1).take(take).copied());
+                if take + 1 < group.members.len() {
                     truncated = true;
                     capped_units.insert(unit);
                 }
@@ -5565,6 +5573,60 @@ mod tests {
         assert_eq!(
             memory.members.as_ref().unwrap().len(),
             MAX_FULL_GROUP_MEMBERS
+        );
+    }
+
+    #[test]
+    fn full_netlist_reserves_every_memory_before_distributing_samples() {
+        let group_count = 10;
+        let members_per_group = 300;
+        let node_count = group_count * members_per_group;
+        let graph = graph_from_parts(
+            "many_memories",
+            (0..node_count)
+                .map(|id| combinational_node(id as NodeId, "$and", None))
+                .collect(),
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let grouping = GroupPartition {
+            groups: (0..group_count)
+                .map(|group| Group {
+                    kind: GroupKind::Memory,
+                    members: ((group * members_per_group) as NodeId
+                        ..((group + 1) * members_per_group) as NodeId)
+                        .collect(),
+                    label: format!("memory{group} [300×1]"),
+                    cell_type: "$mem".to_owned(),
+                })
+                .collect(),
+            group_of: (0..node_count as NodeId)
+                .map(|id| (id, id / members_per_group as NodeId))
+                .collect(),
+        };
+
+        let result = analysis.full_netlist(
+            &graph,
+            full_options(group_count, false, true, false, &[]),
+            Some(&grouping),
+        );
+
+        assert!(result.truncated);
+        assert_eq!(result.nodes.len(), group_count);
+        assert!(result.nodes.iter().all(|node| {
+            node.members
+                .as_ref()
+                .is_some_and(|members| !members.is_empty())
+        }));
+        assert!(
+            result
+                .nodes
+                .iter()
+                .map(|node| node.members.as_ref().map_or(0, Vec::len))
+                .sum::<usize>()
+                <= MAX_SUBGRAPH_NODES
         );
     }
 
