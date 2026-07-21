@@ -1,4 +1,5 @@
 import type { DesignFile, Mode } from '../types'
+import { flagsForVivadoChange } from '../lib/flagRegistry'
 import defaultSource from './default.sv?raw'
 
 export const DEFAULT_FILE: DesignFile = {
@@ -13,5 +14,6 @@ export function defaultWorkspace() {
     top: '',
     mode: 'gates' as Mode,
     extraArgs: '',
+    vivadoExtraArgs: flagsForVivadoChange(''),
   }
 }

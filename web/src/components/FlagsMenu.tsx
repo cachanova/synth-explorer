@@ -189,7 +189,8 @@ export function FlagsMenu({
                         {def.defaultOn && (
                           <span className="flags-menu-default">
                             {' '}
-                            On by default — {def.defaultReason}
+                            {def.value ? `Default: ${def.defaultValue}` : 'On by default'}
+                            {' — '}{def.defaultReason}
                           </span>
                         )}
                       </div>

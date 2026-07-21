@@ -38,8 +38,8 @@ export type FlagDef = BooleanFlagDef | IntegerFlagDef | SelectFlagDef
 export const VIVADO_FLAG_REGISTRY: FlagDef[] = [
   {
     flag: '-mode',
-    label: 'Logic-only design',
-    description: 'Out-of-context synthesis omits package I/O and clock buffers.',
+    label: 'Design mode',
+    description: 'Choose logic-only out-of-context or Vivado\'s package-facing default synthesis.',
     value: 'select',
     defaultValue: 'out_of_context',
     choices: ['out_of_context', 'default'],

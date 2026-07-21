@@ -69,6 +69,7 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('CCU2C'))).toBe('carry')
     expect(symbolKind(cell('DSP48E2'))).toBe('dsp')
     expect(symbolKind(cell('MULT18X18D'))).toBe('dsp')
+    expect(symbolKind(cell('SB_MAC16'))).toBe('dsp')
     expect(symbolKind(cell('mystery', { seq: true, is_boundary: true }))).toBe('box')
   })
 
@@ -81,7 +82,7 @@ describe('symbolKind', () => {
   it('identifies vendor-specific implementation primitives', () => {
     for (const primitive of [
       'CARRY4', 'SB_LUT4', 'TRELLIS_COMB', 'IBUF', 'LUT6', 'XORCY', 'MUXCY', 'INV',
-      'DSP48E2', 'MULT18X18D',
+      'DSP48E2', 'MULT18X18D', 'SB_MAC16',
     ]) {
       expect(isSpecialPrimitive(cell(primitive)), primitive).toBe(true)
     }

@@ -682,7 +682,7 @@ const SchematicNode = memo(function SchematicNode({
   const name = nodeSublabel(node)
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
   const title = name && name !== nodeLabel(node)
-    ? `${nodeLabel(node)} — ${name}`
+    ? `${nodeLabel(node)} — ${name}${name !== node.name ? ` (${node.name})` : ''}`
     : nodeLabel(node)
 
   return (

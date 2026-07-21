@@ -269,6 +269,15 @@ describe('nodeSublabel', () => {
     })).toBe('valid')
   })
 
+  it('does not rewrite a similarly named non-Vivado cell', () => {
+    expect(nodeSublabel({
+      id: 4,
+      kind: 'cell',
+      name: 'valid_OBUF_inst_i_1',
+      cell_type: 'my_output_stage',
+    })).toBe('valid_OBUF_inst_i_1')
+  })
+
   it('reduces a grouped fallback name to its count', () => {
     const grouped: GraphNode = {
       id: 2,

@@ -45,6 +45,7 @@ describe('schematic layout sizing', () => {
   it('gives carry and DSP primitives distinct hard-block proportions', () => {
     expect(nodeDimensions(node(1, 'CARRY8'))).toEqual({ width: 98, height: 58 })
     expect(nodeDimensions(node(2, 'DSP48E2'))).toEqual({ width: 112, height: 62 })
+    expect(nodeDimensions(node(3, 'SB_MAC16'))).toEqual({ width: 112, height: 62 })
   })
 
   it('sizes Vivado implementation cells from the readable RTL-facing name', () => {

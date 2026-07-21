@@ -49,7 +49,6 @@ import {
 } from './lib/synthesisSettings'
 import {
   flagsForModeTransition,
-  flagsForVivadoChange,
   type ModeFlagMemory,
 } from './lib/flagRegistry'
 import { boundaryPathPinSelection } from './lib/endpointCone'
@@ -295,7 +294,7 @@ export function StoreProvider({
   const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
   const [vivadoStatus, setVivadoStatus] = useState<VivadoBridgeStatus | null>(null)
   const [vivadoTarget, setVivadoTargetState] = useState('')
-  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState(() => flagsForVivadoChange(''))
+  const [vivadoExtraArgs, setVivadoExtraArgsState] = useState(initial.vivadoExtraArgs)
   const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
     loadResetConfirmationPreference,
   )
@@ -439,6 +438,7 @@ export function StoreProvider({
     top,
     mode,
     extraArgs,
+    vivadoExtraArgs,
   }
 
   const cancelScheduledWorkspaceSave = useCallback(() => {
@@ -461,6 +461,7 @@ export function StoreProvider({
     files,
     mode,
     top,
+    vivadoExtraArgs,
   ])
 
   useEffect(() => {
@@ -672,6 +673,7 @@ export function StoreProvider({
       top: '',
       mode: modeRef.current,
       extraArgs: extraArgsRef.current,
+      vivadoExtraArgs: vivadoExtraArgsRef.current,
     }
     filesRef.current = next.files
     topRef.current = next.top

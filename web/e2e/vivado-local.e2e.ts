@@ -82,6 +82,22 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   await expect(page.getByLabel('Vivado flags')).toHaveValue(
     '-mode out_of_context -global_retiming auto',
   )
+
+  await page.waitForTimeout(350)
+  await page.reload()
+  await expect(page.getByLabel('Top')).toHaveValue('top')
+  await page.getByLabel('Synthesis tool').selectOption('vivado')
+  await expect(page.getByLabel('Vivado flags')).toHaveValue(
+    '-mode out_of_context -global_retiming auto',
+  )
+
+  await page.getByLabel('Vivado flags').fill('')
+  await page.waitForTimeout(350)
+  await page.reload()
+  await page.getByLabel('Synthesis tool').selectOption('vivado')
+  await expect(page.getByLabel('Vivado flags')).toHaveValue('')
+  await page.getByLabel('Vivado flags').fill('-mode out_of_context -global_retiming auto')
+
   await page.getByRole('button', { name: 'Synthesize' }).click()
   await page.getByRole('tab', { name: 'Overview' }).click()
 
@@ -102,7 +118,10 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   await page.getByRole('tab', { name: 'Schematic' }).click()
   const carry = page.locator('.g-symbol-carry')
   await expect(carry).toHaveCount(1)
-  await expect(carry).toHaveAttribute('data-node-tooltip', 'CARRY4 — one_hot[3]')
+  await expect(carry).toHaveAttribute(
+    'data-node-tooltip',
+    'CARRY4 — one_hot[3] (one_hot_OBUF[3]_inst_i_1)',
+  )
   await expect(carry.locator('.g-symbol-outline')).toHaveAttribute('stroke', 'var(--green)')
 })
 
