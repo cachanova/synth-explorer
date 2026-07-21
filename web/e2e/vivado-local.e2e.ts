@@ -63,7 +63,7 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   })
 
   await page.goto('/')
-  await page.getByLabel('Top module/entity').fill('top')
+  await page.getByLabel('Top').fill('top')
   await page.getByLabel('Synthesis tool').selectOption('vivado')
 
   await expect(page.getByLabel('Synthesis tool')).toHaveValue('vivado')
@@ -112,7 +112,7 @@ test('marks Vivado disconnected when the bridge disappears during synthesis', as
     'endmodule',
     '',
   ].join('\n'))
-  await page.getByLabel('Top module/entity').fill('top')
+  await page.getByLabel('Top').fill('top')
   await page.getByLabel('Synthesis tool').selectOption('vivado')
 
   await expect(page.getByLabel('Synthesis tool')).toHaveValue('vivado')

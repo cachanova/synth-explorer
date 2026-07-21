@@ -1003,7 +1003,7 @@ test('clears the schematic while source or top-level changes are pending', async
   await expect(schematic).toHaveCount(0)
   await waitForAnalysisReady(page)
 
-  await page.getByLabel('Top module/entity').fill('top')
+  await page.getByLabel('Top').fill('top')
   await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
   await expect(schematic).toHaveCount(0)
   await waitForAnalysisReady(page)

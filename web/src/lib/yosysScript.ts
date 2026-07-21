@@ -60,7 +60,7 @@ export function validateSynthesisRequest(
   validateNarrowCarry(request.mode, extraArgs)
   const tool = request.tool ?? 'yosys'
   if (tool === 'vivado') {
-    if (!top) throw new Error('Vivado synthesis requires an explicit top module or entity')
+    if (!top) throw new Error('Vivado synthesis requires an explicit top name')
     if (!request.target || !validVivadoField(request.target, 128)) {
       throw new Error('Vivado synthesis requires a valid installed target')
     }
