@@ -64,6 +64,79 @@ export interface LayoutGeometry {
   height: number
 }
 
+interface CachedLayoutGeometry {
+  geometry: LayoutGeometry
+  retainedBytes: number
+}
+
+// Repeated source/cone queries return fresh Subgraph objects even when their
+// layout-relevant content is identical. Keep a small structural cache of the
+// compact geometry, then hydrate it with the current graph objects. The byte
+// budget prevents a handful of near-cap schematics from retaining unbounded
+// routed-point arrays; the entry cap keeps small-graph churn bounded too.
+export const LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES = 4
+export const LAYOUT_GEOMETRY_CACHE_MAX_BYTES = 16 * 1024 * 1024
+const layoutGeometryCache = new Map<string, CachedLayoutGeometry>()
+let layoutGeometryCacheBytes = 0
+
+function layoutGeometryKey(input: LayoutInput, placement: NodePlacement): string {
+  return `${placement}:${JSON.stringify(input)}`
+}
+
+function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
+  const pointCount = geometry.edges.reduce(
+    (total, edge) => total + edge.points.length,
+    0,
+  )
+  // Conservative object/array allowances plus UTF-16 key storage. This is a
+  // retained-memory budget, not a wire-size estimate.
+  return (
+    key.length * 2 +
+    geometry.nodes.length * 128 +
+    geometry.edges.length * 96 +
+    pointCount * 48 +
+    256
+  )
+}
+
+function cachedLayoutGeometry(key: string): LayoutGeometry | null {
+  const cached = layoutGeometryCache.get(key)
+  if (!cached) return null
+  // Map insertion order is the LRU order.
+  layoutGeometryCache.delete(key)
+  layoutGeometryCache.set(key, cached)
+  return cached.geometry
+}
+
+function cacheLayoutGeometry(key: string, geometry: LayoutGeometry): void {
+  const retainedBytes = estimatedRetainedBytes(key, geometry)
+  if (retainedBytes > LAYOUT_GEOMETRY_CACHE_MAX_BYTES) return
+
+  const previous = layoutGeometryCache.get(key)
+  if (previous) {
+    layoutGeometryCacheBytes -= previous.retainedBytes
+    layoutGeometryCache.delete(key)
+  }
+  layoutGeometryCache.set(key, { geometry, retainedBytes })
+  layoutGeometryCacheBytes += retainedBytes
+
+  while (
+    layoutGeometryCache.size > LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES ||
+    layoutGeometryCacheBytes > LAYOUT_GEOMETRY_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = layoutGeometryCache.keys().next().value
+    if (oldestKey == null) break
+    const oldest = layoutGeometryCache.get(oldestKey)
+    layoutGeometryCache.delete(oldestKey)
+    if (oldest) layoutGeometryCacheBytes -= oldest.retainedBytes
+  }
+}
+
+export function clearLayoutGeometryCache(): void {
+  layoutGeometryCache.clear()
+  layoutGeometryCacheBytes = 0
+}
+
 export interface ViewportTransform {
   x: number
   y: number
@@ -778,21 +851,35 @@ export async function layoutSubgraph(
   signal?: AbortSignal,
 ): Promise<LaidOutGraph> {
   assertRenderableSubgraph(sub)
+  if (signal?.aborted) throw abortError()
   const input = prepareLayoutInput(sub)
   const placement = placementForLayout(sub)
-  let geometry: LayoutGeometry
+  const cacheKey = layoutGeometryKey(input, placement)
+  const cached = cachedLayoutGeometry(cacheKey)
+  if (cached) return hydrateLayoutResult(sub, cached)
   if (placement === 'BRANDES_KOEPF') {
-    geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-  } else {
-    try {
-      geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
-    } catch (error) {
-      // Never retry an aborted (superseded) request.
-      if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
-        throw error
-      }
-      geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    }
+    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
+    cacheLayoutGeometry(cacheKey, geometry)
+    return hydrateLayoutResult(sub, geometry)
   }
-  return hydrateLayoutResult(sub, geometry)
+  try {
+    const geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
+    cacheLayoutGeometry(cacheKey, geometry)
+    return hydrateLayoutResult(sub, geometry)
+  } catch (error) {
+    // Never retry an aborted (superseded) request.
+    if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
+      throw error
+    }
+    // A tight layout can fail because of either this topology or transient
+    // worker infrastructure. Keep robust fallback geometry under its actual
+    // placement so the next equivalent request still retries the preferred
+    // tight placement, while a repeat topology failure can reuse the fallback.
+    const fallbackKey = layoutGeometryKey(input, 'BRANDES_KOEPF')
+    const cachedFallback = cachedLayoutGeometry(fallbackKey)
+    if (cachedFallback) return hydrateLayoutResult(sub, cachedFallback)
+    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
+    cacheLayoutGeometry(fallbackKey, geometry)
+    return hydrateLayoutResult(sub, geometry)
+  }
 }
