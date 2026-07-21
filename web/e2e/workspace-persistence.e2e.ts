@@ -31,7 +31,7 @@ test('restores source files and synthesis inputs across reloads', async ({ page 
   await replaceEditorText(page, source)
   await page.getByTitle('Add file').click()
   await replaceEditorText(page, 'module helper; endmodule')
-  await page.getByLabel('Top module').fill('restored')
+  await page.getByLabel('Top').fill('restored')
   await page.getByLabel('Platform').selectOption('lut4')
   await page.getByLabel('Synthesis flags').fill('-noabc')
 
@@ -42,7 +42,7 @@ test('restores source files and synthesis inputs across reloads', async ({ page 
     'aria-selected',
     'true',
   )
-  await expect(page.getByLabel('Top module')).toHaveValue('restored')
+  await expect(page.getByLabel('Top')).toHaveValue('restored')
   await expect(page.getByLabel('Platform')).toHaveValue('lut4')
   await expect(page.getByLabel('Synthesis flags')).toHaveValue('-noabc')
   expect(await editorText(page)).toContain('module helper; endmodule')
@@ -54,7 +54,7 @@ test('restores source files and synthesis inputs across reloads', async ({ page 
 test('warns before reset, remembers opt-out, and exposes the preference in settings', async ({ page }) => {
   await replaceEditorText(page, 'module disposable; endmodule')
   await page.getByTitle('Add file').click()
-  await page.getByLabel('Top module').fill('disposable')
+  await page.getByLabel('Top').fill('disposable')
   await page.getByLabel('Platform').selectOption('lut4')
   await page.getByLabel('Synthesis flags').fill('-noabc')
 
@@ -74,7 +74,7 @@ test('warns before reset, remembers opt-out, and exposes the preference in setti
   await expect(page.getByRole('tab', { name: /^design\.sv/ })).toHaveCount(1)
   await expect(page.getByRole('tab', { name: /^file1\.sv/ })).toHaveCount(0)
   expect(await editorText(page)).toContain('module top')
-  await expect(page.getByLabel('Top module')).toHaveValue('')
+  await expect(page.getByLabel('Top')).toHaveValue('')
   await expect(page.getByLabel('Platform')).toHaveValue('lut4')
   await expect(page.getByLabel('Synthesis flags')).toHaveValue('-noabc')
 

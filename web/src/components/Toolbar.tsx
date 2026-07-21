@@ -155,12 +155,12 @@ export function Toolbar() {
       </label>
 
       <label className="field">
-        <span>Top module/entity</span>
+        <span>Top</span>
         <input
           style={{ width: 110 }}
           placeholder={store.synthTool === 'vivado' ? 'required' : 'auto-detect'}
           title={store.synthTool === 'vivado'
-            ? 'Local Vivado synthesis requires an explicit top module or entity.'
+            ? 'Local Vivado synthesis requires an explicit top name.'
             : 'Verilog can auto-detect when blank; VHDL requires an explicit entity.'}
           value={store.top}
           onChange={(event) => store.setTop(event.target.value)}
@@ -264,7 +264,7 @@ export function Toolbar() {
             className="primary synthesize-button"
             disabled={store.synthesizing || !store.top.trim()}
             onClick={() => void store.synthesize()}
-            title={store.top.trim() ? 'Run synthesis in local Vivado' : 'Enter the top module or entity first'}
+            title={store.top.trim() ? 'Run synthesis in local Vivado' : 'Enter a top name first'}
           >
             {store.synthesizing ? (
               <span className="synth-button-content">

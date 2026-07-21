@@ -46,7 +46,7 @@ export function Overview() {
     return (
       <div className="empty-state">
         {store.synthTool === 'vivado'
-          ? 'Enter a top module or entity, then run Vivado from the toolbar.'
+          ? 'Enter a top name, then run Vivado from the toolbar.'
           : (
               <>
                 Paste or edit Verilog or VHDL on the left.{' '}
