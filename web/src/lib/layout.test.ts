@@ -699,6 +699,60 @@ describe('schematic layout sizing', () => {
     instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
+  it('evicts at the cumulative byte budget before reaching the entry bound', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pointsPerEntry = Math.ceil(
+      (LAYOUT_GEOMETRY_CACHE_MAX_BYTES / LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1) / 48,
+    )
+    const subgraphFor = (index: number): Subgraph => ({
+      nodes: [node(index * 2, '$_BUF_'), node(index * 2 + 1, '$_BUF_')],
+      edges: [{
+        from: index * 2,
+        to: index * 2 + 1,
+        from_port: 'Y',
+        to_port: 'A',
+        net_name: `route-${index}`,
+        bits: [index],
+      }],
+      truncated: false,
+    })
+    const geometryFor = (index: number, large: boolean) => ({
+      nodes: [
+        { id: index * 2, x: 0, y: 0, width: 62, height: 46 },
+        { id: index * 2 + 1, x: 128, y: 0, width: 62, height: 46 },
+      ],
+      edges: [{
+        inputIndex: 0,
+        points: large
+          ? Array(pointsPerEntry).fill({ x: 0, y: 0 })
+          : [{ x: 62, y: 23 }, { x: 128, y: 23 }],
+      }],
+      width: 190,
+      height: 46,
+    })
+
+    for (let index = 1; index <= LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES; index += 1) {
+      const pendingLayout = layoutSubgraph(subgraphFor(index))
+      const instance = FakeWorker.instances[0]
+      const request = instance.requests.at(-1)!
+      instance.onmessage?.({
+        data: { id: request.id, ok: true, result: geometryFor(index, true) },
+      } as MessageEvent)
+      await pendingLayout
+    }
+
+    const instance = FakeWorker.instances[0]
+    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES)
+    const evicted = layoutSubgraph(subgraphFor(1))
+    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1)
+    const request = instance.requests.at(-1)!
+    instance.onmessage?.({
+      data: { id: request.id, ok: true, result: geometryFor(1, false) },
+    } as MessageEvent)
+    await evicted
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
   it('keeps cached hits abortable without starting worker work', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const firstLayout = layoutSubgraph(workerSubgraph())
