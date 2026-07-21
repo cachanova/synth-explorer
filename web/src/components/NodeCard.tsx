@@ -53,14 +53,14 @@ export function NodeCard({
         {groupedMemory ? (
           <>
             <span className="k">primitives</span>
-            <span className="v">{node.members?.length}</span>
+            <span className="v">{node.member_count ?? node.width ?? node.members?.length}</span>
           </>
         ) : node.width != null && node.width >= 2 ? (
           <>
             <span className="k">width</span>
             <span className="v">{node.width}</span>
             <span className="k">members</span>
-            <span className="v">{node.members?.length ?? node.width} bits</span>
+            <span className="v">{node.width} bits</span>
           </>
         ) : null}
         {node.seq && (

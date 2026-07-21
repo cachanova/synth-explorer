@@ -903,6 +903,17 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+    const editor = page.locator('.cm-content')
+    await expect(editor).toContainText('parameter int unsigned DEPTH = 16')
+    await editor.click()
+    await editor.press('Control+Home')
+    await editor.press('ArrowDown')
+    await editor.press('ArrowDown')
+    await editor.press('End')
+    await editor.press('ArrowLeft')
+    await editor.press('Backspace')
+    await editor.press('Backspace')
+    await editor.pressSequentially('128')
     await page.getByLabel('Platform').selectOption('gates')
   })
 
@@ -913,9 +924,9 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await expect(groupedMemory).toHaveCount(1)
   await expect(groupedMemory).toHaveAttribute(
     'data-node-tooltip',
-    'MEM — memory [16×16]',
+    'MEM — memory [128×16]',
   )
-  await expect(groupedMemory).toHaveAttribute('data-member-count', '256')
+  await expect(groupedMemory).toHaveAttribute('data-member-count', '2048')
   expect(apiRequests).toEqual([])
 })
 

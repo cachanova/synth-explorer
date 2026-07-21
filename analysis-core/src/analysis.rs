@@ -17,6 +17,7 @@ const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
 pub const MAX_PATH_RESULTS: usize = 8_000;
 pub const MAX_SUBGRAPH_NODES: usize = 2_000;
+const MAX_FULL_GROUP_MEMBERS: usize = 256;
 pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
 const MAX_BOUNDARY_ENDPOINTS: usize = 10_000;
 const MAX_BOUNDARY_ENDPOINT_BITS: usize = 100_000;
@@ -65,10 +66,14 @@ pub struct GraphNode {
     pub params: BTreeMap<String, String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<ControlRef>,
-    /// Number of member bits collapsed into this node; present only on grouped
-    /// vector nodes (`group_vectors=true`). Equals the members carried here.
+    /// Number of projected member bits collapsed into this node; present only
+    /// on grouped vector nodes (`group_vectors=true`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
+    /// Total members in the canonical group. This can exceed `width` when a
+    /// bounded projection carries only a representative subset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member_count: Option<u32>,
     /// Real graph node ids collapsed into this group; present only on grouped
     /// vector nodes. These are the per-bit ids `/nodes` still addresses.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1540,7 +1545,7 @@ impl Analysis {
             &[options.dir],
             options,
             grouping,
-            SubgraphWorkLimits::default(),
+            SubgraphWorkLimits::for_public_projection(),
         )
     }
 
@@ -1592,7 +1597,7 @@ impl Analysis {
             &[ConeDir::Fanin, ConeDir::Fanout],
             options,
             grouping,
-            SubgraphWorkLimits::default(),
+            SubgraphWorkLimits::for_public_projection(),
         )
     }
 
@@ -1891,14 +1896,50 @@ impl Analysis {
         // all nodes. Selection context takes the bounded adjacency path above.
         let mut seen = HashSet::new();
         let mut truncated = false;
+        let mut capped_units = HashSet::new();
+
+        // Logical memories are the highest-value grouping boundary and their
+        // mapped DFFs may sort after thousands of helper cells. Reserve one
+        // unit and a bounded representative member sample for each memory so
+        // it cannot disappear merely because of raw graph order.
+        if let Some(partition) = grouping {
+            for (group_id, group) in partition.groups.iter().enumerate() {
+                if group.kind != GroupKind::Memory {
+                    continue;
+                }
+                if seen_units.len() >= cap || seen.len() >= MAX_SUBGRAPH_NODES {
+                    truncated = true;
+                    continue;
+                }
+                let unit = base + group_id as u32;
+                seen_units.insert(unit);
+                let take = group
+                    .members
+                    .len()
+                    .min(MAX_FULL_GROUP_MEMBERS)
+                    .min(MAX_SUBGRAPH_NODES - seen.len());
+                seen.extend(group.members.iter().take(take).copied());
+                if take < group.members.len() {
+                    truncated = true;
+                    capped_units.insert(unit);
+                }
+            }
+        }
+
         for node in &graph.nodes {
             if options.hide_const && node.kind == NodeKind::Const {
                 continue;
             }
             let unit = unit_id(grouping, base, node.id);
             if seen_units.contains(&unit) {
-                seen.insert(node.id);
-            } else if seen_units.len() < cap {
+                if capped_units.contains(&unit) {
+                    truncated = true;
+                } else if seen.len() < MAX_SUBGRAPH_NODES {
+                    seen.insert(node.id);
+                } else {
+                    truncated = true;
+                }
+            } else if seen_units.len() < cap && seen.len() < MAX_SUBGRAPH_NODES {
                 seen_units.insert(unit);
                 seen.insert(node.id);
             } else {
@@ -1958,12 +1999,13 @@ impl Analysis {
                      seen_units: &mut HashSet<u32>,
                      seen: &mut HashSet<NodeId>,
                      queued: &mut HashSet<NodeId>,
-                     queue: &mut VecDeque<NodeId>| {
+                     queue: &mut VecDeque<NodeId>,
+                     truncated: &mut bool| {
             let unit = unit_id(grouping, base, id);
             if seen_units.contains(&unit) {
                 return true;
             }
-            if seen_units.len() >= cap {
+            if seen_units.len() >= cap || seen.len() >= MAX_SUBGRAPH_NODES {
                 return false;
             }
             seen_units.insert(unit);
@@ -1974,6 +2016,10 @@ impl Analysis {
                     .and_then(|group_id| partition.groups.get(*group_id as usize))
             }) {
                 for member in &group.members {
+                    if seen.len() >= MAX_SUBGRAPH_NODES {
+                        *truncated = true;
+                        break;
+                    }
                     seen.insert(*member);
                     if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(*member) {
                         queue.push_back(*member);
@@ -1994,7 +2040,14 @@ impl Analysis {
             {
                 continue;
             }
-            if !admit(*root, &mut seen_units, &mut seen, &mut queued, &mut queue) {
+            if !admit(
+                *root,
+                &mut seen_units,
+                &mut seen,
+                &mut queued,
+                &mut queue,
+                &mut truncated,
+            ) {
                 truncated = true;
                 break;
             }
@@ -2019,6 +2072,7 @@ impl Analysis {
                     &mut seen,
                     &mut queued,
                     &mut queue,
+                    &mut truncated,
                 ) {
                     truncated = true;
                     continue;
@@ -2263,6 +2317,7 @@ impl Analysis {
                     params: node.params.clone(),
                     controls,
                     width: None,
+                    member_count: None,
                     members: None,
                 }
             })
@@ -2466,6 +2521,15 @@ struct SubgraphWorkLimits {
 }
 
 impl SubgraphWorkLimits {
+    fn for_public_projection() -> Self {
+        Self {
+            max_raw_nodes: Some(MAX_SUBGRAPH_NODES),
+            max_raw_edges: Some(MAX_SUBGRAPH_EDGES),
+            max_examined_edges: Some(MAX_SUBGRAPH_EDGES),
+            ..Self::default()
+        }
+    }
+
     fn for_source_selection(expand_output_register_inputs: bool) -> Self {
         Self {
             expand_output_register_inputs,
@@ -2623,6 +2687,7 @@ fn quotient_subgraph(graph: &Graph, subgraph: Subgraph, partition: &GroupPartiti
             params: BTreeMap::new(),
             controls: acc.controls,
             width: Some(members.len() as u32),
+            member_count: Some(group.members.len() as u32),
             members: Some(members),
         });
     }
@@ -5160,6 +5225,7 @@ mod tests {
             params: BTreeMap::new(),
             controls: Vec::new(),
             width: None,
+            member_count: None,
             members: None,
         };
         let subgraph = Subgraph {
@@ -5238,6 +5304,7 @@ mod tests {
                 params: BTreeMap::new(),
                 controls: Vec::new(),
                 width: None,
+                member_count: None,
                 members: None,
             })
             .collect();
@@ -5411,6 +5478,21 @@ mod tests {
             group_of: (0..node_count as NodeId).map(|id| (id, 0)).collect(),
         };
 
+        let full = analysis.full_netlist(
+            &graph,
+            full_options(1, false, true, false, &[]),
+            Some(&grouping),
+        );
+        assert!(full.truncated);
+        assert_eq!(full.nodes.len(), 1);
+        assert_eq!(full.nodes[0].width, Some(MAX_SUBGRAPH_NODES as u32));
+        assert_eq!(full.nodes[0].member_count, Some(node_count as u32));
+        assert_eq!(
+            full.nodes[0].members.as_ref().unwrap().len(),
+            MAX_SUBGRAPH_NODES
+        );
+        assert!(serde_json::to_vec(&full).unwrap().len() < 100_000);
+
         let result = analysis
             .source_selection(
                 &graph,
@@ -5430,11 +5512,60 @@ mod tests {
 
         assert!(result.graph.truncated);
         assert_eq!(result.graph.nodes.len(), 1);
+        assert_eq!(result.graph.nodes[0].width, Some(MAX_SUBGRAPH_NODES as u32));
+        assert_eq!(result.graph.nodes[0].member_count, Some(node_count as u32));
         assert_eq!(
             result.graph.nodes[0].members.as_ref().unwrap().len(),
             MAX_SUBGRAPH_NODES
         );
         assert!(serde_json::to_vec(&result).unwrap().len() < 100_000);
+    }
+
+    #[test]
+    fn full_netlist_reserves_a_bounded_memory_sample_before_graph_order() {
+        let node_count = 5_000;
+        let memory_start = 4_000;
+        let graph = graph_from_parts(
+            "late_memory",
+            (0..node_count)
+                .map(|id| combinational_node(id as NodeId, "$and", None))
+                .collect(),
+            Vec::new(),
+            vec![Vec::new(); node_count],
+            vec![Vec::new(); node_count],
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Memory,
+                members: (memory_start as NodeId..node_count as NodeId).collect(),
+                label: "memory [1000×1]".to_owned(),
+                cell_type: "$mem".to_owned(),
+            }],
+            group_of: (memory_start as NodeId..node_count as NodeId)
+                .map(|id| (id, 0))
+                .collect(),
+        };
+
+        let result = analysis.full_netlist(
+            &graph,
+            full_options(400, false, true, false, &[]),
+            Some(&grouping),
+        );
+        let memory = result
+            .nodes
+            .iter()
+            .find(|node| node.node.id == node_count as NodeId)
+            .expect("the late-sorting logical memory remains visible");
+
+        assert!(result.truncated);
+        assert_eq!(result.nodes.len(), 400);
+        assert_eq!(memory.width, Some(MAX_FULL_GROUP_MEMBERS as u32));
+        assert_eq!(memory.member_count, Some(1_000));
+        assert_eq!(
+            memory.members.as_ref().unwrap().len(),
+            MAX_FULL_GROUP_MEMBERS
+        );
     }
 
     #[test]
@@ -6680,6 +6811,7 @@ mod tests {
                 params: BTreeMap::new(),
                 controls: Vec::new(),
                 width: None,
+                member_count: None,
                 members: None,
             })
             .collect();
@@ -6744,6 +6876,7 @@ mod tests {
                 params: BTreeMap::new(),
                 controls: Vec::new(),
                 width: None,
+                member_count: None,
                 members: None,
             })
             .collect();

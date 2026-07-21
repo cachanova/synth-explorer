@@ -23,6 +23,8 @@ export interface GraphNode extends NodeRef {
   // bit-parallel cells or physical primitives from one logical memory.
   // `members` are the real node ids it stands for.
   width?: number
+  // Canonical group size; may exceed `width` in a bounded projection.
+  member_count?: number
   members?: number[]
 }
 

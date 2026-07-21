@@ -180,11 +180,16 @@ pub fn memory_arrays_from_source(
     }
 
     logical.sort_by(|left, right| left.name.cmp(&right.name));
-    let logical_by_name: HashMap<&str, usize> = logical
-        .iter()
-        .enumerate()
-        .map(|(index, memory)| (memory.name.as_str(), index))
-        .collect();
+    // Escaped identifiers may contain the same `.` used as our flattened
+    // hierarchy separator. Treat duplicate normalized paths as ambiguous
+    // rather than assigning their primitives to whichever entry wins.
+    let mut logical_by_name: HashMap<&str, Option<usize>> = HashMap::new();
+    for (index, memory) in logical.iter().enumerate() {
+        logical_by_name
+            .entry(memory.name.as_str())
+            .and_modify(|matched| *matched = None)
+            .or_insert(Some(index));
+    }
     let mut members = vec![Vec::new(); logical.len()];
     for node in &graph.nodes {
         if node.kind != NodeKind::Cell || !node.cell_type.as_deref().is_some_and(is_memory_type) {
@@ -192,7 +197,7 @@ pub fn memory_arrays_from_source(
         }
         let raw_name = clean_name(&node.raw_name);
         let mut candidate = raw_name.as_str();
-        let mut matched = logical_by_name.get(candidate).copied();
+        let mut matched = logical_by_name.get(candidate).copied().flatten();
         // Yosys appends numeric implementation coordinates to the logical
         // memory path (`memory.0.0`). Only peel those generated suffixes: an
         // arbitrary hierarchy ancestor must never claim a primitive.
@@ -204,14 +209,14 @@ pub fn memory_arrays_from_source(
                 break;
             }
             candidate = prefix;
-            matched = logical_by_name.get(candidate).copied();
+            matched = logical_by_name.get(candidate).copied().flatten();
         }
         if matched.is_none() {
             // Vivado commonly maps `foo` to `foo_reg...`. Search from the
             // right so a logical `foo_regbank` wins over the shorter `foo`.
             for (offset, _) in raw_name.rmatch_indices("_reg") {
-                if let Some(index) = logical_by_name.get(&raw_name[..offset]) {
-                    matched = Some(*index);
+                if let Some(index) = logical_by_name.get(&raw_name[..offset]).copied().flatten() {
+                    matched = Some(index);
                     break;
                 }
             }
@@ -226,17 +231,14 @@ pub fn memory_arrays_from_source(
     // those rows to their source logical array.
     for register in registers {
         let mut candidate = register.name.as_str();
-        let mut matched = None;
-        loop {
+        let mut matched = logical_by_name.get(candidate).copied().flatten();
+        while matched.is_none() {
             let parent = strip_bit_suffix(candidate);
             if parent == candidate {
                 break;
             }
             candidate = parent;
-            if let Some(index) = logical_by_name.get(candidate) {
-                matched = Some(*index);
-                break;
-            }
+            matched = logical_by_name.get(candidate).copied().flatten();
         }
         if let Some(index) = matched {
             members[index].extend(register.bits.iter().map(|bit| bit.node_id));
@@ -957,6 +959,69 @@ mod tests {
         assert_eq!(partition.groups[0].members, vec![0, 1, 2, 3]);
         assert_eq!(partition.groups[0].label, "memory [2×2]");
         assert_eq!(partition.groups[0].cell_type, "$mem");
+    }
+
+    #[test]
+    fn scalar_width_memory_matches_an_exact_register_alias() {
+        let graph = graph_from_nodes(
+            "top",
+            (0..2)
+                .map(|id| dff_cell(id, &format!("$auto$ff${id}")))
+                .collect(),
+        );
+        let registers = vec![register_group("memory", &[(0, 0), (1, 1)])];
+        let source_netlist = parse_value(serde_json::json!({
+            "modules": { "top": {
+                "attributes": { "top": "1" },
+                "memories": {
+                    "memory": { "width": 1, "start_offset": 0, "size": 2 }
+                }
+            } }
+        }))
+        .unwrap();
+
+        let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &registers);
+        let partition = GroupPartition::build(&graph, &registers, memories);
+
+        assert_eq!(partition.groups.len(), 1);
+        assert_eq!(partition.groups[0].kind, GroupKind::Memory);
+        assert_eq!(partition.groups[0].label, "memory [2×1]");
+        assert_eq!(partition.groups[0].members, vec![0, 1]);
+    }
+
+    #[test]
+    fn ambiguous_escaped_and_hierarchical_memory_paths_do_not_merge() {
+        let graph = graph_from_nodes(
+            "top",
+            (0..4)
+                .map(|id| dff_cell(id, &format!("$auto$ff${id}")))
+                .collect(),
+        );
+        let registers = vec![register_group(
+            "u.memory[0]",
+            &[(0, 0), (1, 1), (2, 2), (3, 3)],
+        )];
+        let source_netlist = parse_value(serde_json::json!({
+            "modules": {
+                "top": {
+                    "attributes": { "top": "1" },
+                    "memories": {
+                        "\\u.memory": { "width": 2, "start_offset": 0, "size": 2 }
+                    },
+                    "cells": { "u": { "type": "child" } }
+                },
+                "child": {
+                    "memories": {
+                        "memory": { "width": 2, "start_offset": 0, "size": 2 }
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &registers);
+
+        assert!(memories.is_empty());
     }
 
     #[test]

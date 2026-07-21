@@ -254,6 +254,7 @@ fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
     assert_eq!(memory.node.seq, Some(true));
     assert_eq!(memory.node.register, Some(false));
     assert_eq!(memory.width, Some(3));
+    assert_eq!(memory.member_count, Some(3));
     assert_eq!(memory.members.as_deref().map(<[_]>::len), Some(3));
 }
 

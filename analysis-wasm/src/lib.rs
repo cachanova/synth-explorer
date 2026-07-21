@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
-    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, PathSort, SourceSelectionOptions,
-    SourceSelectionRange, TimingEstimate,
+    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort,
+    SourceSelectionOptions, SourceSelectionRange, TimingEstimate,
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
@@ -230,8 +230,9 @@ impl AnalysisSession {
         // Synthetic group ids remain valid request roots when presentation is
         // toggled back to raw nodes. Resolve through the canonical partition,
         // then apply grouping only to the returned projection.
-        let roots = self.resolve_projection_roots(&query.nodes, Some(&self.design.grouping))?;
-        let response = self
+        let (roots, roots_truncated) =
+            self.resolve_projection_roots(&query.nodes, Some(&self.design.grouping))?;
+        let mut response = self
             .design
             .analysis
             .multi_root_cone(
@@ -252,6 +253,7 @@ impl AnalysisSession {
                 grouping,
             )
             .ok_or_else(|| js_error("unknown node"))?;
+        response.truncated |= roots_truncated;
         to_json(&response)
     }
 
@@ -261,8 +263,9 @@ impl AnalysisSession {
             return Err(js_error("at most 200 context roots may be requested"));
         }
         let grouping = self.grouping(query.group_vectors);
-        let roots = self.resolve_projection_roots(&query.around, grouping)?;
-        let response = self.design.analysis.full_netlist(
+        let (roots, roots_truncated) =
+            self.resolve_projection_roots(&query.around, Some(&self.design.grouping))?;
+        let mut response = self.design.analysis.full_netlist(
             &self.design.graph,
             FullNetlistOptions {
                 max_nodes: query.max_nodes.unwrap_or(1_500),
@@ -273,6 +276,7 @@ impl AnalysisSession {
             },
             grouping,
         );
+        response.truncated |= roots_truncated;
         to_json(&response)
     }
 
@@ -354,17 +358,24 @@ impl AnalysisSession {
         &self,
         requested: &[u32],
         grouping: Option<&GroupPartition>,
-    ) -> Result<Vec<u32>, JsValue> {
+    ) -> Result<(Vec<u32>, bool), JsValue> {
         let base = self.design.graph.nodes.len() as u32;
         let mut roots = Vec::new();
         let mut requested_seen = HashSet::new();
         let mut roots_seen = HashSet::new();
+        let mut truncated = false;
         for &id in requested {
             if !requested_seen.insert(id) {
                 continue;
             }
             if id < base {
-                if roots_seen.insert(id) {
+                if roots_seen.contains(&id) {
+                    continue;
+                }
+                if roots.len() >= MAX_SUBGRAPH_NODES {
+                    truncated = true;
+                } else {
+                    roots_seen.insert(id);
                     roots.push(id);
                 }
                 continue;
@@ -375,15 +386,19 @@ impl AnalysisSession {
                         .and_then(|group_id| partition.groups.get(group_id as usize))
                 })
                 .ok_or_else(|| js_error("unknown node"))?;
-            roots.extend(
-                group
-                    .members
-                    .iter()
-                    .copied()
-                    .filter(|member| roots_seen.insert(*member)),
-            );
+            for &member in &group.members {
+                if roots_seen.contains(&member) {
+                    continue;
+                }
+                if roots.len() >= MAX_SUBGRAPH_NODES {
+                    truncated = true;
+                    break;
+                }
+                roots_seen.insert(member);
+                roots.push(member);
+            }
         }
-        Ok(roots)
+        Ok((roots, truncated))
     }
 }
 
@@ -431,8 +446,9 @@ fn js_error(message: impl AsRef<str>) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
     use synth_explorer_analysis::analysis::PathsResponse;
+    use synth_explorer_analysis::grouping::{Group, GroupKind};
 
     const PRECOMPUTED: &str = include_str!(
         "../../web/public/precomputed/37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8.json"
@@ -583,12 +599,28 @@ mod tests {
                 .all(|node| node["id"].as_u64().is_some_and(|id| id < u64::from(base)))
         );
 
-        let once = session
+        let (once, once_truncated) = session
             .resolve_projection_roots(&[synthetic_id], Some(&session.design.grouping))
             .expect("one synthetic root resolves");
-        let repeated = session
+        let (repeated, repeated_truncated) = session
             .resolve_projection_roots(&vec![synthetic_id; 200], Some(&session.design.grouping))
             .expect("repeated synthetic roots resolve");
         assert_eq!(repeated, once, "duplicate requests must not amplify roots");
+        assert_eq!(repeated_truncated, once_truncated);
+
+        let oversized = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Memory,
+                members: (0..5_000).collect(),
+                label: "memory [5000×1]".to_owned(),
+                cell_type: "$mem".to_owned(),
+            }],
+            group_of: HashMap::new(),
+        };
+        let (bounded, bounded_truncated) = session
+            .resolve_projection_roots(&[base], Some(&oversized))
+            .expect("oversized synthetic root resolves within the raw-node cap");
+        assert_eq!(bounded.len(), MAX_SUBGRAPH_NODES);
+        assert!(bounded_truncated);
     }
 }

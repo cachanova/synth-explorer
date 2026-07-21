@@ -59,6 +59,7 @@ describe('NodeCard synthesis details', () => {
           name: 'memory [128×16]',
           cell_type: 'RAM64M',
           width: 12,
+          member_count: 5_000,
           members: Array.from({ length: 12 }, (_, index) => index),
           seq: true,
           register: false,
@@ -67,7 +68,7 @@ describe('NodeCard synthesis details', () => {
       />,
     )
 
-    expect(markup).toContain('<span class="k">primitives</span><span class="v">12</span>')
+    expect(markup).toContain('<span class="k">primitives</span><span class="v">5000</span>')
     expect(markup).not.toContain('12 bits')
   })
 
