@@ -17,7 +17,8 @@ export function NodeCard({
   onExpand?: () => void
 }) {
   const store = useStore(
-    ({ files, highlightSources, openCone, openControlCone }) => ({
+    ({ design, files, highlightSources, openCone, openControlCone }) => ({
+      design,
       files,
       highlightSources,
       openCone,
@@ -95,7 +96,7 @@ export function NodeCard({
       )}
 
       <details className="collapsible" style={{ margin: '8px 0' }}>
-        <summary>Yosys details</summary>
+        <summary>{store.design?.tool === 'vivado' ? 'Vivado details' : 'Yosys details'}</summary>
         <div className="kv" style={{ marginTop: 6 }}>
           <span className="k">raw name</span>
           <span className="v">{node.name}</span>
