@@ -3,7 +3,7 @@
 use crate::analysis::{Analysis, SourceLineIndex, SourceRangeMapping, Stats};
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
-use crate::grouping::GroupPartition;
+use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
 use crate::source_provenance::{SourceProvenance, recover_source_provenance};
 use deepsize::DeepSizeOf;
@@ -65,7 +65,9 @@ impl AnalysisDesign {
         analysis.extend_source_ranges(ranges, source_ranges_truncated);
         analysis.set_procedural_targets(procedural_targets);
         analysis.set_source_probe_hints(probe_hints);
-        let grouping = GroupPartition::build(&graph, &analysis.endpoints().registers);
+        let memory_arrays = memory_arrays_from_source(&graph, source_netlist, source_top);
+        let grouping =
+            GroupPartition::build(&graph, &analysis.endpoints().registers, &memory_arrays);
 
         Ok(Self {
             graph,

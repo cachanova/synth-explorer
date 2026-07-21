@@ -134,13 +134,13 @@ const ARITH_GLYPHS: Record<string, string> = {
   REDUCE_XOR: '=1',
 }
 
-const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAM(?:B|\d)|URAM|DP16KD|SPRAM|SB_(?:RAM|SPRAM)|SRL(?:16E|C32E))/i
+const MEMORY_HINT = /(?:^|_)(?:MEM(?:ORY|RD|WR|INIT)?|RAM|ROM)(?:_|$)|^(?:RAM(?:B|D|S|\d)|URAM|DP16KD|SPRAM|SB_(?:RAM|SPRAM)|SRL(?:16E|C32E))/i
 const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
 const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i
 const CARRY_HINT = /^(?:CARRY[48]?|SB_CARRY|CCU2C)$/i
 const DSP_HINT = /^(?:DSP48\w*|MULT18X18D|SB_MAC16)$/i
-const SPECIAL_PRIMITIVE_HINT = /^(?:SB_|TRELLIS_|CCU2C|CARRY|DSP48|MULT18X18D|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:B|\d)|URAM|DP16KD|SPRAM|SRL(?:16E|C32E)|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)/i
+const SPECIAL_PRIMITIVE_HINT = /^(?:SB_|TRELLIS_|CCU2C|CARRY|DSP48|MULT18X18D|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:B|D|S|\d)|URAM|DP16KD|SPRAM|SRL(?:16E|C32E)|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)/i
 
 /** Vendor-specific implementation primitive, independent of its symbol shape. */
 export function isSpecialPrimitive(node: NodeRef): boolean {

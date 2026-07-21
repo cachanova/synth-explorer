@@ -122,6 +122,49 @@ describe('GraphView LUT labels', () => {
     )
   })
 
+  it('renders grouped physical memory primitives as one stacked memory symbol', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 20,
+            x: 0,
+            y: 0,
+            width: 140,
+            height: 62,
+            node: {
+              id: 20,
+              kind: 'cell',
+              name: 'memory [128×16]',
+              cell_type: 'RAM64M',
+              seq: true,
+              register: false,
+              width: 12,
+              members: Array.from({ length: 12 }, (_, index) => index + 1),
+            },
+          }],
+          edges: [],
+          width: 140,
+          height: 62,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={20}
+        interactive={false}
+        onSelect={() => undefined}
+        active
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('g-symbol-memory')
+    expect(markup.match(/class="g-symbol-stack"/g)).toHaveLength(2)
+    expect(markup).toContain('data-member-count="12"')
+    expect(markup).toContain('>RAM64M<')
+    expect(markup).toContain('>memory [128×16]<')
+  })
+
   it('renders only the grouped count and no decorative LUT separators', () => {
     const markup = renderToStaticMarkup(
       <GraphView

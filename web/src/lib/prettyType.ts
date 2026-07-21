@@ -139,7 +139,7 @@ export function nodeLabel(node: GraphNode | NodeRef): string {
 }
 
 /**
- * "×N" bit-count badge for a grouped (width>=2) node, or null when the width is
+ * "×N" member-count badge for a grouped (width>=2) node, or null when the width is
  * already visible in the node's own label/name as a "[hi:lo]" range or "×N"
  * suffix — the common case (`q[7:0]`, `a[7:0]`, `sum ×3`) where the badge would
  * just repeat what the label says. Kept only for grouped nodes whose visible

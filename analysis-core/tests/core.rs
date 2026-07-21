@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions,
 };
+use synth_explorer_analysis::delay_model::DelayProfile;
+use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
 use synth_explorer_analysis::grouping::{GroupKind, GroupPartition};
 use synth_explorer_analysis::netlist::{parse_str, parse_value, select_top};
@@ -77,7 +79,7 @@ fn grouped_register_banks() -> (Graph, Analysis, GroupPartition) {
     let (top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     let analysis = Analysis::new(&graph, vec!["banks.sv".to_owned()]);
-    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, &[]);
     (graph, analysis, partition)
 }
 
@@ -180,6 +182,79 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
             .count(),
         1
     );
+}
+
+#[test]
+fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "memory.0.0": { "type": "RAM64M" },
+                "memory.0.1": { "type": "RAM64M" },
+                "memory.0.2": { "type": "RAM64M" },
+                "other.0.0": { "type": "RAM64M" },
+                "other.0.1": { "type": "RAM64M" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "memories": {
+                "memory": {
+                    "attributes": { "src": "fifo.sv:18.26-18.32" },
+                    "width": 16,
+                    "start_offset": 0,
+                    "size": 128
+                },
+                "other": {
+                    "width": 8,
+                    "start_offset": 0,
+                    "size": 64
+                }
+            }
+        } }
+    }))
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &final_netlist,
+        &source_netlist,
+        vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
+        "xilinx",
+        DelayProfile::Series7,
+        false,
+    )
+    .unwrap();
+
+    let memory_groups: Vec<_> = design
+        .grouping
+        .groups
+        .iter()
+        .filter(|group| group.kind == GroupKind::Memory)
+        .collect();
+    assert_eq!(memory_groups.len(), 2);
+    assert_eq!(memory_groups[0].label, "memory [128×16]");
+    assert_eq!(memory_groups[0].members.len(), 3);
+    assert_eq!(memory_groups[1].label, "other [64×8]");
+    assert_eq!(memory_groups[1].members.len(), 2);
+
+    let grouped = design.analysis.full_netlist(
+        &design.graph,
+        full_options(2000, false, true, false),
+        Some(&design.grouping),
+    );
+    let memory = grouped
+        .nodes
+        .iter()
+        .find(|node| node.node.name == "memory [128×16]")
+        .expect("logical memory renders as one grouped node");
+    assert_eq!(memory.node.cell_type.as_deref(), Some("RAM64M"));
+    assert_eq!(memory.node.seq, Some(true));
+    assert_eq!(memory.node.register, Some(false));
+    assert_eq!(memory.width, Some(3));
+    assert_eq!(memory.members.as_deref().map(<[_]>::len), Some(3));
 }
 
 #[test]

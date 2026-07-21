@@ -845,6 +845,48 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   expect(apiRequests).toEqual([])
 })
 
+test('stacks mapped primitives from one inferred memory when buses are grouped', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+    const editor = page.locator('.cm-content')
+    await expect(editor).toContainText('parameter int unsigned DEPTH = 16')
+    await editor.click()
+    await editor.press('Control+Home')
+    await editor.press('ArrowDown')
+    await editor.press('ArrowDown')
+    await editor.press('End')
+    await editor.press('ArrowLeft')
+    await editor.press('Backspace')
+    await editor.press('Backspace')
+    await editor.pressSequentially('128')
+    await page.getByLabel('Platform').selectOption('xilinx')
+  })
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const groupedMemory = page.locator(
+    '.g-node-body.g-symbol-memory[data-member-count]',
+  )
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(groupedMemory).toHaveAttribute(
+    'data-node-tooltip',
+    'RAM64M — memory [128×16]',
+  )
+  const memberCount = Number(await groupedMemory.getAttribute('data-member-count'))
+  expect(memberCount).toBeGreaterThan(1)
+  await groupedMemory.click()
+  await expect(page.locator('.g-symbol-stack')).toHaveCount(2)
+
+  await page.getByLabel('group buses').uncheck()
+  await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)
+  await expect(page.locator('.g-node-body[data-member-count]')).toHaveCount(0)
+
+  await page.getByLabel('group buses').check()
+  await expect(groupedMemory).toHaveCount(1)
+  expect(apiRequests).toEqual([])
+})
+
 test('source selections and Focus use the in-browser Rust analysis worker', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []

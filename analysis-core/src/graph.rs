@@ -761,7 +761,7 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
         || cell_type.starts_with("$adlatch")
         || cell_type == "$ff"
         || cell_type == "$sr"
-        || cell_type.starts_with("$mem")
+        || is_memory_type(cell_type)
         || upper.starts_with("$_DFF")
         || upper.starts_with("$_SDFF")
         || upper.starts_with("$_ALDFF")
@@ -780,8 +780,30 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
 /// top-level-output aliases.
 pub fn is_register_type(cell_type: &str) -> bool {
     is_sequential_type(cell_type)
-        && !cell_type.starts_with("$mem")
+        && !is_memory_type(cell_type)
         && !is_addressable_sequential_type(cell_type)
+}
+
+/// Stateful memory cells emitted by the generic and supported FPGA flows.
+/// Keep this aligned with the frontend's memory-symbol vocabulary: these are
+/// traversal boundaries, but they are neither black boxes nor register bits.
+pub fn is_memory_type(cell_type: &str) -> bool {
+    let upper = cell_type.to_ascii_uppercase();
+    let xilinx_ram = upper.strip_prefix("RAM").is_some_and(|suffix| {
+        suffix.starts_with(['B', 'D', 'S'])
+            || suffix
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_digit())
+    });
+    cell_type.starts_with("$mem")
+        || xilinx_ram
+        || upper.starts_with("URAM")
+        || upper == "DP16KD"
+        || upper.starts_with("SPRAM")
+        || upper.starts_with("SB_RAM")
+        || upper.starts_with("SB_SPRAM")
+        || matches!(upper.as_str(), "SRL16E" | "SRLC32E")
 }
 
 /// Stateful primitives whose output also has a combinational address path.
@@ -801,7 +823,7 @@ pub fn is_blackbox_cell(
     if attr_truthy(&cell.attributes, "blackbox") {
         return true;
     }
-    if vendor_primitive_class(&cell.cell_type).is_some() {
+    if is_memory_type(&cell.cell_type) || vendor_primitive_class(&cell.cell_type).is_some() {
         return false;
     }
     if blackbox_modules.contains(&cell.cell_type) {
@@ -932,6 +954,27 @@ mod tests {
         }
         for not_latch in ["FDRE", "$dff", "$dffe", "LUT6"] {
             assert!(!is_latch_type(not_latch), "{not_latch}");
+        }
+    }
+
+    #[test]
+    fn memory_types_cover_supported_primitives_without_claiming_named_blackboxes() {
+        for memory in [
+            "$mem_v2",
+            "RAM64M",
+            "RAMD32",
+            "RAMS64E",
+            "RAMB36E2",
+            "URAM288",
+            "DP16KD",
+            "SB_RAM40_4K",
+            "SB_SPRAM256KA",
+            "SRLC32E",
+        ] {
+            assert!(is_memory_type(memory), "{memory}");
+        }
+        for blackbox in ["RAM_CONTROLLER", "memory_wrapper", "my_ram"] {
+            assert!(!is_memory_type(blackbox), "{blackbox}");
         }
     }
 }

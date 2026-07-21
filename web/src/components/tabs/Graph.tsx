@@ -792,7 +792,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
 
       <label
         className="toggle"
-        title="Collapse bit-parallel vectors into one node per bus"
+        title="Collapse bit-parallel vectors and mapped primitives from one logical memory"
       >
         <input
           type="checkbox"

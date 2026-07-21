@@ -2587,6 +2587,7 @@ fn quotient_subgraph(graph: &Graph, subgraph: Subgraph, partition: &GroupPartiti
         let mut members = acc.members;
         members.sort_unstable();
         let register = matches!(group.kind, GroupKind::Register);
+        let sequential = matches!(group.kind, GroupKind::Register | GroupKind::Memory);
         let mut src_fragments: Vec<String> = Vec::new();
         for member in &members {
             if let Some(src) = graph.nodes[*member as usize].src.as_deref() {
@@ -2612,8 +2613,8 @@ fn quotient_subgraph(graph: &Graph, subgraph: Subgraph, partition: &GroupPartiti
                 },
                 name: group.label.clone(),
                 cell_type: (!is_port).then(|| group.cell_type.clone()),
-                seq: register.then_some(true),
-                register: register.then(|| is_register_type(&group.cell_type)),
+                seq: sequential.then_some(true),
+                register: sequential.then(|| register && is_register_type(&group.cell_type)),
                 src: (!src_fragments.is_empty()).then(|| src_fragments.join("|")),
             },
             is_root: is_root.then_some(true),
@@ -5314,6 +5315,7 @@ mod tests {
             attributes: BTreeMap::new(),
             ports: BTreeMap::new(),
             cells: BTreeMap::new(),
+            memories: BTreeMap::new(),
             netnames: BTreeMap::new(),
         };
         let source_index = SourceLineIndex::from_module(&module, vec!["source.sv".to_owned()]);
@@ -6114,6 +6116,7 @@ mod tests {
             attributes: BTreeMap::new(),
             ports: BTreeMap::new(),
             cells: BTreeMap::new(),
+            memories: BTreeMap::new(),
             netnames: BTreeMap::new(),
         };
         let mut source_index = SourceLineIndex::from_module(&module, vec!["sparse.sv".to_owned()]);
@@ -6897,6 +6900,7 @@ mod tests {
             attributes: BTreeMap::new(),
             ports: BTreeMap::new(),
             cells: BTreeMap::new(),
+            memories: BTreeMap::new(),
             netnames: BTreeMap::new(),
         };
         SourceLineIndex::from_module(&module, vec![file.to_owned()])

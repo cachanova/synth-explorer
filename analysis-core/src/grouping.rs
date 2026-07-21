@@ -2,10 +2,12 @@
 //! endpoint analysis; combinational cells are grouped by bounded partition
 //! refinement plus a final 1:1 bit-correspondence check so that only true
 //! bit-parallel structures collapse (carry chains and shared-bit fanin never
-//! group). Every step is deterministic for a given graph and register list.
+//! group). Logical memories seed from the provenance netlist. Every step is
+//! deterministic for a given graph, register list, and memory list.
 
 use crate::analysis::RegisterGroup;
-use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
+use crate::graph::{Graph, NodeId, NodeKind, is_memory_type, strip_bit_suffix};
+use crate::netlist::YosysNetlist;
 use deepsize::DeepSizeOf;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -16,8 +18,17 @@ pub type GroupId = u32;
 #[serde(rename_all = "lowercase")]
 pub enum GroupKind {
     Register,
+    Memory,
     Comb,
     Port,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryArray {
+    pub name: String,
+    pub width: usize,
+    pub depth: usize,
+    pub members: Vec<NodeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, DeepSizeOf)]
@@ -45,9 +56,14 @@ impl GroupPartition {
     /// Register groups seed from the endpoint analysis; each refinement round
     /// costs O(edges) and hashes full signatures to class ids, so no all-pairs
     /// comparison ever happens.
-    pub fn build(graph: &Graph, registers: &[RegisterGroup]) -> GroupPartition {
+    pub fn build(
+        graph: &Graph,
+        registers: &[RegisterGroup],
+        memories: &[MemoryArray],
+    ) -> GroupPartition {
         let mut partition = GroupPartition::default();
         seed_register_groups(&mut partition, registers);
+        seed_memory_groups(&mut partition, graph, memories);
 
         let comb: Vec<NodeId> = graph
             .nodes
@@ -104,6 +120,109 @@ impl GroupPartition {
     }
 }
 
+/// Resolve logical RTL memories from the provenance netlist to the physical
+/// memory primitives in the final flattened graph. Yosys keeps the logical
+/// memory path as the prefix of mapped cells (`memory.0.0`, `u.fifo.0.3`), so
+/// the closest path match associates each primitive with exactly one array.
+pub fn memory_arrays_from_source(
+    graph: &Graph,
+    source_netlist: &YosysNetlist,
+    source_top: &str,
+) -> Vec<MemoryArray> {
+    #[derive(Debug)]
+    struct LogicalMemory {
+        name: String,
+        width: usize,
+        depth: usize,
+    }
+
+    fn clean_name(name: &str) -> String {
+        name.trim_start_matches('\\').replace('\\', "")
+    }
+
+    let mut logical = Vec::new();
+    let mut pending = vec![(source_top.to_owned(), String::new())];
+    let mut seen = BTreeSet::new();
+    while let Some((module_name, scope)) = pending.pop() {
+        if !seen.insert((module_name.clone(), scope.clone())) {
+            continue;
+        }
+        let Some(module) = source_netlist.modules.get(&module_name) else {
+            continue;
+        };
+        for (memory_name, memory) in &module.memories {
+            let memory_name = clean_name(memory_name);
+            let name = if scope.is_empty() {
+                memory_name
+            } else {
+                format!("{scope}.{memory_name}")
+            };
+            logical.push(LogicalMemory {
+                name,
+                width: memory.width,
+                depth: memory.size,
+            });
+        }
+        for (cell_name, cell) in &module.cells {
+            if !source_netlist.modules.contains_key(&cell.cell_type) {
+                continue;
+            }
+            let cell_name = clean_name(cell_name);
+            let child_scope = if scope.is_empty() {
+                cell_name
+            } else {
+                format!("{scope}.{cell_name}")
+            };
+            pending.push((cell.cell_type.clone(), child_scope));
+        }
+    }
+
+    logical.sort_by(|left, right| left.name.cmp(&right.name));
+    let logical_by_name: HashMap<&str, usize> = logical
+        .iter()
+        .enumerate()
+        .map(|(index, memory)| (memory.name.as_str(), index))
+        .collect();
+    let mut members = vec![Vec::new(); logical.len()];
+    for node in &graph.nodes {
+        if node.kind != NodeKind::Cell || !node.cell_type.as_deref().is_some_and(is_memory_type) {
+            continue;
+        }
+        let raw_name = clean_name(&node.raw_name);
+        let mut candidate = raw_name.as_str();
+        let mut matched = logical_by_name.get(candidate).copied();
+        while matched.is_none() {
+            let Some((prefix, _)) = candidate.rsplit_once('.') else {
+                break;
+            };
+            candidate = prefix;
+            matched = logical_by_name.get(candidate).copied();
+        }
+        if matched.is_none()
+            && let Some((prefix, _)) = raw_name.split_once("_reg")
+        {
+            matched = logical_by_name.get(prefix).copied();
+        }
+        if let Some(index) = matched {
+            members[index].push(node.id);
+        }
+    }
+
+    logical
+        .into_iter()
+        .zip(members)
+        .filter_map(|(memory, mut members)| {
+            members.sort_unstable();
+            (members.len() >= 2).then_some(MemoryArray {
+                name: memory.name,
+                width: memory.width,
+                depth: memory.depth,
+                members,
+            })
+        })
+        .collect()
+}
+
 /// Register vectors are trusted from the endpoint analysis; only groups that
 /// actually span at least two cells collapse anything (a single multi-bit
 /// `$dff` already renders as one node).
@@ -125,6 +244,39 @@ fn seed_register_groups(partition: &mut GroupPartition, registers: &[RegisterGro
             members: members.into_iter().collect(),
             label: register_label(register),
             cell_type: register.cell_type.clone(),
+        });
+    }
+}
+
+fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: &[MemoryArray]) {
+    for memory in memories {
+        let members: Vec<NodeId> = memory
+            .members
+            .iter()
+            .copied()
+            .filter(|id| !partition.group_of.contains_key(id))
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        let cell_types: BTreeSet<&str> = members
+            .iter()
+            .filter_map(|id| graph.nodes[*id as usize].cell_type.as_deref())
+            .collect();
+        let cell_type = if cell_types.len() == 1 {
+            cell_types.first().copied().unwrap_or("$mem").to_owned()
+        } else {
+            "$mem".to_owned()
+        };
+        let group_id = partition.groups.len() as GroupId;
+        for &member in &members {
+            partition.group_of.insert(member, group_id);
+        }
+        partition.groups.push(Group {
+            kind: GroupKind::Memory,
+            members,
+            label: format!("{} [{}×{}]", memory.name, memory.depth, memory.width),
+            cell_type,
         });
     }
 }
@@ -725,7 +877,7 @@ mod tests {
         let registers = &analysis.endpoints().registers;
         assert_eq!(registers.len(), 2);
 
-        let partition = GroupPartition::build(&graph, registers);
+        let partition = GroupPartition::build(&graph, registers, &[]);
 
         assert_eq!(partition.groups.len(), 2);
         for (idx, group) in partition.groups.iter().enumerate() {
@@ -768,7 +920,7 @@ mod tests {
         }
         let graph = graph_from_nodes("top", nodes);
 
-        let partition = GroupPartition::build(&graph, &[]);
+        let partition = GroupPartition::build(&graph, &[], &[]);
 
         // a, b, y each collapse; the scalar `sel` does not.
         assert_eq!(partition.groups.len(), 3);
@@ -787,7 +939,7 @@ mod tests {
     fn bit_parallel_mux_row_groups_with_shared_select() {
         let (graph, registers) = mux_row_graph();
 
-        let partition = GroupPartition::build(&graph, &registers);
+        let partition = GroupPartition::build(&graph, &registers, &[]);
 
         // register(q) + comb(next_q) + two input buses (a, b); scalar `s` stays.
         assert_eq!(partition.groups.len(), 4);
@@ -826,7 +978,7 @@ mod tests {
         // share a class after eight rounds and only the 1:1 check rejects them.
         let graph = carry_chain_graph(24);
 
-        let partition = GroupPartition::build(&graph, &[]);
+        let partition = GroupPartition::build(&graph, &[], &[]);
 
         // Only the a/sum ports group; no carry cell (ids 24..48) ever joins one.
         assert!(partition.groups.iter().all(|g| g.kind == GroupKind::Port));
@@ -863,13 +1015,13 @@ mod tests {
             register_group("s1", &[(0, 7)]),
             register_group("s2", &[(0, 8)]),
         ];
-        let partition = GroupPartition::build(&graph, &narrow);
+        let partition = GroupPartition::build(&graph, &narrow, &[]);
         assert!(partition.groups.is_empty());
         assert!(partition.group_of.is_empty());
 
         // A multi-bit register held in one cell has no second member to merge.
         let single_cell = vec![register_group("s_wide", &[(0, 6), (1, 6)])];
-        let partition = GroupPartition::build(&graph, &single_cell);
+        let partition = GroupPartition::build(&graph, &single_cell, &[]);
         assert!(partition.groups.is_empty());
     }
 
@@ -877,7 +1029,7 @@ mod tests {
     fn divergent_sink_shapes_split_into_two_groups() {
         let graph = divergent_sink_graph();
 
-        let partition = GroupPartition::build(&graph, &[]);
+        let partition = GroupPartition::build(&graph, &[], &[]);
 
         // Two comb vectors split by sink shape, plus the a/x/y bus ports.
         assert_eq!(partition.groups.len(), 5);
@@ -898,13 +1050,13 @@ mod tests {
     #[test]
     fn partition_is_deterministic_across_runs() {
         let (graph, registers) = mux_row_graph();
-        let first = GroupPartition::build(&graph, &registers);
-        let second = GroupPartition::build(&graph, &registers);
+        let first = GroupPartition::build(&graph, &registers, &[]);
+        let second = GroupPartition::build(&graph, &registers, &[]);
         assert_eq!(first, second);
 
         let divergent = divergent_sink_graph();
-        let first = GroupPartition::build(&divergent, &[]);
-        let second = GroupPartition::build(&divergent, &[]);
+        let first = GroupPartition::build(&divergent, &[], &[]);
+        let second = GroupPartition::build(&divergent, &[], &[]);
         assert_eq!(first, second);
     }
 }
