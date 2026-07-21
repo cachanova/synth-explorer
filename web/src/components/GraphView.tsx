@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type MutableRefObject,
+  type ReactNode,
   type RefObject,
 } from 'react'
 import {
@@ -121,6 +122,8 @@ const DETAIL_LEVEL_RANK: Record<SchematicDetailLevel, number> = {
   full: 2,
 }
 const DETAIL_RESTORE_IDLE_MS = 160
+const DETAIL_VIEWPORT_OVERSCAN = 96
+const INITIAL_DETAIL_VIEWPORT = { width: 960, height: 640 }
 
 function initialDetailLevel(scale: number): SchematicDetailLevel {
   if (scale < 0.4) return 'overview'
@@ -145,6 +148,60 @@ function nextDetailLevel(
   if (scale < 0.35) return 'overview'
   if (scale < 0.65) return 'compact'
   return 'full'
+}
+
+function visibleDetailNodeIds(
+  graph: LaidOutGraph,
+  transform: ViewportTransform,
+  viewportWidth: number,
+  viewportHeight: number,
+): Set<number> {
+  const ids = new Set<number>()
+  const minX = -DETAIL_VIEWPORT_OVERSCAN
+  const minY = -DETAIL_VIEWPORT_OVERSCAN
+  const maxX = viewportWidth + DETAIL_VIEWPORT_OVERSCAN
+  const maxY = viewportHeight + DETAIL_VIEWPORT_OVERSCAN
+  for (const node of graph.nodes) {
+    const left = node.x * transform.k + transform.x
+    const right = (node.x + node.width) * transform.k + transform.x
+    const top = node.y * transform.k + transform.y
+    const bottom = (node.y + node.height) * transform.k + transform.y
+    if (right >= minX && left <= maxX && bottom >= minY && top <= maxY) {
+      ids.add(node.id)
+    }
+  }
+  return ids
+}
+
+function initialDetailState(graph: LaidOutGraph): {
+  level: SchematicDetailLevel
+  ids: Set<number>
+} {
+  const transform = fitViewportToContent(
+    INITIAL_DETAIL_VIEWPORT.width,
+    INITIAL_DETAIL_VIEWPORT.height,
+    graph.width,
+    graph.height,
+  )
+  if (!transform) return { level: 'overview', ids: new Set() }
+  const level = initialDetailLevel(transform.k)
+  return {
+    level,
+    ids: level === 'overview'
+      ? new Set()
+      : visibleDetailNodeIds(
+          graph,
+          transform,
+          INITIAL_DETAIL_VIEWPORT.width,
+          INITIAL_DETAIL_VIEWPORT.height,
+        ),
+  }
+}
+
+function sameNodeIds(left: Set<number>, right: Set<number>): boolean {
+  if (left.size !== right.size) return false
+  for (const id of left) if (!right.has(id)) return false
+  return true
 }
 
 function nodeVisual(
@@ -202,6 +259,9 @@ function SchematicOutline({
   height,
   visual,
   strokeWidth,
+  showDetails,
+  showStack,
+  showOutline = true,
 }: {
   node: GraphNode
   kind: SymbolKind
@@ -209,6 +269,9 @@ function SchematicOutline({
   height: number
   visual: NodeVisual
   strokeWidth: number
+  showDetails: boolean
+  showStack: boolean
+  showOutline?: boolean
 }) {
   const path = shapePath(kind, width, height)
   const bubble = bubbleAt(kind, width, height)
@@ -236,7 +299,7 @@ function SchematicOutline({
 
   return (
     <>
-      {stackOffsets.map((d) => (
+      {showStack && stackOffsets.map((d) => (
         <g
           key={`stack-${d}`}
           className="g-symbol-stack"
@@ -250,19 +313,19 @@ function SchematicOutline({
           )}
         </g>
       ))}
-      {path ? (
-        <path className="g-symbol-outline" d={path} {...common} />
-      ) : (
-        <rect
-          className="g-symbol-outline"
-          width={width}
-          height={height}
-          rx={rx}
-          {...common}
-        />
-      )}
+      {showOutline && (path ? (
+          <path className="g-symbol-outline" d={path} {...common} />
+        ) : (
+          <rect
+            className="g-symbol-outline"
+            width={width}
+            height={height}
+            rx={rx}
+            {...common}
+          />
+        ))}
 
-      {bubble && (
+      {showOutline && bubble && (
         <circle
           className="g-symbol-outline"
           cx={bubble.cx}
@@ -271,7 +334,7 @@ function SchematicOutline({
           {...common}
         />
       )}
-      {inputBubble && (
+      {showOutline && inputBubble && (
         <circle
           className="g-symbol-outline"
           cx={inputBubble.cx}
@@ -280,7 +343,7 @@ function SchematicOutline({
           {...common}
         />
       )}
-      {inputArc && (
+      {showDetails && inputArc && (
         <path
           className="g-symbol-detail"
           d={inputArc}
@@ -291,7 +354,7 @@ function SchematicOutline({
         />
       )}
 
-      {kind === 'reg' && (
+      {showDetails && kind === 'reg' && (
         <path
           className="g-symbol-detail"
           d={registerClockPath(Math.min(height, 58), REG_CLOCK_Y_FRAC)}
@@ -301,7 +364,7 @@ function SchematicOutline({
           vectorEffect="non-scaling-stroke"
         />
       )}
-      {kind === 'memory' && (
+      {showDetails && kind === 'memory' && (
         <path
           className="g-symbol-detail"
           d={`M 7 0 V ${height} M ${width - 7} 0 V ${height}`}
@@ -320,19 +383,21 @@ function NodeContents({
   width,
   height,
   name,
+  detailLevel = 'full',
 }: {
   node: GraphNode
   kind: SymbolKind
   width: number
   height: number
   name: string | null
+  detailLevel?: Exclude<SchematicDetailLevel, 'overview'>
 }) {
   const label = nodeLabel(node)
   const maxChars = Math.max(4, Math.floor((width - 24) / 7.2))
   const primaryHeight = kind === 'reg' ? Math.min(height, 58) : height
 
   const badgeText = groupBadgeText(node)
-  const groupBadge = badgeText ? (
+  const groupBadge = detailLevel === 'full' && badgeText ? (
     <text className="g-group-badge" x={width - 4} y={11} textAnchor="end">
       {badgeText}
     </text>
@@ -345,7 +410,7 @@ function NodeContents({
         <text className="g-operator-glyph" x={width / 2} y={primaryHeight / 2 + 7} textAnchor="middle">
           {arithGlyph(node.cell_type) ?? label}
         </text>
-        {name && (
+        {detailLevel === 'full' && name && (
           <text className="g-node-name" x={width / 2} y={height - 6} textAnchor="middle">
             {truncate(name, maxChars)}
           </text>
@@ -361,7 +426,7 @@ function NodeContents({
     return (
       <>
         {groupBadge}
-        {name && (
+        {detailLevel === 'full' && name && (
           <text className="g-reg-type" x={width / 2} y={11} textAnchor="middle">
             {truncate(label, maxChars)}
           </text>
@@ -391,7 +456,7 @@ function NodeContents({
   return (
     <>
       {groupBadge}
-      {isBox && (
+      {detailLevel === 'full' && isBox && (
         <text className="g-boundary-badge" x={width / 2} y={11} textAnchor="middle">
           {boxBadge(node)}
         </text>
@@ -399,7 +464,7 @@ function NodeContents({
       <text className="g-node-label" x={width / 2} y={labelY} textAnchor="middle">
         {truncate(label, maxChars)}
       </text>
-      {showName && (
+      {detailLevel === 'full' && showName && (
         <text className="g-node-name" x={width / 2} y={labelY + 13} textAnchor="middle">
           {truncate(name, maxChars)}
         </text>
@@ -572,11 +637,9 @@ interface SchematicNodeProps {
   highlighted: boolean
   selected: boolean
   portDirection: PortDirection
-  pins: NodePins
   interactive: boolean
   tabIndex: 0 | -1
   onNodeElement: (nodeId: number, element: SVGGElement | null) => void
-  onControlSelect?: (control: ControlRef, node: GraphNode) => void
 }
 
 type GraphNavigationKey =
@@ -603,18 +666,14 @@ const SchematicNode = memo(function SchematicNode({
   highlighted,
   selected,
   portDirection,
-  pins,
   interactive,
   tabIndex,
   onNodeElement,
-  onControlSelect,
 }: SchematicNodeProps) {
   const node = laidOutNode.node
   const kind = symbolKind(node, portDirection)
   const visual = nodeVisual(node, kind, rootId, highlighted)
   const name = nodeSublabel(node)
-  const controls = controlsFor(node)
-  const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
   const title = name && name !== nodeLabel(node)
     ? `${nodeLabel(node)} — ${name}`
@@ -625,6 +684,7 @@ const SchematicNode = memo(function SchematicNode({
       ref={(element) => onNodeElement(node.id, element)}
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       data-graph-node-id={node.id}
+      data-node-tooltip={title}
       className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
       data-relevant={relevant ? 1 : 0}
       data-node-id={node.id}
@@ -638,7 +698,6 @@ const SchematicNode = memo(function SchematicNode({
           : undefined
       }
     >
-      <title>{title}</title>
       <SchematicOutline
         node={node}
         kind={kind}
@@ -646,15 +705,110 @@ const SchematicNode = memo(function SchematicNode({
         height={laidOutNode.height}
         visual={visual}
         strokeWidth={strokeWidth}
+        showDetails={false}
+        showStack={false}
+      />
+    </g>
+  )
+})
+
+interface SchematicNodeShellsProps {
+  graph: LaidOutGraph
+  rootId: number
+  relevantIds: Set<number>
+  overlayIds: Set<number>
+  selectedId: number | null
+  portDirection: Map<number, PortDirection>
+  interactive: boolean
+  rovingTabStopId: number | null
+  onNodeElement: (nodeId: number, element: SVGGElement | null) => void
+}
+
+const SchematicNodeShells = memo(function SchematicNodeShells({
+  graph,
+  rootId,
+  relevantIds,
+  overlayIds,
+  selectedId,
+  portDirection,
+  interactive,
+  rovingTabStopId,
+  onNodeElement,
+}: SchematicNodeShellsProps) {
+  return graph.nodes.map((laidOutNode) => (
+    <SchematicNode
+      key={laidOutNode.id}
+      laidOutNode={laidOutNode}
+      rootId={rootId}
+      relevant={relevantIds.size === 0 || relevantIds.has(laidOutNode.id)}
+      highlighted={overlayIds.has(laidOutNode.id)}
+      selected={laidOutNode.id === selectedId}
+      portDirection={portDirection.get(laidOutNode.id) ?? 'input'}
+      interactive={interactive}
+      tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
+      onNodeElement={onNodeElement}
+    />
+  ))
+})
+
+function SchematicNodeDetails({
+  laidOutNode,
+  rootId,
+  highlighted,
+  relevant,
+  selected,
+  portDirection,
+  pins,
+  forceFull,
+  detailLevel,
+  onControlSelect,
+}: {
+  laidOutNode: LaidOutNode
+  rootId: number
+  highlighted: boolean
+  relevant: boolean
+  selected: boolean
+  portDirection: PortDirection
+  pins: NodePins
+  forceFull: boolean
+  detailLevel: Exclude<SchematicDetailLevel, 'overview'>
+  onControlSelect?: (control: ControlRef, node: GraphNode) => void
+}) {
+  const node = laidOutNode.node
+  const kind = symbolKind(node, portDirection)
+  const visual = nodeVisual(node, kind, rootId, highlighted)
+  const controls = controlsFor(node)
+  const bodyHeight = Math.max(1, laidOutNode.height - controls.length * 13)
+  const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
+  const renderedLevel = forceFull ? 'full' : detailLevel
+  return (
+    <g
+      className={`g-node-details${forceFull ? ' force-full' : ''}`}
+      transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
+      data-node-detail-id={node.id}
+      data-relevant={relevant ? 1 : 0}
+      aria-hidden="true"
+    >
+      <SchematicOutline
+        node={node}
+        kind={kind}
+        width={laidOutNode.width}
+        height={laidOutNode.height}
+        visual={visual}
+        strokeWidth={strokeWidth}
+        showDetails
+        showStack={false}
+        showOutline={false}
       />
       <NodeContents
         node={node}
         kind={kind}
         width={laidOutNode.width}
         height={bodyHeight}
-        name={name}
+        name={nodeSublabel(node)}
+        detailLevel={renderedLevel}
       />
-      {(kind === 'reg' || kind === 'latch') && (
+      {renderedLevel === 'full' && (kind === 'reg' || kind === 'latch') && (
         <RegisterPins
           node={node}
           pins={pins}
@@ -662,17 +816,62 @@ const SchematicNode = memo(function SchematicNode({
           bodyHeight={bodyHeight}
         />
       )}
-      {controls.length > 0 && (
+      {renderedLevel === 'full' && controls.length > 0 && (
         <ControlLabels
           node={node}
           width={laidOutNode.width}
           startY={bodyHeight}
-          onSelect={interactive ? onControlSelect : undefined}
+          onSelect={onControlSelect}
         />
       )}
     </g>
   )
-})
+}
+
+function SchematicNodeStack({
+  laidOutNode,
+  rootId,
+  highlighted,
+  relevant,
+  selected,
+  portDirection,
+  forceFull,
+}: {
+  laidOutNode: LaidOutNode
+  rootId: number
+  highlighted: boolean
+  relevant: boolean
+  selected: boolean
+  portDirection: PortDirection
+  forceFull: boolean
+}) {
+  const node = laidOutNode.node
+  if ((node.width ?? 0) < 2) return null
+  const kind = symbolKind(node, portDirection)
+  const visual = nodeVisual(node, kind, rootId, highlighted)
+  const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
+  return (
+    <g
+      className={`g-node-details${forceFull ? ' force-full' : ''}`}
+      transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
+      data-node-stack-id={node.id}
+      data-relevant={relevant ? 1 : 0}
+      aria-hidden="true"
+    >
+      <SchematicOutline
+        node={node}
+        kind={kind}
+        width={laidOutNode.width}
+        height={laidOutNode.height}
+        visual={visual}
+        strokeWidth={strokeWidth}
+        showDetails={false}
+        showStack
+        showOutline={false}
+      />
+    </g>
+  )
+}
 
 function graphNodeElement(
   target: EventTarget | null,
@@ -689,6 +888,103 @@ function graphNodeId(element: SVGGElement | null): number | null {
   const nodeId = Number(value)
   return Number.isFinite(nodeId) ? nodeId : null
 }
+
+interface SchematicNodeDetailOverlaysProps {
+  children: ReactNode
+  viewportRef: RefObject<SVGGElement | null>
+  nodeById: Map<number, LaidOutNode>
+  pinsById: Map<number, NodePins>
+  portDirection: Map<number, PortDirection>
+  mountedIds: Set<number>
+  detailLevel: SchematicDetailLevel
+  rootId: number
+  relevantIds: Set<number>
+  overlayIds: Set<number>
+  selectedId: number | null
+  interactive: boolean
+  onControlSelect?: (control: ControlRef, node: GraphNode) => void
+}
+
+// Rich node detail is a viewport-bounded overlay over stable accessible shells.
+// Focus is delegated here so moving between nodes reconciles only the old/new
+// overlay rather than remapping every shell in a large graph.
+const SchematicNodeDetailOverlays = memo(function SchematicNodeDetailOverlays({
+  children,
+  viewportRef,
+  nodeById,
+  pinsById,
+  portDirection,
+  mountedIds,
+  detailLevel,
+  rootId,
+  relevantIds,
+  overlayIds,
+  selectedId,
+  interactive,
+  onControlSelect,
+}: SchematicNodeDetailOverlaysProps) {
+  const [focusedElement, setFocusedElement] = useState<SVGGElement | null>(null)
+
+  useEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const onFocusIn = (event: FocusEvent) => {
+      setFocusedElement(graphNodeElement(event.target, viewport))
+    }
+    const onFocusOut = (event: FocusEvent) => {
+      setFocusedElement(graphNodeElement(event.relatedTarget, viewport))
+    }
+    viewport.addEventListener('focusin', onFocusIn)
+    viewport.addEventListener('focusout', onFocusOut)
+    return () => {
+      viewport.removeEventListener('focusin', onFocusIn)
+      viewport.removeEventListener('focusout', onFocusOut)
+    }
+  }, [viewportRef])
+
+  const focusedId = graphNodeId(focusedElement)
+  const renderedIds = new Set(mountedIds)
+  if (selectedId != null) renderedIds.add(selectedId)
+  if (focusedId != null) renderedIds.add(focusedId)
+
+  const detailNodes = [...renderedIds].flatMap((nodeId) => {
+    const laidOutNode = nodeById.get(nodeId)
+    return laidOutNode ? [{ nodeId, laidOutNode }] : []
+  })
+
+  return (
+    <>
+      {detailNodes.map(({ nodeId, laidOutNode }) => (
+        <SchematicNodeStack
+          key={nodeId}
+          laidOutNode={laidOutNode}
+          rootId={rootId}
+          highlighted={overlayIds.has(nodeId)}
+          relevant={relevantIds.size === 0 || relevantIds.has(nodeId)}
+          selected={nodeId === selectedId}
+          portDirection={portDirection.get(nodeId) ?? 'input'}
+          forceFull={nodeId === selectedId || nodeId === focusedId}
+        />
+      ))}
+      {children}
+      {detailNodes.map(({ nodeId, laidOutNode }) => (
+        <SchematicNodeDetails
+          key={nodeId}
+          laidOutNode={laidOutNode}
+          rootId={rootId}
+          highlighted={overlayIds.has(nodeId)}
+          relevant={relevantIds.size === 0 || relevantIds.has(nodeId)}
+          selected={nodeId === selectedId}
+          portDirection={portDirection.get(nodeId) ?? 'input'}
+          pins={pinsById.get(nodeId) ?? EMPTY_NODE_PINS}
+          forceFull={nodeId === selectedId || nodeId === focusedId}
+          detailLevel={detailLevel === 'overview' ? 'compact' : detailLevel}
+          onControlSelect={interactive ? onControlSelect : undefined}
+        />
+      ))}
+    </>
+  )
+})
 
 interface SchematicPinOverlaysProps {
   viewportRef: RefObject<SVGGElement | null>
@@ -1179,6 +1475,92 @@ function hitTestEdge(
   return best?.edge ?? null
 }
 
+interface NodeTooltipState {
+  nodeId: number
+  title: string
+  left: number
+  top: number
+}
+
+const SchematicNodeTooltip = memo(function SchematicNodeTooltip({
+  active,
+  stageRef,
+  svgRef,
+  hideRef,
+}: {
+  active: boolean
+  stageRef: RefObject<HTMLDivElement | null>
+  svgRef: RefObject<SVGSVGElement | null>
+  hideRef: MutableRefObject<(() => void) | null>
+}) {
+  const [tooltip, setTooltip] = useState<NodeTooltipState | null>(null)
+
+  useEffect(() => {
+    setTooltip(null)
+    if (!active) return
+    const svg = svgRef.current
+    const stage = stageRef.current
+    if (!svg || !stage) return
+    let activeNode: SVGGElement | null = null
+    const hide = () => {
+      activeNode = null
+      setTooltip(null)
+    }
+    hideRef.current = hide
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType === 'touch' || svg.classList.contains('panning')) {
+        hide()
+        return
+      }
+      const node = graphNodeElement(event.target, svg)
+      if (node === activeNode) return
+      activeNode = node
+      const title = node?.dataset.nodeTooltip
+      if (!node || !title) {
+        setTooltip(null)
+        return
+      }
+      const stageRect = stage.getBoundingClientRect()
+      const nodeRect = node.getBoundingClientRect()
+      setTooltip({
+        nodeId: graphNodeId(node) ?? -1,
+        title,
+        left: Math.min(
+          Math.max(8, nodeRect.left - stageRect.left + nodeRect.width / 2),
+          Math.max(8, stageRect.width - 272),
+        ),
+        top: Math.min(
+          Math.max(8, nodeRect.top - stageRect.top - 30),
+          Math.max(8, stageRect.height - 44),
+        ),
+      })
+    }
+    svg.addEventListener('pointermove', onPointerMove)
+    svg.addEventListener('pointerleave', hide)
+    svg.addEventListener('pointerdown', hide)
+    svg.addEventListener('wheel', hide)
+    return () => {
+      svg.removeEventListener('pointermove', onPointerMove)
+      svg.removeEventListener('pointerleave', hide)
+      svg.removeEventListener('pointerdown', hide)
+      svg.removeEventListener('wheel', hide)
+      if (hideRef.current === hide) hideRef.current = null
+    }
+  }, [active, hideRef, stageRef, svgRef])
+
+  if (!tooltip) return null
+  return (
+    <div
+      className="g-edge-tooltip g-node-tooltip"
+      role="tooltip"
+      data-node-id={tooltip.nodeId}
+      style={{ left: tooltip.left, top: tooltip.top }}
+    >
+      {tooltip.title}
+    </div>
+  )
+})
+
 const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
   active,
   edges,
@@ -1353,6 +1735,7 @@ export const GraphView = memo(function GraphView({
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
   const hideEdgeTooltipRef = useRef<(() => void) | null>(null)
+  const hideNodeTooltipRef = useRef<(() => void) | null>(null)
   const graphRef = useRef(graph)
   graphRef.current = graph
   const layoutHistory = useRef<{
@@ -1369,6 +1752,11 @@ export const GraphView = memo(function GraphView({
   const programmaticFocusNodeId = useRef<number | null>(null)
   const detailLevel = useRef<SchematicDetailLevel | null>(null)
   const detailRestoreTimer = useRef<number | null>(null)
+  const mountedDetailsGraph = useRef(graph)
+  const [mountedDetails, setMountedDetails] = useState(() => ({
+    graph,
+    ...initialDetailState(graph),
+  }))
 
   const metadata = useMemo(() => {
     const nodeById = new Map<number, LaidOutNode>()
@@ -1436,10 +1824,35 @@ export const GraphView = memo(function GraphView({
     detailRestoreTimer.current = null
   }, [])
 
+  const updateMountedDetails = useCallback((level: SchematicDetailLevel) => {
+    const currentGraph = graphRef.current
+    mountedDetailsGraph.current = currentGraph
+    let ids = new Set<number>()
+    if (level !== 'overview') {
+      const rect = stageRef.current?.getBoundingClientRect()
+      ids = rect && rect.width > 0 && rect.height > 0
+        ? visibleDetailNodeIds(
+            currentGraph,
+            transformRef.current,
+            rect.width,
+            rect.height,
+          )
+        : initialDetailState(currentGraph).ids
+    }
+    setMountedDetails((previous) =>
+      previous.graph === currentGraph &&
+      previous.level === level &&
+      sameNodeIds(previous.ids, ids)
+        ? previous
+        : { graph: currentGraph, level, ids },
+    )
+  }, [])
+
   const applyDetailLevel = useCallback((next: SchematicDetailLevel) => {
     detailLevel.current = next
     viewportRef.current?.setAttribute('data-detail-level', next)
-  }, [])
+    updateMountedDetails(next)
+  }, [updateMountedDetails])
 
   // The graph can contain thousands of SVG elements. Keep pointer-frequency
   // pan/zoom updates outside React so moving the viewport only mutates this
@@ -1448,6 +1861,7 @@ export const GraphView = memo(function GraphView({
   // 2,000-node style/layout transition never lands in the middle of a frame.
   const applyTransform = useCallback((next: ViewportTransform) => {
     hideEdgeTooltipRef.current?.()
+    hideNodeTooltipRef.current?.()
     transformRef.current = next
     viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
 
@@ -1456,22 +1870,28 @@ export const GraphView = memo(function GraphView({
       applyDetailLevel(initialDetailLevel(next.k))
       return
     }
+    if (mountedDetailsGraph.current !== graphRef.current) {
+      // A replacement graph must derive its overlay IDs from the preserved
+      // viewport, not the nominal fit used to keep server/static markup useful.
+      updateMountedDetails(current)
+    }
     const desired = nextDetailLevel(next.k, current)
     clearDetailRestore()
-    if (DETAIL_LEVEL_RANK[desired] <= DETAIL_LEVEL_RANK[current]) {
-      if (desired !== current) applyDetailLevel(desired)
+    if (DETAIL_LEVEL_RANK[desired] < DETAIL_LEVEL_RANK[current]) {
+      applyDetailLevel(desired)
       return
     }
+    if (desired === current && desired === 'overview') return
     detailRestoreTimer.current = window.setTimeout(() => {
       detailRestoreTimer.current = null
       const activeLevel = detailLevel.current
       if (activeLevel == null) return
       const idleLevel = nextDetailLevel(transformRef.current.k, activeLevel)
-      if (DETAIL_LEVEL_RANK[idleLevel] > DETAIL_LEVEL_RANK[activeLevel]) {
+      if (DETAIL_LEVEL_RANK[idleLevel] >= DETAIL_LEVEL_RANK[activeLevel]) {
         applyDetailLevel(idleLevel)
       }
     }, DETAIL_RESTORE_IDLE_MS)
-  }, [applyDetailLevel, clearDetailRestore])
+  }, [applyDetailLevel, clearDetailRestore, updateMountedDetails])
 
   useEffect(() => clearDetailRestore, [clearDetailRestore])
 
@@ -1696,6 +2116,7 @@ export const GraphView = memo(function GraphView({
 
     const updateSize = () => {
       if (!userAdjusted.current) fit()
+      else applyTransform(transformRef.current)
     }
 
     // ResizeObserver normally delivers an initial entry, but measuring now
@@ -1711,7 +2132,7 @@ export const GraphView = memo(function GraphView({
     const observer = new ResizeObserver(updateSize)
     observer.observe(stage)
     return () => observer.disconnect()
-  }, [active, fit])
+  }, [active, applyTransform, fit])
 
   const onWheel = useCallback(
     (event: React.WheelEvent) => {
@@ -2020,6 +2441,12 @@ export const GraphView = memo(function GraphView({
     return () => stage.removeEventListener('wheel', preventNativeScroll)
   }, [])
 
+  const initialDetails = mountedDetails.graph === graph
+    ? null
+    : initialDetailState(graph)
+  const renderedDetailIds = initialDetails?.ids ?? mountedDetails.ids
+  const renderedDetailLevel = initialDetails?.level ?? mountedDetails.level
+
   return (
     <div className="graph-stage" ref={stageRef}>
       <svg
@@ -2046,22 +2473,32 @@ export const GraphView = memo(function GraphView({
         >
           <SchematicEdges prepared={preparedEdges} />
 
-          {graph.nodes.map((laidOutNode) => (
-            <SchematicNode
-              key={laidOutNode.id}
-              laidOutNode={laidOutNode}
+          <SchematicNodeDetailOverlays
+            viewportRef={viewportRef}
+            nodeById={metadata.nodeById}
+            pinsById={metadata.pinsById}
+            portDirection={metadata.portDirection}
+            mountedIds={renderedDetailIds}
+            detailLevel={renderedDetailLevel}
+            rootId={rootId}
+            relevantIds={relevantIds}
+            overlayIds={overlayIds}
+            selectedId={selectedId}
+            interactive={interactive}
+            onControlSelect={onControlSelect}
+          >
+            <SchematicNodeShells
+              graph={graph}
               rootId={rootId}
-              relevant={relevantIds.size === 0 || relevantIds.has(laidOutNode.id)}
-              highlighted={overlayIds.has(laidOutNode.id)}
-              selected={laidOutNode.id === selectedId}
-              portDirection={metadata.portDirection.get(laidOutNode.id) ?? 'input'}
-              pins={metadata.pinsById.get(laidOutNode.id) ?? EMPTY_NODE_PINS}
+              relevantIds={relevantIds}
+              overlayIds={overlayIds}
+              selectedId={selectedId}
+              portDirection={metadata.portDirection}
               interactive={interactive}
-              tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
+              rovingTabStopId={rovingTabStopId}
               onNodeElement={setNodeElement}
-              onControlSelect={onControlSelect}
             />
-          ))}
+          </SchematicNodeDetailOverlays>
 
           <SchematicPinOverlays
             viewportRef={viewportRef}
@@ -2080,6 +2517,13 @@ export const GraphView = memo(function GraphView({
         svgRef={svgRef}
         viewportRef={viewportRef}
         hideRef={hideEdgeTooltipRef}
+      />
+
+      <SchematicNodeTooltip
+        active={active}
+        stageRef={stageRef}
+        svgRef={svgRef}
+        hideRef={hideNodeTooltipRef}
       />
 
       {interactive && (
