@@ -140,6 +140,7 @@ describe('GraphView LUT labels', () => {
               seq: true,
               register: false,
               width: 12,
+              member_count: 12,
               members: Array.from({ length: 12 }, (_, index) => index + 1),
             },
           }],
@@ -163,6 +164,7 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('data-member-count="12"')
     expect(markup).toContain('>RAM64M<')
     expect(markup).toContain('>memory [128×16]<')
+    expect(markup).toContain('>×12<')
   })
 
   it('renders only the grouped count and no decorative LUT separators', () => {

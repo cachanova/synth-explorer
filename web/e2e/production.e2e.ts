@@ -881,6 +881,9 @@ test('stacks mapped primitives from one inferred memory when buses are grouped',
   await groupedMemory.focus()
   await groupedMemory.press('Enter')
   await expect(
+    page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`),
+  ).toHaveText(`×${memberCount}`)
+  await expect(
     page.locator(`[data-node-stack-id="${groupedId}"] .g-symbol-stack`),
   ).toHaveCount(memberCount >= 4 ? 2 : 1)
 
@@ -927,9 +930,14 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
     'MEM — memory [128×16]',
   )
   await expect(groupedMemory).toHaveAttribute('data-member-count', '2048')
+  const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
+  expect(groupedId).not.toBeNull()
   await expect(groupedMemory).toHaveAttribute('role', 'button')
   await groupedMemory.focus()
   await groupedMemory.press('Enter')
+  await expect(
+    page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`),
+  ).toHaveText('×2048')
   await page.getByRole('button', { name: 'Fanin cone' }).click()
   await page.getByLabel('Focus').check()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)
