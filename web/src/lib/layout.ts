@@ -41,6 +41,7 @@ export interface LayoutInputNode {
   baseHeight: number
   controlHeight: number
   register: boolean
+  cycleBreaker: boolean
 }
 
 export interface LayoutInputEdge {
@@ -49,6 +50,7 @@ export interface LayoutInputEdge {
   fromPort: string
   toPort: string
   control: boolean
+  net: number
 }
 
 export interface LayoutInput {
@@ -444,6 +446,19 @@ function pinBodyHeight(node: LayoutInputNode, height: number): number {
 }
 
 export function prepareLayoutInput(sub: Subgraph): LayoutInput {
+  const netByKey = new Map<string, number>()
+  const netForEdge = (edge: GraphEdge, index: number) => {
+    const bits = [...new Set(edge.bits)].sort((a, b) => a - b)
+    const key = bits.length > 0
+      ? `${edge.from}:${edge.from_port}:${bits.join(',')}`
+      : `edge:${index}`
+    let net = netByKey.get(key)
+    if (net == null) {
+      net = netByKey.size
+      netByKey.set(key, net)
+    }
+    return net
+  }
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -453,14 +468,16 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         baseHeight: height,
         controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
         register: isRegKind(node),
+        cycleBreaker: node.seq === true,
       }
     }),
-    edges: sub.edges.map((edge) => ({
+    edges: sub.edges.map((edge, index) => ({
       from: edge.from,
       to: edge.to,
       fromPort: edge.from_port,
       toPort: edge.to_port,
       control: edge.control === true,
+      net: netForEdge(edge, index),
     })),
   }
 }
@@ -544,15 +561,11 @@ export function toSchemWeaveGraph(input: LayoutInput): SchemWeaveGraph {
       id: node.id,
       width,
       height,
-      cycle_breaker: node.register,
+      cycle_breaker: node.cycleBreaker,
       ports,
     }
   })
 
-  const netKeys = canonicalPinNames(
-    input.edges.map((edge) => `${edge.from}:${edge.fromPort}`),
-  )
-  const netIds = new Map(netKeys.map((key, index) => [key, index]))
   const portId = (node: number, key: string): number => {
     const id = portIds.get(`${node}:${key}`)
     if (id == null) throw new Error(`missing layout port ${node}:${key}`)
@@ -570,7 +583,7 @@ export function toSchemWeaveGraph(input: LayoutInput): SchemWeaveGraph {
       id,
       source: { node: edge.from, port: portId(edge.from, sourceKey) },
       target: { node: edge.to, port: portId(edge.to, targetKey) },
-      net: netIds.get(`${edge.from}:${edge.fromPort}`)!,
+      net: edge.net,
       participates_in_ranking: true,
     }
   })

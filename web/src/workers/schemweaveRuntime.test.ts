@@ -4,8 +4,8 @@ import { runSchemWeaveRequest } from './schemweaveRuntime'
 
 const input: LayoutInput = {
   nodes: [
-    { id: 1, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false },
-    { id: 2, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false },
+    { id: 1, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false, cycleBreaker: false },
+    { id: 2, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false, cycleBreaker: false },
   ],
   edges: [{
     from: 1,
@@ -13,6 +13,7 @@ const input: LayoutInput = {
     fromPort: 'Y',
     toPort: 'A',
     control: false,
+    net: 0,
   }],
 }
 

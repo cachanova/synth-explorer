@@ -29,4 +29,18 @@ mod tests {
             r#"{"nodes":[],"edges":[],"width":0.0,"height":0.0}"#
         );
     }
+
+    #[test]
+    fn lays_out_and_routes_a_connected_graph() {
+        let output = layout_json(
+            r#"{"nodes":[{"id":1,"width":62,"height":46,"ports":[{"id":0,"side":"east","offset":23}]},{"id":2,"width":62,"height":46,"ports":[{"id":0,"side":"west","offset":23}]}],"edges":[{"id":7,"source":{"node":1,"port":0},"target":{"node":2,"port":0},"net":3,"participates_in_ranking":true}]}"#,
+        )
+        .unwrap();
+        let layout: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(layout["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(layout["edges"][0]["id"], 7);
+        assert!(layout["edges"][0]["points"].as_array().unwrap().len() >= 2);
+        assert!(layout["width"].as_f64().unwrap() > 0.0);
+    }
 }

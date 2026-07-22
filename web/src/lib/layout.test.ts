@@ -184,6 +184,45 @@ describe('schematic layout sizing', () => {
     expect(graph.edges.every((edge) => edge.participates_in_ranking)).toBe(true)
   })
 
+  it('shares trunks only for edges carrying the same electrical bit set', () => {
+    const graph = toSchemWeaveGraph(prepareLayoutInput({
+      nodes: [
+        node(1, '$_BUF_'),
+        node(2, 'port', { kind: 'port' }),
+        node(3, 'port', { kind: 'port' }),
+        node(4, 'port', { kind: 'port' }),
+      ],
+      edges: [
+        { from: 1, to: 2, from_port: 'Y', to_port: 'A', net_name: 'sum[0]', bits: [101, 103] },
+        { from: 1, to: 3, from_port: 'Y', to_port: 'A', net_name: 'sum[1]', bits: [102] },
+        { from: 1, to: 4, from_port: 'Y', to_port: 'A', net_name: 'sum_alias', bits: [103, 101] },
+      ],
+      truncated: false,
+    }))
+
+    expect(graph.edges.map((edge) => edge.net)).toEqual([0, 1, 0])
+  })
+
+  it('marks every sequential storage boundary as a cycle breaker', () => {
+    const graph = toSchemWeaveGraph(prepareLayoutInput({
+      nodes: [
+        node(1, 'RAM32M', { seq: true, register: false }),
+        node(2, 'SRL16E', { seq: true, register: false }),
+        node(3, 'blackbox', { seq: true, register: false }),
+        node(4, '$_AND_', { seq: false }),
+      ],
+      edges: [],
+      truncated: false,
+    }))
+
+    expect(graph.nodes.map((candidate) => candidate.cycle_breaker)).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ])
+  })
+
   it('preserves SchemWeave edge identity when adapting WASM output', () => {
     expect(interpretSchemWeaveResult({
       nodes: [{ id: 2, x: 100, y: 20, width: 76, height: 52 }],
