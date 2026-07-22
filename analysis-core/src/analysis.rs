@@ -2447,7 +2447,7 @@ impl Analysis {
         // are enabled. Attach one control hop without opening a second data
         // traversal through the boundary.
         if !options.hide_control {
-            let sequential_nodes: Vec<NodeId> = seen
+            let mut sequential_nodes: Vec<NodeId> = seen
                 .iter()
                 .copied()
                 .filter(|id| {
@@ -2455,6 +2455,7 @@ impl Analysis {
                         && !(options.root_port.is_some() && included_roots.contains(id))
                 })
                 .collect();
+            sequential_nodes.sort_unstable();
             'controls: for id in sequential_nodes {
                 for edge_idx in graph.incoming[id as usize].iter().copied() {
                     if edge_set.contains(&edge_idx) {
