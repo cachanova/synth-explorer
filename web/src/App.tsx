@@ -5,6 +5,7 @@ import { BrandMark } from './components/BrandMark'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
 import { SettingsMenu } from './components/SettingsMenu'
+import { isLocalLauncher } from './lib/localLauncher'
 
 const REPOSITORY_URL = 'https://github.com/cachanova/synth-explorer'
 
@@ -22,6 +23,7 @@ function GitHubMark() {
 }
 
 function App() {
+  const localLauncher = isLocalLauncher()
   const [leftWidth, setLeftWidth] = useState(46) // percent
   const [mobileWorkspace, setMobileWorkspace] = useState<'editor' | 'analysis'>(
     'editor',
@@ -115,8 +117,12 @@ function App() {
           <RightPane />
         </div>
       </main>
-      <Analytics />
-      <SpeedInsights />
+      {!localLauncher && (
+        <>
+          <Analytics />
+          <SpeedInsights />
+        </>
+      )}
     </div>
   )
 }

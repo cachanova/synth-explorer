@@ -6,6 +6,14 @@ caching, and graph interaction require no application server. An explicitly
 selected optional path can call Vivado through a loopback-only service running
 on the user's computer.
 
+The downloadable local application packages the same `web/dist/` output with a
+small Rust launcher. It serves those files only on `127.0.0.1:32124` and opens a
+dedicated Chrome or Chromium app window. The launcher also owns the canonical
+Vivado bridge on `127.0.0.1:32125` when it detects a local Vivado installation;
+it does not duplicate synthesis or analysis implementations. On macOS, where
+Vivado is not available natively, an SSH tunnel can forward that same local
+port to the released connector on a Linux or Windows Vivado host.
+
 ## Runtime flow
 
 1. For Yosys, React waits for 250 ms without an input change, then validates the files,
@@ -38,11 +46,13 @@ Local Vivado is a manual branch after validation. The user starts
 browser loopback access, and selects a family plus speed grade from the
 installation's authoritative part catalog. The browser sends the RTL, explicit
 top, concrete resolved part, and validated `synth_design` arguments to
-`http://127.0.0.1:32123`. The bridge invokes Vivado directly with argv and a
-generated Tcl file, runs `report_timing -max_paths 1 -delay_type max`, then
-returns structural Verilog plus the bounded timing report. The existing Yosys
-worker normalizes that netlist and the existing analysis worker owns every
-downstream structural query. No hosted service sees the RTL or result.
+the website connector at `http://127.0.0.1:32123` or the launcher's built-in
+connector at `http://127.0.0.1:32125`. The bridge invokes Vivado directly with
+argv and a generated Tcl file, runs
+`report_timing -max_paths 1 -delay_type max`, then returns structural Verilog
+plus the bounded timing report. The existing Yosys worker normalizes that
+netlist and the existing analysis worker owns every downstream structural
+query. No hosted service sees the RTL or result.
 
 There is no hosted HTTP API, application server, remote design identifier,
 account, or shared design store. The optional HTTP protocol exists only on the
@@ -151,3 +161,9 @@ assert zero `/api` traffic.
 Vercel Web Analytics and Speed Insights collect page-level usage and browser
 performance metrics; they are not part of the synthesis path and receive no RTL
 or synthesized netlist content.
+
+GitHub releases package the same static build beside Windows, Linux, macOS
+Apple Silicon, and macOS Intel launcher executables. The local origin is stable
+so IndexedDB workspace and design-cache records persist across launches.
+Release archives also retain the separate Linux and Windows bridge binaries
+used by the hosted website, remote macOS workflow, and installer.

@@ -23,6 +23,7 @@ use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:32123";
+pub const LOCAL_APP_ORIGIN: &str = "http://127.0.0.1:32124";
 pub const PROTOCOL_VERSION: u32 = 2;
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const NETLIST_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
@@ -180,6 +181,16 @@ impl AppState {
             website_seen: Arc::new(AtomicBool::new(false)),
         }
     }
+}
+
+pub fn bridge_allowed_origins(additional: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut origins = vec![
+        "https://synthexplorer.dev".to_owned(),
+        "https://www.synthexplorer.dev".to_owned(),
+        LOCAL_APP_ORIGIN.to_owned(),
+    ];
+    origins.extend(additional);
+    origins
 }
 
 pub fn app(state: AppState) -> Router {
@@ -513,6 +524,27 @@ pub async fn preflight_vivado(vivado_bin: &Path) -> Result<BridgeStatus, BridgeE
         vivado_version: version,
         parts,
     })
+}
+
+pub fn resolve_vivado(explicit: Option<PathBuf>) -> PathBuf {
+    if let Some(vivado) = explicit {
+        return vivado;
+    }
+    if let Some(root) = env::var_os("XILINX_VIVADO") {
+        let candidate = PathBuf::from(root).join("bin").join(vivado_executable());
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    PathBuf::from(vivado_executable())
+}
+
+fn vivado_executable() -> &'static str {
+    if cfg!(windows) {
+        "vivado.bat"
+    } else {
+        "vivado"
+    }
 }
 
 fn parse_version_banner(output: &str) -> Option<&str> {
@@ -959,10 +991,10 @@ struct ProcessGroupGuard {
 }
 
 impl ProcessGroupGuard {
-    fn new(child: &tokio::process::Child) -> Self {
+    fn new(_child: &tokio::process::Child) -> Self {
         Self {
             #[cfg(target_os = "linux")]
-            pgid: child.id().and_then(|id| i32::try_from(id).ok()),
+            pgid: _child.id().and_then(|id| i32::try_from(id).ok()),
         }
     }
 
@@ -1082,6 +1114,36 @@ mod tests {
         let body = allowed.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["protocol_version"], PROTOCOL_VERSION);
+    }
+
+    #[tokio::test]
+    async fn downloadable_local_app_origin_is_allowed_by_default() {
+        let state = AppState::new(
+            BridgeStatus {
+                protocol_version: PROTOCOL_VERSION,
+                bridge_version: "test",
+                vivado_version: "Vivado v2026.1".to_owned(),
+                parts: vec![part()],
+            },
+            bridge_allowed_origins([]),
+            PathBuf::from("vivado"),
+        );
+        let response = app(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/status")
+                    .header(header::ORIGIN, LOCAL_APP_ORIGIN)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            LOCAL_APP_ORIGIN,
+        );
     }
 
     #[test]

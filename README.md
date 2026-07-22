@@ -8,7 +8,9 @@ synthesize it with [Yosys](https://yosyshq.net/yosys/) and
 [GHDL](https://github.com/ghdl/ghdl), and inspect the resulting circuit by path,
 endpoint, fanin, fanout, or source location.
 
-[Try Synth Explorer in your browser](https://www.synthexplorer.dev/)
+[Try Synth Explorer in your browser](https://www.synthexplorer.dev/) or download
+the self-contained Chrome launcher for Windows, Linux, or macOS from the
+[latest release](https://github.com/cachanova/synth-explorer/releases/latest).
 
 Yosys synthesis and all analysis run locally in the browser. An optional
 loopback connector can run Vivado installed on the same computer or through an
@@ -40,6 +42,23 @@ menu.
 > closure inside Synth Explorer.
 
 ## Quick start
+
+### Downloadable local application
+
+Download the Windows, Linux, macOS Apple Silicon, or macOS Intel archive from
+the latest GitHub release, extract the complete archive, then run
+`synth-explorer`. It serves the bundled application only on `127.0.0.1` and
+opens a dedicated Chrome or Chromium window. No internet connection is required
+after download.
+
+The same executable includes the Vivado connector. It detects a local Vivado
+installation at startup; pass `--vivado /path/to/Vivado/bin/vivado` when it is
+not on `PATH`. Yosys and GHDL remain available when Vivado is not installed.
+Vivado does not run natively on macOS, so the macOS launcher directs Vivado
+requests through an SSH tunnel to the released connector on a licensed Linux or
+Windows host.
+
+### Source checkout
 
 Requirements are Rust 1.97.1, Node.js 24.11.1, npm 11.6.2, and a current
 Chromium browser.
@@ -84,6 +103,7 @@ Explorer origins, and permits one Vivado run at a time. See
 | [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
 | [`tools/ghdl-wasm/`](tools/ghdl-wasm/) | Reproducible project-owned GHDL synthesis WebAssembly build |
 | [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
+| [`launcher/`](launcher/) | Downloadable loopback Chrome launcher with the built-in Vivado connector |
 | [`vivado-bridge/`](vivado-bridge/) | Loopback-only bridge from the static website to a user's local Vivado |
 | [`docs/`](docs/) | Current architecture and runtime behavior |
 

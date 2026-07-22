@@ -3,9 +3,17 @@ import type {
   VivadoTimingReport,
   VivadoBridgeStatus,
 } from '../types'
+import { isLocalLauncher } from './localLauncher'
 
-const BRIDGE_ORIGIN = 'http://127.0.0.1:32123'
+const WEBSITE_BRIDGE_ORIGIN = 'http://127.0.0.1:32123'
+const LOCAL_BRIDGE_ORIGIN = 'http://127.0.0.1:32125'
 export const VIVADO_BRIDGE_PROTOCOL = 2
+
+export function vivadoBridgeOrigin(
+  search = typeof window === 'undefined' ? '' : window.location.search,
+): string {
+  return isLocalLauncher(search) ? LOCAL_BRIDGE_ORIGIN : WEBSITE_BRIDGE_ORIGIN
+}
 
 interface LoopbackRequestInit extends RequestInit {
   targetAddressSpace?: 'loopback'
@@ -71,7 +79,7 @@ async function request<T>(
 ): Promise<T> {
   let response: Response
   try {
-    response = await fetch(`${BRIDGE_ORIGIN}${path}`, {
+    response = await fetch(`${vivadoBridgeOrigin()}${path}`, {
       ...init,
       mode: 'cors',
       targetAddressSpace: 'loopback',
