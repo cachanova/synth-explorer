@@ -1428,6 +1428,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
   expect(apiRequests).toEqual([])
 })
 
@@ -1577,6 +1578,9 @@ endmodule
     'transform',
     viewportTransform ?? '',
   )
+  await page.locator('.cm-content').press('Escape')
+  await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
+  await expect(page.locator('.cm-src-range-hl')).toHaveCount(0)
   expect(apiRequests).toEqual([])
 })
 

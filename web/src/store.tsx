@@ -259,6 +259,7 @@ export interface Store {
   }) => void
   showPathInGraph: (path: TimingPath) => void
   clearGraphSelection: () => void
+  registerGraphProbeReset: (reset: (() => void) | null) => void
 
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
@@ -381,6 +382,7 @@ export function StoreProvider({
   const sourceSelectionRef = useRef(sourceSelection)
   sourceSelectionRef.current = sourceSelection
   const sourceSelectionActiveRef = useRef(false)
+  const graphProbeResetRef = useRef<(() => void) | null>(null)
   const designRef = useRef(design)
   designRef.current = design
   const filesRef = useRef(files)
@@ -1081,10 +1083,16 @@ export function StoreProvider({
   )
 
   const clearGraphSelection = useCallback(() => {
+    graphProbeResetRef.current?.()
     cancelSourceProbe()
     sourceSelectionActiveRef.current = false
     setConeReq(null)
+    setEditorHighlight(null)
   }, [cancelSourceProbe])
+
+  const registerGraphProbeReset = useCallback((reset: (() => void) | null) => {
+    graphProbeResetRef.current = reset
+  }, [])
 
   const highlightSources = useCallback((spans: SrcSpan[]) => {
     if (spans.length === 0) {
@@ -1131,6 +1139,7 @@ export function StoreProvider({
       ) {
         return
       }
+      graphProbeResetRef.current?.()
       sourceSelectionRef.current = selection
       sourceSelectionActiveRef.current = true
       setSourceSelectionState(selection)
@@ -1224,6 +1233,7 @@ export function StoreProvider({
       openControlCone,
       showPathInGraph,
       clearGraphSelection,
+      registerGraphProbeReset,
       editorHighlight,
       highlightSources,
       highlightNodeSources,
@@ -1281,6 +1291,7 @@ export function StoreProvider({
       openControlCone,
       showPathInGraph,
       clearGraphSelection,
+      registerGraphProbeReset,
       editorHighlight,
       highlightSources,
       highlightNodeSources,

@@ -79,6 +79,7 @@ export function Graph({ active }: { active: boolean }) {
       coneReq,
       graphOptions,
       clearGraphSelection,
+      registerGraphProbeReset,
       highlightSources,
       highlightNodeSources,
       openControlCone,
@@ -89,6 +90,7 @@ export function Graph({ active }: { active: boolean }) {
       coneReq,
       graphOptions,
       clearGraphSelection,
+      registerGraphProbeReset,
       highlightSources,
       highlightNodeSources,
       openControlCone,
@@ -102,6 +104,7 @@ export function Graph({ active }: { active: boolean }) {
     coneReq,
     graphOptions,
     clearGraphSelection,
+    registerGraphProbeReset,
     highlightSources,
     highlightNodeSources,
     openControlCone,
@@ -119,6 +122,7 @@ export function Graph({ active }: { active: boolean }) {
   const [fetchingRelevant, setFetchingRelevant] = useState(false)
   const [layingOut, setLayingOut] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sourceProbeNotice, setSourceProbeNotice] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
   const [sourceStatus, setSourceStatus] = useState<SourceSelectionStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
@@ -142,7 +146,9 @@ export function Graph({ active }: { active: boolean }) {
       ({ designId, bits }: EdgeSourceProbe) => getSourceRangesForBits(designId, bits),
       (response, request) => {
         if (currentDesignIdRef.current !== request.designId) return
-        setError(sourceRangeProbeMessage(response.truncated, response.approximate))
+        setSourceProbeNotice(
+          sourceRangeProbeMessage(response.truncated, response.approximate),
+        )
         highlightSourcesRef.current(
           response.ranges.map((range) => ({
             file: range.file,
@@ -156,10 +162,21 @@ export function Graph({ active }: { active: boolean }) {
       },
       (cause, request) => {
         if (currentDesignIdRef.current !== request.designId) return
+        setSourceProbeNotice(null)
         setError(cause instanceof Error ? cause.message : String(cause))
       },
     )
   }
+  const resetGraphProbe = useCallback(() => {
+    edgeSourceProbeRef.current?.cancel()
+    setSourceProbeNotice(null)
+    setSelected(null)
+  }, [])
+
+  useEffect(() => {
+    registerGraphProbeReset(resetGraphProbe)
+    return () => registerGraphProbeReset(null)
+  }, [registerGraphProbeReset, resetGraphProbe])
 
   // ELK is a large module and this graph surface stays mounted across tabs.
   // Start its reusable worker once at mount so module startup can overlap the
@@ -172,7 +189,6 @@ export function Graph({ active }: { active: boolean }) {
     if (!active) return
     const clearSelection = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return
-      setSelected(null)
       clearGraphSelection()
     }
     window.addEventListener('keydown', clearSelection)
@@ -216,6 +232,7 @@ export function Graph({ active }: { active: boolean }) {
   )
   useEffect(() => {
     edgeSourceProbeRef.current?.cancel()
+    setSourceProbeNotice(null)
   }, [active, activeFileName, coneReq, design?.design_id])
 
   const fetchFullGraph = useCallback(
@@ -322,7 +339,7 @@ export function Graph({ active }: { active: boolean }) {
     const controller = new AbortController()
     setFetchingRelevant(true)
     setError(null)
-    if (request.kind !== 'source') setSelected(null)
+    setSelected(null)
     const fetchRelevantGraph =
       request.kind === 'source'
         ? analyzeSourceInBrowser(requestDesignId, {
@@ -668,6 +685,7 @@ export function Graph({ active }: { active: boolean }) {
     (node: GraphNode | null) => {
       if (!graphInteractive) return
       edgeSourceProbeRef.current?.cancel()
+      setSourceProbeNotice(null)
       setSelected(node)
       highlightNodeSources(node?.src)
     },
@@ -676,6 +694,8 @@ export function Graph({ active }: { active: boolean }) {
   const onEdgeSelect = useCallback(
     (bits: number[]) => {
       if (!designId || bits.length === 0) return
+      setSourceProbeNotice(null)
+      setSelected(null)
       edgeSourceProbeRef.current?.schedule({ designId, bits })
     },
     [designId],
@@ -684,6 +704,7 @@ export function Graph({ active }: { active: boolean }) {
     (control: NonNullable<GraphNode['controls']>[number]) => {
       if (!graphInteractive) return
       edgeSourceProbeRef.current?.cancel()
+      setSourceProbeNotice(null)
       openControlCone({
         nodes: controlDriverIds(control),
         label: controlLabel(control),
@@ -749,6 +770,7 @@ export function Graph({ active }: { active: boolean }) {
             </span>
           )}
           {error && <span className="msg err">{error}</span>}
+          {sourceProbeNotice && <span className="msg">{sourceProbeNotice}</span>}
           {analysisState === 'stale' && (
             <span className="msg">source changed — synthesize to refresh mapping</span>
           )}
