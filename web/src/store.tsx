@@ -97,6 +97,8 @@ export interface SourceGraphRequest {
   startColumn?: number
   endLine: number
   endColumn?: number
+  fallbackStartColumn?: number
+  fallbackEndColumn?: number
   selectionTruncated: boolean
   label: string
   highlight: number[]
@@ -171,6 +173,8 @@ function sourceGraphRequest(
     startColumn: bounded.startColumn,
     endLine,
     endColumn: bounded.endColumn,
+    fallbackStartColumn: selection.fallbackStartColumn,
+    fallbackEndColumn: selection.fallbackEndColumn,
     selectionTruncated: bounded.truncated,
     label: `${selection.file}:${lineLabel}`,
     highlight: [],
@@ -259,6 +263,7 @@ export interface Store {
   }) => void
   showPathInGraph: (path: TimingPath) => void
   clearGraphSelection: () => void
+  registerGraphProbeReset: (reset: (() => void) | null) => void
 
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
@@ -273,6 +278,8 @@ export interface Store {
     endLine: number,
     startColumn?: number,
     endColumn?: number,
+    fallbackStartColumn?: number,
+    fallbackEndColumn?: number,
   ) => void
 }
 
@@ -381,6 +388,7 @@ export function StoreProvider({
   const sourceSelectionRef = useRef(sourceSelection)
   sourceSelectionRef.current = sourceSelection
   const sourceSelectionActiveRef = useRef(false)
+  const graphProbeResetRef = useRef<(() => void) | null>(null)
   const designRef = useRef(design)
   designRef.current = design
   const filesRef = useRef(files)
@@ -1081,10 +1089,16 @@ export function StoreProvider({
   )
 
   const clearGraphSelection = useCallback(() => {
+    graphProbeResetRef.current?.()
     cancelSourceProbe()
     sourceSelectionActiveRef.current = false
     setConeReq(null)
+    setEditorHighlight(null)
   }, [cancelSourceProbe])
+
+  const registerGraphProbeReset = useCallback((reset: (() => void) | null) => {
+    graphProbeResetRef.current = reset
+  }, [])
 
   const highlightSources = useCallback((spans: SrcSpan[]) => {
     if (spans.length === 0) {
@@ -1112,6 +1126,8 @@ export function StoreProvider({
       endLine: number,
       startColumn = 1,
       endColumn = startColumn,
+      fallbackStartColumn?: number,
+      fallbackEndColumn?: number,
     ) => {
       const selection = normalizeSourceSelection(
         file,
@@ -1119,15 +1135,21 @@ export function StoreProvider({
         endLine,
         startColumn,
         endColumn,
+        fallbackStartColumn,
+        fallbackEndColumn,
       )
       const previous = sourceSelectionRef.current
+      graphProbeResetRef.current?.()
+      setEditorHighlight(null)
       if (
         sourceSelectionActiveRef.current &&
         previous.file === selection.file &&
         previous.startLine === selection.startLine &&
         previous.startColumn === selection.startColumn &&
         previous.endLine === selection.endLine &&
-        previous.endColumn === selection.endColumn
+        previous.endColumn === selection.endColumn &&
+        previous.fallbackStartColumn === selection.fallbackStartColumn &&
+        previous.fallbackEndColumn === selection.fallbackEndColumn
       ) {
         return
       }
@@ -1224,6 +1246,7 @@ export function StoreProvider({
       openControlCone,
       showPathInGraph,
       clearGraphSelection,
+      registerGraphProbeReset,
       editorHighlight,
       highlightSources,
       highlightNodeSources,
@@ -1281,6 +1304,7 @@ export function StoreProvider({
       openControlCone,
       showPathInGraph,
       clearGraphSelection,
+      registerGraphProbeReset,
       editorHighlight,
       highlightSources,
       highlightNodeSources,

@@ -351,14 +351,22 @@ export function Editor() {
           storeRef.current.updateFileContent(currentFileRef.current, text)
         }
         if (u.selectionSet || u.docChanged) {
-          const { startLine, startColumn, endLine, endColumn } =
-            selectedSourceRange(u.state)
+          const {
+            startLine,
+            startColumn,
+            endLine,
+            endColumn,
+            fallbackStartColumn,
+            fallbackEndColumn,
+          } = selectedSourceRange(u.state)
           storeRef.current.setSourceSelection(
             currentFileRef.current,
             startLine,
             endLine,
             startColumn,
             endColumn,
+            fallbackStartColumn,
+            fallbackEndColumn,
           )
         }
       }

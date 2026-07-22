@@ -27,6 +27,8 @@ describe('source selection analysis client', () => {
           startColumn: 7,
           endLine: 5,
           endColumn: 11,
+          fallbackStartColumn: 1,
+          fallbackEndColumn: 18,
         },
         {
           maxNodes: 400,
@@ -44,6 +46,8 @@ describe('source selection analysis client', () => {
       start_column: 7,
       end_line: 5,
       end_column: 11,
+      fallback_start_column: 1,
+      fallback_end_column: 18,
       max_nodes: 400,
       hide_control: true,
       hide_const: false,

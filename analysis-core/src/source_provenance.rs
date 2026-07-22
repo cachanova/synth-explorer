@@ -1,8 +1,9 @@
 //! Source-range recovery from provenance-preserving synthesis artifacts.
 
 use crate::analysis::{
-    ParsedSourceSpan, SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_ROOT_COLLECTION_CAP,
-    SourceProbeDirection, SourceProbeHint, SourceProbeHintKind, SourceRangeMapping, parse_src_span,
+    ParsedSourceSpan, SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_RANGE_INDEX_CAP,
+    SOURCE_ROOT_COLLECTION_CAP, SourceProbeDirection, SourceProbeHint, SourceProbeHintKind,
+    SourceRangeMapping, parse_src_span,
 };
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::{PortDirection, YosysNetlist};
@@ -85,6 +86,8 @@ pub(crate) fn recover_source_provenance(
     let mut unusable_lines: HashSet<(String, usize)> = HashSet::new();
     let mut target_count = 0usize;
     let mut probe_hints = Vec::new();
+    let mut probe_hints_truncated = false;
+    let mut ranges_truncated = false;
     let ports_by_module = ports_by_source_module(source_netlist);
 
     for (file, source) in files {
@@ -113,26 +116,35 @@ pub(crate) fn recover_source_provenance(
                     }
                 }
             }
-            if !roots.is_empty() && probe_hints.len() < SOURCE_RANGE_ASSOCIATION_CAP {
-                probe_hints.push(SourceProbeHint {
-                    file: file.clone(),
-                    start_line: assignment.start_line,
-                    start_column: Some(assignment.start_column),
-                    end_line: assignment.end_line,
-                    end_column: Some(assignment.end_column),
-                    direction: SourceProbeDirection::Fanin,
-                    kind: SourceProbeHintKind::Signal,
-                });
+            if !roots.is_empty() {
+                let omitted = push_probe_hint(
+                    &mut probe_hints,
+                    SourceProbeHint {
+                        file: file.clone(),
+                        start_line: assignment.start_line,
+                        start_column: Some(assignment.start_column),
+                        end_line: assignment.end_line,
+                        end_column: Some(assignment.end_column),
+                        direction: SourceProbeDirection::Fanin,
+                        kind: SourceProbeHintKind::Signal,
+                    },
+                );
+                mapping_incomplete |= omitted;
+                probe_hints_truncated |= omitted;
             }
-            let range = ranges
-                .entry((
+            let Some(range) = bounded_range_entry(
+                &mut ranges,
+                (
                     file.clone(),
                     assignment.start_line,
                     Some(assignment.start_column),
                     assignment.end_line,
                     Some(assignment.end_column),
-                ))
-                .or_default();
+                ),
+                &mut ranges_truncated,
+            ) else {
+                continue;
+            };
             merge_range_roots(range, roots, mapping_incomplete, &mut association_count);
         }
         for declaration in scan_port_declarations(&source, &ports_by_module) {
@@ -164,9 +176,10 @@ pub(crate) fn recover_source_provenance(
                     }
                 }
             }
-            if !roots.is_empty() && probe_hints.len() < SOURCE_RANGE_ASSOCIATION_CAP {
-                for direction in directions {
-                    probe_hints.push(SourceProbeHint {
+            if !roots.is_empty() {
+                let hints = directions
+                    .iter()
+                    .map(|direction| SourceProbeHint {
                         file: file.clone(),
                         start_line: declaration.line,
                         start_column: Some(declaration.start_column),
@@ -178,18 +191,25 @@ pub(crate) fn recover_source_provenance(
                         } else {
                             SourceProbeHintKind::Signal
                         },
-                    });
-                }
+                    })
+                    .collect();
+                let omitted = push_probe_hint_group(&mut probe_hints, hints);
+                mapping_incomplete |= omitted;
+                probe_hints_truncated |= omitted;
             }
-            let range = ranges
-                .entry((
+            let Some(range) = bounded_range_entry(
+                &mut ranges,
+                (
                     file.clone(),
                     declaration.line,
                     Some(declaration.start_column),
                     declaration.line,
                     Some(declaration.end_column),
-                ))
-                .or_default();
+                ),
+                &mut ranges_truncated,
+            ) else {
+                continue;
+            };
             merge_range_roots(range, roots, mapping_incomplete, &mut association_count);
         }
         for assignment in &scanned.procedural {
@@ -216,15 +236,19 @@ pub(crate) fn recover_source_provenance(
             if roots.is_empty() {
                 continue;
             }
-            let range = ranges
-                .entry((
+            let Some(range) = bounded_range_entry(
+                &mut ranges,
+                (
                     file.clone(),
                     assignment.line,
                     Some(assignment.start_column),
                     assignment.end_line,
                     Some(assignment.end_column),
-                ))
-                .or_default();
+                ),
+                &mut ranges_truncated,
+            ) else {
+                continue;
+            };
             merge_range_roots(
                 range,
                 roots.iter().copied(),
@@ -253,19 +277,19 @@ pub(crate) fn recover_source_provenance(
         }
         for assignment in &scanned.procedural {
             let key = (file.clone(), assignment.line);
-            if procedural.contains_key(&key)
-                && !unusable_lines.contains(&key)
-                && probe_hints.len() < SOURCE_RANGE_ASSOCIATION_CAP
-            {
-                probe_hints.push(SourceProbeHint {
-                    file: file.clone(),
-                    start_line: assignment.line,
-                    start_column: Some(assignment.start_column),
-                    end_line: assignment.end_line,
-                    end_column: Some(assignment.end_column),
-                    direction: SourceProbeDirection::Fanin,
-                    kind: SourceProbeHintKind::Procedural,
-                });
+            if procedural.contains_key(&key) && !unusable_lines.contains(&key) {
+                probe_hints_truncated |= push_probe_hint(
+                    &mut probe_hints,
+                    SourceProbeHint {
+                        file: file.clone(),
+                        start_line: assignment.line,
+                        start_column: Some(assignment.start_column),
+                        end_line: assignment.end_line,
+                        end_column: Some(assignment.end_column),
+                        direction: SourceProbeDirection::Fanin,
+                        kind: SourceProbeHintKind::Procedural,
+                    },
+                );
             }
         }
         let resolved_lines: BTreeSet<usize> = scanned
@@ -295,19 +319,19 @@ pub(crate) fn recover_source_provenance(
                 .range(block.start_line..=block.end_line)
                 .next()
                 .is_some();
-            if has_resolved_target
-                && !has_unusable_target
-                && probe_hints.len() < SOURCE_RANGE_ASSOCIATION_CAP
-            {
-                probe_hints.push(SourceProbeHint {
-                    file: file.clone(),
-                    start_line: block.start_line,
-                    start_column: None,
-                    end_line: block.end_line,
-                    end_column: None,
-                    direction: SourceProbeDirection::Fanin,
-                    kind: SourceProbeHintKind::Block,
-                });
+            if has_resolved_target && !has_unusable_target {
+                probe_hints_truncated |= push_probe_hint(
+                    &mut probe_hints,
+                    SourceProbeHint {
+                        file: file.clone(),
+                        start_line: block.start_line,
+                        start_column: None,
+                        end_line: block.end_line,
+                        end_column: None,
+                        direction: SourceProbeDirection::Fanin,
+                        kind: SourceProbeHintKind::Block,
+                    },
+                );
             }
         }
     }
@@ -369,34 +393,40 @@ pub(crate) fn recover_source_provenance(
         let hint_range = (
             declaration.file.clone(),
             declaration.start_line,
+            declaration.start_column,
             declaration.end_line,
+            declaration.end_column,
         );
         if !roots.is_empty() && declaration_hint_ranges.insert(hint_range) {
-            if SOURCE_RANGE_ASSOCIATION_CAP.saturating_sub(probe_hints.len()) >= 2 {
-                for direction in [SourceProbeDirection::Fanin, SourceProbeDirection::Fanout] {
-                    probe_hints.push(SourceProbeHint {
-                        file: declaration.file.clone(),
-                        start_line: declaration.start_line,
-                        start_column: declaration.start_column,
-                        end_line: declaration.end_line,
-                        end_column: declaration.end_column,
-                        direction,
-                        kind: SourceProbeHintKind::Signal,
-                    });
-                }
-            } else {
-                mapping_incomplete = true;
-            }
+            let hints = [SourceProbeDirection::Fanin, SourceProbeDirection::Fanout]
+                .into_iter()
+                .map(|direction| SourceProbeHint {
+                    file: declaration.file.clone(),
+                    start_line: declaration.start_line,
+                    start_column: declaration.start_column,
+                    end_line: declaration.end_line,
+                    end_column: declaration.end_column,
+                    direction,
+                    kind: SourceProbeHintKind::Signal,
+                })
+                .collect();
+            let omitted = push_probe_hint_group(&mut probe_hints, hints);
+            mapping_incomplete |= omitted;
+            probe_hints_truncated |= omitted;
         }
-        let range = ranges
-            .entry((
+        let Some(range) = bounded_range_entry(
+            &mut ranges,
+            (
                 declaration.file,
                 declaration.start_line,
                 declaration.start_column,
                 declaration.end_line,
                 declaration.end_column,
-            ))
-            .or_default();
+            ),
+            &mut ranges_truncated,
+        ) else {
+            continue;
+        };
         merge_range_roots(range, roots, mapping_incomplete, &mut association_count);
         merge_range_signal_bits(range, signal_bits, &mut signal_bit_association_count);
         if mapping_partial {
@@ -430,6 +460,8 @@ pub(crate) fn recover_source_provenance(
         )
         .collect::<Vec<_>>();
     let truncated = declarations_truncated
+        || probe_hints_truncated
+        || ranges_truncated
         || vhdl_wire_ranges_truncated
         || ranges.iter().any(|range| range.mapping_incomplete);
     let procedural_targets = procedural
@@ -443,6 +475,37 @@ pub(crate) fn recover_source_provenance(
         procedural_targets,
         probe_hints,
     }
+}
+
+fn push_probe_hint(probe_hints: &mut Vec<SourceProbeHint>, hint: SourceProbeHint) -> bool {
+    if probe_hints.len() >= SOURCE_RANGE_ASSOCIATION_CAP {
+        return true;
+    }
+    probe_hints.push(hint);
+    false
+}
+
+fn push_probe_hint_group(
+    probe_hints: &mut Vec<SourceProbeHint>,
+    hints: Vec<SourceProbeHint>,
+) -> bool {
+    if probe_hints.len().saturating_add(hints.len()) > SOURCE_RANGE_ASSOCIATION_CAP {
+        return true;
+    }
+    probe_hints.extend(hints);
+    false
+}
+
+fn bounded_range_entry<'a>(
+    ranges: &'a mut BTreeMap<ParsedSourceSpan, RangeProvenance>,
+    location: ParsedSourceSpan,
+    truncated: &mut bool,
+) -> Option<&'a mut RangeProvenance> {
+    if !ranges.contains_key(&location) && ranges.len() >= SOURCE_RANGE_INDEX_CAP {
+        *truncated = true;
+        return None;
+    }
+    Some(ranges.entry(location).or_default())
 }
 
 fn merge_range_roots(
@@ -765,7 +828,9 @@ fn merge_vhdl_wire_line_provenance(
                 fallback_range_count += 1;
             }
             let approximate = coarse_bits.contains(&bit) && coarse_locations.contains(&location);
-            let range = ranges.entry(location).or_default();
+            let Some(range) = bounded_range_entry(ranges, location, &mut truncated) else {
+                continue;
+            };
             if approximate {
                 truncated |= merge_range_approximate_signal_bits(range, [bit], association_count);
             } else {
@@ -1898,6 +1963,80 @@ mod tests {
     }
 
     #[test]
+    fn probe_hint_budget_rejects_overflow_without_exceeding_the_cap() {
+        let hint = SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 1,
+            start_column: Some(1),
+            end_line: 1,
+            end_column: Some(3),
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Signal,
+        };
+        let mut hints = vec![hint.clone(); SOURCE_RANGE_ASSOCIATION_CAP];
+
+        assert!(push_probe_hint(&mut hints, hint));
+        assert_eq!(hints.len(), SOURCE_RANGE_ASSOCIATION_CAP);
+    }
+
+    #[test]
+    fn bidirectional_probe_hints_are_retained_atomically() {
+        let hint = SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 1,
+            start_column: Some(1),
+            end_line: 1,
+            end_column: Some(3),
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::Signal,
+        };
+        let mut hints = vec![hint.clone(); SOURCE_RANGE_ASSOCIATION_CAP - 1];
+        let pair = vec![
+            hint.clone(),
+            SourceProbeHint {
+                direction: SourceProbeDirection::Fanout,
+                ..hint
+            },
+        ];
+
+        assert!(push_probe_hint_group(&mut hints, pair));
+        assert_eq!(hints.len(), SOURCE_RANGE_ASSOCIATION_CAP - 1);
+    }
+
+    #[test]
+    fn recovered_range_count_is_hard_capped() {
+        let mut ranges = BTreeMap::new();
+        let mut truncated = false;
+        for line in 1..=SOURCE_RANGE_INDEX_CAP {
+            assert!(
+                bounded_range_entry(
+                    &mut ranges,
+                    ("top.sv".to_owned(), line, Some(1), line, Some(2)),
+                    &mut truncated,
+                )
+                .is_some()
+            );
+        }
+        assert!(
+            bounded_range_entry(
+                &mut ranges,
+                (
+                    "top.sv".to_owned(),
+                    SOURCE_RANGE_INDEX_CAP + 1,
+                    Some(1),
+                    SOURCE_RANGE_INDEX_CAP + 1,
+                    Some(2),
+                ),
+                &mut truncated,
+            )
+            .is_none()
+        );
+
+        assert_eq!(ranges.len(), SOURCE_RANGE_INDEX_CAP);
+        assert!(truncated);
+    }
+
+    #[test]
     fn custom_typed_netname_declaration_recovers_bidirectional_graph_roots() {
         let netlist = parse_value(json!({
             "modules": {
@@ -2073,15 +2212,23 @@ endmodule
         let source = "module top(input logic a, output logic y, output logic z);\nlogic next_value; logic other_value;\nassign next_value = ~a; assign other_value = ~a;\nassign y = next_value; assign z = other_value;\nendmodule\n";
         let (fixture_top, fixture_module) = select_top(&netlist, None).unwrap();
         let fixture_graph = Graph::from_netlist(&netlist, fixture_top, fixture_module).unwrap();
-        let assignment_ranges = recover_source_provenance(
+        let provenance = recover_source_provenance(
             &fixture_graph,
             &netlist,
             [("top.sv".to_owned(), source.to_owned())],
-        )
-        .ranges
-        .into_iter()
-        .filter(|range| range.start_line == 3 && range.start_column.is_some())
-        .collect::<Vec<_>>();
+        );
+        let declaration_hints = provenance
+            .probe_hints
+            .iter()
+            .filter(|hint| hint.start_line == 2 && hint.kind == SourceProbeHintKind::Signal)
+            .map(|hint| (hint.start_column, hint.end_column, hint.direction))
+            .collect::<BTreeSet<_>>();
+        assert_eq!(declaration_hints.len(), 4);
+        let assignment_ranges = provenance
+            .ranges
+            .into_iter()
+            .filter(|range| range.start_line == 3 && range.start_column.is_some())
+            .collect::<Vec<_>>();
         assert_eq!(assignment_ranges.len(), 2);
         assert_ne!(assignment_ranges[0].node_ids, assignment_ranges[1].node_ids);
         let design = AnalysisDesign::from_netlists(

@@ -17,6 +17,8 @@ export function analyzeSourceInBrowser(
     startColumn?: number
     endLine: number
     endColumn?: number
+    fallbackStartColumn?: number
+    fallbackEndColumn?: number
   },
   options: SelectionOptions,
   signal?: AbortSignal,
@@ -28,6 +30,12 @@ export function analyzeSourceInBrowser(
       start_column: selection.startColumn,
       end_line: selection.endLine,
       end_column: selection.endColumn,
+      ...(selection.fallbackStartColumn == null || selection.fallbackEndColumn == null
+        ? {}
+        : {
+            fallback_start_column: selection.fallbackStartColumn,
+            fallback_end_column: selection.fallbackEndColumn,
+          }),
       max_nodes: options.maxNodes,
       hide_control: options.hideControl,
       hide_const: options.hideConst,

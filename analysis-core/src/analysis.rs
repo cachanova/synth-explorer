@@ -30,8 +30,10 @@ const SOURCE_LINE_RESPONSE_NODE_BUDGET: usize = 20_000;
 const SOURCE_RANGE_RESPONSE_CAP: usize = 10_000;
 const SOURCE_BIT_RANGE_RESPONSE_CAP: usize = 200;
 pub(crate) const SOURCE_RANGE_ASSOCIATION_CAP: usize = 20_000;
+pub(crate) const SOURCE_RANGE_INDEX_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
 const SOURCE_SPAN_INDEX_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
 const SOURCE_PROBE_TARGET_VISIT_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
+const SOURCE_BIDIRECTIONAL_DEPTH: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
 #[serde(rename_all = "lowercase")]
@@ -146,7 +148,7 @@ pub struct SourceSelectionOptions {
     pub group_memories: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceSelectionRange<'a> {
     pub file: &'a str,
     pub start_line: usize,
@@ -396,6 +398,7 @@ struct SourceProbeSelection {
     direct_bits: Vec<u32>,
     direct_bits_incomplete: bool,
     direction: Option<ConeDir>,
+    local_bidirectional: bool,
     expand_output_register_inputs: bool,
     truncated: bool,
 }
@@ -437,6 +440,7 @@ pub struct SourceLineIndex {
     recovered_ranges: BTreeMap<String, IntervalIndex>,
     spans: BTreeMap<String, SourceSpanIndex>,
     span_count: usize,
+    incomplete_span_files: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, DeepSizeOf)]
@@ -528,6 +532,7 @@ impl SourceLineIndex {
         let mut spans = BTreeMap::<String, SourceSpanIndex>::new();
         let mut known_spans = BTreeSet::new();
         let mut span_count = 0usize;
+        let mut incomplete_span_files = HashSet::new();
         for module in modules {
             for cell in module.cells.values() {
                 let Some(src) = cell.attributes.get("src") else {
@@ -552,6 +557,7 @@ impl SourceLineIndex {
                         continue;
                     }
                     if span_count == SOURCE_SPAN_INDEX_CAP {
+                        incomplete_span_files.insert(file);
                         continue;
                     }
                     known_spans.insert((file.clone(), span.clone()));
@@ -569,7 +575,12 @@ impl SourceLineIndex {
             recovered_ranges: BTreeMap::new(),
             spans,
             span_count,
+            incomplete_span_files,
         }
+    }
+
+    fn span_mapping_incomplete(&self, file: &str) -> bool {
+        self.incomplete_span_files.contains(file)
     }
 
     pub fn contains_range(&self, file: &str, start_line: usize, end_line: usize) -> Option<bool> {
@@ -619,9 +630,12 @@ impl SourceLineIndex {
                 end_line: range.end_line,
                 end_column: range.end_column,
             };
-            if self.span_count < SOURCE_SPAN_INDEX_CAP
-                && known_spans.insert((range.file.clone(), span.clone()))
-            {
+            if !known_spans.insert((range.file.clone(), span.clone())) {
+                continue;
+            }
+            if self.span_count == SOURCE_SPAN_INDEX_CAP {
+                self.incomplete_span_files.insert(range.file.clone());
+            } else {
                 self.spans
                     .entry(range.file.clone())
                     .or_default()
@@ -1070,6 +1084,19 @@ impl Analysis {
         selection: SourceSelectionRange<'_>,
         options: SourceSelectionOptions,
     ) -> Result<SourceSelectionResult, SourceSelectionError> {
+        self.source_selection_with_fallback(graph, source_index, grouping, selection, None, options)
+    }
+
+    pub fn source_selection_with_fallback(
+        &self,
+        graph: &Graph,
+        source_index: &SourceLineIndex,
+        grouping: &GroupPartition,
+        selection: SourceSelectionRange<'_>,
+        fallback_columns: Option<(usize, usize)>,
+        options: SourceSelectionOptions,
+    ) -> Result<SourceSelectionResult, SourceSelectionError> {
+        let original_selection = selection;
         let SourceSelectionRange {
             file,
             start_line,
@@ -1092,16 +1119,42 @@ impl Analysis {
         if end_line - start_line >= 200 {
             return Err(SourceSelectionError::TooManyLines);
         }
-        let probe = self
+        let exact_probe = self
             .source_probe_range(graph, file, start_line, end_line, start_column, end_column)
             .ok_or(SourceSelectionError::UnknownFile)?;
+        let exact_mapped = !exact_probe.roots.is_empty() || !exact_probe.direct_bits.is_empty();
+        let selection = if exact_mapped {
+            selection
+        } else {
+            self.nearest_source_span(source_index, selection, fallback_columns)
+        };
+        let use_exact_probe = selection == original_selection;
+        let SourceSelectionRange {
+            file,
+            start_line,
+            end_line,
+            start_column,
+            end_column,
+        } = selection;
+        let probe = if use_exact_probe {
+            exact_probe
+        } else {
+            self.source_probe_range(graph, file, start_line, end_line, start_column, end_column)
+                .ok_or(SourceSelectionError::UnknownFile)?
+        };
         let control = probe
             .roots
             .iter()
             .any(|root| self.has_control_output[*root as usize]);
         let cone_options = ConeOptions {
             dir: probe.direction.unwrap_or(ConeDir::Fanin),
-            max_depth: 64,
+            // An unqualified signal declaration has useful logic on both sides,
+            // but traversing the full connected component makes Focus a no-op.
+            max_depth: if probe.local_bidirectional {
+                SOURCE_BIDIRECTIONAL_DEPTH
+            } else {
+                64
+            },
             max_nodes: options.max_nodes,
             hide_control: options.hide_control && !control,
             hide_const: options.hide_const,
@@ -1136,6 +1189,7 @@ impl Analysis {
             .map(|node| node.node.id)
             .collect();
         let mapping_incomplete = probe.direct_bits_incomplete
+            || (start_column.is_some() && source_index.span_mapping_incomplete(file))
             || self
                 .source_mapping_incomplete(file, start_line, end_line, start_column, end_column)
                 .expect("analysis source indexes contain the requested file");
@@ -1164,6 +1218,84 @@ impl Analysis {
             direct_ids,
             direct_bits: probe.direct_bits,
             graph,
+        })
+    }
+
+    fn nearest_source_span<'a>(
+        &self,
+        source_index: &SourceLineIndex,
+        selection: SourceSelectionRange<'a>,
+        fallback_columns: Option<(usize, usize)>,
+    ) -> SourceSelectionRange<'a> {
+        let (Some(caret_column), Some(end_column)) = (selection.start_column, selection.end_column)
+        else {
+            return selection;
+        };
+        if selection.start_line != selection.end_line || caret_column != end_column {
+            return selection;
+        }
+        let Some((fallback_start, fallback_end)) = fallback_columns else {
+            return selection;
+        };
+        if fallback_start < 1
+            || fallback_end < fallback_start
+            || caret_column < fallback_start
+            || caret_column > fallback_end
+        {
+            return selection;
+        }
+        let Some(index) = self.source_ranges.get(selection.file) else {
+            return selection;
+        };
+        if source_index
+            .contains_span(
+                selection.file,
+                selection.start_line,
+                selection.end_line,
+                selection.start_column,
+                selection.end_column,
+            )
+            .unwrap_or(false)
+            || !matching_source_ranges(
+                index,
+                selection.start_line,
+                selection.end_line,
+                selection.start_column,
+                selection.end_column,
+            )
+            .is_empty()
+        {
+            return selection;
+        }
+        let nearest = index
+            .overlapping(selection.start_line, selection.end_line)
+            .iter()
+            .filter(|range| {
+                range.start_line == selection.start_line
+                    && range.end_line == selection.end_line
+                    && range.start_column.is_some()
+                    && range.end_column.is_some()
+                    && range
+                        .start_column
+                        .is_some_and(|start| start >= fallback_start)
+                    && range.end_column.is_some_and(|end| end <= fallback_end)
+            })
+            .min_by_key(|range| {
+                let start = range.start_column.expect("filtered precise source range");
+                let end = range.end_column.expect("filtered precise source range");
+                let distance = if caret_column < start {
+                    start - caret_column
+                } else {
+                    caret_column.saturating_sub(end)
+                };
+                (distance, start, end)
+            });
+        nearest.map_or(selection, |range| SourceSelectionRange {
+            file: selection.file,
+            start_line: range.start_line,
+            end_line: range.end_line,
+            start_column: range.start_column,
+            end_column: range.end_column,
         })
     }
 
@@ -1208,32 +1340,40 @@ impl Analysis {
             })
             .unwrap_or_default();
         let mut ids = BTreeSet::new();
-        let has_precise_mapping = start_column.is_some()
-            && overlapping_ranges
-                .iter()
-                .any(|range| range.start_column.is_some());
+        let precise_mapping_lines = start_column
+            .map(|_| {
+                overlapping_ranges
+                    .iter()
+                    .filter(|range| range.start_column.is_some())
+                    .flat_map(|range| {
+                        range.start_line.max(start_line)..=range.end_line.min(end_line)
+                    })
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
         'collect: {
-            if !has_precise_mapping {
-                for line in start_line..=end_line {
-                    if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
-                        for id in line_ids {
-                            if start_column.is_some()
-                                && source_columns_are_authoritative(file)
-                                && !node_source_overlaps(
-                                    graph,
-                                    *id,
-                                    file,
-                                    start_line,
-                                    end_line,
-                                    start_column,
-                                    end_column,
-                                )
-                            {
-                                continue;
-                            }
-                            if insert_bounded_node(&mut ids, *id) {
-                                break 'collect;
-                            }
+            for line in start_line..=end_line {
+                if precise_mapping_lines.contains(&line) {
+                    continue;
+                }
+                if let Some(line_ids) = self.source_map.by_line.get(&format!("{file}:{line}")) {
+                    for id in line_ids {
+                        if start_column.is_some()
+                            && source_columns_are_authoritative(file)
+                            && !node_source_overlaps(
+                                graph,
+                                *id,
+                                file,
+                                start_line,
+                                end_line,
+                                start_column,
+                                end_column,
+                            )
+                        {
+                            continue;
+                        }
+                        if insert_bounded_node(&mut ids, *id) {
+                            break 'collect;
                         }
                     }
                 }
@@ -1294,6 +1434,7 @@ impl Analysis {
                 direct_bits,
                 direct_bits_incomplete,
                 direction: None,
+                local_bidirectional: false,
                 expand_output_register_inputs: false,
                 truncated: false,
             });
@@ -1320,6 +1461,7 @@ impl Analysis {
                 direct_bits,
                 direct_bits_incomplete,
                 direction: None,
+                local_bidirectional: false,
                 expand_output_register_inputs: false,
                 truncated: false,
             });
@@ -1402,17 +1544,31 @@ impl Analysis {
                 end_column,
             )?);
         }
-        let mut directions = selected.iter().map(|hint| hint.direction);
-        let first = directions.next();
-        let uniform = first.filter(|direction| directions.all(|other| other == *direction));
+        let has_fanin = selected
+            .iter()
+            .any(|hint| hint.direction == SourceProbeDirection::Fanin);
+        let has_fanout = selected
+            .iter()
+            .any(|hint| hint.direction == SourceProbeDirection::Fanout);
+        let shared_signal_span = selected.first().is_some_and(|first| {
+            selected.iter().all(|hint| {
+                hint.kind == SourceProbeHintKind::Signal
+                    && hint.start_line == first.start_line
+                    && hint.start_column == first.start_column
+                    && hint.end_line == first.end_line
+                    && hint.end_column == first.end_column
+            })
+        });
         Some(SourceProbeSelection {
             roots: roots.into_iter().collect(),
             direct_bits,
             direct_bits_incomplete,
-            direction: uniform.map(|direction| match direction {
-                SourceProbeDirection::Fanin => ConeDir::Fanin,
-                SourceProbeDirection::Fanout => ConeDir::Fanout,
-            }),
+            direction: match (has_fanin, has_fanout) {
+                (true, false) => Some(ConeDir::Fanin),
+                (false, true) => Some(ConeDir::Fanout),
+                _ => None,
+            },
+            local_bidirectional: has_fanin && has_fanout && shared_signal_span,
             expand_output_register_inputs: selected
                 .iter()
                 .any(|hint| hint.kind == SourceProbeHintKind::OutputPort),
@@ -1559,7 +1715,14 @@ impl Analysis {
     }
 
     pub fn extend_source_ranges(&mut self, ranges: Vec<SourceRangeMapping>, truncated: bool) {
-        for range in ranges {
+        let indexed_ranges = self
+            .source_ranges
+            .values()
+            .map(|index| index.ranges.len())
+            .sum::<usize>();
+        let remaining = SOURCE_RANGE_INDEX_CAP.saturating_sub(indexed_ranges);
+        let ranges_omitted = ranges.len() > remaining;
+        for range in ranges.into_iter().take(remaining) {
             let source = format_source_range(&range);
             for root in &range.node_ids {
                 self.synthetic_src
@@ -1576,7 +1739,7 @@ impl Analysis {
         for index in self.source_ranges.values_mut() {
             index.rebuild();
         }
-        self.source_map.truncated |= truncated;
+        self.source_map.truncated |= truncated || ranges_omitted;
     }
 
     pub fn node_ref(&self, graph: &Graph, id: NodeId) -> NodeRef {
@@ -7763,6 +7926,7 @@ mod tests {
                 },
             )]),
             span_count: SOURCE_SPAN_INDEX_CAP - 1,
+            incomplete_span_files: HashSet::new(),
         };
 
         index.extend_ranges([&duplicate, &distinct]);
@@ -7772,6 +7936,81 @@ mod tests {
             index.contains_span("top.sv", 3, 3, Some(8), Some(8)),
             Some(true)
         );
+    }
+
+    #[test]
+    fn source_span_index_reports_omitted_distinct_spans() {
+        let mut index = SourceLineIndex {
+            files: HashSet::from(["top.sv".to_owned()]),
+            lines: HashSet::new(),
+            recovered_ranges: BTreeMap::new(),
+            spans: BTreeMap::new(),
+            span_count: SOURCE_SPAN_INDEX_CAP,
+            incomplete_span_files: HashSet::new(),
+        };
+        let omitted = SourceRangeMapping {
+            file: "top.sv".to_owned(),
+            start_line: 9,
+            end_line: 9,
+            start_column: Some(3),
+            end_column: Some(8),
+            node_ids: Vec::new(),
+            signal_bits: Vec::new(),
+            approximate_signal_bits: Vec::new(),
+            mapping_incomplete: false,
+        };
+
+        index.extend_ranges([&omitted]);
+
+        assert!(index.span_mapping_incomplete("top.sv"));
+        let graph = source_selection_fixture();
+        let result = Analysis::new(&graph, vec!["top.sv".to_owned()])
+            .source_selection(
+                &graph,
+                &index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 9,
+                    end_line: 9,
+                    start_column: Some(4),
+                    end_column: Some(4),
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(result.status, SourceSelectionStatus::MappingIncomplete);
+    }
+
+    #[test]
+    fn analysis_source_range_index_rejects_overflow() {
+        let graph = sourced_node_graph(1);
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        let ranges = (1..=SOURCE_RANGE_INDEX_CAP + 1)
+            .map(|line| SourceRangeMapping {
+                file: "top.sv".to_owned(),
+                start_line: line,
+                end_line: line,
+                start_column: Some(1),
+                end_column: Some(2),
+                node_ids: Vec::new(),
+                signal_bits: Vec::new(),
+                approximate_signal_bits: Vec::new(),
+                mapping_incomplete: false,
+            })
+            .collect();
+
+        analysis.extend_source_ranges(ranges, false);
+
+        assert_eq!(
+            analysis
+                .source_ranges
+                .values()
+                .map(|index| index.ranges.len())
+                .sum::<usize>(),
+            SOURCE_RANGE_INDEX_CAP
+        );
+        assert!(analysis.source_map.truncated);
     }
 
     #[test]
@@ -7808,6 +8047,271 @@ mod tests {
         assert_eq!(select(6).direct_ids, vec![0]);
         assert_eq!(select(25).direct_ids, vec![1]);
         assert_eq!(select(16).status, SourceSelectionStatus::Unmapped);
+    }
+
+    #[test]
+    fn precise_mapping_does_not_hide_native_nodes_on_other_selected_lines() {
+        let graph = graph_from_parts(
+            "mixed_source_ranges",
+            vec![
+                combinational_node(0, "$and", Some("top.sv:5.1-5.12")),
+                combinational_node(1, "$or", Some("top.sv:6.1-6.12")),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 2],
+            vec![Vec::new(); 2],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![SourceRangeMapping {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                end_line: 5,
+                start_column: Some(1),
+                end_column: Some(12),
+                node_ids: vec![0],
+                signal_bits: Vec::new(),
+                approximate_signal_bits: Vec::new(),
+                mapping_incomplete: false,
+            }],
+            false,
+        );
+
+        assert_eq!(
+            analysis.source_nodes_range(&graph, "top.sv", 5, 6, Some(1), Some(12)),
+            Some(vec![0, 1])
+        );
+    }
+
+    #[test]
+    fn collapsed_caret_falls_back_to_the_nearest_span_inside_its_statement() {
+        let graph = graph_from_parts(
+            "nearest_declaration",
+            vec![
+                combinational_node(0, "$and", None),
+                combinational_node(1, "$or", None),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 2],
+            vec![Vec::new(); 2],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(7),
+                    end_column: Some(11),
+                    node_ids: vec![0],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(20),
+                    end_column: Some(25),
+                    node_ids: vec![1],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+            ],
+            false,
+        );
+        let select = |column, fallback_columns| {
+            analysis
+                .source_selection_with_fallback(
+                    &graph,
+                    &empty_source_index("top.sv"),
+                    &GroupPartition::default(),
+                    SourceSelectionRange {
+                        file: "top.sv",
+                        start_line: 5,
+                        end_line: 5,
+                        start_column: Some(column),
+                        end_column: Some(column),
+                    },
+                    Some(fallback_columns),
+                    selection_options(),
+                )
+                .unwrap()
+                .direct_ids
+        };
+
+        assert_eq!(select(1, (1, 12)), vec![0]);
+        assert_eq!(select(14, (13, 26)), vec![1]);
+        assert!(select(14, (13, 18)).is_empty());
+        assert_eq!(select(22, (1, 26)), vec![1]);
+    }
+
+    #[test]
+    fn exact_native_mapping_wins_when_the_auxiliary_span_index_is_incomplete() {
+        let graph = graph_from_parts(
+            "exact_native",
+            vec![
+                combinational_node(0, "$and", Some("top.sv:5.7-5.11")),
+                combinational_node(1, "$or", None),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 2],
+            vec![Vec::new(); 2],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![SourceRangeMapping {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                end_line: 5,
+                start_column: Some(20),
+                end_column: Some(25),
+                node_ids: vec![1],
+                signal_bits: Vec::new(),
+                approximate_signal_bits: Vec::new(),
+                mapping_incomplete: false,
+            }],
+            false,
+        );
+        let mut source_index = empty_source_index("top.sv");
+        source_index
+            .incomplete_span_files
+            .insert("top.sv".to_owned());
+
+        let result = analysis
+            .source_selection_with_fallback(
+                &graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(9),
+                    end_column: Some(9),
+                },
+                Some((1, 26)),
+                selection_options(),
+            )
+            .unwrap();
+
+        assert_eq!(result.direct_ids, vec![0]);
+        assert_eq!(result.status, SourceSelectionStatus::MappingIncomplete);
+    }
+
+    #[test]
+    fn bidirectional_source_probe_uses_a_local_neighborhood() {
+        let graph = deep_chain_graph(10);
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![SourceRangeMapping {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                end_line: 5,
+                start_column: Some(7),
+                end_column: Some(16),
+                node_ids: vec![5],
+                signal_bits: Vec::new(),
+                approximate_signal_bits: Vec::new(),
+                mapping_incomplete: false,
+            }],
+            false,
+        );
+        analysis.set_source_probe_hints(vec![
+            SourceProbeHint {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                start_column: Some(7),
+                end_line: 5,
+                end_column: Some(16),
+                direction: SourceProbeDirection::Fanin,
+                kind: SourceProbeHintKind::Signal,
+            },
+            SourceProbeHint {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                start_column: Some(7),
+                end_line: 5,
+                end_column: Some(16),
+                direction: SourceProbeDirection::Fanout,
+                kind: SourceProbeHintKind::Signal,
+            },
+        ]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(10),
+                    end_column: Some(10),
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![4, 5, 6]
+        );
+    }
+
+    #[test]
+    fn legacy_no_hint_source_probe_retains_its_deep_envelope() {
+        let graph = deep_chain_graph(10);
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![SourceRangeMapping {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                end_line: 5,
+                start_column: Some(7),
+                end_column: Some(16),
+                node_ids: vec![5],
+                signal_bits: Vec::new(),
+                approximate_signal_bits: Vec::new(),
+                mapping_incomplete: false,
+            }],
+            false,
+        );
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(10),
+                    end_column: Some(10),
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            (0..graph.nodes.len() as u32).collect::<Vec<_>>()
+        );
     }
 
     #[test]

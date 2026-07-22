@@ -20,13 +20,69 @@ describe('editor source coordinates', () => {
       startColumn: 9,
       endLine: 1,
       endColumn: 9,
+      fallbackStartColumn: 1,
+      fallbackEndColumn: 12,
     })
     expect(range(document.indexOf('second') + 2)).toEqual({
       startLine: 1,
       startColumn: 22,
       endLine: 1,
       endColumn: 22,
+      fallbackStartColumn: 13,
+      fallbackEndColumn: 26,
     })
+  })
+
+  it('bounds a missed caret to the surrounding semicolon statement', () => {
+    expect(range(document.indexOf('logic second'))).toEqual({
+      startLine: 1,
+      startColumn: 14,
+      endLine: 1,
+      endColumn: 14,
+      fallbackStartColumn: 13,
+      fallbackEndColumn: 26,
+    })
+    expect(range(document.indexOf('logic third'))).toEqual({
+      startLine: 2,
+      startColumn: 1,
+      endLine: 2,
+      endColumn: 1,
+      fallbackStartColumn: 1,
+      fallbackEndColumn: 12,
+    })
+  })
+
+  it('omits fallback coordinates instead of scanning an oversized line', () => {
+    const longDocument = `logic value;${' '.repeat(4096)}`
+    const selected = selectedSourceRange(
+      EditorState.create({
+        doc: longDocument,
+        selection: EditorSelection.cursor(longDocument.indexOf('value')),
+      }),
+    )
+
+    expect(selected).toEqual({
+      startLine: 1,
+      startColumn: 7,
+      endLine: 1,
+      endColumn: 7,
+    })
+  })
+
+  it('ignores semicolons inside comments and strings', () => {
+    const complex = 'logic first = "a;b" /* ; */; logic second;'
+    const second = complex.indexOf('logic second')
+    const separator = complex.indexOf(';', complex.indexOf('*/'))
+    const terminator = complex.indexOf(';', second)
+    const selected = selectedSourceRange(
+      EditorState.create({
+        doc: complex,
+        selection: EditorSelection.cursor(second),
+      }),
+    )
+
+    expect(selected.fallbackStartColumn).toBe(separator + 2)
+    expect(selected.fallbackEndColumn).toBe(terminator + 1)
   })
 
   it('uses inclusive endpoints for forward and backward selections', () => {

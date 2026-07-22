@@ -1139,9 +1139,31 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   )
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
+  const sourceQueriesBeforeInput = (await workerCounts()).source
   await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
   await editor.press('Home')
   for (let press = 0; press < 13; press += 1) await editor.press('ArrowRight')
+  await expect.poll(async () => (await workerCounts()).source).toBeGreaterThan(
+    sourceQueriesBeforeInput,
+  )
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const requests =
+          (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+        const sourceQueries = requests.filter(
+          (request): request is Record<string, unknown> =>
+            request != null &&
+            typeof request === 'object' &&
+            !Array.isArray(request) &&
+            request.kind === 'query' &&
+            request.method === 'source',
+        )
+        return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
+          ?.start_column
+      }),
+    )
+    .toBe(18)
   await expect(focus).toBeEnabled({ timeout: 15_000 })
   const workerContract = await page.evaluate(() => {
     const requests =
@@ -1168,6 +1190,8 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(workerContract.sourcePayloadKeys).toEqual([
     'end_column',
     'end_line',
+    'fallback_end_column',
+    'fallback_start_column',
     'file',
     'group_memories',
     'group_vectors',
@@ -1428,6 +1452,111 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
+  expect(apiRequests).toEqual([])
+})
+
+test('Round-Robin internal declaration fallback keeps Focus local', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const originalPostMessage = Worker.prototype.postMessage
+    Object.defineProperty(Worker.prototype, 'postMessage', {
+      configurable: true,
+      value: function (...args: unknown[]) {
+        requests.push(args[0])
+        return Reflect.apply(originalPostMessage, this, args)
+      },
+    })
+    ;(window as typeof window & { __workerRequests?: unknown[] }).__workerRequests = requests
+  })
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('round_robin_arbiter')
+  })
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeEnabled()
+  await focus.uncheck()
+  const allNodes = page.locator('.g-node-body')
+  await expect(allNodes.first()).toBeVisible()
+  const fullNodeCount = await allNodes.count()
+  expect(fullNodeCount).toBeGreaterThan(0)
+
+  const editor = page.locator('.cm-content')
+  const selectDeclarationColumn = async (line: Locator, column: number) => {
+    await line.click()
+    await editor.press('Home')
+    await editor.press('Home')
+    for (let press = 1; press < column; press += 1) await editor.press('ArrowRight')
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const requests =
+            (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+          const sourceQueries = requests.filter(
+            (request): request is Record<string, unknown> =>
+              request != null &&
+              typeof request === 'object' &&
+              !Array.isArray(request) &&
+              request.kind === 'query' &&
+              request.method === 'source',
+          )
+          return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
+            ?.start_column
+        }),
+      )
+      .toBe(column)
+    await expect
+      .poll(
+        async () =>
+          (await page.locator('.g-node-body.hl').count()) +
+          (await page.locator('.g-edge.hl').count()),
+      )
+      .toBeGreaterThan(0)
+    return {
+      nodes: await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+      edges: await page.locator('.g-edge.hl').evaluateAll((edges) =>
+        edges.map((edge) => edge.getAttribute('data-first-edge-title') ?? '').sort(),
+      ),
+    }
+  }
+  const expectDeclarationFallback = async (lineText: string, identifier: string) => {
+    const line = page.locator('.cm-line', { hasText: lineText })
+    const text = (await line.textContent()) ?? ''
+    const exact = await selectDeclarationColumn(line, text.indexOf(identifier) + 1)
+    const fallbackColumns = new Set([
+      1,
+      text.indexOf('input') + 1,
+      text.indexOf('output') + 1,
+      text.indexOf('logic') + 1,
+      text.indexOf('[') + 1,
+    ])
+    fallbackColumns.delete(0)
+    for (const column of fallbackColumns) {
+      expect(await selectDeclarationColumn(line, column)).toEqual(exact)
+    }
+  }
+
+  await expectDeclarationFallback(
+    'input logic [NUM_REQUESTERS-1:0] requests,',
+    'requests',
+  )
+  await expectDeclarationFallback(
+    'output logic [NUM_REQUESTERS-1:0] grant,',
+    'grant',
+  )
+  await expectDeclarationFallback('logic [INDEX_WIDTH-1:0] next_index;', 'next_index')
+  const relevantNodes = page.locator('.g-node-body[data-relevant="1"]')
+  const relevantNodeCount = await relevantNodes.count()
+  expect(relevantNodeCount).toBeGreaterThan(0)
+  expect(relevantNodeCount).toBeLessThanOrEqual(Math.ceil(fullNodeCount / 2))
+
+  await focus.check()
+  await expect(allNodes).toHaveCount(relevantNodeCount)
   expect(apiRequests).toEqual([])
 })
 
@@ -1565,6 +1694,9 @@ endmodule
     }),
   ).toBeVisible()
   await expect(page.locator('.cm-src-range-hl')).toHaveText(/^second;?$/)
+  await selectColumn(declarationLine, 8, 11)
+  await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
+  await expect(page.locator('.cm-src-range-hl')).toHaveCount(0)
   expect(
     await fullNodes.evaluateAll((nodes) =>
       nodes.map((node) => [
@@ -1577,6 +1709,9 @@ endmodule
     'transform',
     viewportTransform ?? '',
   )
+  await page.locator('.cm-content').press('Escape')
+  await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
+  await expect(page.locator('.cm-src-range-hl')).toHaveCount(0)
   expect(apiRequests).toEqual([])
 })
 
