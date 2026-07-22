@@ -7,7 +7,7 @@
   aria-labelledby="title description"
 >
   <title id="title">Synth Explorer</title>
-  <desc id="description">Browser-based RTL synthesis and circuit analysis</desc>
+  <desc id="description">RTL synthesis and circuit analysis</desc>
   <defs>
     <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0" stop-color="#202225" />

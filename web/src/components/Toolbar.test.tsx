@@ -34,7 +34,7 @@ vi.mock('../useStore', () => ({
       setVivadoTarget: vi.fn(),
       vivadoExtraArgs: state.vivadoExtraArgs,
       setVivadoExtraArgs: vi.fn(),
-      connectVivado: vi.fn(async () => false),
+      connectVivado: vi.fn(async () => ({ connected: false })),
       disconnectVivado: vi.fn(),
       autoSynthesize: state.autoSynthesize,
       synthesizing: state.synthesizing,

@@ -11,9 +11,7 @@ test('publishes crawlable metadata and semantic product identity', async ({ page
     'Synth Explorer - Online RTL Synthesis Exploration and Analysis',
   )
   await expect(page.getByRole('heading', { level: 1, name: 'Synth Explorer' })).toBeVisible()
-  await expect(
-    page.getByText('Browser-based RTL synthesis & circuit analysis', { exact: true }),
-  ).toBeVisible()
+  await expect(page.locator('.app-header .tagline')).toHaveCount(0)
 
   await expect(page.locator('meta[name="description"]')).toHaveAttribute(
     'content',

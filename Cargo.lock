@@ -945,6 +945,8 @@ dependencies = [
  "axum",
  "clap",
  "http-body-util",
+ "serde",
+ "serde_json",
  "synth-explorer-vivado-bridge",
  "tempfile",
  "tokio",
