@@ -1,20 +1,11 @@
 import { useEffect, useState } from 'react'
+import { hostPlatform, type HostPlatform } from '../lib/hostPlatform'
 import { isLocalLauncher } from '../lib/localLauncher'
 import type { VivadoBridgeStatus } from '../types'
 
 const RELEASE_BASE = 'https://github.com/cachanova/synth-explorer/releases/latest/download'
 const LINUX_DOWNLOAD = `${RELEASE_BASE}/synth-explorer-vivado-bridge-linux-x86_64`
 const WINDOWS_DOWNLOAD = `${RELEASE_BASE}/synth-explorer-vivado-bridge-windows-x86_64.exe`
-
-type HostPlatform = 'linux' | 'windows' | 'macos' | 'other'
-
-function hostPlatform(): HostPlatform {
-  const agent = navigator.userAgent.toLowerCase()
-  if (agent.includes('windows')) return 'windows'
-  if (agent.includes('macintosh') || agent.includes('mac os')) return 'macos'
-  if (agent.includes('linux')) return 'linux'
-  return 'other'
-}
 
 function PlatformDownload({ platform }: { platform: HostPlatform }) {
   const note = platform === 'windows'
@@ -61,6 +52,9 @@ export function VivadoSetupDialog({
   const [platform] = useState(hostPlatform)
   const [localLauncher] = useState(isLocalLauncher)
   const localMac = localLauncher && platform === 'macos'
+  const vivadoArgument = platform === 'windows'
+    ? '--vivado "C:\\Xilinx\\Vivado\\2025.2\\bin\\vivado.bat"'
+    : '--vivado /path/to/Vivado/bin/vivado'
   const [submitting, setSubmitting] = useState(false)
   const [failed, setFailed] = useState(false)
 
@@ -87,19 +81,19 @@ export function VivadoSetupDialog({
   }
 
   return (
-    <div className="vivado-setup-backdrop" role="presentation">
+    <div className="app-modal-backdrop" role="presentation">
       <section
-        className="vivado-setup-dialog"
+        className="app-modal-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="vivado-setup-title"
       >
-        <div className="vivado-setup-heading">
+        <div className="app-modal-heading">
           <div>
             <h2 id="vivado-setup-title">Use Vivado on this computer</h2>
             <p>Your RTL goes directly from this browser to Vivado. It is not sent to Synth Explorer servers.</p>
           </div>
-          <button type="button" className="vivado-setup-close" onClick={onClose} aria-label="Close">×</button>
+          <button type="button" className="app-modal-close" onClick={onClose} aria-label="Close">×</button>
         </div>
 
         {status ? (
@@ -129,7 +123,7 @@ export function VivadoSetupDialog({
               ) : localLauncher ? (
                 <li>
                   <strong>The connector is built into this launcher.</strong>
-                  <span>It detects Vivado when Synth Explorer starts. If Vivado was not found, restart the launcher after loading AMD's environment or pass <code>--vivado /path/to/Vivado/bin/vivado</code>.</span>
+                  <span>It checks for Vivado in the background when Synth Explorer starts. Wait for the Vivado version to appear in the launcher window. If Vivado was not found, restart after loading AMD's environment or pass <code>{vivadoArgument}</code>.</span>
                 </li>
               ) : (
                 <li>
@@ -162,7 +156,7 @@ export function VivadoSetupDialog({
                 {localMac
                   ? 'Could not reach Vivado through the SSH tunnel. Check the remote connector and tunnel, then try again.'
                   : localLauncher
-                  ? 'Could not reach Vivado. Check the launcher window, then restart it with Vivado configured.'
+                  ? 'Could not reach Vivado. If the launcher is still checking, wait and try again; otherwise restart it with Vivado configured.'
                   : 'Could not reach Vivado. Start the connector, then allow loopback access in your browser.'}
               </p>
             )}

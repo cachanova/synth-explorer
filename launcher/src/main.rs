@@ -68,7 +68,10 @@ async fn main() -> anyhow::Result<()> {
     println!("  Application: {origin}");
     println!("  Files: {}", web_root.display());
 
-    start_vivado_bridge(args.vivado, &origin).await;
+    let vivado_origin = origin.clone();
+    let _vivado_bridge = tokio::spawn(async move {
+        run_vivado_bridge(args.vivado, &vivado_origin).await;
+    });
 
     if !args.no_open {
         open_chrome(args.chrome.as_deref(), &url)?;
@@ -109,7 +112,7 @@ fn web_app(web_root: PathBuf) -> Router {
     Router::new().fallback_service(files)
 }
 
-async fn start_vivado_bridge(explicit_vivado: Option<PathBuf>, local_origin: &str) {
+async fn run_vivado_bridge(explicit_vivado: Option<PathBuf>, local_origin: &str) {
     let vivado = resolve_vivado(explicit_vivado);
     println!("  Vivado: checking {}", vivado.display());
     let status = match preflight_vivado(&vivado).await {
@@ -145,11 +148,9 @@ async fn start_vivado_bridge(explicit_vivado: Option<PathBuf>, local_origin: &st
         bridge_allowed_origins([local_origin.to_owned()]),
         vivado,
     );
-    tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, vivado_app(state)).await {
-            eprintln!("Built-in Vivado connector stopped: {error}");
-        }
-    });
+    if let Err(error) = axum::serve(listener, vivado_app(state)).await {
+        eprintln!("Built-in Vivado connector stopped: {error}");
+    }
 }
 
 fn open_chrome(explicit: Option<&Path>, url: &str) -> anyhow::Result<()> {
@@ -224,9 +225,28 @@ fn chrome_candidates() -> Vec<PathBuf> {
     }
 
     #[cfg(target_os = "macos")]
-    candidates.push(PathBuf::from(
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ));
+    {
+        candidates.extend(
+            [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            ]
+            .map(PathBuf::from),
+        );
+        if let Some(home) = env::var_os("HOME") {
+            let applications = PathBuf::from(home).join("Applications");
+            candidates.push(
+                applications
+                    .join("Google Chrome.app")
+                    .join("Contents/MacOS/Google Chrome"),
+            );
+            candidates.push(
+                applications
+                    .join("Chromium.app")
+                    .join("Contents/MacOS/Chromium"),
+            );
+        }
+    }
 
     candidates
 }

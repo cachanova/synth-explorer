@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/react'
 import { BrandMark } from './components/BrandMark'
+import { DownloadLauncher } from './components/DownloadLauncher'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
 import { SettingsMenu } from './components/SettingsMenu'
@@ -51,6 +52,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
+        {!localLauncher && <DownloadLauncher />}
         <h1 className="logo" aria-label="Synth Explorer">
           <BrandMark className="brand-mark" />
           <span>

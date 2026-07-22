@@ -45,18 +45,98 @@ menu.
 
 ### Downloadable local application
 
-Download the Windows, Linux, macOS Apple Silicon, or macOS Intel archive from
-the latest GitHub release, extract the complete archive, then run
-`synth-explorer`. It serves the bundled application only on `127.0.0.1` and
-opens a dedicated Chrome or Chromium window. No internet connection is required
-after download.
+Install a current Chrome or Chromium browser, then use the download button in
+the website header or open the
+[latest release](https://github.com/cachanova/synth-explorer/releases/latest).
+Choose the archive for the computer that will run the application:
 
-The same executable includes the Vivado connector. It detects a local Vivado
-installation at startup; pass `--vivado /path/to/Vivado/bin/vivado` when it is
-not on `PATH`. Yosys and GHDL remain available when Vivado is not installed.
-Vivado does not run natively on macOS, so the macOS launcher directs Vivado
-requests through an SSH tunnel to the released connector on a licensed Linux or
-Windows host.
+| Computer | Release asset |
+| --- | --- |
+| Windows 10/11 x64 | `synth-explorer-local-windows-x86_64.zip` |
+| Linux x86-64 | `synth-explorer-local-linux-x86_64.tar.gz` |
+| Mac with an Apple chip | `synth-explorer-local-macos-arm64.tar.gz` |
+| Mac with an Intel processor | `synth-explorer-local-macos-x86_64.tar.gz` |
+
+On macOS, open **About This Mac**. Choose Apple Silicon when the **Chip** name
+begins with Apple; choose Intel when the window lists an Intel **Processor**.
+
+#### Windows
+
+1. Download the Windows ZIP and choose **Extract all**. Do not run the program
+   from inside the ZIP preview.
+2. Open the extracted `synth-explorer-local` folder and run
+   `synth-explorer.exe`.
+3. If Microsoft Defender SmartScreen warns about the unsigned current build,
+   verify that it came from this repository, then choose **More info** and
+   **Run anyway**.
+4. Keep the launcher window open while using the Chrome application window.
+
+#### Linux
+
+```bash
+tar -xzf synth-explorer-local-linux-x86_64.tar.gz
+cd synth-explorer-local
+./synth-explorer
+```
+
+If the executable bit was removed while copying the folder, restore it with
+`chmod +x synth-explorer`. Keep that terminal open while using the application.
+
+#### macOS
+
+1. Download and open the archive matching the Mac's chip.
+2. Open the extracted `synth-explorer-local` folder.
+3. Current release builds are not signed or notarized. Try to open
+   `synth-explorer` once so macOS displays its security warning.
+4. Open **System Settings → Privacy & Security**, scroll to **Security**, choose
+   **Open Anyway**, then confirm **Open**. Only override this protection after
+   verifying the official release and checksum. See
+   [Apple's current instructions](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
+5. Keep the Terminal window open while using the Chrome application window.
+
+The extracted executable must remain beside its `web` directory on every
+platform. The launcher serves that directory only on `127.0.0.1:32124`, then
+opens `http://127.0.0.1:32124/?launcher=1` in Chrome app mode. Yosys, GHDL,
+analysis, examples, and browser storage are bundled; no internet connection is
+required after download. Closing the launcher stops the local server.
+
+Each archive has a neighboring `.sha256` file. Verify it before running an
+unsigned download with `sha256sum -c <file>.sha256` on Linux or
+`shasum -a 256 -c <file>.sha256` on macOS. On Windows, compare the value in the
+checksum file with `Get-FileHash -Algorithm SHA256 <file>` in PowerShell.
+
+#### Vivado in the local application
+
+On Windows and Linux, the launcher contains the Vivado connector. At startup it
+checks `VIVADO_BIN`, `XILINX_VIVADO`, and `PATH` in the background so the Chrome
+window can open immediately. Wait for the launcher window to print the Vivado
+version before connecting. If necessary, start it with an explicit executable:
+
+On Linux:
+
+```bash
+./synth-explorer --vivado /path/to/Vivado/bin/vivado
+```
+
+On Windows Command Prompt:
+
+```text
+synth-explorer.exe --vivado "C:\Xilinx\Vivado\2025.2\bin\vivado.bat"
+```
+
+The built-in connector listens only on `127.0.0.1:32125`. Yosys and GHDL remain
+available when Vivado is not installed.
+
+Vivado does not run natively on macOS. Start the standalone released connector
+on a licensed Linux or Windows Vivado host, then forward it to the Mac launcher's
+dedicated connector port:
+
+```bash
+ssh -N -L 32125:127.0.0.1:32123 user@vivado-host
+```
+
+Keep the connector and SSH command running, open the macOS launcher, select
+**Vivado**, and click **Connect local Vivado**.
 
 ### Source checkout
 

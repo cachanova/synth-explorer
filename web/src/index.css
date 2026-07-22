@@ -185,6 +185,31 @@ a:hover {
   flex: 0 0 auto;
 }
 
+.download-launcher-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 5px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-dim);
+}
+.download-launcher-trigger:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--bg-2);
+  color: var(--text);
+}
+.download-launcher-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.download-launcher-trigger svg {
+  width: 18px;
+  height: 18px;
+}
+
 /* ---- settings / theme menu ---- */
 .settings-menu {
   position: relative;
@@ -472,6 +497,14 @@ a:hover {
     gap: 8px;
     padding-inline: 8px;
   }
+  .app-modal-backdrop {
+    align-items: end;
+    padding: 10px;
+  }
+  .app-modal-dialog {
+    max-height: calc(100dvh - 20px);
+    padding: 18px;
+  }
   .repo-link span {
     display: none;
   }
@@ -599,7 +632,7 @@ a:hover {
   gap: 6px;
 }
 
-.vivado-setup-backdrop {
+.app-modal-backdrop {
   position: fixed;
   inset: 0;
   z-index: 1000;
@@ -609,7 +642,7 @@ a:hover {
   background: color-mix(in srgb, #000 66%, transparent);
 }
 
-.vivado-setup-dialog {
+.app-modal-dialog {
   width: min(720px, 100%);
   max-height: min(780px, calc(100vh - 48px));
   overflow: auto;
@@ -620,29 +653,143 @@ a:hover {
   box-shadow: 0 24px 80px color-mix(in srgb, #000 48%, transparent);
 }
 
-.vivado-setup-heading {
+.app-modal-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 20px;
 }
 
-.vivado-setup-heading h2 {
+.app-modal-heading h2 {
   margin: 0 0 6px;
   font-size: 20px;
 }
 
-.vivado-setup-heading p {
+.app-modal-heading p {
   margin: 0;
   color: var(--text-dim);
   line-height: 1.45;
 }
 
-.vivado-setup-close {
+.app-modal-close {
   min-width: 32px;
   padding: 2px 8px;
   font-size: 22px;
   line-height: 1;
+}
+
+.download-launcher-dialog {
+  width: min(680px, 100%);
+}
+
+.download-launcher-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 22px 0 18px;
+}
+
+.download-launcher-option {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+
+.download-launcher-primary,
+.download-launcher-checksum {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.download-launcher-primary {
+  flex: 1 1 auto;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-weight: 650;
+}
+
+.download-launcher-primary:hover,
+.download-launcher-primary:focus-visible {
+  background: var(--accent-dim);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.download-launcher-primary svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.download-launcher-checksum {
+  flex: 0 0 auto;
+  padding: 8px;
+  border-left: 1px solid var(--border-strong);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.download-launcher-checksum:hover,
+.download-launcher-checksum:focus-visible {
+  background: var(--bg-3);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.download-launcher-steps {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding-left: 24px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.download-launcher-steps strong,
+.download-launcher-steps code {
+  color: var(--text);
+}
+
+.download-launcher-note,
+.download-launcher-vivado {
+  display: grid;
+  gap: 4px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-2);
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.download-launcher-note strong,
+.download-launcher-vivado strong {
+  color: var(--text);
+}
+
+.download-launcher-vivado p {
+  margin: 0;
+}
+
+.download-launcher-vivado code {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  user-select: all;
+}
+
+.download-launcher-all {
+  display: inline-block;
+  margin-top: 16px;
+  font-size: 12px;
 }
 
 .vivado-steps {
