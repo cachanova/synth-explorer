@@ -1,19 +1,68 @@
 use anyhow::{Context, bail};
-use axum::Router;
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    routing::post,
+};
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use synth_explorer_vivado_bridge::{
-    AppState, app as vivado_app, bridge_allowed_origins, preflight_vivado, resolve_vivado,
+    AppState, BridgeError, BridgeStatus, app as vivado_app, bridge_allowed_origins,
+    preflight_vivado, resolve_vivado,
 };
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 use tower_http::services::{ServeDir, ServeFile};
 
 const DEFAULT_APP_BIND: &str = "127.0.0.1:32124";
 const DEFAULT_BUILT_IN_VIVADO_BIND: &str = "127.0.0.1:32125";
+
+#[derive(Clone)]
+struct LauncherState {
+    local_origin: String,
+    vivado: Arc<Mutex<VivadoRuntime>>,
+}
+
+struct VivadoRuntime {
+    configured_vivado: Option<PathBuf>,
+    running: Option<RunningVivadoBridge>,
+}
+
+struct RunningVivadoBridge {
+    status: BridgeStatus,
+    task: JoinHandle<()>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StartVivadoRequest {
+    vivado: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct StartVivadoError {
+    error: String,
+    path_required: bool,
+}
+
+impl LauncherState {
+    fn new(configured_vivado: Option<PathBuf>, local_origin: String) -> Self {
+        Self {
+            local_origin,
+            vivado: Arc::new(Mutex::new(VivadoRuntime {
+                configured_vivado,
+                running: None,
+            })),
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -67,11 +116,9 @@ async fn main() -> anyhow::Result<()> {
     println!("Synth Explorer local application");
     println!("  Application: {origin}");
     println!("  Files: {}", web_root.display());
+    println!("  Vivado: starts when selected in the application");
 
-    let vivado_origin = origin.clone();
-    let _vivado_bridge = tokio::spawn(async move {
-        run_vivado_bridge(args.vivado, &vivado_origin).await;
-    });
+    let launcher_state = LauncherState::new(args.vivado, origin.clone());
 
     if !args.no_open {
         open_chrome(args.chrome.as_deref(), &url)?;
@@ -80,7 +127,7 @@ async fn main() -> anyhow::Result<()> {
         println!("Open {url}");
     }
 
-    let server = axum::serve(listener, web_app(web_root));
+    let server = axum::serve(listener, web_app(web_root, launcher_state));
     server
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -106,21 +153,71 @@ fn validate_web_root(web_root: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn web_app(web_root: PathBuf) -> Router {
+fn web_app(web_root: PathBuf, launcher_state: LauncherState) -> Router {
     let index = web_root.join("index.html");
     let files = ServeDir::new(web_root).fallback(ServeFile::new(index));
-    Router::new().fallback_service(files)
+    Router::new()
+        .route("/launcher/vivado/start", post(start_vivado_bridge))
+        .fallback_service(files)
+        .with_state(launcher_state)
 }
 
-async fn run_vivado_bridge(explicit_vivado: Option<PathBuf>, local_origin: &str) {
-    let vivado = resolve_vivado(explicit_vivado);
+async fn start_vivado_bridge(
+    State(state): State<LauncherState>,
+    headers: HeaderMap,
+    Json(request): Json<StartVivadoRequest>,
+) -> Result<Json<BridgeStatus>, (StatusCode, Json<StartVivadoError>)> {
+    let request_origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    if request_origin != Some(state.local_origin.as_str()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(StartVivadoError {
+                error: "Vivado can only be started by this local Synth Explorer application"
+                    .to_owned(),
+                path_required: false,
+            }),
+        ));
+    }
+
+    let mut runtime = state.vivado.lock().await;
+    if let Some(running) = runtime.running.as_ref()
+        && !running.task.is_finished()
+    {
+        return Ok(Json(running.status.clone()));
+    }
+    runtime.running.take();
+
+    let requested_vivado = request
+        .vivado
+        .map(|path| path.trim().to_owned())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    let vivado = resolve_vivado(requested_vivado.or_else(|| runtime.configured_vivado.clone()));
+    println!("  Vivado: start requested by the local application");
     println!("  Vivado: checking {}", vivado.display());
     let status = match preflight_vivado(&vivado).await {
         Ok(status) => status,
         Err(error) => {
+            let path_required = matches!(
+                &error,
+                BridgeError::Io(source) if source.kind() == io::ErrorKind::NotFound
+            );
+            let message = if path_required {
+                format!("Vivado was not found: {error}")
+            } else {
+                format!("Vivado could not start: {error}")
+            };
             println!("  Vivado: unavailable ({error})");
             println!("  Yosys and GHDL remain fully available.");
-            return;
+            return Err((
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(StartVivadoError {
+                    error: message,
+                    path_required,
+                }),
+            ));
         }
     };
 
@@ -131,11 +228,23 @@ async fn run_vivado_bridge(explicit_vivado: Option<PathBuf>, local_origin: &str)
         Ok(listener) => listener,
         Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
             eprintln!("  Vivado: built-in connector port {bridge_address} is already in use");
-            return;
+            return Err((
+                StatusCode::CONFLICT,
+                Json(StartVivadoError {
+                    error: format!("Vivado connector port {bridge_address} is already in use"),
+                    path_required: false,
+                }),
+            ));
         }
         Err(error) => {
             eprintln!("  Vivado: failed to start built-in connector: {error}");
-            return;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(StartVivadoError {
+                    error: format!("Failed to start the Vivado connector: {error}"),
+                    path_required: false,
+                }),
+            ));
         }
     };
     println!(
@@ -144,13 +253,21 @@ async fn run_vivado_bridge(explicit_vivado: Option<PathBuf>, local_origin: &str)
         status.parts.len(),
     );
     let state = AppState::new(
-        status,
-        bridge_allowed_origins([local_origin.to_owned()]),
-        vivado,
+        status.clone(),
+        bridge_allowed_origins([state.local_origin.clone()]),
+        vivado.clone(),
     );
-    if let Err(error) = axum::serve(listener, vivado_app(state)).await {
-        eprintln!("Built-in Vivado connector stopped: {error}");
-    }
+    let task = tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, vivado_app(state)).await {
+            eprintln!("Built-in Vivado connector stopped: {error}");
+        }
+    });
+    runtime.configured_vivado = Some(vivado);
+    runtime.running = Some(RunningVivadoBridge {
+        status: status.clone(),
+        task,
+    });
+    Ok(Json(status))
 }
 
 fn open_chrome(explicit: Option<&Path>, url: &str) -> anyhow::Result<()> {
@@ -288,7 +405,8 @@ mod tests {
         let temp = TempDir::new().unwrap();
         std::fs::write(temp.path().join("index.html"), "local app").unwrap();
         std::fs::write(temp.path().join("engine.wasm"), b"wasm").unwrap();
-        let app = web_app(temp.path().to_path_buf());
+        let state = LauncherState::new(None, "http://127.0.0.1:32124".to_owned());
+        let app = web_app(temp.path().to_path_buf(), state);
 
         let wasm = app
             .clone()
@@ -305,5 +423,59 @@ mod tests {
         assert_eq!(fallback.status(), StatusCode::OK);
         let body = fallback.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"local app");
+    }
+
+    #[tokio::test]
+    async fn vivado_stays_stopped_until_requested_and_missing_path_can_be_retried() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("index.html"), "local app").unwrap();
+        let missing_vivado = temp.path().join("missing-vivado");
+        let state = LauncherState::new(None, "http://127.0.0.1:32124".to_owned());
+        assert!(state.vivado.lock().await.running.is_none());
+        let app = web_app(temp.path().to_path_buf(), state);
+        let request = serde_json::json!({ "vivado": missing_vivado });
+
+        let response = app
+            .oneshot(
+                Request::post("/launcher/vivado/start")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://127.0.0.1:32124")
+                    .body(Body::from(request.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["path_required"], true);
+        assert!(
+            error["error"]
+                .as_str()
+                .unwrap()
+                .contains("Vivado was not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn vivado_start_rejects_requests_outside_the_local_app_origin() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("index.html"), "local app").unwrap();
+        let state = LauncherState::new(None, "http://127.0.0.1:32124".to_owned());
+        let app = web_app(temp.path().to_path_buf(), state);
+
+        let response = app
+            .oneshot(
+                Request::post("/launcher/vivado/start")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://example.com")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

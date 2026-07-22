@@ -9,11 +9,13 @@ publish = false
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
 synth-explorer-vivado-bridge = { path = "../vivado-bridge" }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+serde_json = "1"
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

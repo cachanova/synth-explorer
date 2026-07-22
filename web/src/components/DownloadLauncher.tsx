@@ -67,7 +67,7 @@ function VivadoNote({ platform }: { platform: HostPlatform }) {
   }
   return (
     <p>
-      On Windows and Linux, the launcher includes the Vivado connector and detects a local Vivado installation at startup.
+      On Windows and Linux, selecting Vivado starts the built-in connector and detects a local installation on demand.
       Yosys and GHDL work without Vivado.
     </p>
   )

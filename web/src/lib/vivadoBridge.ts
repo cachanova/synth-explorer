@@ -30,17 +30,32 @@ interface BridgeSynthesisResponse {
 export class VivadoBridgeError extends Error {
   readonly status: number
   readonly log?: string
+  readonly pathRequired: boolean
 
-  constructor(message: string, status = 0, log?: string) {
+  constructor(message: string, status = 0, log?: string, pathRequired = false) {
     super(message)
     this.name = 'VivadoBridgeError'
     this.status = status
     this.log = log
+    this.pathRequired = pathRequired
   }
 }
 
-export async function connectVivadoBridge(): Promise<VivadoBridgeStatus> {
-  const status = await request<VivadoBridgeStatus>('/v1/status')
+export async function connectVivadoBridge(vivadoPath?: string): Promise<VivadoBridgeStatus> {
+  let status: VivadoBridgeStatus
+  if (isLocalLauncher()) {
+    try {
+      status = await startLauncherVivado(vivadoPath)
+    } catch (startError) {
+      try {
+        status = await request<VivadoBridgeStatus>('/v1/status')
+      } catch {
+        throw startError
+      }
+    }
+  } else {
+    status = await request<VivadoBridgeStatus>('/v1/status')
+  }
   if (status.protocol_version !== VIVADO_BRIDGE_PROTOCOL) {
     throw new VivadoBridgeError(
       `Bridge protocol ${status.protocol_version} is not supported by this website`,
@@ -50,6 +65,30 @@ export async function connectVivadoBridge(): Promise<VivadoBridgeStatus> {
     throw new VivadoBridgeError('Vivado did not report any installed target devices')
   }
   return status
+}
+
+async function startLauncherVivado(vivadoPath?: string): Promise<VivadoBridgeStatus> {
+  const response = await fetch('/launcher/vivado/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vivado: vivadoPath?.trim() || undefined }),
+  })
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`
+    let pathRequired = false
+    try {
+      const body = await response.json() as {
+        error?: unknown
+        path_required?: unknown
+      }
+      if (typeof body.error === 'string') message = body.error
+      pathRequired = body.path_required === true
+    } catch {
+      // Keep the HTTP status when the launcher returned a non-JSON error.
+    }
+    throw new VivadoBridgeError(message, response.status, undefined, pathRequired)
+  }
+  return await response.json() as VivadoBridgeStatus
 }
 
 export async function synthesizeWithVivadoBridge(

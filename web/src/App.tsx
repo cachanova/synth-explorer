@@ -58,7 +58,6 @@ function App() {
             Synth <span className="accent">Explorer</span>
           </span>
         </h1>
-        <p className="tagline">Browser-based RTL synthesis &amp; circuit analysis</p>
         <a
           className="repo-link"
           href={REPOSITORY_URL}

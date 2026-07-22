@@ -107,10 +107,11 @@ checksum file with `Get-FileHash -Algorithm SHA256 <file>` in PowerShell.
 
 #### Vivado in the local application
 
-On Windows and Linux, the launcher contains the Vivado connector. At startup it
-checks `VIVADO_BIN`, `XILINX_VIVADO`, and `PATH` in the background so the Chrome
-window can open immediately. Wait for the launcher window to print the Vivado
-version before connecting. If necessary, start it with an explicit executable:
+On Windows and Linux, the launcher contains the Vivado connector but does not
+start Vivado until the **Vivado** tool is selected. It then checks `VIVADO_BIN`,
+`XILINX_VIVADO`, and `PATH`, shows startup progress in the local application,
+and starts the connector on demand. If Vivado is not found, enter its executable
+path in the prompt. The path can also be provided when starting the launcher:
 
 On Linux:
 

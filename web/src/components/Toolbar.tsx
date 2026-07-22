@@ -7,6 +7,7 @@ import { BubbleLoader } from './BubbleLoader'
 import { FlagsMenu } from './FlagsMenu'
 import { VIVADO_FLAG_REGISTRY } from '../lib/flagRegistry'
 import { VivadoSetupDialog } from './VivadoSetupDialog'
+import { isLocalLauncher } from '../lib/localLauncher'
 
 interface FamilyBucket {
   key: string
@@ -41,6 +42,7 @@ export function Toolbar() {
   const [exampleLanguage, setExampleLanguage] = useState<ExampleLanguage>('verilog')
   const [selectedExample, setSelectedExample] = useState('')
   const [setupOpen, setSetupOpen] = useState(false)
+  const [localLauncher] = useState(isLocalLauncher)
   const store = useStore(
     ({
       examples,
@@ -176,10 +178,14 @@ export function Toolbar() {
           onChange={(event) => {
             const tool = event.target.value as SynthTool
             if (tool === 'vivado' && !store.vivadoStatus) {
-              void store.connectVivado().then((connected) => {
-                if (connected) store.setSynthTool('vivado')
-                else setSetupOpen(true)
-              })
+              if (localLauncher) {
+                setSetupOpen(true)
+              } else {
+                void store.connectVivado().then((result) => {
+                  if (result.connected) store.setSynthTool('vivado')
+                  else setSetupOpen(true)
+                })
+              }
               return
             }
             store.setSynthTool(tool)
@@ -312,10 +318,10 @@ export function Toolbar() {
         open={setupOpen}
         status={store.vivadoStatus}
         onClose={() => setSetupOpen(false)}
-        onConnect={async () => {
-          const connected = await store.connectVivado()
-          if (connected) store.setSynthTool('vivado')
-          return connected
+        onConnect={async (vivadoPath) => {
+          const result = await store.connectVivado(vivadoPath)
+          if (result.connected) store.setSynthTool('vivado')
+          return result
         }}
         onDisconnect={store.disconnectVivado}
       />

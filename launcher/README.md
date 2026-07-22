@@ -6,12 +6,13 @@ window. The downloadable archive includes the launcher and the built `web/`
 directory, so Yosys, GHDL, analysis, examples, and workspace persistence work
 without internet access.
 
-The launcher also contains the canonical Vivado bridge. In the background at
-startup it looks for Vivado using `VIVADO_BIN`, `XILINX_VIVADO/bin/vivado`, then
-`vivado` on `PATH`. When found, the existing loopback API starts on
-`127.0.0.1:32125`. The separate port prevents an already-running website
-connector on `32123` from interfering with the packaged application. Failure to
-find Vivado does not prevent the browser-local Yosys and GHDL flows from running.
+The launcher also contains the canonical Vivado bridge, but does not start it at
+application startup. When **Vivado** is selected, the local application asks the
+launcher to find Vivado using `VIVADO_BIN`, `XILINX_VIVADO/bin/vivado`, then
+`vivado` on `PATH`. When found, the loopback API starts on `127.0.0.1:32125`.
+If Vivado is not found, the local application prompts for its executable path.
+The separate port prevents an already-running website connector on `32123` from
+interfering with the packaged application. Yosys and GHDL never start Vivado.
 
 ## Run a packaged download
 

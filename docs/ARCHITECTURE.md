@@ -176,4 +176,6 @@ releases without replacing the rolling Latest release.
 The local origin is stable so IndexedDB workspace and design-cache records
 persist across launches. Release archives also retain the separate Linux and
 Windows bridge binaries used by the hosted website, remote macOS workflow, and
-installer.
+installer. The local launcher exposes a same-origin control endpoint that starts
+its embedded bridge only when the packaged application selects Vivado; hosted
+website builds continue to connect to the separately started bridge directly.

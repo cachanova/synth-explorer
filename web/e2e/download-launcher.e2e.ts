@@ -34,7 +34,7 @@ test('offers the Linux local application and complete run instructions', async (
   )
   await expect(dialog).toContainText('./synth-explorer')
   await expect(dialog).toContainText('Chrome or Chromium is required')
-  await expect(dialog).toContainText('includes the Vivado connector')
+  await expect(dialog).toContainText('selecting Vivado starts the built-in connector')
 
   await expect(page.getByRole('button', { name: 'Close download instructions' })).toBeFocused()
   await page.keyboard.press('Shift+Tab')

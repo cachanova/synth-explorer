@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { hostPlatform, type HostPlatform } from '../lib/hostPlatform'
 import { isLocalLauncher } from '../lib/localLauncher'
 import type { VivadoBridgeStatus } from '../types'
+import { BubbleLoader } from './BubbleLoader'
 
 const RELEASE_BASE = 'https://github.com/cachanova/synth-explorer/releases/latest/download'
 const LINUX_DOWNLOAD = `${RELEASE_BASE}/synth-explorer-vivado-bridge-linux-x86_64`
@@ -46,39 +47,59 @@ export function VivadoSetupDialog({
   open: boolean
   status: VivadoBridgeStatus | null
   onClose: () => void
-  onConnect: () => Promise<boolean>
+  onConnect: (vivadoPath?: string) => Promise<{
+    connected: boolean
+    error?: string
+    pathRequired?: boolean
+  }>
   onDisconnect: () => void
 }) {
   const [platform] = useState(hostPlatform)
   const [localLauncher] = useState(isLocalLauncher)
   const localMac = localLauncher && platform === 'macos'
-  const vivadoArgument = platform === 'windows'
-    ? '--vivado "C:\\Xilinx\\Vivado\\2025.2\\bin\\vivado.bat"'
-    : '--vivado /path/to/Vivado/bin/vivado'
   const [submitting, setSubmitting] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [failureMessage, setFailureMessage] = useState('')
+  const [pathRequired, setPathRequired] = useState(false)
+  const [vivadoPath, setVivadoPath] = useState('')
+  const autoStarted = useRef(false)
+  const submittingRef = useRef(false)
+
+  const connect = useCallback(async (path?: string) => {
+    if (submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    setFailed(false)
+    setFailureMessage('')
+    setPathRequired(false)
+    const result = await onConnect(path)
+    submittingRef.current = false
+    setSubmitting(false)
+    if (result.connected) onClose()
+    else {
+      setFailed(true)
+      setFailureMessage(result.error ?? 'Vivado was not found or could not start.')
+      setPathRequired(result.pathRequired === true)
+    }
+  }, [onClose, onConnect])
 
   useEffect(() => {
-    if (!open) return
-    setFailed(false)
+    if (!open) {
+      autoStarted.current = false
+      return
+    }
+    if (localLauncher && !localMac && !status && !autoStarted.current) {
+      autoStarted.current = true
+      void connect()
+    }
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose, open])
+  }, [connect, localLauncher, localMac, onClose, open, status])
 
   if (!open) return null
-
-  const connect = async () => {
-    if (submitting) return
-    setSubmitting(true)
-    setFailed(false)
-    const connected = await onConnect()
-    setSubmitting(false)
-    if (connected) onClose()
-    else setFailed(true)
-  }
 
   return (
     <div className="app-modal-backdrop" role="presentation">
@@ -105,6 +126,45 @@ export function VivadoSetupDialog({
             </div>
             <button type="button" onClick={onDisconnect}>Disconnect</button>
           </div>
+        ) : localLauncher && !localMac ? (
+          <div className="vivado-local-start">
+            {submitting || !failed ? (
+              <div className="vivado-starting" aria-live="polite">
+                <BubbleLoader size={30} label="Starting Vivado" />
+                <div>
+                  <strong>Starting Vivado</strong>
+                  <span>Checking this computer for Vivado and starting its private local connector. This may take a moment.</span>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="vivado-not-found" role="alert">
+                  <strong>{pathRequired ? 'Vivado was not found' : 'Vivado could not start'}</strong>
+                  <span>{failureMessage}</span>
+                </div>
+                <label className="vivado-path-field">
+                  <span>Vivado executable path</span>
+                  <input
+                    type="text"
+                    value={vivadoPath}
+                    onChange={(event) => setVivadoPath(event.target.value)}
+                    placeholder={platform === 'windows'
+                      ? 'C:\\Xilinx\\Vivado\\2025.2\\bin\\vivado.bat'
+                      : '/opt/Xilinx/Vivado/2025.2/bin/vivado'}
+                    autoFocus
+                  />
+                </label>
+                <button
+                  className="primary vivado-connect-button"
+                  type="button"
+                  disabled={!vivadoPath.trim()}
+                  onClick={() => void connect(vivadoPath)}
+                >
+                  Start Vivado
+                </button>
+              </>
+            )}
+          </div>
         ) : (
           <>
             <ol className="vivado-steps">
@@ -119,11 +179,6 @@ export function VivadoSetupDialog({
                   <strong>Tunnel the remote connector to this Mac.</strong>
                   <code>ssh -N -L 32125:127.0.0.1:32123 user@vivado-host</code>
                   <span>Keep the connector and SSH tunnel running while Synth Explorer uses Vivado.</span>
-                </li>
-              ) : localLauncher ? (
-                <li>
-                  <strong>The connector is built into this launcher.</strong>
-                  <span>It checks for Vivado in the background when Synth Explorer starts. Wait for the Vivado version to appear in the launcher window. If Vivado was not found, restart after loading AMD's environment or pass <code>{vivadoArgument}</code>.</span>
                 </li>
               ) : (
                 <li>
@@ -155,8 +210,6 @@ export function VivadoSetupDialog({
               <p className="vivado-connect-error" role="alert">
                 {localMac
                   ? 'Could not reach Vivado through the SSH tunnel. Check the remote connector and tunnel, then try again.'
-                  : localLauncher
-                  ? 'Could not reach Vivado. If the launcher is still checking, wait and try again; otherwise restart it with Vivado configured.'
                   : 'Could not reach Vivado. Start the connector, then allow loopback access in your browser.'}
               </p>
             )}

@@ -210,7 +210,11 @@ export interface Store {
   setExtraArgs: (a: string) => void
   setVivadoTarget: (target: string) => void
   setVivadoExtraArgs: (args: string) => void
-  connectVivado: () => Promise<boolean>
+  connectVivado: (vivadoPath?: string) => Promise<{
+    connected: boolean
+    error?: string
+    pathRequired?: boolean
+  }>
   disconnectVivado: () => void
   loadExample: (variant: ExampleVariant) => void
   confirmWorkspaceReset: boolean
@@ -776,9 +780,9 @@ export function StoreProvider({
     }
   }, [markInputChanged])
 
-  const connectVivado = useCallback(async () => {
+  const connectVivado = useCallback(async (vivadoPath?: string) => {
     try {
-      const status = await connectVivadoBridge()
+      const status = await connectVivadoBridge(vivadoPath)
       const target = status.parts.some((part) => part.name === vivadoTargetRef.current)
         ? vivadoTargetRef.current
         : status.parts.find((part) => part.name === 'xc7a35tcpg236-1')?.name ??
@@ -788,15 +792,23 @@ export function StoreProvider({
       setVivadoStatus(status)
       setVivadoTargetState(target)
       setError(null)
-      return true
+      return { connected: true }
     } catch (error) {
       const bridgeError = error as VivadoBridgeError
-      setError({
-        message: bridgeError.message,
-        log: bridgeError.log,
-        status: bridgeError.status || undefined,
-      })
-      return false
+      if (bridgeError.pathRequired) {
+        setError(null)
+      } else {
+        setError({
+          message: bridgeError.message,
+          log: bridgeError.log,
+          status: bridgeError.status || undefined,
+        })
+      }
+      return {
+        connected: false,
+        error: bridgeError.message,
+        pathRequired: bridgeError.pathRequired,
+      }
     }
   }, [])
 

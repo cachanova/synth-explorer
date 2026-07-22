@@ -31,7 +31,7 @@ assert.equal(metaContent('name', 'twitter:card'), 'summary_large_image')
 assert.equal(metaContent('name', 'twitter:title'), expectedTitle)
 assert.equal(metaContent('name', 'twitter:description'), expectedDescription)
 assert.match(html, /<h1 class="logo" aria-label="Synth Explorer">/)
-assert.match(html, /Browser-based RTL synthesis &amp; circuit analysis/)
+assert.doesNotMatch(html, /class="tagline"/)
 
 const jsonLdMatch = html.match(
   /<script type="application\/ld\+json">\s*([\s\S]*?)\s*<\/script>/,
