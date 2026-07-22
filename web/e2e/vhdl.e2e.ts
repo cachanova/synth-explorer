@@ -69,8 +69,28 @@ test('synthesizes VHDL-2008 locally with source provenance', async ({ page }) =>
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   await expect(page.locator('.graph-stage svg')).toBeAttached({ timeout: 120_000 })
   await page.getByRole('tab', { name: /counter\.vhdl/ }).click()
-  await page.locator('.cm-line', { hasText: "if reset = '1' then" }).click()
+  const sourceLine = page.locator('.cm-line', { hasText: "if reset = '1' then" })
+  await sourceLine.click()
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+  await expect.poll(() => page.locator('.g-edge.hl').count()).toBeGreaterThan(0)
+
+  // Keep the full schematic stable while clearing the source-originated
+  // selection, then reverse-probe one of its known relevant wires.
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeEnabled()
+  await focus.uncheck()
+  await page.locator('.cm-content').press('Escape')
+  await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
+  const edgePoint = await page.locator<SVGPathElement>('.g-edge').first().evaluate((edge) => {
+    const point = edge.getPointAtLength(edge.getTotalLength() / 2)
+    const matrix = edge.getScreenCTM()
+    if (!matrix) throw new Error('VHDL edge has no screen transform')
+    const screen = point.matrixTransform(matrix)
+    return { x: screen.x, y: screen.y }
+  })
+  await page.mouse.click(edgePoint.x, edgePoint.y + 4)
+  await expect.poll(() => page.locator('.cm-line.cm-src-hl').count()).toBeGreaterThan(0)
+  await expect(page.locator('.cm-src-range-hl')).toHaveCount(0)
   expect(apiRequests).toEqual([])
 })
 

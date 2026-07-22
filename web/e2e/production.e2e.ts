@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 import { retriggerCurrentInput, waitForAnalysisReady } from './helpers'
 
 function recordApiRequests(page: Page): string[] {
@@ -1051,11 +1051,32 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
     ;(window as typeof window & { __workerRequests?: unknown[] }).__workerRequests = requests
   })
   const apiRequests = recordApiRequests(page)
+  const workerCounts = () =>
+    page.evaluate(() => {
+      const requests =
+        (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+      const records = requests.filter(
+        (request): request is Record<string, unknown> =>
+          request != null && typeof request === 'object' && !Array.isArray(request),
+      )
+      return {
+        source: records.filter(
+          (request) => request.kind === 'query' && request.method === 'source',
+        ).length,
+        netlist: records.filter(
+          (request) => request.kind === 'query' && request.method === 'netlist',
+        ).length,
+        layout: records.filter(
+          (request) => 'input' in request && 'placement' in request,
+        ).length,
+      }
+    })
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('handshake_controller')
   })
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const editor = page.locator('.cm-content')
 
   const focus = page.getByLabel('Focus')
   await expect(focus).toBeChecked()
@@ -1068,9 +1089,17 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   const fullNodeIds = await fullNodes.evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')),
   )
+  const fullNodeTransforms = await fullNodes.evaluateAll((nodes) =>
+    nodes.map((node) => [
+      node.getAttribute('data-graph-node-id'),
+      node.getAttribute('transform'),
+    ]),
+  )
   expect(fullNodeIds.length).toBeGreaterThan(0)
 
   await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
+  await editor.press('Home')
+  for (let press = 0; press < 13; press += 1) await editor.press('ArrowRight')
   await expect(focus).toBeEnabled({ timeout: 15_000 })
   const workerContract = await page.evaluate(() => {
     const requests =
@@ -1095,6 +1124,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(workerContract.snapshotRequests).toBe(0)
   expect(workerContract.sourceQueries).toBeGreaterThan(0)
   expect(workerContract.sourcePayloadKeys).toEqual([
+    'end_column',
     'end_line',
     'file',
     'group_memories',
@@ -1102,6 +1132,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
     'hide_const',
     'hide_control',
     'max_nodes',
+    'start_column',
     'start_line',
   ])
   await expect(focus).not.toBeChecked()
@@ -1200,6 +1231,105 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
 
   await focus.uncheck()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
+  const fullViewportTransform = await page
+    .locator('.g-viewport')
+    .getAttribute('transform')
+  const workerCountsBeforeDeclaration = await workerCounts()
+  const placeCaretAtTrailingIdentifier = async (
+    line: ReturnType<typeof page.locator>,
+    identifierLength: number,
+  ) => {
+    await line.click()
+    await editor.press('End')
+    for (let offset = 0; offset <= identifierLength; offset += 1) {
+      await editor.press('ArrowLeft')
+    }
+  }
+  await placeCaretAtTrailingIdentifier(
+    page.locator('.cm-line', { hasText: 'logic [COUNT_WIDTH-1:0] wait_count;' }),
+    'wait_count'.length,
+  )
+  await expect.poll(() => page.locator('.g-node-body.g-symbol-reg.hl').count()).toBeGreaterThan(0)
+  await expect
+    .poll(() =>
+      page.locator('.g-edge.hl').evaluateAll((edges) =>
+        edges.some((edge) =>
+          (edge.getAttribute('data-first-edge-title') ?? '').includes('wait_count'),
+        ),
+      ),
+    )
+    .toBe(true)
+  const waitCountDirectNodeIds = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+  )
+  await expect
+    .poll(() =>
+      page.locator('.g-node-body[data-relevant="1"]:not(.hl)').count(),
+    )
+    .toBeGreaterThan(0)
+  expect(
+    await fullNodes.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-graph-node-id')),
+    ),
+  ).toEqual(fullNodeIds)
+  expect(
+    await fullNodes.evaluateAll((nodes) =>
+      nodes.map((node) => [
+        node.getAttribute('data-graph-node-id'),
+        node.getAttribute('transform'),
+      ]),
+    ),
+  ).toEqual(fullNodeTransforms)
+  await expect(page.locator('.g-viewport')).toHaveAttribute(
+    'transform',
+    fullViewportTransform ?? '',
+  )
+  await expect.poll(workerCounts).toMatchObject({
+    netlist: workerCountsBeforeDeclaration.netlist,
+    layout: workerCountsBeforeDeclaration.layout,
+  })
+
+  const sourceQueriesBeforeState = (await workerCounts()).source
+  await placeCaretAtTrailingIdentifier(
+    page.locator('.cm-line', { hasText: 'state_t state;' }),
+    'state'.length,
+  )
+  await expect.poll(async () => (await workerCounts()).source).toBeGreaterThan(
+    sourceQueriesBeforeState,
+  )
+  await expect
+    .poll(() =>
+      page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+    )
+    .not.toEqual(waitCountDirectNodeIds)
+  await expect.poll(() => page.locator('.g-node-body.g-symbol-reg.hl').count()).toBeGreaterThan(0)
+  const declarationDirectNodeIds = await page
+    .locator('.g-node-body.hl')
+    .evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+    )
+  await focus.check()
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThan(fullNodeIds.length)
+  await expect
+    .poll(() =>
+      page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+    )
+    .toEqual(declarationDirectNodeIds)
+  const sourceQueriesBeforeReverse = (await workerCounts()).source
+  await page
+    .locator(`.g-node-body[data-graph-node-id="${declarationDirectNodeIds[0]}"]`)
+    .click()
+  await expect(
+    page.locator('.cm-line.cm-src-hl', { hasText: 'state_t state;' }),
+  ).toBeVisible()
+  await expect.poll(async () => (await workerCounts()).source).toBe(sourceQueriesBeforeReverse)
+  await focus.uncheck()
+  await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
+
   await page.locator('.cm-line', { hasText: "request_valid = 1'b1;" }).click()
   await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
   expect(
@@ -1256,6 +1386,155 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expect(focus).toBeDisabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  expect(apiRequests).toEqual([])
+})
+
+test('same-line declarations carry column and exact-net identity', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const originalPostMessage = Worker.prototype.postMessage
+    Object.defineProperty(Worker.prototype, 'postMessage', {
+      configurable: true,
+      value: function (...args: unknown[]) {
+        requests.push(args[0])
+        return Reflect.apply(originalPostMessage, this, args)
+      },
+    })
+    ;(window as typeof window & { __workerRequests?: unknown[] }).__workerRequests = requests
+  })
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAnalysisReady(page)
+  const top = (await page.getByLabel('Top').inputValue()) || 'top'
+  const source = `module ${top}(
+  input logic clk,
+  input logic a,
+  output logic y,
+  output logic z
+);
+  logic first; logic second;
+  always_ff @(posedge clk) begin
+    first <= a; second <= ~a;
+  end
+  assign y = first; assign z = second;
+endmodule
+`
+  const editor = page.locator('.cm-content')
+  await waitForAutomaticSynthesis(page, async () => {
+    await editor.click()
+    await editor.press('Control+A')
+    await page.keyboard.insertText(source)
+  })
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const declarationLine = page.locator('.cm-line', {
+    hasText: 'logic first; logic second;',
+  })
+  await declarationLine.click()
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeEnabled({ timeout: 15_000 })
+  await focus.uncheck()
+  const fullNodes = page.locator('.g-node-body')
+  await expect(fullNodes.first()).toBeVisible()
+  const fullNodeState = await fullNodes.evaluateAll((nodes) =>
+    nodes.map((node) => [
+      node.getAttribute('data-graph-node-id'),
+      node.getAttribute('transform'),
+    ]),
+  )
+  const viewportTransform = await page.locator('.g-viewport').getAttribute('transform')
+
+  const selectColumn = async (
+    line: Locator,
+    rightPresses: number,
+    expectedColumn: number,
+    requireEdge = true,
+  ) => {
+    await line.click()
+    await editor.press('Home')
+    for (let press = 0; press < rightPresses; press += 1) {
+      await editor.press('ArrowRight')
+    }
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const requests =
+            (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+          const sourceQueries = requests.filter(
+            (request): request is Record<string, unknown> =>
+              request != null &&
+              typeof request === 'object' &&
+              !Array.isArray(request) &&
+              request.kind === 'query' &&
+              request.method === 'source',
+          )
+          return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
+            ?.start_column
+        }),
+      )
+      .toBe(expectedColumn)
+    await expect
+      .poll(() =>
+        requireEdge
+          ? page.locator('.g-edge.hl').count()
+          : page.locator('.g-node-body.hl').count(),
+      )
+      .toBeGreaterThan(0)
+    return page.locator('.g-edge.hl').evaluateAll((edges) =>
+      edges.map((edge) => edge.getAttribute('data-first-edge-title') ?? '').sort(),
+    )
+  }
+
+  const firstEdges = await selectColumn(declarationLine, 8, 11)
+  expect(firstEdges.length).toBeGreaterThan(0)
+  const secondEdges = await selectColumn(declarationLine, 21, 24)
+  expect(secondEdges.length).toBeGreaterThan(0)
+  expect(secondEdges).not.toEqual(firstEdges)
+
+  const proceduralLine = page.locator('.cm-line', {
+    hasText: 'first <= a; second <= ~a;',
+  })
+  await selectColumn(proceduralLine, 0, 5, false)
+  const firstProceduralNodes = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+  )
+  await selectColumn(proceduralLine, 12, 17, false)
+  const secondProceduralNodes = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+  )
+  expect(secondProceduralNodes).not.toEqual(firstProceduralNodes)
+
+  const continuousLine = page.locator('.cm-line', {
+    hasText: 'assign y = first; assign z = second;',
+  })
+  const firstContinuousEdges = await selectColumn(continuousLine, 7, 10)
+  const secondContinuousEdges = await selectColumn(continuousLine, 25, 28)
+  expect(secondContinuousEdges).not.toEqual(firstContinuousEdges)
+  const edgePoint = await page.locator<SVGPathElement>('.g-edge.hl').first().evaluate((edge) => {
+    const point = edge.getPointAtLength(edge.getTotalLength() / 2)
+    const matrix = edge.getScreenCTM()
+    if (!matrix) throw new Error('highlighted edge has no screen transform')
+    const screen = point.matrixTransform(matrix)
+    return { x: screen.x, y: screen.y }
+  })
+  await page.mouse.click(edgePoint.x, edgePoint.y + 4)
+  await expect(
+    page.locator('.cm-line.cm-src-hl', {
+      hasText: 'logic first; logic second;',
+    }),
+  ).toBeVisible()
+  await expect(page.locator('.cm-src-range-hl')).toHaveText(/^second;?$/)
+  expect(
+    await fullNodes.evaluateAll((nodes) =>
+      nodes.map((node) => [
+        node.getAttribute('data-graph-node-id'),
+        node.getAttribute('transform'),
+      ]),
+    ),
+  ).toEqual(fullNodeState)
+  await expect(page.locator('.g-viewport')).toHaveAttribute(
+    'transform',
+    viewportTransform ?? '',
+  )
   expect(apiRequests).toEqual([])
 })
 

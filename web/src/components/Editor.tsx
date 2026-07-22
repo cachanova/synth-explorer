@@ -31,6 +31,7 @@ import {
   indentOnInput,
   syntaxHighlighting,
 } from '@codemirror/language'
+import { selectedSourceRange } from '../lib/editorSourceSelection'
 import {
   closeBrackets,
   closeBracketsKeymap,
@@ -150,7 +151,7 @@ function lineNumberExtension(relative: boolean, activeLine = 1): Extension {
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
-  { from: number; primary: boolean }[] | null
+  { from: number; to?: number; primary: boolean }[] | null
 >()
 const programmaticUpdate = Annotation.define<boolean>()
 const secondaryLine = Decoration.line({
@@ -162,6 +163,8 @@ const secondaryLine = Decoration.line({
 const primaryLine = Decoration.line({
   attributes: { class: 'cm-src-hl' },
 })
+const primaryRange = Decoration.mark({ class: 'cm-src-range-hl' })
+const secondaryRange = Decoration.mark({ class: 'cm-src-range-hl-secondary' })
 
 const highlightField = StateField.define<DecorationSet>({
   create() {
@@ -174,8 +177,10 @@ const highlightField = StateField.define<DecorationSet>({
         if (e.value == null) next = Decoration.none
         else {
           next = Decoration.set(
-            e.value.map(({ from, primary }) =>
-              (primary ? primaryLine : secondaryLine).range(from),
+            e.value.map(({ from, to, primary }) =>
+              to == null
+                ? (primary ? primaryLine : secondaryLine).range(from)
+                : (primary ? primaryRange : secondaryRange).range(from, to),
             ),
             true,
           )
@@ -200,9 +205,24 @@ function applyHighlight(view: EditorView, hl: EditorHighlight, activeFile: strin
       linePriority.set(line, primary || linePriority.get(line) === true)
     }
   })
-  const decorations = [...linePriority.entries()]
+  const decorations: { from: number; to?: number; primary: boolean }[] = [
+    ...linePriority.entries(),
+  ]
     .sort(([a], [b]) => a - b)
     .map(([line, primary]) => ({ from: doc.line(line).from, primary }))
+
+  hl.spans.forEach((span, index) => {
+    if (span.file !== activeFile || !span.exact) return
+    const startLine = doc.line(Math.min(Math.max(span.startLine, 1), doc.lines))
+    const endLine = doc.line(Math.min(Math.max(span.endLine, startLine.number), doc.lines))
+    const from = startLine.from + Math.min(Math.max(span.startCol - 1, 0), startLine.length)
+    const to = endLine.from + Math.min(Math.max(span.endCol, 1), endLine.length)
+    if (to > from) decorations.push({ from, to, primary: index === hl.primary })
+  })
+  decorations.sort(
+    (left, right) =>
+      left.from - right.from || Number(left.to != null) - Number(right.to != null),
+  )
 
   const primaryLineNumber =
     primarySpan?.file === activeFile
@@ -210,7 +230,12 @@ function applyHighlight(view: EditorView, hl: EditorHighlight, activeFile: strin
       : decorations.length > 0
         ? doc.lineAt(decorations[0].from).number
         : 1
-  const primaryPosition = doc.line(primaryLineNumber).from
+  const primaryLine = doc.line(primaryLineNumber)
+  const primaryPosition =
+    primarySpan?.file === activeFile
+      ? primaryLine.from +
+        Math.min(Math.max(primarySpan.startCol - 1, 0), primaryLine.length)
+      : primaryLine.from
   view.dispatch({
     selection: { anchor: primaryPosition },
     effects: [
@@ -219,19 +244,6 @@ function applyHighlight(view: EditorView, hl: EditorHighlight, activeFile: strin
     ],
     annotations: programmaticUpdate.of(true),
   })
-}
-
-function selectedLines(state: EditorState): { startLine: number; endLine: number } {
-  const selection = state.selection.main
-  const startLine = state.doc.lineAt(selection.from).number
-  let endLine = state.doc.lineAt(selection.to).number
-  if (
-    selection.from !== selection.to &&
-    selection.to === state.doc.line(endLine).from
-  ) {
-    endLine = Math.max(startLine, endLine - 1)
-  }
-  return { startLine, endLine }
 }
 
 export function Editor() {
@@ -339,11 +351,14 @@ export function Editor() {
           storeRef.current.updateFileContent(currentFileRef.current, text)
         }
         if (u.selectionSet || u.docChanged) {
-          const { startLine, endLine } = selectedLines(u.state)
+          const { startLine, startColumn, endLine, endColumn } =
+            selectedSourceRange(u.state)
           storeRef.current.setSourceSelection(
             currentFileRef.current,
             startLine,
             endLine,
+            startColumn,
+            endColumn,
           )
         }
       }

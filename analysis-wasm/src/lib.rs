@@ -88,6 +88,8 @@ struct SourceSelectionQuery {
     file: String,
     start_line: usize,
     end_line: usize,
+    start_column: Option<usize>,
+    end_column: Option<usize>,
     max_nodes: Option<usize>,
     hide_control: Option<bool>,
     hide_const: Option<bool>,
@@ -299,6 +301,11 @@ impl AnalysisSession {
         to_json(&self.design.analysis.source_map())
     }
 
+    pub fn source_ranges_for_bits_json(&self, bits_json: &str) -> Result<String, JsValue> {
+        let bits: Vec<u32> = parse_json(bits_json, "source net bits")?;
+        to_json(&self.design.analysis.source_ranges_for_bits(&bits))
+    }
+
     pub fn nodes_json(&self, ids_json: &str) -> Result<String, JsValue> {
         let ids: Vec<u32> = parse_json(ids_json, "node ids")?;
         if ids.len() > 200 {
@@ -325,6 +332,8 @@ impl AnalysisSession {
                     file: &query.file,
                     start_line: query.start_line,
                     end_line: query.end_line,
+                    start_column: query.start_column,
+                    end_column: query.end_column,
                 },
                 SourceSelectionOptions {
                     max_nodes: query.max_nodes.unwrap_or(400),

@@ -15,6 +15,7 @@ describe('parseSrcFragment', () => {
       startCol: 16,
       endLine: 12,
       endCol: 21,
+      exact: true,
     })
   })
 
@@ -25,6 +26,7 @@ describe('parseSrcFragment', () => {
       startCol: 1,
       endLine: 5,
       endCol: 9,
+      exact: true,
     })
   })
 
@@ -35,6 +37,7 @@ describe('parseSrcFragment', () => {
       startCol: 4,
       endLine: 7,
       endCol: 4,
+      exact: true,
     })
   })
 
@@ -119,5 +122,19 @@ describe('designSrcSpans', () => {
     expect(
       designSrcSpans('/opt/yosys/share/yosys/xilinx/lut_map.v:51.1-53.4', files),
     ).toEqual([])
+  })
+
+  it('keeps VHDL node provenance line-only', () => {
+    expect(
+      designSrcSpans('top.vhdl:12.7-14.19', [{ name: 'top.vhdl' }]),
+    ).toEqual([
+      {
+        file: 'top.vhdl',
+        startLine: 12,
+        startCol: 1,
+        endLine: 14,
+        endCol: 1,
+      },
+    ])
   })
 })

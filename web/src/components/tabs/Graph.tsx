@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ApiRequestError, getCone, getNetlist } from '../../api'
+import {
+  ApiRequestError,
+  getCone,
+  getNetlist,
+  getSourceRangesForBits,
+} from '../../api'
 import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
 import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
+import {
+  createLatestRequestQueue,
+  type LatestRequestQueue,
+} from '../../lib/latest'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
@@ -10,7 +19,10 @@ import {
   prewarmLayoutWorker,
   type LaidOutGraph,
 } from '../../lib/layout'
-import { sourceProbePresentation } from '../../lib/sourceProbe'
+import {
+  sourceProbePresentation,
+  sourceRangeProbeMessage,
+} from '../../lib/sourceProbe'
 import { controlDriverIds, controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
@@ -30,6 +42,7 @@ interface RelevantSubgraph {
   graph: Subgraph
   relevantIds: number[]
   overlayIds: number[]
+  highlightedBits: number[]
 }
 
 interface ExpansionState {
@@ -52,22 +65,31 @@ interface FullGraphCacheEntry {
   promise: Promise<Subgraph>
 }
 
+interface EdgeSourceProbe {
+  designId: string
+  bits: number[]
+}
+
 export function Graph({ active }: { active: boolean }) {
   const store = useStore(
     ({
       analysisState,
+      activeFileName,
       design,
       coneReq,
       graphOptions,
       clearGraphSelection,
+      highlightSources,
       highlightNodeSources,
       openControlCone,
     }) => ({
       analysisState,
+      activeFileName,
       design,
       coneReq,
       graphOptions,
       clearGraphSelection,
+      highlightSources,
       highlightNodeSources,
       openControlCone,
     }),
@@ -75,10 +97,12 @@ export function Graph({ active }: { active: boolean }) {
   )
   const {
     analysisState,
+    activeFileName,
     design,
     coneReq,
     graphOptions,
     clearGraphSelection,
+    highlightSources,
     highlightNodeSources,
     openControlCone,
   } = store
@@ -108,6 +132,34 @@ export function Graph({ active }: { active: boolean }) {
   // The full projection is independent of source/cone selection. Reusing this
   // single entry keeps non-focus selection changes free of netlist refetches.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
+  const currentDesignIdRef = useRef(design?.design_id)
+  currentDesignIdRef.current = design?.design_id
+  const highlightSourcesRef = useRef(highlightSources)
+  highlightSourcesRef.current = highlightSources
+  const edgeSourceProbeRef = useRef<LatestRequestQueue<EdgeSourceProbe> | null>(null)
+  if (!edgeSourceProbeRef.current) {
+    edgeSourceProbeRef.current = createLatestRequestQueue(
+      ({ designId, bits }: EdgeSourceProbe) => getSourceRangesForBits(designId, bits),
+      (response, request) => {
+        if (currentDesignIdRef.current !== request.designId) return
+        setError(sourceRangeProbeMessage(response.truncated, response.approximate))
+        highlightSourcesRef.current(
+          response.ranges.map((range) => ({
+            file: range.file,
+            startLine: range.start_line,
+            startCol: range.start_column ?? 1,
+            endLine: range.end_line,
+            endCol: range.end_column ?? range.start_column ?? 1,
+            exact: range.start_column != null && range.end_column != null,
+          })),
+        )
+      },
+      (cause, request) => {
+        if (currentDesignIdRef.current !== request.designId) return
+        setError(cause instanceof Error ? cause.message : String(cause))
+      },
+    )
+  }
 
   // ELK is a large module and this graph surface stays mounted across tabs.
   // Start its reusable worker once at mount so module startup can overlap the
@@ -156,11 +208,15 @@ export function Graph({ active }: { active: boolean }) {
     () => () => {
       fullGraphCache.current?.controller.abort()
       fullGraphCache.current = null
+      edgeSourceProbeRef.current?.cancel()
       for (const inFlight of expansionControllers.current) inFlight.abort()
       expansionControllers.current.clear()
     },
     [],
   )
+  useEffect(() => {
+    edgeSourceProbeRef.current?.cancel()
+  }, [active, activeFileName, coneReq, design?.design_id])
 
   const fetchFullGraph = useCallback(
     (requestDesignId: string) => {
@@ -272,7 +328,9 @@ export function Graph({ active }: { active: boolean }) {
         ? analyzeSourceInBrowser(requestDesignId, {
             file: request.file,
             startLine: request.startLine,
+            startColumn: request.startColumn,
             endLine: request.endLine,
+            endColumn: request.endColumn,
           }, {
             maxNodes: graphOptions.maxNodes,
             hideControl: graphOptions.hideControl,
@@ -284,6 +342,7 @@ export function Graph({ active }: { active: boolean }) {
             status: response.status,
             control: response.control,
             directIds: response.directIds,
+            directBits: response.directBits,
           }))
         : getCone(requestDesignId, {
             node: request.node,
@@ -304,9 +363,10 @@ export function Graph({ active }: { active: boolean }) {
             status: null,
             control: false,
             directIds: [],
+            directBits: [],
           }))
     fetchRelevantGraph
-      .then(({ graph, status, control, directIds }) => {
+      .then(({ graph, status, control, directIds, directBits }) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
         setSourceControl(control)
         const presentation = sourceProbePresentation(status)
@@ -323,6 +383,10 @@ export function Graph({ active }: { active: boolean }) {
                 ? directIds
                 : []),
             ],
+            highlightedBits:
+              request.kind === 'source' && presentation.showDirectSelection
+                ? directBits
+                : [],
           })
           if (status != null) setSelected(null)
         } else {
@@ -491,6 +555,13 @@ export function Graph({ active }: { active: boolean }) {
     }
     return ids
   }, [relevantRequestCurrent, relevantSubgraph?.overlayIds, sub])
+  const highlightedBits = useMemo(
+    () =>
+      new Set<number>(
+        relevantRequestCurrent ? (relevantSubgraph?.highlightedBits ?? []) : [],
+      ),
+    [relevantRequestCurrent, relevantSubgraph?.highlightedBits],
+  )
   const rootId =
     relevantRequestCurrent && coneReq?.kind === 'cone' ? coneReq.node : -1
 
@@ -596,14 +667,23 @@ export function Graph({ active }: { active: boolean }) {
   const onGraphSelect = useCallback(
     (node: GraphNode | null) => {
       if (!graphInteractive) return
+      edgeSourceProbeRef.current?.cancel()
       setSelected(node)
       highlightNodeSources(node?.src)
     },
     [graphInteractive, highlightNodeSources],
   )
+  const onEdgeSelect = useCallback(
+    (bits: number[]) => {
+      if (!designId || bits.length === 0) return
+      edgeSourceProbeRef.current?.schedule({ designId, bits })
+    },
+    [designId],
+  )
   const onControlSelect = useCallback(
     (control: NonNullable<GraphNode['controls']>[number]) => {
       if (!graphInteractive) return
+      edgeSourceProbeRef.current?.cancel()
       openControlCone({
         nodes: controlDriverIds(control),
         label: controlLabel(control),
@@ -637,10 +717,12 @@ export function Graph({ active }: { active: boolean }) {
             rootId={rootId}
             relevantIds={relevantIds}
             overlayIds={overlayIds}
+            highlightedBits={highlightedBits}
             extendOverlayToBoundaryNets={coneReq?.kind === 'source'}
             selectedId={graphInteractive ? (selected?.id ?? null) : null}
             interactive={graphInteractive}
             onSelect={onGraphSelect}
+            onEdgeSelect={onEdgeSelect}
             onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
             active={active}

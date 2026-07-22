@@ -11,7 +11,13 @@ export interface SelectionOptions {
 
 export function analyzeSourceInBrowser(
   _id: string,
-  selection: { file: string; startLine: number; endLine: number },
+  selection: {
+    file: string
+    startLine: number
+    startColumn?: number
+    endLine: number
+    endColumn?: number
+  },
   options: SelectionOptions,
   signal?: AbortSignal,
 ): Promise<SourceSelectionResult> {
@@ -19,7 +25,9 @@ export function analyzeSourceInBrowser(
     queryAnalysis<SourceSelectionResult>('source', {
       file: selection.file,
       start_line: selection.startLine,
+      start_column: selection.startColumn,
       end_line: selection.endLine,
+      end_column: selection.endColumn,
       max_nodes: options.maxNodes,
       hide_control: options.hideControl,
       hide_const: options.hideConst,

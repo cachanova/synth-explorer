@@ -4,7 +4,30 @@ import { buildSynthesizeRequest, type VivadoRequestTarget } from './synthesize'
 export interface SourceSelection {
   file: string
   startLine: number
+  startColumn: number
   endLine: number
+  endColumn: number
+}
+
+export function boundedSourceSelection(
+  selection: SourceSelection,
+  maxLines: number,
+): {
+  startLine: number
+  startColumn?: number
+  endLine: number
+  endColumn?: number
+  truncated: boolean
+} {
+  const endLine = Math.min(selection.endLine, selection.startLine + maxLines - 1)
+  const truncated = endLine !== selection.endLine
+  return {
+    startLine: selection.startLine,
+    startColumn: truncated ? undefined : selection.startColumn,
+    endLine,
+    endColumn: truncated ? undefined : selection.endColumn,
+    truncated,
+  }
 }
 
 export interface SourceProbeDebouncer {
@@ -62,10 +85,22 @@ export function normalizeSourceSelection(
   file: string,
   startLine: number,
   endLine: number,
+  startColumn = 1,
+  endColumn = startColumn,
 ): SourceSelection {
-  const start = Math.max(1, Math.min(startLine, endLine))
-  const end = Math.max(start, Math.max(startLine, endLine))
-  return { file, startLine: start, endLine: end }
+  const first = { line: Math.max(1, startLine), column: Math.max(1, startColumn) }
+  const last = { line: Math.max(1, endLine), column: Math.max(1, endColumn) }
+  const ordered =
+    first.line < last.line || (first.line === last.line && first.column <= last.column)
+      ? [first, last]
+      : [last, first]
+  return {
+    file,
+    startLine: ordered[0].line,
+    startColumn: ordered[0].column,
+    endLine: ordered[1].line,
+    endColumn: ordered[1].column,
+  }
 }
 
 /**
