@@ -89,10 +89,11 @@ The finalized index also owns reverse indexes for:
 - signal bit to exact or approximate mappings.
 
 Node reverse storage chooses a dense or compact representation based on the
-key distribution. Bit lookup likewise adapts to the retained mapping set:
-small sets can be scanned directly, while larger association sets use compact
-reverse indexes. These are storage choices only and do not change query
-semantics.
+key distribution. Bit lookup likewise adapts to the retained mapping set: it
+keeps compact reverse indexes when the mapping count is large or the retained
+association count is small, and scans the mappings when a small mapping set
+would require a disproportionately large reverse index. These are storage
+choices only and do not change query semantics.
 
 ## Source-to-graph selection
 
@@ -131,9 +132,10 @@ devolve into the entire connected graph.
 
 ## Graph-to-source queries
 
-Node source projection uses direct reverse lookup into canonical spans.
-Recovered display spans are combined with native source attribution without
-reparsing source strings.
+Recovered node source projection uses direct reverse lookup into canonical
+spans. `Analysis::node_ref` combines those recovered spans with the native
+`Graph::Node.src` compatibility field, splitting and deduplicating the native
+fragments before producing the existing `NodeRef.src` string.
 
 Signal-bit source projection accepts a bounded, deduplicated bit set and
 returns exact mappings before marking approximate matches. The index uses its
