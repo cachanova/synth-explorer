@@ -35,7 +35,9 @@ pub struct MemoryArray {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, DeepSizeOf)]
 pub struct Group {
     pub kind: GroupKind,
-    /// Sorted, always at least two distinct nodes.
+    /// Sorted distinct nodes. Structural-vector groups contain at least two;
+    /// a logical-memory group may wrap one physical primitive so its RTL shape
+    /// and identity survive mapping.
     pub members: Vec<NodeId>,
     /// `"sum[17:0]"` for contiguous bit indices, `"sum ×18"` otherwise.
     pub label: String,
@@ -111,6 +113,7 @@ impl GroupPartition {
     ) -> GroupPartition {
         let mut partition = GroupPartition::default();
         seed_memory_groups(&mut partition, graph, memories);
+        seed_memory_input_mirror_register_groups(&mut partition, graph);
         seed_register_groups(&mut partition, registers);
 
         let comb: Vec<NodeId> = graph
@@ -347,7 +350,7 @@ pub fn memory_arrays_from_source(
         .filter_map(|(memory, mut members)| {
             members.sort_unstable();
             members.dedup();
-            (members.len() >= 2).then_some(MemoryArray {
+            (!members.is_empty()).then_some(MemoryArray {
                 name: memory.name,
                 width: memory.width,
                 depth: memory.depth,
@@ -388,7 +391,7 @@ fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: V
             .members
             .retain(|id| !partition.group_of.contains_key(id));
         let members = memory.members;
-        if members.len() < 2 {
+        if members.is_empty() {
             continue;
         }
         let cell_types: BTreeSet<&str> = members
@@ -410,6 +413,108 @@ fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: V
             members,
             label: format!("{} [{}×{}]", memory.name, memory.depth, memory.width),
             cell_type,
+        });
+    }
+}
+
+/// iCE40 RAM mapping inserts one `SB_DFF` per write-data bit, but generated Q
+/// aliases describe them as internal RDATA signals and split the bank during
+/// endpoint-name grouping. The shared data nets are authoritative: DFF D pins
+/// that mirror every bit of one `SB_RAM*` WDATA input form one structural
+/// register vector. The wrapper's auxiliary DFF uses another net and remains
+/// separate.
+fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, graph: &Graph) {
+    let mut memory_bits: BTreeMap<NodeId, BTreeMap<u32, u32>> = BTreeMap::new();
+    let mut dff_sinks_by_net: BTreeMap<u32, BTreeSet<NodeId>> = BTreeMap::new();
+    for edge in &graph.edges {
+        if edge.control {
+            continue;
+        }
+        let Some(net) = edge.bit else {
+            continue;
+        };
+        let Some(target_type) = graph.nodes[edge.to as usize].cell_type.as_deref() else {
+            continue;
+        };
+        if edge.to_port.eq_ignore_ascii_case("WDATA")
+            && is_memory_type(target_type)
+            && target_type.to_ascii_uppercase().starts_with("SB_RAM")
+        {
+            memory_bits
+                .entry(edge.to)
+                .or_default()
+                .insert(net, edge.to_port_bit);
+        } else if edge.to_port.eq_ignore_ascii_case("D")
+            && target_type.to_ascii_uppercase().starts_with("SB_DFF")
+        {
+            dff_sinks_by_net.entry(net).or_default().insert(edge.to);
+        }
+    }
+
+    for (memory, bit_by_net) in memory_bits {
+        let mut sinks_by_bit: BTreeMap<u32, Option<NodeId>> = BTreeMap::new();
+        let memory_raw_name = &graph.nodes[memory as usize].raw_name;
+        for (net, bit) in &bit_by_net {
+            let Some(sinks) = dff_sinks_by_net.get(net) else {
+                continue;
+            };
+            for &sink_id in sinks {
+                let sink_raw_name = &graph.nodes[sink_id as usize].raw_name;
+                if !sink_raw_name
+                    .strip_prefix(memory_raw_name)
+                    .is_some_and(|suffix| suffix.starts_with("_RDATA"))
+                {
+                    continue;
+                }
+                sinks_by_bit
+                    .entry(*bit)
+                    .and_modify(|sink| {
+                        if *sink != Some(sink_id) {
+                            *sink = None;
+                        }
+                    })
+                    .or_insert(Some(sink_id));
+            }
+        }
+        let physical_bits: BTreeSet<u32> = bit_by_net.values().copied().collect();
+        if sinks_by_bit.len() < 2
+            || sinks_by_bit.len() != physical_bits.len()
+            || sinks_by_bit.values().any(Option::is_none)
+        {
+            continue;
+        }
+        let members: BTreeSet<NodeId> = sinks_by_bit.values().flatten().copied().collect();
+        if members.len() != sinks_by_bit.len()
+            || members.iter().any(|id| partition.group_of.contains_key(id))
+        {
+            continue;
+        }
+        let cell_types: BTreeSet<&str> = members
+            .iter()
+            .filter_map(|id| graph.nodes[*id as usize].cell_type.as_deref())
+            .collect();
+        if cell_types.len() != 1 {
+            continue;
+        }
+        let group_id = partition.groups.len() as GroupId;
+        for &member in &members {
+            partition.group_of.insert(member, group_id);
+        }
+        let bits: Vec<u32> = sinks_by_bit.keys().copied().collect();
+        let contiguous = bits
+            .first()
+            .copied()
+            .is_some_and(|low| bits.iter().copied().eq(low..low + bits.len() as u32));
+        let suffix = if contiguous {
+            format!("[{}:{}]", bits.last().copied().unwrap_or(0), bits[0])
+        } else {
+            format!(" ×{}", bits.len())
+        };
+        partition.groups.push(Group {
+            kind: GroupKind::Register,
+            members: members.into_iter().collect(),
+            label: format!("{}.WDATA{suffix}", graph.nodes[memory as usize].name),
+            cell_type: cell_types.first().copied().unwrap_or("SB_DFF").to_owned(),
         });
     }
 }
@@ -1148,6 +1253,127 @@ mod tests {
         assert_eq!(partition.groups[0].kind, GroupKind::Memory);
         assert_eq!(partition.groups[0].label, "memory [2×1]");
         assert_eq!(partition.groups[0].members, vec![0, 1]);
+    }
+
+    #[test]
+    fn singleton_physical_memory_keeps_its_logical_shape() {
+        let mut memory = comb_cell(0, "SB_RAM40_4K");
+        memory.seq = true;
+        memory.name = "memory.0.0".to_owned();
+        memory.raw_name = "memory.0.0".to_owned();
+        let graph = graph_from_nodes("top", vec![memory]);
+        let source_netlist = parse_value(serde_json::json!({
+            "modules": { "top": {
+                "attributes": { "top": "1" },
+                "memories": {
+                    "memory": { "width": 16, "start_offset": 0, "size": 64 }
+                }
+            } }
+        }))
+        .unwrap();
+
+        let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
+        let partition = GroupPartition::build(&graph, &[], memories);
+
+        assert_eq!(partition.groups.len(), 1);
+        assert_eq!(partition.groups[0].kind, GroupKind::Memory);
+        assert_eq!(partition.groups[0].members, vec![0]);
+        assert_eq!(partition.groups[0].label, "memory [64×16]");
+        assert_eq!(partition.groups[0].cell_type, "SB_RAM40_4K");
+    }
+
+    #[test]
+    fn ecp5_lutram_slices_stack_at_shallow_fifo_regression_depths() {
+        for (depth, primitive_count) in [(16, 4), (64, 16)] {
+            let nodes = (0..primitive_count)
+                .map(|id| {
+                    let mut node = comb_cell(id, "TRELLIS_DPR16X4");
+                    node.seq = true;
+                    node.name = format!("memory.0.{id}");
+                    node.raw_name = node.name.clone();
+                    node
+                })
+                .collect();
+            let graph = graph_from_nodes("top", nodes);
+            let source_netlist = parse_value(serde_json::json!({
+                "modules": { "top": {
+                    "attributes": { "top": "1" },
+                    "memories": {
+                        "memory": { "width": 16, "start_offset": 0, "size": depth }
+                    }
+                } }
+            }))
+            .unwrap();
+
+            let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
+            let partition = GroupPartition::build(&graph, &[], memories);
+
+            assert_eq!(partition.groups.len(), 1, "depth {depth}");
+            assert_eq!(partition.groups[0].kind, GroupKind::Memory, "depth {depth}");
+            assert_eq!(
+                partition.groups[0].members.len(),
+                primitive_count as usize,
+                "depth {depth}",
+            );
+            assert_eq!(partition.groups[0].label, format!("memory [{depth}×16]"),);
+            assert_eq!(partition.groups[0].cell_type, "TRELLIS_DPR16X4");
+        }
+    }
+
+    #[test]
+    fn ice40_ram_data_mirror_dffs_form_one_vector_without_the_auxiliary_dff() {
+        let mut memory = comb_cell(0, "SB_RAM40_4K");
+        memory.seq = true;
+        memory.name = "memory.0.0".to_owned();
+        memory.raw_name = "memory.0.0".to_owned();
+        let mut nodes = vec![memory];
+        for bit in 0..16 {
+            let mut dff = dff_cell(1 + bit, &format!("memory.0.0_RDATA_{bit}"));
+            dff.cell_type = Some("SB_DFF".to_owned());
+            nodes.push(dff);
+        }
+        let mut auxiliary = dff_cell(17, "memory.0.0_RDATA_aux");
+        auxiliary.cell_type = Some("SB_DFF".to_owned());
+        nodes.push(auxiliary);
+        for bit in 0..16 {
+            nodes.push(port_bit(
+                18 + bit,
+                "push_data",
+                bit as usize,
+                16,
+                PortDirection::Input,
+            ));
+        }
+        let mut graph = graph_from_nodes("top", nodes);
+        for bit in 0..16 {
+            for (to, to_port, to_port_bit) in [(0, "WDATA", bit), (1 + bit, "D", 0)] {
+                let edge_index = graph.edges.len();
+                graph.edges.push(Edge {
+                    from: 18 + bit,
+                    to,
+                    from_port: "push_data".to_owned(),
+                    to_port: to_port.to_owned(),
+                    to_port_bit,
+                    bit: Some(100 + bit),
+                    net_name: format!("push_data[{bit}]"),
+                    control: false,
+                });
+                graph.outgoing[(18 + bit) as usize].push(edge_index);
+                graph.incoming[to as usize].push(edge_index);
+            }
+        }
+
+        let partition = GroupPartition::build(&graph, &[], Vec::new());
+
+        let register = partition
+            .groups
+            .iter()
+            .find(|group| group.kind == GroupKind::Register)
+            .unwrap();
+        assert_eq!(register.members, (1..=16).collect::<Vec<_>>());
+        assert_eq!(register.label, "memory.0.0.WDATA[15:0]");
+        assert_eq!(register.cell_type, "SB_DFF");
+        assert!(!partition.group_of.contains_key(&17));
     }
 
     #[test]

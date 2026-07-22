@@ -144,7 +144,7 @@ const ARITH_GLYPHS: Record<string, string> = {
   REDUCE_XOR: '=1',
 }
 
-const MEMORY_HINT = /^(?:MEM(?:ORY|RD|WR|INIT)?(?:_V\d+)?|RAM|ROM|RAM(?:\d[A-Z0-9]*(?:_1)?|B\d[A-Z0-9]*|D\d[A-Z0-9]*|S\d[A-Z0-9]*)|URAM\d[A-Z0-9]*|DP16KD|SPRAM(?:\d[A-Z0-9]*)?|SB_(?:RAM|SPRAM)\d[A-Z0-9_]*|SRL(?:16E|C32E))$/i
+const MEMORY_HINT = /^(?:MEM(?:ORY|RD|WR|INIT)?(?:_V\d+)?|RAM|ROM|RAM(?:\d[A-Z0-9]*(?:_1)?|B\d[A-Z0-9]*|D\d[A-Z0-9]*|S\d[A-Z0-9]*)|URAM\d[A-Z0-9]*|DP16KD|TRELLIS_DPR16X4|SPRAM(?:\d[A-Z0-9]*)?|SB_(?:RAM|SPRAM)\d[A-Z0-9_]*|SRL(?:16E|C32E))$/i
 const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
 const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i

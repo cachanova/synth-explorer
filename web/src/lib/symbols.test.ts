@@ -108,7 +108,7 @@ describe('symbolKind', () => {
 
   it('recognizes memory primitives across supported synthesis families', () => {
     for (const primitive of [
-      '$mem_v2', 'RAM32M', 'RAM64X1S_1', 'RAMD32', 'RAMS64E', 'RAMB36E2', 'URAM288', 'DP16KD', 'SB_RAM40_4K',
+      '$mem_v2', 'RAM32M', 'RAM64X1S_1', 'RAMD32', 'RAMS64E', 'RAMB36E2', 'URAM288', 'DP16KD', 'TRELLIS_DPR16X4', 'SB_RAM40_4K',
       'SB_SPRAM256KA',
     ]) {
       expect(symbolKind(cell(primitive)), primitive).toBe('memory')

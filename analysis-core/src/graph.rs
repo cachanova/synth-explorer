@@ -832,6 +832,7 @@ pub fn is_memory_type(cell_type: &str) -> bool {
         || xilinx_ram
         || numbered_family(b"URAM", false)
         || cell_type.eq_ignore_ascii_case("DP16KD")
+        || cell_type.eq_ignore_ascii_case("TRELLIS_DPR16X4")
         || cell_type.eq_ignore_ascii_case("SPRAM")
         || numbered_family(b"SPRAM", false)
         || numbered_family(b"SB_RAM", true)
@@ -1020,6 +1021,7 @@ mod tests {
             "RAMB36E2",
             "URAM288",
             "DP16KD",
+            "TRELLIS_DPR16X4",
             "SB_RAM40_4K",
             "SB_SPRAM256KA",
             "SRLC32E",
@@ -1033,6 +1035,7 @@ mod tests {
             "RAM64_CONTROLLER",
             "URAM_CACHE",
             "SPRAM_CONTROLLER",
+            "TRELLIS_DPR_CONTROLLER",
             "SB_RAM_WRAPPER",
             "memory_wrapper",
             "my_ram",
