@@ -3,9 +3,15 @@ name: Release local app and Vivado bridge
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     tags:
       - 'vivado-bridge-v*'
       - 'local-v*'
+
+concurrency:
+  group: release-local-app-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -141,7 +147,7 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -151,10 +157,25 @@ jobs:
       - name: Download build artifacts
         run: gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir release-assets
 
-      - name: Publish release
+      - name: Publish rolling release for main
+        if: github.ref_type == 'branch'
+        run: |
+          release_tag="local-main-${GITHUB_SHA}"
+          gh release create "$release_tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Synth Explorer latest (${GITHUB_SHA::12})" \
+            --notes "Automatically built from main commit ${GITHUB_SHA}. This download matches the latest website source." \
+            --latest \
+            release-assets/*/*
+
+      - name: Publish versioned release
+        if: github.ref_type == 'tag'
         run: >-
           gh release create "$GITHUB_REF_NAME"
           --repo "$GITHUB_REPOSITORY"
+          --verify-tag
           --title "Synth Explorer ${GITHUB_REF_NAME}"
           --generate-notes
+          --latest=false
           release-assets/*/*

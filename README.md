@@ -48,6 +48,9 @@ menu.
 Install a current Chrome or Chromium browser, then use the download button in
 the website header or open the
 [latest release](https://github.com/cachanova/synth-explorer/releases/latest).
+Every push to `main` builds a complete rolling release from that exact commit,
+so this download tracks the latest website source once the build finishes.
+Versioned `local-v*` releases remain available as historical snapshots.
 Choose the archive for the computer that will run the application:
 
 | Computer | Release asset |
