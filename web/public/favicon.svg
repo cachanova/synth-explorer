@@ -12,6 +12,6 @@
     <path stroke-width="8" d="M46 40 Q86 100 46 160" />
     <circle stroke-width="8" cx="181" cy="100" r="9" />
   </g>
-  <circle stroke="#E9EFED" stroke-width="3.75" cx="122" cy="100" r="22.5" />
-  <circle fill="#E9EFED" cx="122" cy="100" r="11.25" />
+  <circle stroke="#E9EFED" stroke-width="4" cx="122" cy="100" r="24" />
+  <circle fill="#E9EFED" cx="122" cy="100" r="12" />
 </svg>

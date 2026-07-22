@@ -26,8 +26,8 @@ export function BrandMark({ className }: BrandMarkProps) {
         <circle strokeWidth="3.2" cx="185" cy="80" r="5" />
         <circle strokeWidth="2.6" cx="194" cy="63" r="3.4" />
       </g>
-      <circle stroke="var(--text)" strokeWidth="3" cx="122" cy="100" r="22.5" />
-      <circle fill="var(--text)" cx="122" cy="100" r="9.75" />
+      <circle stroke="var(--text)" strokeWidth="3.2" cx="122" cy="100" r="24" />
+      <circle fill="var(--text)" cx="122" cy="100" r="10.4" />
     </svg>
   )
 }

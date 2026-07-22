@@ -20,6 +20,6 @@
     <circle stroke-width="2.6" cx="194" cy="63" r="3.4" />
   </g>
   <!-- eye -->
-  <circle stroke="#dde1e6" stroke-width="3" cx="122" cy="100" r="22.5" />
-  <circle fill="#dde1e6" cx="122" cy="100" r="9.75" />
+  <circle stroke="#dde1e6" stroke-width="3.2" cx="122" cy="100" r="24" />
+  <circle fill="#dde1e6" cx="122" cy="100" r="10.4" />
 </svg>
