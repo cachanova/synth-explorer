@@ -38,8 +38,9 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 - `src/workers/analysis.worker.ts` owns the active Rust analysis session,
   including bounded source-selection projections.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
-- `src/lib/vivadoBridge.ts` is the only HTTP client and talks exclusively to
-  the explicitly started connector at `127.0.0.1`.
+- `src/lib/vivadoBridge.ts` is the only HTTP client. The hosted website uses the
+  explicitly started connector on `127.0.0.1:32123`; the packaged local
+  application uses its built-in connector on `127.0.0.1:32125`.
 - `public/precomputed/` contains content-addressed gate-mode artifacts for the
   default design and bundled examples; `src/data/precomputedManifest.json`
   limits which exact input keys may use them.

@@ -1,19 +1,11 @@
 import { useEffect, useState } from 'react'
+import { hostPlatform, type HostPlatform } from '../lib/hostPlatform'
+import { isLocalLauncher } from '../lib/localLauncher'
 import type { VivadoBridgeStatus } from '../types'
 
 const RELEASE_BASE = 'https://github.com/cachanova/synth-explorer/releases/latest/download'
 const LINUX_DOWNLOAD = `${RELEASE_BASE}/synth-explorer-vivado-bridge-linux-x86_64`
 const WINDOWS_DOWNLOAD = `${RELEASE_BASE}/synth-explorer-vivado-bridge-windows-x86_64.exe`
-
-type HostPlatform = 'linux' | 'windows' | 'macos' | 'other'
-
-function hostPlatform(): HostPlatform {
-  const agent = navigator.userAgent.toLowerCase()
-  if (agent.includes('windows')) return 'windows'
-  if (agent.includes('macintosh') || agent.includes('mac os')) return 'macos'
-  if (agent.includes('linux')) return 'linux'
-  return 'other'
-}
 
 function PlatformDownload({ platform }: { platform: HostPlatform }) {
   const note = platform === 'windows'
@@ -58,6 +50,11 @@ export function VivadoSetupDialog({
   onDisconnect: () => void
 }) {
   const [platform] = useState(hostPlatform)
+  const [localLauncher] = useState(isLocalLauncher)
+  const localMac = localLauncher && platform === 'macos'
+  const vivadoArgument = platform === 'windows'
+    ? '--vivado "C:\\Xilinx\\Vivado\\2025.2\\bin\\vivado.bat"'
+    : '--vivado /path/to/Vivado/bin/vivado'
   const [submitting, setSubmitting] = useState(false)
   const [failed, setFailed] = useState(false)
 
@@ -84,19 +81,19 @@ export function VivadoSetupDialog({
   }
 
   return (
-    <div className="vivado-setup-backdrop" role="presentation">
+    <div className="app-modal-backdrop" role="presentation">
       <section
-        className="vivado-setup-dialog"
+        className="app-modal-dialog"
         role="dialog"
         aria-modal="true"
         aria-labelledby="vivado-setup-title"
       >
-        <div className="vivado-setup-heading">
+        <div className="app-modal-heading">
           <div>
             <h2 id="vivado-setup-title">Use Vivado on this computer</h2>
             <p>Your RTL goes directly from this browser to Vivado. It is not sent to Synth Explorer servers.</p>
           </div>
-          <button type="button" className="vivado-setup-close" onClick={onClose} aria-label="Close">×</button>
+          <button type="button" className="app-modal-close" onClick={onClose} aria-label="Close">×</button>
         </div>
 
         {status ? (
@@ -112,23 +109,42 @@ export function VivadoSetupDialog({
           <>
             <ol className="vivado-steps">
               <li>
-                <strong>Install Vivado locally.</strong>
-                <span>Vivado must be installed and licensed on the machine that will run synthesis. A free AMD license is enough for supported devices.</span>
+                <strong>{localMac ? 'Run Vivado on a Linux or Windows host.' : 'Install Vivado locally.'}</strong>
+                <span>{localMac
+                  ? 'Vivado does not run natively on macOS. Start the released Synth Explorer connector on a licensed Vivado machine.'
+                  : 'Vivado must be installed and licensed on the machine that will run synthesis. A free AMD license is enough for supported devices.'}</span>
               </li>
-              <li>
-                <strong>Start the local connector.</strong>
-                <PlatformDownload platform={platform} />
-                <details>
-                  <summary>Vivado is not detected automatically</summary>
-                  <span>Load AMD's environment before starting the connector:</span>
-                  <code>source "/path/to/Vivado/settings64.sh" &amp;&amp; curl -fsSL https://synthexplorer.dev/vivado | sh</code>
-                  <span>Or provide the exact executable:</span>
-                  <code>curl -fsSL https://synthexplorer.dev/vivado | env VIVADO_BIN="/path/to/Vivado/bin/vivado" sh</code>
-                </details>
-              </li>
+              {localMac ? (
+                <li>
+                  <strong>Tunnel the remote connector to this Mac.</strong>
+                  <code>ssh -N -L 32125:127.0.0.1:32123 user@vivado-host</code>
+                  <span>Keep the connector and SSH tunnel running while Synth Explorer uses Vivado.</span>
+                </li>
+              ) : localLauncher ? (
+                <li>
+                  <strong>The connector is built into this launcher.</strong>
+                  <span>It checks for Vivado in the background when Synth Explorer starts. Wait for the Vivado version to appear in the launcher window. If Vivado was not found, restart after loading AMD's environment or pass <code>{vivadoArgument}</code>.</span>
+                </li>
+              ) : (
+                <li>
+                  <strong>Start the local connector.</strong>
+                  <PlatformDownload platform={platform} />
+                  <details>
+                    <summary>Vivado is not detected automatically</summary>
+                    <span>Load AMD's environment before starting the connector:</span>
+                    <code>source "/path/to/Vivado/settings64.sh" &amp;&amp; curl -fsSL https://synthexplorer.dev/vivado | sh</code>
+                    <span>Or provide the exact executable:</span>
+                    <code>curl -fsSL https://synthexplorer.dev/vivado | env VIVADO_BIN="/path/to/Vivado/bin/vivado" sh</code>
+                  </details>
+                </li>
+              )}
               <li>
                 <strong>Connect this browser.</strong>
-                <span>Leave the connector running, then connect below. Allow loopback-network access if your browser asks.</span>
+                <span>{localMac
+                  ? 'Connect below after the SSH tunnel is ready.'
+                  : localLauncher
+                  ? 'Connect below. Keep the launcher window open while Vivado is in use.'
+                  : 'Leave the connector running, then connect below. Allow loopback-network access if your browser asks.'}</span>
               </li>
             </ol>
 
@@ -137,11 +153,15 @@ export function VivadoSetupDialog({
             </button>
             {failed && (
               <p className="vivado-connect-error" role="alert">
-                Could not reach Vivado. Start the connector, then allow loopback access in your browser.
+                {localMac
+                  ? 'Could not reach Vivado through the SSH tunnel. Check the remote connector and tunnel, then try again.'
+                  : localLauncher
+                  ? 'Could not reach Vivado. If the launcher is still checking, wait and try again; otherwise restart it with Vivado configured.'
+                  : 'Could not reach Vivado. Start the connector, then allow loopback access in your browser.'}
               </p>
             )}
 
-            <details className="vivado-remote-instructions">
+            {!localLauncher && <details className="vivado-remote-instructions">
               <summary>Vivado runs on another computer</summary>
               <p>Start the connector on the licensed Linux or Windows Vivado host. It stays private on that machine's loopback interface.</p>
               <div className="vivado-remote-step">
@@ -157,7 +177,7 @@ export function VivadoSetupDialog({
                 <summary>The remote Vivado host runs Windows</summary>
                 <p>Download and run the Windows connector on that host, enable Windows OpenSSH Server, then use the same SSH tunnel command from the laptop.</p>
               </details>
-            </details>
+            </details>}
           </>
         )}
       </section>

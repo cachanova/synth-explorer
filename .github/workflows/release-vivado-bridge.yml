@@ -1,9 +1,11 @@
-name: Release Vivado bridge
+name: Release local app and Vivado bridge
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'vivado-bridge-v*'
+      - 'local-v*'
 
 permissions:
   contents: write
@@ -11,19 +13,38 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.asset }}
+    name: Build ${{ matrix.launcher_asset }}
     strategy:
       matrix:
         include:
           - os: ubuntu-24.04
             asset: synth-explorer-vivado-bridge-linux-x86_64
+            launcher_asset: synth-explorer-local-linux-x86_64.tar.gz
           - os: windows-2025
             asset: synth-explorer-vivado-bridge-windows-x86_64.exe
+            launcher_asset: synth-explorer-local-windows-x86_64.zip
+          - os: macos-15
+            launcher_asset: synth-explorer-local-macos-arm64.tar.gz
+          - os: macos-15-intel
+            launcher_asset: synth-explorer-local-macos-x86_64.tar.gz
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.11.1
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build local web application
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.97.1 --profile minimal
@@ -34,11 +55,15 @@ jobs:
 
       - name: Build Linux bridge
         if: runner.os == 'Linux'
-        run: cargo build --release --locked -p synth-explorer-vivado-bridge --target x86_64-unknown-linux-musl
+        run: cargo build --release --locked -p synth-explorer-vivado-bridge -p synth-explorer-launcher --target x86_64-unknown-linux-musl
 
       - name: Build Windows bridge
         if: runner.os == 'Windows'
-        run: cargo build --release --locked -p synth-explorer-vivado-bridge
+        run: cargo build --release --locked -p synth-explorer-vivado-bridge -p synth-explorer-launcher
+
+      - name: Build macOS launcher
+        if: runner.os == 'macOS'
+        run: cargo build --release --locked -p synth-explorer-launcher
 
       - name: Stage Linux binary
         if: runner.os == 'Linux'
@@ -47,6 +72,17 @@ jobs:
       - name: Generate Linux checksum
         if: runner.os == 'Linux'
         run: sha256sum ${{ matrix.asset }} > ${{ matrix.asset }}.sha256
+
+      - name: Package Linux local application
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p synth-explorer-local/web
+          cp target/x86_64-unknown-linux-musl/release/synth-explorer-launcher synth-explorer-local/synth-explorer
+          cp -R web/dist/. synth-explorer-local/web/
+          cp launcher/README.md synth-explorer-local/README.md
+          cp LICENSE synth-explorer-local/LICENSE
+          tar -czf ${{ matrix.launcher_asset }} synth-explorer-local
+          sha256sum ${{ matrix.launcher_asset }} > ${{ matrix.launcher_asset }}.sha256
 
       - name: Stage Windows binary
         if: runner.os == 'Windows'
@@ -60,7 +96,41 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.asset }}").Hash.ToLowerInvariant()
           "$hash  ${{ matrix.asset }}" | Set-Content -NoNewline "${{ matrix.asset }}.sha256"
 
-      - name: Upload release asset
+      - name: Package Windows local application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force synth-explorer-local/web | Out-Null
+          Copy-Item target/release/synth-explorer-launcher.exe synth-explorer-local/synth-explorer.exe
+          Copy-Item -Recurse web/dist/* synth-explorer-local/web/
+          Copy-Item launcher/README.md synth-explorer-local/README.md
+          Copy-Item LICENSE synth-explorer-local/LICENSE
+          Compress-Archive -Path synth-explorer-local -DestinationPath "${{ matrix.launcher_asset }}"
+          $hash = (Get-FileHash -Algorithm SHA256 "${{ matrix.launcher_asset }}").Hash.ToLowerInvariant()
+          "$hash  ${{ matrix.launcher_asset }}" | Set-Content -NoNewline "${{ matrix.launcher_asset }}.sha256"
+
+      - name: Package macOS local application
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p synth-explorer-local/web
+          cp target/release/synth-explorer-launcher synth-explorer-local/synth-explorer
+          cp -R web/dist/. synth-explorer-local/web/
+          cp launcher/README.md synth-explorer-local/README.md
+          cp LICENSE synth-explorer-local/LICENSE
+          tar -czf ${{ matrix.launcher_asset }} synth-explorer-local
+          shasum -a 256 ${{ matrix.launcher_asset }} > ${{ matrix.launcher_asset }}.sha256
+
+      - name: Upload launcher release asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.launcher_asset }}
+          path: |
+            ${{ matrix.launcher_asset }}
+            ${{ matrix.launcher_asset }}.sha256
+          if-no-files-found: error
+
+      - name: Upload bridge release asset
+        if: runner.os == 'Linux' || runner.os == 'Windows'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.asset }}
@@ -71,6 +141,7 @@ jobs:
 
   release:
     name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -84,6 +155,6 @@ jobs:
         run: >-
           gh release create "$GITHUB_REF_NAME"
           --repo "$GITHUB_REPOSITORY"
-          --title "Synth Explorer Vivado bridge ${GITHUB_REF_NAME#vivado-bridge-v}"
+          --title "Synth Explorer ${GITHUB_REF_NAME}"
           --generate-notes
           release-assets/*/*

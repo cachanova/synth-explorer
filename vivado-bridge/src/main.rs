@@ -1,9 +1,10 @@
 use anyhow::{Context, bail};
 use clap::Parser;
-use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use synth_explorer_vivado_bridge::{AppState, DEFAULT_BIND, app, preflight_vivado};
+use synth_explorer_vivado_bridge::{
+    AppState, DEFAULT_BIND, app, bridge_allowed_origins, preflight_vivado, resolve_vivado,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -34,11 +35,7 @@ async fn main() -> anyhow::Result<()> {
     let status = preflight_vivado(&vivado)
         .await
         .with_context(|| format!("Vivado preflight failed for {}", vivado.display()))?;
-    let mut origins = vec![
-        "https://synthexplorer.dev".to_owned(),
-        "https://www.synthexplorer.dev".to_owned(),
-    ];
-    origins.extend(args.additional_origins);
+    let origins = bridge_allowed_origins(args.additional_origins);
     let state = AppState::new(status.clone(), origins, vivado);
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
@@ -55,25 +52,4 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Vivado bridge server failed")?;
     Ok(())
-}
-
-fn resolve_vivado(explicit: Option<PathBuf>) -> PathBuf {
-    if let Some(vivado) = explicit {
-        return vivado;
-    }
-    if let Some(root) = env::var_os("XILINX_VIVADO") {
-        let candidate = PathBuf::from(root).join("bin").join(vivado_executable());
-        if candidate.exists() {
-            return candidate;
-        }
-    }
-    PathBuf::from(vivado_executable())
-}
-
-fn vivado_executable() -> &'static str {
-    if cfg!(windows) {
-        "vivado.bat"
-    } else {
-        "vivado"
-    }
 }

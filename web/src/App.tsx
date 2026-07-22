@@ -2,9 +2,11 @@ import { useCallback, useRef, useState } from 'react'
 import { Analytics } from '@vercel/analytics/react'
 import { SpeedInsights } from '@vercel/speed-insights/react'
 import { BrandMark } from './components/BrandMark'
+import { DownloadLauncher } from './components/DownloadLauncher'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
 import { SettingsMenu } from './components/SettingsMenu'
+import { isLocalLauncher } from './lib/localLauncher'
 
 const REPOSITORY_URL = 'https://github.com/cachanova/synth-explorer'
 
@@ -22,6 +24,7 @@ function GitHubMark() {
 }
 
 function App() {
+  const localLauncher = isLocalLauncher()
   const [leftWidth, setLeftWidth] = useState(46) // percent
   const [mobileWorkspace, setMobileWorkspace] = useState<'editor' | 'analysis'>(
     'editor',
@@ -49,6 +52,7 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
+        {!localLauncher && <DownloadLauncher />}
         <h1 className="logo" aria-label="Synth Explorer">
           <BrandMark className="brand-mark" />
           <span>
@@ -115,8 +119,12 @@ function App() {
           <RightPane />
         </div>
       </main>
-      <Analytics />
-      <SpeedInsights />
+      {!localLauncher && (
+        <>
+          <Analytics />
+          <SpeedInsights />
+        </>
+      )}
     </div>
   )
 }
