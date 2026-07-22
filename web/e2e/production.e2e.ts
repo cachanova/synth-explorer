@@ -1560,6 +1560,41 @@ test('Round-Robin internal declaration fallback keeps Focus local', async ({ pag
   expect(apiRequests).toEqual([])
 })
 
+test('focused output selections keep visible clock and reset wiring', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('round_robin_arbiter')
+    await page.getByLabel('Platform').selectOption('lut6')
+  })
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const editor = page.locator('.cm-content')
+  await page
+    .locator('.cm-line', { hasText: /output logic \[NUM_REQUESTERS-1:0\]\s+grant,/ })
+    .click()
+  await editor.press('End')
+  for (let offset = 0; offset <= 'grant'.length; offset += 1) {
+    await editor.press('ArrowLeft')
+  }
+
+  await expect(page.getByLabel('Focus')).toBeEnabled({ timeout: 15_000 })
+  await expect(page.getByLabel('Focus')).toBeChecked()
+  await expect(page.locator('.graph-stage-wrap')).toHaveAttribute('data-focus', 'on')
+  await page.getByLabel('hide control').uncheck()
+  await expect(page.locator('.g-node-body[data-node-tooltip="clk"]')).toBeVisible()
+  await expect(page.locator('.g-node-body[data-node-tooltip="rst"]')).toBeVisible()
+  await expect
+    .poll(() =>
+      page.locator('.g-edge.control').evaluateAll((paths) =>
+        paths.reduce(
+          (count, path) => count + Number(path.getAttribute('data-edge-count') ?? 0),
+          0,
+        ),
+      ),
+    )
+    .toBeGreaterThanOrEqual(2)
+})
+
 test('same-line declarations carry column and exact-net identity', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []
