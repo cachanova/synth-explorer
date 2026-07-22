@@ -40,8 +40,7 @@ function PlatformInstructions({ platform }: { platform: HostPlatform }) {
   if (platform === 'macos') {
     return (
       <ol className="download-launcher-steps">
-        <li>In <strong>About This Mac</strong>, choose Apple Silicon when Chip begins with Apple; otherwise choose Intel.</li>
-        <li>Download and extract the matching macOS archive.</li>
+        <li>Download and extract the Apple silicon or Intel archive.</li>
         <li>Try to open <code>synth-explorer</code> once. Current builds are not signed or notarized.</li>
         <li>Open <strong>System Settings → Privacy &amp; Security</strong>, choose <strong>Open Anyway</strong>, then confirm <strong>Open</strong>.</li>
         <li>Keep the terminal window open while using Synth Explorer.</li>

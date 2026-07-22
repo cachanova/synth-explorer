@@ -71,7 +71,8 @@ test('offers both macOS architectures and remote Vivado instructions', async ({
     'href',
     `${RELEASE_DOWNLOAD}/synth-explorer-local-macos-x86_64.tar.gz`,
   )
-  await expect(dialog).toContainText('About This Mac')
+  await expect(dialog).toContainText('Apple silicon or Intel archive')
+  await expect(dialog).not.toContainText('About This Mac')
   await expect(dialog).toContainText('System Settings → Privacy & Security')
   await expect(dialog).toContainText('Open Anyway')
   await expect(dialog).toContainText(
