@@ -2442,6 +2442,79 @@ impl Analysis {
             }
         }
 
+        // A focused data cone stops at sequential boundaries, but visible
+        // registers still need their clock/reset/enable wiring when controls
+        // are enabled. Attach one control hop without opening a second data
+        // traversal through the boundary.
+        if !options.hide_control {
+            let mut sequential_nodes: Vec<NodeId> = seen
+                .iter()
+                .copied()
+                .filter(|id| {
+                    graph.nodes[*id as usize].seq
+                        && !(options.root_port.is_some() && included_roots.contains(id))
+                })
+                .collect();
+            sequential_nodes.sort_unstable();
+            'controls: for id in sequential_nodes {
+                for edge_idx in graph.incoming[id as usize].iter().copied() {
+                    if edge_set.contains(&edge_idx) {
+                        continue;
+                    }
+                    if let Some(limit) = work_limits.max_examined_edges
+                        && examined_edges >= limit
+                    {
+                        truncated = true;
+                        break 'controls;
+                    }
+                    examined_edges += 1;
+                    let edge = &graph.edges[edge_idx];
+                    if !is_labeled_control_edge(graph, edge)
+                        || should_hide_edge(graph, edge, false, options.hide_const)
+                    {
+                        continue;
+                    }
+                    let key = (
+                        edge.from,
+                        edge.to,
+                        edge.from_port.clone(),
+                        edge.to_port.clone(),
+                    );
+                    if raw_edges_per_connection.get(&key).copied().unwrap_or(0)
+                        >= MAX_FULL_GROUP_MEMBERS
+                    {
+                        truncated = true;
+                        continue;
+                    }
+                    if work_limits
+                        .max_raw_edges
+                        .is_some_and(|limit| edge_set.len() >= limit)
+                    {
+                        truncated = true;
+                        break 'controls;
+                    }
+                    if !seen.contains(&edge.from) {
+                        if work_limits
+                            .max_raw_nodes
+                            .is_some_and(|limit| seen.len() >= limit)
+                        {
+                            truncated = true;
+                            continue;
+                        }
+                        let unit = unit_id(grouping, base, edge.from);
+                        if !seen_units.contains(&unit) && seen_units.len() >= cap {
+                            truncated = true;
+                            continue;
+                        }
+                        seen_units.insert(unit);
+                        seen.insert(edge.from);
+                    }
+                    *raw_edges_per_connection.entry(key).or_default() += 1;
+                    edge_set.insert(edge_idx);
+                }
+            }
+        }
+
         let subgraph = self.subgraph_from_sets(
             graph,
             &seen,
@@ -8381,6 +8454,143 @@ mod tests {
                 .map(|node| node.node.id)
                 .collect::<Vec<_>>(),
             vec![0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn source_selection_keeps_visible_controls_for_dependency_registers() {
+        let mut register = combinational_node(2, "$dff", None);
+        register.seq = true;
+        register.name = "registered".to_owned();
+        let mut output = port_node(3, "y", PortDirection::Output);
+        output.src = Some("top.sv:5".to_owned());
+        let nodes = vec![
+            port_node(0, "a", PortDirection::Input),
+            combinational_node(1, "$and", None),
+            register,
+            output,
+            port_node(4, "clk", PortDirection::Input),
+            port_node(5, "rst", PortDirection::Input),
+        ];
+        let connections = [
+            (0, 1, "a", "A", false),
+            (2, 1, "Q", "B", false),
+            (1, 3, "Y", "y", false),
+            (4, 2, "clk", "C", true),
+            (5, 2, "rst", "R", true),
+        ];
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); nodes.len()];
+        let mut incoming = vec![Vec::new(); nodes.len()];
+        for (from, to, from_port, to_port, control) in connections {
+            let index = edges.len();
+            edges.push(Edge {
+                from,
+                to,
+                from_port: from_port.to_owned(),
+                to_port: to_port.to_owned(),
+                to_port_bit: 0,
+                bit: Some(index as u32),
+                net_name: from_port.to_owned(),
+                control,
+            });
+            outgoing[from as usize].push(index);
+            incoming[to as usize].push(index);
+        }
+        let graph = graph_from_parts(
+            "registered_output_controls",
+            nodes,
+            edges,
+            outgoing,
+            incoming,
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.set_source_probe_hints(vec![SourceProbeHint {
+            file: "top.sv".to_owned(),
+            start_line: 5,
+            start_column: None,
+            end_line: 5,
+            end_column: None,
+            direction: SourceProbeDirection::Fanin,
+            kind: SourceProbeHintKind::OutputPort,
+        }]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: None,
+                    end_column: None,
+                },
+                SourceSelectionOptions {
+                    hide_control: false,
+                    ..selection_options()
+                },
+            )
+            .unwrap();
+
+        assert!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .any(|node| node.node.name == "clk")
+        );
+        assert!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .any(|node| node.node.name == "rst")
+        );
+        assert!(
+            result
+                .graph
+                .edges
+                .iter()
+                .any(|edge| { edge.to == 2 && edge.to_port == "C" && edge.control == Some(true) })
+        );
+        assert!(
+            result
+                .graph
+                .edges
+                .iter()
+                .any(|edge| { edge.to == 2 && edge.to_port == "R" && edge.control == Some(true) })
+        );
+
+        let hidden = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: None,
+                    end_column: None,
+                },
+                selection_options(),
+            )
+            .unwrap();
+        assert!(
+            hidden
+                .graph
+                .nodes
+                .iter()
+                .all(|node| !matches!(node.node.name.as_str(), "clk" | "rst"))
+        );
+        assert!(
+            hidden
+                .graph
+                .edges
+                .iter()
+                .all(|edge| edge.control != Some(true))
         );
     }
 
