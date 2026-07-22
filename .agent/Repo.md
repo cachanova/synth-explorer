@@ -14,8 +14,9 @@ interactive circuit explorer, not a full-schematic renderer.
 
 - `analysis-core/`: canonical Rust netlist parser and graph analysis.
 - `analysis-wasm/`: browser bindings for the Rust core.
+- `layout-wasm/`: browser bindings for the pinned SchemWeave layout engine.
 - `web/`: the complete static product, including Yosys/analysis workers,
-  bundled examples, React, TypeScript, Vite, and the elkjs cone viewer.
+  bundled examples, React, TypeScript, Vite, and the SchemWeave cone viewer.
 - `calibration/`: local-only native Yosys and optional Vivado tooling.
 - `docs/ARCHITECTURE.md`: architecture and design rationale.
 
@@ -83,7 +84,7 @@ git --git-dir=/home/leela/code/synth_explorer/repo.git worktree add \
 - Use compact numeric indices on hot paths. Do not clone the graph per request.
 - Bound cone and path responses by depth and size and return truncation flags.
 - The frontend renders requested cones, not the full netlist by default. Run
-  elkjs in a worker, cap node counts, and ask the user to narrow oversized views.
+  SchemWeave WASM in a worker, cap node counts, and ask the user to narrow oversized views.
 - Give Yosys subprocesses timeouts and output-size limits. Fail cleanly on a hung
   or oversized synthesis.
 

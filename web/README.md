@@ -1,9 +1,9 @@
 # Synth Explorer web application
 
 This package is the entire production application. It contains the React UI,
-CodeMirror editor, browser-local GHDL, Yosys, and Rust analysis workers, bundled
-examples, IndexedDB cache, elkjs graph viewer, and the optional client for the
-loopback-only local Vivado bridge.
+CodeMirror editor, browser-local GHDL, Yosys, Rust analysis, and SchemWeave
+layout workers, bundled examples, IndexedDB cache, and the optional client for
+the loopback-only local Vivado bridge.
 
 ## Development
 
@@ -37,6 +37,8 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
   `public/ghdl/` before Yosys runs.
 - `src/workers/analysis.worker.ts` owns the active Rust analysis session,
   including bounded source-selection projections.
+- `src/workers/schemweave.worker.ts` owns layered schematic placement and
+  orthogonal routing in Rust/WebAssembly.
 - `src/lib/designCache.ts` stores bounded per-origin synthesis artifacts.
 - `src/lib/vivadoBridge.ts` is the only HTTP client and talks exclusively to
   the explicitly started connector at `127.0.0.1`.

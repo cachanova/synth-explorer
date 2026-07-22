@@ -109,7 +109,7 @@ export function Graph({ active }: { active: boolean }) {
   // single entry keeps non-focus selection changes free of netlist refetches.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
 
-  // ELK is a large module and this graph surface stays mounted across tabs.
+  // SchemWeave is a WASM module and this graph surface stays mounted across tabs.
   // Start its reusable worker once at mount so module startup can overlap the
   // editor's initial idle/debounce window instead of the first real layout.
   useEffect(() => {
@@ -407,7 +407,7 @@ export function Graph({ active }: { active: boolean }) {
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    // Every expanded projection gets a fresh optimal ELK layout. Reusing the
+    // Every expanded projection gets a fresh SchemWeave layout. Reusing the
     // previous coordinates makes a focused subset inherit the full schematic's
     // spacing and leaves large, awkward gaps. GraphView separately preserves a
     // retained node's viewport position so the relayout does not feel like a jump.
