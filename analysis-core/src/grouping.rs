@@ -465,7 +465,7 @@ fn seed_structural_memory_groups(
     candidates.sort_by_key(|members| members[0]);
 
     for members in candidates {
-        if !control_signatures_match(graph, interner, &members)
+        if !storage_contracts_match(graph, interner, &members)
             || !bit_correspondence_holds(
                 graph,
                 &partition.group_of,
@@ -496,10 +496,47 @@ fn seed_structural_memory_groups(
     }
 }
 
-/// A stacked memory vector has one shared control contract. Exact source-node,
-/// output-port, and net-bit identity keeps lanes with different clocks or
-/// enables separate even though generic vector refinement ignores controls.
-fn control_signatures_match(graph: &Graph, interner: &mut Interner, members: &[NodeId]) -> bool {
+fn is_addressable_memory_address_port(port: &str) -> bool {
+    ["A0", "A1", "A2", "A3", "A4"]
+        .iter()
+        .any(|address| port.eq_ignore_ascii_case(address))
+}
+
+fn is_addressable_memory_address_edge(graph: &Graph, edge_idx: usize) -> bool {
+    let edge = &graph.edges[edge_idx];
+    is_addressable_memory_address_port(&edge.to_port)
+        && graph.nodes[edge.to as usize]
+            .cell_type
+            .as_deref()
+            .is_some_and(is_addressable_sequential_type)
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value
+        .get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn ends_with_ignore_ascii_case(value: &str, suffix: &str) -> bool {
+    value
+        .len()
+        .checked_sub(suffix.len())
+        .and_then(|start| value.get(start..))
+        .is_some_and(|tail| tail.eq_ignore_ascii_case(suffix))
+}
+
+fn is_storage_polarity_parameter(key: &str) -> bool {
+    ends_with_ignore_ascii_case(key, "_POLARITY")
+        || (starts_with_ignore_ascii_case(key, "IS_")
+            && ends_with_ignore_ascii_case(key, "_INVERTED"))
+}
+
+/// A stacked memory vector has one shared storage contract. Exact source-node,
+/// output-port, and net-bit identity keeps lanes with different clocks,
+/// enables, or address buses separate. Retained clock/control polarity
+/// parameters must also agree. Generic vector refinement deliberately ignores
+/// these broadcast signals so it can focus on the one-to-one data lanes.
+fn storage_contracts_match(graph: &Graph, interner: &mut Interner, members: &[NodeId]) -> bool {
     fn signature(
         graph: &Graph,
         interner: &mut Interner,
@@ -509,7 +546,7 @@ fn control_signatures_match(graph: &Graph, interner: &mut Interner, members: &[N
             .iter()
             .filter_map(|&edge_idx| {
                 let edge = &graph.edges[edge_idx];
-                edge.control.then(|| {
+                (edge.control || is_addressable_memory_address_edge(graph, edge_idx)).then(|| {
                     (
                         interner.id(&edge.to_port),
                         edge.from,
@@ -524,12 +561,24 @@ fn control_signatures_match(graph: &Graph, interner: &mut Interner, members: &[N
         controls
     }
 
+    fn polarity_parameters_match(graph: &Graph, left: NodeId, right: NodeId) -> bool {
+        let parameters = |member: NodeId| {
+            graph.nodes[member as usize]
+                .params
+                .iter()
+                .filter(|(key, _)| is_storage_polarity_parameter(key))
+        };
+        parameters(left).eq(parameters(right))
+    }
+
     let Some((&first, rest)) = members.split_first() else {
         return false;
     };
     let expected = signature(graph, interner, first);
-    rest.iter()
-        .all(|&member| signature(graph, interner, member) == expected)
+    rest.iter().all(|&member| {
+        signature(graph, interner, member) == expected
+            && polarity_parameters_match(graph, first, member)
+    })
 }
 
 fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: Vec<MemoryArray>) {
@@ -819,7 +868,7 @@ fn signature(
     let mut incoming = Vec::with_capacity(graph.incoming[id as usize].len());
     for &edge_idx in &graph.incoming[id as usize] {
         let edge = &graph.edges[edge_idx];
-        if edge.control {
+        if edge.control || is_addressable_memory_address_edge(graph, edge_idx) {
             continue;
         }
         incoming.push((
@@ -920,7 +969,7 @@ fn bit_correspondence_holds(
         ] {
             for &edge_idx in edge_indices {
                 let edge = &graph.edges[edge_idx];
-                if edge.control {
+                if edge.control || is_addressable_memory_address_edge(graph, edge_idx) {
                     continue;
                 }
                 let neighbor = if is_incoming { edge.from } else { edge.to };
@@ -1143,7 +1192,7 @@ mod tests {
             from_port: from_port.to_owned(),
             to_port: to_port.to_owned(),
             to_port_bit: 0,
-            bit: Some(idx as u32),
+            bit: Some(from),
             net_name: net.to_owned(),
             control: false,
         });
@@ -1166,12 +1215,29 @@ mod tests {
             from_port: from_port.to_owned(),
             to_port: to_port.to_owned(),
             to_port_bit: 0,
-            bit: Some(idx as u32),
+            bit: Some(from),
             net_name: net.to_owned(),
             control: true,
         });
         graph.outgoing[from as usize].push(idx);
         graph.incoming[to as usize].push(idx);
+    }
+
+    fn append_input(graph: &mut Graph, name: &str) -> NodeId {
+        let id = graph.nodes.len() as NodeId;
+        graph
+            .nodes
+            .push(port_bit(id, name, 0, 1, PortDirection::Input));
+        graph.outgoing.push(Vec::new());
+        graph.incoming.push(Vec::new());
+        id
+    }
+
+    fn has_memory_group(graph: &Graph) -> bool {
+        GroupPartition::build(graph, &[], Vec::new())
+            .groups
+            .iter()
+            .any(|group| group.kind == GroupKind::Memory)
     }
 
     fn register_group(name: &str, members: &[(usize, NodeId)]) -> RegisterGroup {
@@ -1518,45 +1584,104 @@ mod tests {
     }
 
     #[test]
-    fn srl_lanes_with_different_controls_do_not_form_a_memory_vector() {
+    fn srl_lanes_with_different_clocks_do_not_form_a_memory_vector() {
         let mut graph = srl_vector_graph("SRL16E", 2);
-        let clk0 = graph.nodes.len() as NodeId;
-        graph
-            .nodes
-            .push(port_bit(clk0, "clk0", 0, 1, PortDirection::Input));
-        graph.outgoing.push(Vec::new());
-        graph.incoming.push(Vec::new());
-        let clk1 = graph.nodes.len() as NodeId;
-        graph
-            .nodes
-            .push(port_bit(clk1, "clk1", 0, 1, PortDirection::Input));
-        graph.outgoing.push(Vec::new());
-        graph.incoming.push(Vec::new());
-        let en0 = graph.nodes.len() as NodeId;
-        graph
-            .nodes
-            .push(port_bit(en0, "en0", 0, 1, PortDirection::Input));
-        graph.outgoing.push(Vec::new());
-        graph.incoming.push(Vec::new());
-        let en1 = graph.nodes.len() as NodeId;
-        graph
-            .nodes
-            .push(port_bit(en1, "en1", 0, 1, PortDirection::Input));
-        graph.outgoing.push(Vec::new());
-        graph.incoming.push(Vec::new());
+        let clk0 = append_input(&mut graph, "clk0");
+        let clk1 = append_input(&mut graph, "clk1");
+        let en = append_input(&mut graph, "en");
         control_link(&mut graph, clk0, 2, "clk0", "CLK", "clk0");
         control_link(&mut graph, clk1, 3, "clk1", "CLK", "clk1");
+        control_link(&mut graph, en, 2, "en", "CE", "en");
+        control_link(&mut graph, en, 3, "en", "CE", "en");
+
+        assert!(!has_memory_group(&graph));
+    }
+
+    #[test]
+    fn srl_lanes_with_different_enables_do_not_form_a_memory_vector() {
+        let mut graph = srl_vector_graph("SRL16E", 2);
+        let clk = append_input(&mut graph, "clk");
+        let en0 = append_input(&mut graph, "en0");
+        let en1 = append_input(&mut graph, "en1");
+        control_link(&mut graph, clk, 2, "clk", "CLK", "clk");
+        control_link(&mut graph, clk, 3, "clk", "CLK", "clk");
         control_link(&mut graph, en0, 2, "en0", "CE", "en0");
         control_link(&mut graph, en1, 3, "en1", "CE", "en1");
 
-        let partition = GroupPartition::build(&graph, &[], Vec::new());
+        assert!(!has_memory_group(&graph));
+    }
 
-        assert!(
-            partition
-                .groups
-                .iter()
-                .all(|group| group.kind != GroupKind::Memory)
-        );
+    #[test]
+    fn srl_lanes_with_different_clock_polarities_do_not_form_a_memory_vector() {
+        let mut graph = srl_vector_graph("SRL16E", 2);
+        let clk = append_input(&mut graph, "clk");
+        let en = append_input(&mut graph, "en");
+        for member in [2, 3] {
+            control_link(&mut graph, clk, member, "clk", "CLK", "clk");
+            control_link(&mut graph, en, member, "en", "CE", "en");
+        }
+        graph.nodes[2]
+            .params
+            .insert("IS_CLK_INVERTED".to_owned(), "0".to_owned());
+        graph.nodes[3]
+            .params
+            .insert("IS_CLK_INVERTED".to_owned(), "1".to_owned());
+
+        assert!(!has_memory_group(&graph));
+    }
+
+    #[test]
+    fn srl_lanes_with_independent_addresses_do_not_form_a_memory_vector() {
+        let mut graph = srl_vector_graph("SRL16E", 2);
+        let clk = append_input(&mut graph, "clk");
+        let en = append_input(&mut graph, "en");
+        for member in [2, 3] {
+            control_link(&mut graph, clk, member, "clk", "CLK", "clk");
+            control_link(&mut graph, en, member, "en", "CE", "en");
+        }
+        for address_bit in 0..4 {
+            for lane in 0..2 {
+                let name = format!("a{address_bit}_{lane}");
+                let address = append_input(&mut graph, "address");
+                link(
+                    &mut graph,
+                    address,
+                    2 + lane,
+                    &name,
+                    &format!("A{address_bit}"),
+                    &name,
+                );
+            }
+        }
+
+        assert!(!has_memory_group(&graph));
+    }
+
+    #[test]
+    fn srl_lanes_with_shared_address_bus_form_a_memory_vector() {
+        let mut graph = srl_vector_graph("SRL16E", 2);
+        let clk = append_input(&mut graph, "clk");
+        let en = append_input(&mut graph, "en");
+        for member in [2, 3] {
+            control_link(&mut graph, clk, member, "clk", "CLK", "clk");
+            control_link(&mut graph, en, member, "en", "CE", "en");
+        }
+        for address_bit in 0..4 {
+            let name = format!("address[{address_bit}]");
+            let address = append_input(&mut graph, "address");
+            for member in [2, 3] {
+                link(
+                    &mut graph,
+                    address,
+                    member,
+                    "address",
+                    &format!("A{address_bit}"),
+                    &name,
+                );
+            }
+        }
+
+        assert!(has_memory_group(&graph));
     }
 
     #[test]
