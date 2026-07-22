@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      - name: Verify frozen provenance behavior
+        run: cargo bench --locked -p synth-explorer-analysis --bench provenance -- --test
+
       - name: Run Clippy
         run: cargo clippy --workspace --locked --all-targets -- -D warnings
 

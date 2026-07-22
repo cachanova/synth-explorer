@@ -328,7 +328,6 @@ impl AnalysisSession {
             .analysis
             .source_selection_with_fallback(
                 &self.design.graph,
-                &self.design.source_index,
                 &self.design.grouping,
                 SourceSelectionRange {
                     file: &query.file,
@@ -578,6 +577,142 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn assert_json_keys_in_order(raw: &str, keys: &[&str]) {
+        let mut cursor = 0;
+        for key in keys {
+            let needle = format!(r#""{key}":"#);
+            let offset = raw[cursor..]
+                .find(&needle)
+                .unwrap_or_else(|| panic!("missing JSON key {key} in {raw}"));
+            cursor += offset + needle.len();
+        }
+    }
+
+    fn json_digest(raw: &str) -> u64 {
+        raw.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn provenance_json_preserves_casing_omission_and_deterministic_order() {
+        let session = session("gates", "generic");
+        let source_map_raw = session
+            .source_map_json()
+            .expect("source map query succeeds");
+        assert_json_keys_in_order(
+            &source_map_raw,
+            &["files", "by_line", "ranges", "truncated"],
+        );
+        let source_map: serde_json::Value =
+            serde_json::from_str(&source_map_raw).expect("source map JSON parses");
+        assert_eq!(
+            source_map["files"],
+            serde_json::json!(["round_robin_arbiter.sv"])
+        );
+        let ranges = source_map["ranges"]
+            .as_array()
+            .expect("source ranges are an array");
+        assert!(!ranges.is_empty());
+        assert!(ranges.iter().all(|range| {
+            range.get("file").is_some()
+                && range.get("start_line").is_some()
+                && range.get("end_line").is_some()
+                && range.get("node_ids").is_some()
+                && range.get("mapping_incomplete").is_some()
+                && range.get("signal_bits").is_none()
+                && range.get("approximate_signal_bits").is_none()
+        }));
+        let signal_range = ranges
+            .iter()
+            .find(|range| {
+                range["signalBits"]
+                    .as_array()
+                    .is_some_and(|bits| !bits.is_empty())
+            })
+            .expect("fixture has an exact signal-bit range");
+        let signal_bit = signal_range["signalBits"][0]
+            .as_u64()
+            .expect("signal bit is numeric");
+        let locations = ranges
+            .iter()
+            .map(|range| {
+                (
+                    range["file"].as_str().expect("range file").to_owned(),
+                    range["start_line"].as_u64().expect("range start line"),
+                    range["end_line"].as_u64().expect("range end line"),
+                    range.get("start_column").and_then(|value| value.as_u64()),
+                    range.get("end_column").and_then(|value| value.as_u64()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(locations.windows(2).all(|pair| pair[0] <= pair[1]));
+
+        let reverse_raw = session
+            .source_ranges_for_bits_json(&serde_json::json!([signal_bit, signal_bit]).to_string())
+            .expect("reverse source query succeeds");
+        assert_json_keys_in_order(&reverse_raw, &["ranges", "truncated", "approximate"]);
+        let reverse: serde_json::Value =
+            serde_json::from_str(&reverse_raw).expect("reverse source JSON parses");
+        let reverse_ranges = reverse["ranges"]
+            .as_array()
+            .expect("reverse ranges are an array");
+        assert!(!reverse_ranges.is_empty());
+        assert!(reverse_ranges.iter().all(|range| {
+            range["node_ids"] == serde_json::json!([])
+                && range.get("signalBits").is_none()
+                && range.get("approximateSignalBits").is_none()
+        }));
+
+        let selection_raw = session
+            .source_selection_json(
+                &serde_json::json!({
+                    "file": "round_robin_arbiter.sv",
+                    "start_line": 15,
+                    "end_line": 15,
+                    "start_column": 30,
+                    "end_column": 30,
+                    "fallback_start_column": 1,
+                    "fallback_end_column": 43
+                })
+                .to_string(),
+            )
+            .expect("source selection query succeeds");
+        assert_json_keys_in_order(
+            &selection_raw,
+            &["status", "control", "directIds", "directBits", "graph"],
+        );
+        let selection: serde_json::Value =
+            serde_json::from_str(&selection_raw).expect("source selection JSON parses");
+        assert!(selection.get("directIds").is_some());
+        assert!(selection.get("directBits").is_some());
+        assert!(selection.get("direct_ids").is_none());
+        assert!(selection.get("direct_bits").is_none());
+
+        let nodes_raw = session
+            .nodes_json("[0]")
+            .expect("node source query succeeds");
+        let nodes: serde_json::Value = serde_json::from_str(&nodes_raw).expect("node JSON parses");
+        assert_eq!(nodes["nodes"].as_array().map(Vec::len), Some(1));
+        assert!(nodes["nodes"][0].get("src").is_some());
+
+        assert_eq!(
+            [
+                json_digest(&source_map_raw),
+                json_digest(&reverse_raw),
+                json_digest(&selection_raw),
+                json_digest(&nodes_raw),
+            ],
+            [
+                0x46a2_3292_4aa2_e2bd,
+                0xfd05_2ab5_cbed_6e77,
+                0x1d75_f01f_f710_e1c2,
+                0x10c3_932e_9ca8_6bcf,
+            ],
+            "update only after intentionally reviewing all provenance wire changes"
+        );
     }
 
     #[test]

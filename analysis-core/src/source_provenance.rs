@@ -2119,7 +2119,6 @@ endmodule
             .analysis
             .source_selection(
                 &design.graph,
-                &design.source_index,
                 &design.grouping,
                 SourceSelectionRange {
                     file: "top.sv",
@@ -2145,7 +2144,6 @@ endmodule
             .analysis
             .source_selection(
                 &design.graph,
-                &design.source_index,
                 &design.grouping,
                 SourceSelectionRange {
                     file: "top.sv",
@@ -2245,7 +2243,6 @@ endmodule
                 .analysis
                 .source_selection(
                     &design.graph,
-                    &design.source_index,
                     &design.grouping,
                     SourceSelectionRange {
                         file: "top.sv",
@@ -2342,7 +2339,6 @@ endmodule
                 .analysis
                 .source_selection(
                     &procedural.graph,
-                    &procedural.source_index,
                     &procedural.grouping,
                     SourceSelectionRange {
                         file: "top.sv",
@@ -2466,7 +2462,6 @@ endmodule
             .analysis
             .source_selection(
                 &design.graph,
-                &design.source_index,
                 &design.grouping,
                 SourceSelectionRange {
                     file: "top.vhdl",
