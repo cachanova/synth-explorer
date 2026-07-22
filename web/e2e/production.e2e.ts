@@ -924,11 +924,20 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   expect(apiRequests).toEqual([])
 })
 
-test('stacks parallel SRL lanes as one memory vector', async ({ page }) => {
+test('stacks parallel SRL lanes through Yosys per-lane logic', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('srl_pipe')
+    const editor = page.locator('.cm-content')
+    await expect(editor).toContainText('shift_data[0] <= data_in;')
+    const source = (await editor.locator('.cm-line').allTextContents()).join('\n')
+    await editor.click()
+    await editor.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+    await editor.fill(source.replace(
+      'shift_data[0] <= data_in;',
+      'shift_data[0] <= ~data_in;',
+    ))
     await page.getByLabel('Platform').selectOption('xilinx')
   })
 

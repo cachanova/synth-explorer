@@ -106,9 +106,8 @@ const MAX_REFINEMENT_ROUNDS: usize = 8;
 impl GroupPartition {
     /// Near-linear: bounded partition refinement (max 8 rounds) + 1:1 check.
     /// Memory and register groups seed from provenance, strict lane evidence,
-    /// and endpoint analysis; each
-    /// refinement round costs O(edges) and hashes full signatures to class ids,
-    /// so no all-pairs comparison ever happens.
+    /// and endpoint analysis; each refinement round costs O(edges) and hashes
+    /// full signatures to class ids, so no all-pairs comparison ever happens.
     pub fn build(
         graph: &Graph,
         registers: &[RegisterGroup],
@@ -118,18 +117,47 @@ impl GroupPartition {
         seed_memory_groups(&mut partition, graph, memories);
         seed_memory_input_mirror_register_groups(&mut partition, graph);
         seed_register_groups(&mut partition, registers);
-        seed_structural_memory_groups(&mut partition, graph);
 
-        let comb: Vec<NodeId> = graph
-            .nodes
-            .iter()
-            .filter(|node| graph.is_comb(node.id))
-            .map(|node| node.id)
-            .collect();
-        let comb_mask = candidate_mask(graph, &comb);
+        let mut comb = Vec::new();
+        let mut structural_memories = Vec::new();
+        for node in &graph.nodes {
+            if graph.is_comb(node.id) {
+                comb.push(node.id);
+            } else if node.kind == NodeKind::Cell
+                && !node.blackbox
+                && node
+                    .cell_type
+                    .as_deref()
+                    .is_some_and(is_addressable_sequential_type)
+                && !partition.group_of.contains_key(&node.id)
+            {
+                structural_memories.push(node.id);
+            }
+        }
+        // Refine combinational wrappers and addressable-memory lanes together.
+        // Their classes can be mutually dependent (for example LUT -> SRL), so
+        // two separate refinement passes would leave each side as unique
+        // anchors and miss the parallel vector.
+        let mut refined_cells = Vec::with_capacity(comb.len() + structural_memories.len());
+        refined_cells.extend_from_slice(&comb);
+        refined_cells.extend_from_slice(&structural_memories);
+        let refined_mask = candidate_mask(graph, &refined_cells);
         let mut interner = Interner::default();
-        let classes =
-            refine_cell_classes(graph, &partition.group_of, &comb, &comb_mask, &mut interner);
+        let classes = refine_cell_classes(
+            graph,
+            &partition.group_of,
+            &refined_cells,
+            &refined_mask,
+            &mut interner,
+        );
+        seed_structural_memory_groups(
+            &mut partition,
+            graph,
+            &structural_memories,
+            &classes,
+            &refined_mask,
+            &mut interner,
+        );
 
         let mut members_by_class: BTreeMap<u32, Vec<NodeId>> = BTreeMap::new();
         for &id in &comb {
@@ -149,7 +177,7 @@ impl GroupPartition {
                 graph,
                 &partition.group_of,
                 &classes,
-                &comb_mask,
+                &refined_mask,
                 &mut interner,
                 &members,
                 false,
@@ -412,30 +440,19 @@ fn seed_register_groups(partition: &mut GroupPartition, registers: &[RegisterGro
 /// register and combinational grouping. A group is admitted only when bounded
 /// refinement finds matching topology and at least one adjacent class has a
 /// distinct one-to-one lane correspondence across every member.
-fn seed_structural_memory_groups(partition: &mut GroupPartition, graph: &Graph) {
-    let cells: Vec<NodeId> = graph
-        .nodes
-        .iter()
-        .filter(|node| {
-            node.kind == NodeKind::Cell
-                && !node.blackbox
-                && node
-                    .cell_type
-                    .as_deref()
-                    .is_some_and(is_addressable_sequential_type)
-                && !partition.group_of.contains_key(&node.id)
-        })
-        .map(|node| node.id)
-        .collect();
+fn seed_structural_memory_groups(
+    partition: &mut GroupPartition,
+    graph: &Graph,
+    cells: &[NodeId],
+    classes: &[u32],
+    refined: &[bool],
+    interner: &mut Interner,
+) {
     if cells.len() < 2 {
         return;
     }
-
-    let mask = candidate_mask(graph, &cells);
-    let mut interner = Interner::default();
-    let classes = refine_cell_classes(graph, &partition.group_of, &cells, &mask, &mut interner);
     let mut members_by_class: BTreeMap<u32, Vec<NodeId>> = BTreeMap::new();
-    for &id in &cells {
+    for &id in cells {
         members_by_class
             .entry(classes[id as usize])
             .or_default()
@@ -448,15 +465,17 @@ fn seed_structural_memory_groups(partition: &mut GroupPartition, graph: &Graph) 
     candidates.sort_by_key(|members| members[0]);
 
     for members in candidates {
-        if !bit_correspondence_holds(
-            graph,
-            &partition.group_of,
-            &classes,
-            &mask,
-            &mut interner,
-            &members,
-            true,
-        ) {
+        if !control_signatures_match(graph, interner, &members)
+            || !bit_correspondence_holds(
+                graph,
+                &partition.group_of,
+                classes,
+                refined,
+                interner,
+                &members,
+                true,
+            )
+        {
             continue;
         }
         let cell_type = graph.nodes[members[0] as usize]
@@ -475,6 +494,42 @@ fn seed_structural_memory_groups(partition: &mut GroupPartition, graph: &Graph) 
             cell_type,
         });
     }
+}
+
+/// A stacked memory vector has one shared control contract. Exact source-node,
+/// output-port, and net-bit identity keeps lanes with different clocks or
+/// enables separate even though generic vector refinement ignores controls.
+fn control_signatures_match(graph: &Graph, interner: &mut Interner, members: &[NodeId]) -> bool {
+    fn signature(
+        graph: &Graph,
+        interner: &mut Interner,
+        member: NodeId,
+    ) -> Vec<(u32, NodeId, u32, Option<u32>, u32)> {
+        let mut controls = graph.incoming[member as usize]
+            .iter()
+            .filter_map(|&edge_idx| {
+                let edge = &graph.edges[edge_idx];
+                edge.control.then(|| {
+                    (
+                        interner.id(&edge.to_port),
+                        edge.from,
+                        interner.id(&edge.from_port),
+                        edge.bit,
+                        edge.to_port_bit,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        controls.sort_unstable();
+        controls
+    }
+
+    let Some((&first, rest)) = members.split_first() else {
+        return false;
+    };
+    let expected = signature(graph, interner, first);
+    rest.iter()
+        .all(|&member| signature(graph, interner, member) == expected)
 }
 
 fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: Vec<MemoryArray>) {
@@ -1096,6 +1151,29 @@ mod tests {
         graph.incoming[to as usize].push(idx);
     }
 
+    fn control_link(
+        graph: &mut Graph,
+        from: NodeId,
+        to: NodeId,
+        from_port: &str,
+        to_port: &str,
+        net: &str,
+    ) {
+        let idx = graph.edges.len();
+        graph.edges.push(Edge {
+            from,
+            to,
+            from_port: from_port.to_owned(),
+            to_port: to_port.to_owned(),
+            to_port_bit: 0,
+            bit: Some(idx as u32),
+            net_name: net.to_owned(),
+            control: true,
+        });
+        graph.outgoing[from as usize].push(idx);
+        graph.incoming[to as usize].push(idx);
+    }
+
     fn register_group(name: &str, members: &[(usize, NodeId)]) -> RegisterGroup {
         RegisterGroup {
             name: name.to_owned(),
@@ -1195,6 +1273,64 @@ mod tests {
                 &mut graph,
                 width as NodeId + bit,
                 2 * width as NodeId + bit,
+                "Q",
+                "data_out",
+                &format!("data_out[{bit}]"),
+            );
+        }
+        graph
+    }
+
+    fn wrapped_srl_vector_graph(width: usize) -> Graph {
+        let mut nodes = Vec::new();
+        for bit in 0..width {
+            nodes.push(port_bit(
+                bit as NodeId,
+                "data_in",
+                bit,
+                width,
+                PortDirection::Input,
+            ));
+        }
+        for bit in 0..width {
+            nodes.push(comb_cell((width + bit) as NodeId, "LUT1"));
+        }
+        for bit in 0..width {
+            let mut srl = comb_cell((2 * width + bit) as NodeId, "SRL16E");
+            srl.seq = true;
+            nodes.push(srl);
+        }
+        for bit in 0..width {
+            nodes.push(port_bit(
+                (3 * width + bit) as NodeId,
+                "data_out",
+                bit,
+                width,
+                PortDirection::Output,
+            ));
+        }
+        let mut graph = graph_from_nodes("wrapped_srl_vector", nodes);
+        for bit in 0..width as NodeId {
+            link(
+                &mut graph,
+                bit,
+                width as NodeId + bit,
+                "data_in",
+                "I0",
+                &format!("data_in[{bit}]"),
+            );
+            link(
+                &mut graph,
+                width as NodeId + bit,
+                2 * width as NodeId + bit,
+                "O",
+                "D",
+                &format!("wrapped_data[{bit}]"),
+            );
+            link(
+                &mut graph,
+                2 * width as NodeId + bit,
+                3 * width as NodeId + bit,
                 "Q",
                 "data_out",
                 &format!("data_out[{bit}]"),
@@ -1379,6 +1515,64 @@ mod tests {
                 .iter()
                 .all(|group| group.kind != GroupKind::Memory)
         );
+    }
+
+    #[test]
+    fn srl_lanes_with_different_controls_do_not_form_a_memory_vector() {
+        let mut graph = srl_vector_graph("SRL16E", 2);
+        let clk0 = graph.nodes.len() as NodeId;
+        graph
+            .nodes
+            .push(port_bit(clk0, "clk0", 0, 1, PortDirection::Input));
+        graph.outgoing.push(Vec::new());
+        graph.incoming.push(Vec::new());
+        let clk1 = graph.nodes.len() as NodeId;
+        graph
+            .nodes
+            .push(port_bit(clk1, "clk1", 0, 1, PortDirection::Input));
+        graph.outgoing.push(Vec::new());
+        graph.incoming.push(Vec::new());
+        let en0 = graph.nodes.len() as NodeId;
+        graph
+            .nodes
+            .push(port_bit(en0, "en0", 0, 1, PortDirection::Input));
+        graph.outgoing.push(Vec::new());
+        graph.incoming.push(Vec::new());
+        let en1 = graph.nodes.len() as NodeId;
+        graph
+            .nodes
+            .push(port_bit(en1, "en1", 0, 1, PortDirection::Input));
+        graph.outgoing.push(Vec::new());
+        graph.incoming.push(Vec::new());
+        control_link(&mut graph, clk0, 2, "clk0", "CLK", "clk0");
+        control_link(&mut graph, clk1, 3, "clk1", "CLK", "clk1");
+        control_link(&mut graph, en0, 2, "en0", "CE", "en0");
+        control_link(&mut graph, en1, 3, "en1", "CE", "en1");
+
+        let partition = GroupPartition::build(&graph, &[], Vec::new());
+
+        assert!(
+            partition
+                .groups
+                .iter()
+                .all(|group| group.kind != GroupKind::Memory)
+        );
+    }
+
+    #[test]
+    fn parallel_srl_lanes_group_through_equivalent_comb_wrappers() {
+        let graph = wrapped_srl_vector_graph(8);
+
+        let partition = GroupPartition::build(&graph, &[], Vec::new());
+        let memories: Vec<_> = partition
+            .groups
+            .iter()
+            .filter(|group| group.kind == GroupKind::Memory)
+            .collect();
+
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].members, (16..24).collect::<Vec<_>>());
+        assert_eq!(memories[0].label, "data_out [16×8]");
     }
 
     #[test]

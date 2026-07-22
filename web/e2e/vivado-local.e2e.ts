@@ -30,11 +30,13 @@ const srlNetlist = [
   '  input wire [7:0] data_in,',
   '  output wire [7:0] data_out',
   ');',
+  '  wire [7:0] wrapped_data;',
   ...Array.from({ length: 8 }, (_, bit) => [
+    `  LUT1 #(.INIT(2'h1)) lut_${bit} (.I0(data_in[${bit}]), .O(wrapped_data[${bit}]));`,
     `  SRL16E srl_${bit} (`,
     `    .Q(data_out[${bit}]),`,
     "    .A0(1'b1), .A1(1'b1), .A2(1'b1), .A3(1'b1),",
-    `    .CE(en), .CLK(clk), .D(data_in[${bit}])`,
+    `    .CE(en), .CLK(clk), .D(wrapped_data[${bit}])`,
     '  );',
   ]).flat(),
   'endmodule',
@@ -144,7 +146,7 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
   await expect(carry.locator('.g-symbol-outline')).toHaveAttribute('stroke', 'var(--green)')
 })
 
-test('stacks parallel Vivado SRL lanes as one memory vector', async ({ page }) => {
+test('stacks parallel Vivado SRL lanes through per-lane LUTs', async ({ page }) => {
   await page.route('http://127.0.0.1:32123/v1/status', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
