@@ -496,7 +496,7 @@ fn seed_structural_memory_groups(
     }
 }
 
-fn is_addressable_memory_address_port(port: &str) -> bool {
+fn is_scalar_address_port(port: &str) -> bool {
     ["A0", "A1", "A2", "A3", "A4"]
         .iter()
         .any(|address| port.eq_ignore_ascii_case(address))
@@ -504,11 +504,19 @@ fn is_addressable_memory_address_port(port: &str) -> bool {
 
 fn is_addressable_memory_address_edge(graph: &Graph, edge_idx: usize) -> bool {
     let edge = &graph.edges[edge_idx];
-    is_addressable_memory_address_port(&edge.to_port)
-        && graph.nodes[edge.to as usize]
-            .cell_type
-            .as_deref()
-            .is_some_and(is_addressable_sequential_type)
+    let target = &graph.nodes[edge.to as usize];
+    if !target.seq {
+        return false;
+    }
+    match target.cell_type.as_deref() {
+        Some(cell_type) if cell_type.eq_ignore_ascii_case("SRL16E") => {
+            is_scalar_address_port(&edge.to_port)
+        }
+        Some(cell_type) if cell_type.eq_ignore_ascii_case("SRLC32E") => {
+            edge.to_port.eq_ignore_ascii_case("A") || is_scalar_address_port(&edge.to_port)
+        }
+        _ => false,
+    }
 }
 
 fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
@@ -1632,56 +1640,60 @@ mod tests {
 
     #[test]
     fn srl_lanes_with_independent_addresses_do_not_form_a_memory_vector() {
-        let mut graph = srl_vector_graph("SRL16E", 2);
-        let clk = append_input(&mut graph, "clk");
-        let en = append_input(&mut graph, "en");
-        for member in [2, 3] {
-            control_link(&mut graph, clk, member, "clk", "CLK", "clk");
-            control_link(&mut graph, en, member, "en", "CE", "en");
-        }
-        for address_bit in 0..4 {
-            for lane in 0..2 {
-                let name = format!("a{address_bit}_{lane}");
-                let address = append_input(&mut graph, "address");
-                link(
-                    &mut graph,
-                    address,
-                    2 + lane,
-                    &name,
-                    &format!("A{address_bit}"),
-                    &name,
-                );
+        for (cell_type, address_width, vector_port) in [("SRL16E", 4, false), ("SRLC32E", 5, true)]
+        {
+            let mut graph = srl_vector_graph(cell_type, 2);
+            let clk = append_input(&mut graph, "clk");
+            let en = append_input(&mut graph, "en");
+            for member in [2, 3] {
+                control_link(&mut graph, clk, member, "clk", "CLK", "clk");
+                control_link(&mut graph, en, member, "en", "CE", "en");
             }
-        }
+            for address_bit in 0..address_width {
+                for lane in 0..2 {
+                    let name = format!("a{address_bit}_{lane}");
+                    let address = append_input(&mut graph, "address");
+                    let to_port = if vector_port {
+                        "A".to_owned()
+                    } else {
+                        format!("A{address_bit}")
+                    };
+                    link(&mut graph, address, 2 + lane, &name, &to_port, &name);
+                    graph.edges.last_mut().unwrap().to_port_bit = address_bit;
+                }
+            }
 
-        assert!(!has_memory_group(&graph));
+            assert!(!has_memory_group(&graph), "{cell_type}");
+        }
     }
 
     #[test]
     fn srl_lanes_with_shared_address_bus_form_a_memory_vector() {
-        let mut graph = srl_vector_graph("SRL16E", 2);
-        let clk = append_input(&mut graph, "clk");
-        let en = append_input(&mut graph, "en");
-        for member in [2, 3] {
-            control_link(&mut graph, clk, member, "clk", "CLK", "clk");
-            control_link(&mut graph, en, member, "en", "CE", "en");
-        }
-        for address_bit in 0..4 {
-            let name = format!("address[{address_bit}]");
-            let address = append_input(&mut graph, "address");
+        for (cell_type, address_width, vector_port) in [("SRL16E", 4, false), ("SRLC32E", 5, true)]
+        {
+            let mut graph = srl_vector_graph(cell_type, 2);
+            let clk = append_input(&mut graph, "clk");
+            let en = append_input(&mut graph, "en");
             for member in [2, 3] {
-                link(
-                    &mut graph,
-                    address,
-                    member,
-                    "address",
-                    &format!("A{address_bit}"),
-                    &name,
-                );
+                control_link(&mut graph, clk, member, "clk", "CLK", "clk");
+                control_link(&mut graph, en, member, "en", "CE", "en");
             }
-        }
+            for address_bit in 0..address_width {
+                let name = format!("address[{address_bit}]");
+                let address = append_input(&mut graph, "address");
+                for member in [2, 3] {
+                    let to_port = if vector_port {
+                        "A".to_owned()
+                    } else {
+                        format!("A{address_bit}")
+                    };
+                    link(&mut graph, address, member, "address", &to_port, &name);
+                    graph.edges.last_mut().unwrap().to_port_bit = address_bit;
+                }
+            }
 
-        assert!(has_memory_group(&graph));
+            assert!(has_memory_group(&graph), "{cell_type}");
+        }
     }
 
     #[test]
