@@ -104,6 +104,26 @@ describe('schematic layout sizing', () => {
     expect(nodeDimensions(controlledSrl).height).toBe(62 + 13)
   })
 
+  it('reserves one row for a compact multi-net grouped control', () => {
+    const groupedMemory = node(4, '$mem_v2', {
+      member_count: 1_024,
+      controls: [
+        { role: 'clock', pin: 'CLK', net_name: 'clk', driver_id: 8, fanout: 1_024 },
+        {
+          role: 'enable',
+          pin: 'EN',
+          net_name: 'row_en[0]',
+          driver_id: 9,
+          driver_ids: Array.from({ length: 64 }, (_, index) => index + 9),
+          net_count: 64,
+          fanout: 1_024,
+        },
+      ],
+    })
+
+    expect(nodeDimensions(groupedMemory).height).toBe(62 + 2 * 13 + 14)
+  })
+
   it('passes per-symbol dimensions to bounded ELK layout', () => {
     const sub: Subgraph = {
       nodes: [node(1, '$_XOR_'), node(2, '$mem_v2', { is_boundary: true })],

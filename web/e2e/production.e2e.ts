@@ -957,6 +957,11 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await expect(
     page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`),
   ).toHaveText('×2048')
+  const groupedDetails = page.locator(`[data-node-detail-id="${groupedId}"]`)
+  await expect(groupedDetails.locator('.g-control-label')).toHaveCount(2)
+  await expect(groupedDetails.locator('.g-control-label').last()).toContainText('EN ×128')
+  expect(await groupedDetails.evaluate((node) => (node as SVGGElement).getBBox().height))
+    .toBeLessThan(150)
   await page.getByRole('button', { name: 'Fanin cone' }).click()
   await page.getByLabel('Focus').check()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)

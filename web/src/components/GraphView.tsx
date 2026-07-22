@@ -597,7 +597,9 @@ function ControlLabels({
         const y = startY + 1 + index * 13
         const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
         const details = [
-          `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${shortNetName(control.net_name)}`,
+          control.net_count != null && control.net_count > 1
+            ? `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${control.net_count} distinct control nets`
+            : `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${shortNetName(control.net_name)}`,
           control.active_low === true
             ? 'active-low'
             : control.active_low === false

@@ -82,7 +82,7 @@ pub struct GraphNode {
     pub members: Option<Vec<u32>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ControlRole {
     Clock,
@@ -98,6 +98,13 @@ pub struct ControlRef {
     pub pin: String,
     pub net_name: String,
     pub driver_id: NodeId,
+    /// Distinct drivers represented by a compact grouped-control row. Empty
+    /// for an ordinary single control.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub driver_ids: Vec<NodeId>,
+    /// Number of distinct control nets represented by this row.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub net_count: Option<u32>,
     pub fanout: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_low: Option<bool>,
@@ -2902,11 +2909,15 @@ fn quotient_subgraph(
             acc.depth = Some(acc.depth.map_or(depth, |current| current.max(depth)));
         }
         for control in node.controls {
-            if !acc
-                .controls
-                .iter()
-                .any(|kept| kept.role == control.role && kept.net_name == control.net_name)
-            {
+            if !acc.controls.iter().any(|kept| {
+                kept.role == control.role
+                    && kept.pin == control.pin
+                    && kept.net_name == control.net_name
+                    && kept.driver_id == control.driver_id
+                    && kept.active_low == control.active_low
+                    && kept.synchronous == control.synchronous
+                    && kept.generated == control.generated
+            }) {
                 acc.controls.push(control);
             }
         }
@@ -2951,7 +2962,7 @@ fn quotient_subgraph(
             is_boundary: (!is_root && acc.is_boundary).then_some(true),
             depth: acc.depth,
             params: BTreeMap::new(),
-            controls: acc.controls,
+            controls: compact_group_controls(acc.controls),
             width: Some(members.len() as u32),
             member_count: Some(group.members.len() as u32),
             members: Some(members),
@@ -2998,6 +3009,64 @@ fn quotient_subgraph(
         edges,
         truncated: subgraph.truncated,
     }
+}
+
+/// Collapse repeated per-member control metadata into one row per compatible
+/// role/pin/polarity. Grouped memories can contain hundreds of row-enable
+/// nets; retaining every label would make one schematic node thousands of
+/// pixels tall even though all edges already share the same logical pin.
+fn compact_group_controls(controls: Vec<ControlRef>) -> Vec<ControlRef> {
+    type ControlKey = (
+        ControlRole,
+        String,
+        Option<bool>,
+        Option<bool>,
+        Option<bool>,
+    );
+    let mut groups: BTreeMap<ControlKey, Vec<ControlRef>> = BTreeMap::new();
+    for control in controls {
+        groups
+            .entry((
+                control.role,
+                control.pin.clone(),
+                control.active_low,
+                control.synchronous,
+                control.generated,
+            ))
+            .or_default()
+            .push(control);
+    }
+
+    groups
+        .into_values()
+        .map(|mut controls| {
+            controls.sort_by(|a, b| {
+                a.net_name
+                    .cmp(&b.net_name)
+                    .then_with(|| a.driver_id.cmp(&b.driver_id))
+            });
+            let mut representative = controls.remove(0);
+            if controls.is_empty() {
+                return representative;
+            }
+            let mut driver_ids: BTreeSet<NodeId> = BTreeSet::from([representative.driver_id]);
+            let mut fanout = representative.fanout;
+            let shared_src = representative.src.clone();
+            let mut same_src = true;
+            for control in &controls {
+                driver_ids.insert(control.driver_id);
+                fanout = fanout.saturating_add(control.fanout);
+                same_src &= control.src == shared_src;
+            }
+            representative.net_count = Some((controls.len() + 1) as u32);
+            representative.driver_ids = driver_ids.into_iter().collect();
+            representative.fanout = fanout;
+            if !same_src {
+                representative.src = None;
+            }
+            representative
+        })
+        .collect()
 }
 
 pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
@@ -3914,6 +3983,8 @@ fn node_controls(
             pin: edge.to_port.clone(),
             net_name: edge.net_name.clone(),
             driver_id: edge.from,
+            driver_ids: Vec::new(),
+            net_count: None,
             fanout,
             active_low,
             synchronous,
@@ -5322,6 +5393,53 @@ mod tests {
             hidden_vector_group_name("$a.b[1]")
         );
         assert_eq!(hidden_vector_group_name("$scalar"), None);
+    }
+
+    #[test]
+    fn grouped_controls_compact_distinct_nets_without_losing_drivers() {
+        let control =
+            |role, pin: &str, net: &str, driver_id, fanout, src: Option<&str>| ControlRef {
+                role,
+                pin: pin.to_owned(),
+                net_name: net.to_owned(),
+                driver_id,
+                driver_ids: Vec::new(),
+                net_count: None,
+                fanout,
+                active_low: Some(false),
+                synchronous: None,
+                src: src.map(str::to_owned),
+                generated: None,
+            };
+        let mut controls = vec![control(
+            ControlRole::Clock,
+            "CLK",
+            "clk",
+            1,
+            2_048,
+            Some("top.sv:2"),
+        )];
+        for row in 0..128 {
+            controls.push(control(
+                ControlRole::Enable,
+                "EN",
+                &format!("row_en[{row}]"),
+                row + 2,
+                16,
+                (row == 0).then_some("top.sv:8"),
+            ));
+        }
+        let compact = compact_group_controls(controls);
+
+        assert_eq!(compact.len(), 2);
+        assert_eq!(compact[0].role, ControlRole::Clock);
+        assert_eq!(compact[0].net_count, None);
+        assert!(compact[0].driver_ids.is_empty());
+        assert_eq!(compact[1].role, ControlRole::Enable);
+        assert_eq!(compact[1].net_count, Some(128));
+        assert_eq!(compact[1].driver_ids, (2..130).collect::<Vec<_>>());
+        assert_eq!(compact[1].fanout, 2_048);
+        assert_eq!(compact[1].src, None);
     }
 
     #[test]

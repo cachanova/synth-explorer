@@ -5,6 +5,7 @@ import {
   boxBadge,
   bubbleAt,
   controlLabel,
+  controlDriverIds,
   controlsFor,
   inferPortDirection,
   inferPortDirections,
@@ -219,5 +220,21 @@ describe('operator and control labels', () => {
     expect(controlsFor(n)).toEqual(n.controls)
     expect(controlLabel(n.controls[0])).toBe('CLK sys_clk')
     expect(controlLabel(n.controls[1])).toBe('RST rst_n')
+  })
+
+  it('labels compact grouped controls and preserves every represented driver', () => {
+    const control = {
+      role: 'enable' as const,
+      pin: 'EN',
+      net_name: 'row_en[0]',
+      driver_id: 4,
+      driver_ids: [4, 8, 12],
+      net_count: 3,
+      fanout: 48,
+    }
+    expect(controlLabel(control)).toBe('EN ×3')
+    expect(controlDriverIds(control)).toEqual([4, 8, 12])
+    expect(controlDriverIds({ ...control, driver_ids: undefined, net_count: undefined }))
+      .toEqual([4])
   })
 })

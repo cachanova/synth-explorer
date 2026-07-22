@@ -1,7 +1,7 @@
 import { designSrcSpans, srcLabel } from '../lib/src'
 import { displayNodeName, nodeLabel } from '../lib/prettyType'
 import { coneRootIds } from '../lib/graphProjection'
-import { controlLabel, controlsFor, symbolKind } from '../lib/symbols'
+import { controlDriverIds, controlLabel, controlsFor, symbolKind } from '../lib/symbols'
 import type { GraphNode } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 
@@ -136,7 +136,7 @@ export function NodeCard({
                 className="hop"
                 onClick={() =>
                   store.openControlCone({
-                    node: control.driver_id,
+                    nodes: controlDriverIds(control),
                     label: controlLabel(control),
                     generated: control.generated,
                   })

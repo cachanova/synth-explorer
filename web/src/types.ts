@@ -35,6 +35,9 @@ export interface ControlRef {
   pin: string
   net_name: string
   driver_id: number
+  // Present when one grouped-control row represents multiple distinct nets.
+  driver_ids?: number[]
+  net_count?: number
   fanout: number
   active_low?: boolean
   synchronous?: boolean

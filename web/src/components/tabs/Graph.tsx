@@ -11,7 +11,7 @@ import {
   type LaidOutGraph,
 } from '../../lib/layout'
 import { sourceProbePresentation } from '../../lib/sourceProbe'
-import { controlLabel } from '../../lib/symbols'
+import { controlDriverIds, controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
@@ -605,7 +605,7 @@ export function Graph({ active }: { active: boolean }) {
     (control: NonNullable<GraphNode['controls']>[number]) => {
       if (!graphInteractive) return
       openControlCone({
-        node: control.driver_id,
+        nodes: controlDriverIds(control),
         label: controlLabel(control),
         generated: control.generated,
       })

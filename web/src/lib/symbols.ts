@@ -45,7 +45,17 @@ export function controlLabel(control: ControlRef): string {
         ? 'EN'
         : control.role.toUpperCase()
   const polarity = control.active_low ? '↓' : ''
+  if ((control.net_count ?? 0) > 1) {
+    return `${prefix}${polarity} ×${control.net_count}`
+  }
   return `${prefix}${polarity} ${shortNetName(control.net_name)}`
+}
+
+/** Every real driver represented by a compact grouped-control row. */
+export function controlDriverIds(control: ControlRef): number[] {
+  return control.driver_ids && control.driver_ids.length > 0
+    ? control.driver_ids
+    : [control.driver_id]
 }
 
 /** Infer a top-level port's data direction from the graph topology. */
