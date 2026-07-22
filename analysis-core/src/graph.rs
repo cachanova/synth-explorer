@@ -943,10 +943,7 @@ pub fn is_memory_type(cell_type: &str) -> bool {
 /// Stateful primitives whose output also has a combinational address path.
 /// SRL D is a storage input, while A0..A4 select the current Q value.
 pub fn is_addressable_sequential_type(cell_type: &str) -> bool {
-    matches!(
-        cell_type.to_ascii_uppercase().as_str(),
-        "SRL16E" | "SRLC32E"
-    )
+    cell_type.eq_ignore_ascii_case("SRL16E") || cell_type.eq_ignore_ascii_case("SRLC32E")
 }
 
 pub fn is_blackbox_cell(

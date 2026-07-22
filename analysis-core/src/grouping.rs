@@ -419,11 +419,11 @@ fn seed_structural_memory_groups(partition: &mut GroupPartition, graph: &Graph) 
         .filter(|node| {
             node.kind == NodeKind::Cell
                 && !node.blackbox
-                && !partition.group_of.contains_key(&node.id)
                 && node
                     .cell_type
                     .as_deref()
                     .is_some_and(is_addressable_sequential_type)
+                && !partition.group_of.contains_key(&node.id)
         })
         .map(|node| node.id)
         .collect();
