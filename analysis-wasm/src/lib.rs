@@ -328,7 +328,6 @@ impl AnalysisSession {
             .analysis
             .source_selection_with_fallback(
                 &self.design.graph,
-                &self.design.source_index,
                 &self.design.grouping,
                 SourceSelectionRange {
                     file: &query.file,
@@ -591,6 +590,12 @@ mod tests {
         }
     }
 
+    fn json_digest(raw: &str) -> u64 {
+        raw.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
     #[test]
     fn provenance_json_preserves_casing_omission_and_deterministic_order() {
         let session = session("gates", "generic");
@@ -685,6 +690,29 @@ mod tests {
         assert!(selection.get("directBits").is_some());
         assert!(selection.get("direct_ids").is_none());
         assert!(selection.get("direct_bits").is_none());
+
+        let nodes_raw = session
+            .nodes_json("[0]")
+            .expect("node source query succeeds");
+        let nodes: serde_json::Value = serde_json::from_str(&nodes_raw).expect("node JSON parses");
+        assert_eq!(nodes["nodes"].as_array().map(Vec::len), Some(1));
+        assert!(nodes["nodes"][0].get("src").is_some());
+
+        assert_eq!(
+            [
+                json_digest(&source_map_raw),
+                json_digest(&reverse_raw),
+                json_digest(&selection_raw),
+                json_digest(&nodes_raw),
+            ],
+            [
+                0x46a2_3292_4aa2_e2bd,
+                0xfd05_2ab5_cbed_6e77,
+                0x1d75_f01f_f710_e1c2,
+                0x10c3_932e_9ca8_6bcf,
+            ],
+            "update only after intentionally reviewing all provenance wire changes"
+        );
     }
 
     #[test]

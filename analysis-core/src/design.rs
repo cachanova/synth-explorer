@@ -1,11 +1,12 @@
 //! Construction and ownership of one browser- or server-resident analysis session.
 
-use crate::analysis::{Analysis, SourceLineIndex, SourceRangeMapping, Stats};
+use crate::analysis::{Analysis, SourceRangeMapping, Stats};
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
-use crate::source_provenance::{SourceProvenance, recover_source_provenance};
+use crate::source_index::SourceProvenanceIndex;
+use crate::source_provenance::recover_source_provenance;
 use deepsize::DeepSizeOf;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -24,7 +25,6 @@ pub enum DesignBuildError {
 pub struct AnalysisDesign {
     pub graph: Graph,
     pub analysis: Analysis,
-    pub source_index: SourceLineIndex,
     pub grouping: GroupPartition,
     pub delay_model: DelayModel,
     pub delay_profile: DelayProfile,
@@ -46,25 +46,29 @@ impl AnalysisDesign {
             .map_err(|error| DesignBuildError::Graph(error.to_string()))?;
         let (source_top, _) = select_top(source_netlist, None)
             .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
-        let SourceProvenance {
-            mut ranges,
-            truncated: source_ranges_truncated,
-            procedural_targets,
-            probe_hints,
-        } = recover_source_provenance(&graph, source_netlist, files.clone());
+        let mut source_provenance =
+            recover_source_provenance(&graph, source_netlist, files.clone());
         if include_vivado_procedural_ranges {
-            ranges.extend(procedural_ranges(&procedural_targets));
+            source_provenance
+                .ranges
+                .extend(procedural_ranges(&source_provenance.procedural_targets));
         }
 
         let delay_model = delay_profile.model();
         let file_names = files.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
-        let mut analysis = Analysis::with_delay_model(&graph, file_names.clone(), &delay_model);
-        let mut source_index =
-            SourceLineIndex::from_netlist(source_netlist, source_top, file_names);
-        source_index.extend_ranges(&ranges);
-        analysis.extend_source_ranges(ranges, source_ranges_truncated);
-        analysis.set_procedural_targets(procedural_targets);
-        analysis.set_source_probe_hints(probe_hints);
+        let source_provenance = SourceProvenanceIndex::build(
+            &graph,
+            source_netlist,
+            source_top,
+            file_names.clone(),
+            source_provenance,
+        );
+        let analysis = Analysis::with_delay_model_and_source_provenance(
+            &graph,
+            file_names,
+            &delay_model,
+            source_provenance,
+        );
         let registers = &analysis.endpoints().registers;
         let memory_arrays =
             memory_arrays_from_source(&graph, source_netlist, source_top, registers);
@@ -73,7 +77,6 @@ impl AnalysisDesign {
         Ok(Self {
             graph,
             analysis,
-            source_index,
             grouping,
             delay_model,
             delay_profile,

@@ -85,6 +85,63 @@ struct PreparedFixture {
     bits: Vec<u32>,
 }
 
+#[derive(Clone, Copy)]
+struct BaselineDigests {
+    source_map: u64,
+    exact: Option<u64>,
+    fallback: Option<u64>,
+    nodes: u64,
+    bits: u64,
+}
+
+fn baseline_digests(name: &str) -> BaselineDigests {
+    match name {
+        "round_robin_arbiter:verilog" => BaselineDigests {
+            source_map: 0x46a2_3292_4aa2_e2bd,
+            exact: Some(0xe0f7_a049_801e_2957),
+            fallback: Some(0xe0f7_a049_801e_2957),
+            nodes: 0x615a_1ec5_4172_d186,
+            bits: 0xe1f6_3ad3_0a9c_230f,
+        },
+        "round_robin_arbiter:vhdl" => BaselineDigests {
+            source_map: 0xe996_697f_3868_a217,
+            exact: Some(0xdcba_d506_34bc_38aa),
+            fallback: None,
+            nodes: 0x57ab_a874_c480_1b26,
+            bits: 0x5019_3dc1_e6ef_35db,
+        },
+        "priority_encoder_for:vhdl" => BaselineDigests {
+            source_map: 0x49b9_e1c2_3983_6f81,
+            exact: None,
+            fallback: None,
+            nodes: 0x7f8c_8b29_880e_71d3,
+            bits: 0x25a0_2f23_74d4_2f27,
+        },
+        "barrel_shifter:verilog" => BaselineDigests {
+            source_map: 0x5e2c_5590_fb96_1302,
+            exact: Some(0xfd4a_9dd9_2109_c1e2),
+            fallback: Some(0xfd4a_9dd9_2109_c1e2),
+            nodes: 0xd497_ac52_4b0f_89f3,
+            bits: 0xee5c_e43c_f034_10d9,
+        },
+        "inferred_fifo:verilog" => BaselineDigests {
+            source_map: 0xc323_506e_9eec_eae9,
+            exact: Some(0x8637_5754_12b8_13c1),
+            fallback: Some(0x8637_5754_12b8_13c1),
+            nodes: 0x7ee7_bf07_5aa1_1f61,
+            bits: 0x1e43_6276_f3a9_c033,
+        },
+        "inferred_fifo:vhdl" => BaselineDigests {
+            source_map: 0x6215_c83d_8716_f14a,
+            exact: Some(0x061c_1e7b_a7fa_c09a),
+            fallback: None,
+            nodes: 0xf253_cf2f_d2d1_224d,
+            bits: 0x8d18_8eaa_81d0_5b52,
+        },
+        _ => panic!("missing frozen baseline digests for {name}"),
+    }
+}
+
 fn benchmark_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -188,7 +245,6 @@ fn run_selection(design: &AnalysisDesign, workload: &SelectionWorkload) -> Sourc
         .analysis
         .source_selection_with_fallback(
             &design.graph,
-            &design.source_index,
             &design.grouping,
             SourceSelectionRange {
                 file: &workload.file,
@@ -396,10 +452,37 @@ fn prepare_fixture(fixture: &Fixture) -> PreparedFixture {
         &design.analysis.source_map(),
         &format!("{}/source_map", fixture.name),
     );
+    let baseline = baseline_digests(&fixture.name);
+    assert_eq!(
+        source_map_digest, baseline.source_map,
+        "{} source-map behavior differs from the frozen baseline",
+        fixture.name
+    );
+    assert_eq!(
+        exact_digest, baseline.exact,
+        "{} exact-selection behavior differs from the frozen baseline",
+        fixture.name
+    );
+    assert_eq!(
+        fallback_digest, baseline.fallback,
+        "{} fallback-selection behavior differs from the frozen baseline",
+        fixture.name
+    );
+    assert_eq!(
+        nodes_digest, baseline.nodes,
+        "{} node-to-source behavior differs from the frozen baseline",
+        fixture.name
+    );
+    assert_eq!(
+        bits_digest, baseline.bits,
+        "{} bit-to-source behavior differs from the frozen baseline",
+        fixture.name
+    );
     eprintln!(
-        "provenance_metric fixture={} retained_heap_bytes={} graph_nodes={} source_ranges={} node_query_count={} bit_query_count={} source_map_digest={source_map_digest:016x} exact_digest={} fallback_digest={} nodes_digest={nodes_digest:016x} bits_digest={bits_digest:016x}",
+        "provenance_metric fixture={} retained_heap_bytes={} provenance_heap_bytes={} graph_nodes={} source_ranges={} node_query_count={} bit_query_count={} source_map_digest={source_map_digest:016x} exact_digest={} fallback_digest={} nodes_digest={nodes_digest:016x} bits_digest={bits_digest:016x}",
         fixture.name,
         design.estimated_heap_bytes(),
+        design.analysis.estimated_source_provenance_heap_bytes(),
         design.graph.nodes.len(),
         design.analysis.source_map().ranges.len(),
         node_ids.len(),
