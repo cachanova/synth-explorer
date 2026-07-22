@@ -48,17 +48,17 @@ menu.
 Install a current Chrome or Chromium browser, then use the download button in
 the website header or open the
 [latest release](https://github.com/cachanova/synth-explorer/releases/latest).
+Every push to `main` builds a complete rolling release from that exact commit,
+so this download tracks the latest website source once the build finishes.
+Versioned `local-v*` releases remain available as historical snapshots.
 Choose the archive for the computer that will run the application:
 
 | Computer | Release asset |
 | --- | --- |
 | Windows 10/11 x64 | `synth-explorer-local-windows-x86_64.zip` |
 | Linux x86-64 | `synth-explorer-local-linux-x86_64.tar.gz` |
-| Mac with an Apple chip | `synth-explorer-local-macos-arm64.tar.gz` |
-| Mac with an Intel processor | `synth-explorer-local-macos-x86_64.tar.gz` |
-
-On macOS, open **About This Mac**. Choose Apple Silicon when the **Chip** name
-begins with Apple; choose Intel when the window lists an Intel **Processor**.
+| macOS Apple silicon (arm64) | `synth-explorer-local-macos-arm64.tar.gz` |
+| macOS Intel (x86-64) | `synth-explorer-local-macos-x86_64.tar.gz` |
 
 #### Windows
 
@@ -84,7 +84,7 @@ If the executable bit was removed while copying the folder, restore it with
 
 #### macOS
 
-1. Download and open the archive matching the Mac's chip.
+1. Download and extract the Apple silicon or Intel archive.
 2. Open the extracted `synth-explorer-local` folder.
 3. Current release builds are not signed or notarized. Try to open
    `synth-explorer` once so macOS displays its security warning.

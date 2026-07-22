@@ -31,11 +31,11 @@ cd synth-explorer-local
 ./synth-explorer
 ```
 
-On macOS, use **About This Mac** to select the Apple Silicon or Intel download,
-extract it, and try to open `synth-explorer` once. Current builds are not signed
-or notarized. Open **System Settings → Privacy & Security**, scroll to
-**Security**, choose **Open Anyway**, then confirm **Open**. Only override this
-protection after verifying the official release and checksum.
+On macOS, extract the Apple silicon or Intel download and try to open
+`synth-explorer` once. Current builds are not signed or notarized. Open
+**System Settings → Privacy & Security**, choose **Open Anyway**, then confirm
+**Open**. Only override this protection after verifying the official release
+and checksum.
 
 Keep the launcher window or terminal open while using the application. Closing
 it stops the private loopback server.

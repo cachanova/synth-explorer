@@ -162,8 +162,18 @@ Vercel Web Analytics and Speed Insights collect page-level usage and browser
 performance metrics; they are not part of the synthesis path and receive no RTL
 or synthesized netlist content.
 
-GitHub releases package the same static build beside Windows, Linux, macOS
-Apple Silicon, and macOS Intel launcher executables. The local origin is stable
-so IndexedDB workspace and design-cache records persist across launches.
-Release archives also retain the separate Linux and Windows bridge binaries
-used by the hosted website, remote macOS workflow, and installer.
+Every push to `main` packages the same static build beside Windows, Linux,
+macOS Apple Silicon, and macOS Intel launcher executables. The workflow creates
+a per-commit `local-main-<commit>` release and marks it Latest only after every
+asset has uploaded, so the website's `releases/latest/download` links keep
+serving the previous complete build until the matching replacement is ready.
+Concurrency cancellation prevents an older main build from publishing after a
+newer one. After the new release is available, the workflow removes superseded
+`local-main-*` releases and tags to keep only the current rolling build.
+Versioned `local-v*` and `vivado-bridge-v*` tags remain available as historical
+releases without replacing the rolling Latest release.
+
+The local origin is stable so IndexedDB workspace and design-cache records
+persist across launches. Release archives also retain the separate Linux and
+Windows bridge binaries used by the hosted website, remote macOS workflow, and
+installer.

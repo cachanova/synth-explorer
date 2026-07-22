@@ -52,7 +52,6 @@ function App() {
   return (
     <div className="app">
       <header className="app-header">
-        {!localLauncher && <DownloadLauncher />}
         <h1 className="logo" aria-label="Synth Explorer">
           <BrandMark className="brand-mark" />
           <span>
@@ -71,6 +70,7 @@ function App() {
           <span>GitHub</span>
         </a>
         <SettingsMenu />
+        {!localLauncher && <DownloadLauncher />}
       </header>
       <nav className="mobile-workspace-nav" aria-label="Workspace views">
         <button
