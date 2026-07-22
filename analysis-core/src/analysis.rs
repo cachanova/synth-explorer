@@ -7906,6 +7906,71 @@ mod tests {
     }
 
     #[test]
+    fn bit_to_source_query_deduplicates_input_and_orders_exact_and_approximate_ranges() {
+        let graph = source_selection_fixture();
+        let mut analysis = Analysis::new(&graph, vec!["z.sv".to_owned(), "a.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![
+                SourceRangeMapping {
+                    file: "z.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: None,
+                    end_column: None,
+                    node_ids: vec![2],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: vec![9],
+                    mapping_incomplete: false,
+                },
+                SourceRangeMapping {
+                    file: "a.sv".to_owned(),
+                    start_line: 9,
+                    end_line: 9,
+                    start_column: Some(7),
+                    end_column: Some(12),
+                    node_ids: vec![1],
+                    signal_bits: vec![9],
+                    approximate_signal_bits: vec![7],
+                    mapping_incomplete: false,
+                },
+                SourceRangeMapping {
+                    file: "a.sv".to_owned(),
+                    start_line: 3,
+                    end_line: 3,
+                    start_column: Some(2),
+                    end_column: Some(4),
+                    node_ids: vec![0],
+                    signal_bits: vec![7],
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+            ],
+            false,
+        );
+
+        let reverse = analysis.source_ranges_for_bits(&[9, 7, 9, 7]);
+
+        assert!(!reverse.truncated);
+        assert!(reverse.approximate);
+        assert_eq!(
+            reverse
+                .ranges
+                .iter()
+                .map(|range| (range.file.as_str(), range.start_line))
+                .collect::<Vec<_>>(),
+            vec![("a.sv", 3), ("a.sv", 9), ("z.sv", 5)]
+        );
+        assert!(reverse.ranges.iter().all(|range| {
+            range.node_ids.is_empty()
+                && range.signal_bits.is_empty()
+                && range.approximate_signal_bits.is_empty()
+        }));
+        assert_eq!(reverse.ranges[0].start_column, Some(2));
+        assert_eq!(reverse.ranges[1].end_column, Some(12));
+        assert_eq!(reverse.ranges[2].start_column, None);
+    }
+
+    #[test]
     fn source_selection_reports_global_source_mapping_truncation() {
         let graph = source_selection_fixture();
         let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
@@ -7961,6 +8026,40 @@ mod tests {
         assert_eq!(
             parse_src_span("top.sv:2.7-4.12"),
             Some(("top.sv".to_owned(), 2, Some(7), 4, Some(12)))
+        );
+    }
+
+    #[test]
+    fn source_span_parser_keeps_valid_fragments_and_normalizes_existing_edge_cases() {
+        assert_eq!(
+            parse_src_span("  /tmp/generated/top.sv:5.7-6.11  "),
+            Some(("top.sv".to_owned(), 5, Some(7), 6, Some(11)))
+        );
+        assert_eq!(
+            parse_src_span("top.sv:8.3-7.2"),
+            Some(("top.sv".to_owned(), 8, Some(3), 8, Some(3)))
+        );
+        assert_eq!(
+            parse_src_span(r"C:\rtl\top.sv:2.1-2.4"),
+            Some((r"C:\rtl\top.sv".to_owned(), 2, Some(1), 2, Some(4)))
+        );
+        for malformed in [
+            "garbage",
+            "top.sv:not-a-line",
+            "top.sv:2.bad-2.4",
+            "top.sv:2.1-4.bad",
+        ] {
+            assert_eq!(parse_src_span(malformed), None, "fragment: {malformed}");
+        }
+
+        let mut retained = Vec::new();
+        insert_src_lines(
+            "garbage|/tmp/generated/top.sv:5.7-5.11|top.sv:not-a-line|top.sv:8.3-7.2",
+            |file, line| retained.push((file.to_owned(), line)),
+        );
+        assert_eq!(
+            retained,
+            vec![("top.sv".to_owned(), 5), ("top.sv".to_owned(), 8)]
         );
     }
 
@@ -8220,6 +8319,205 @@ mod tests {
         assert_eq!(select(14, (13, 26)), vec![1]);
         assert!(select(14, (13, 18)).is_empty());
         assert_eq!(select(22, (1, 26)), vec![1]);
+    }
+
+    #[test]
+    fn exact_optimized_span_does_not_fall_through_to_a_mapped_neighbor() {
+        let graph = graph_from_parts(
+            "optimized_neighbor",
+            vec![combinational_node(0, "$and", None)],
+            Vec::new(),
+            vec![Vec::new()],
+            vec![Vec::new()],
+        );
+        let optimized = SourceRangeMapping {
+            file: "top.sv".to_owned(),
+            start_line: 5,
+            end_line: 5,
+            start_column: Some(7),
+            end_column: Some(11),
+            node_ids: Vec::new(),
+            signal_bits: Vec::new(),
+            approximate_signal_bits: Vec::new(),
+            mapping_incomplete: false,
+        };
+        let mapped = SourceRangeMapping {
+            file: "top.sv".to_owned(),
+            start_line: 5,
+            end_line: 5,
+            start_column: Some(20),
+            end_column: Some(25),
+            node_ids: vec![0],
+            signal_bits: vec![42],
+            approximate_signal_bits: Vec::new(),
+            mapping_incomplete: false,
+        };
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(vec![mapped.clone(), optimized.clone()], false);
+        let mut source_index = empty_source_index("top.sv");
+        source_index.extend_ranges([&mapped, &optimized]);
+
+        let result = analysis
+            .source_selection_with_fallback(
+                &graph,
+                &source_index,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(9),
+                    end_column: Some(9),
+                },
+                Some((1, 30)),
+                selection_options(),
+            )
+            .unwrap();
+
+        assert_eq!(result.status, SourceSelectionStatus::OptimizedOrAbsorbed);
+        assert!(result.direct_ids.is_empty());
+        assert!(result.direct_bits.is_empty());
+        assert!(result.graph.nodes.is_empty());
+    }
+
+    #[test]
+    fn fallback_ties_are_stable_and_only_apply_to_valid_collapsed_carets() {
+        let graph = graph_from_parts(
+            "fallback_boundaries",
+            vec![
+                combinational_node(0, "$and", None),
+                combinational_node(1, "$or", None),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 2],
+            vec![Vec::new(); 2],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(7),
+                    end_column: Some(9),
+                    node_ids: vec![0],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(13),
+                    end_column: Some(15),
+                    node_ids: vec![1],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+            ],
+            false,
+        );
+        let select = |selection, fallback_columns| {
+            analysis
+                .source_selection_with_fallback(
+                    &graph,
+                    &empty_source_index("top.sv"),
+                    &GroupPartition::default(),
+                    selection,
+                    fallback_columns,
+                    selection_options(),
+                )
+                .unwrap()
+        };
+        let caret = |column| SourceSelectionRange {
+            file: "top.sv",
+            start_line: 5,
+            end_line: 5,
+            start_column: Some(column),
+            end_column: Some(column),
+        };
+
+        assert_eq!(select(caret(11), Some((1, 20))).direct_ids, vec![0]);
+        assert_eq!(select(caret(11), Some((10, 20))).direct_ids, vec![1]);
+        assert!(select(caret(11), Some((12, 20))).direct_ids.is_empty());
+        assert!(select(caret(11), None).direct_ids.is_empty());
+        assert!(
+            select(
+                SourceSelectionRange {
+                    start_column: Some(10),
+                    end_column: Some(11),
+                    ..caret(10)
+                },
+                Some((1, 20)),
+            )
+            .direct_ids
+            .is_empty()
+        );
+        assert!(
+            select(
+                SourceSelectionRange {
+                    start_line: 5,
+                    end_line: 6,
+                    start_column: Some(16),
+                    end_column: Some(1),
+                    ..caret(16)
+                },
+                Some((1, 20)),
+            )
+            .direct_ids
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn node_ref_unions_deduplicates_and_orders_native_and_synthetic_sources() {
+        let graph = graph_from_parts(
+            "source_union",
+            vec![combinational_node(
+                0,
+                "$and",
+                Some("top.sv:9.1-9.3|top.sv:2.1-2.3|top.sv:9.1-9.3"),
+            )],
+            Vec::new(),
+            vec![Vec::new()],
+            vec![Vec::new()],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 4,
+                    end_line: 4,
+                    start_column: Some(7),
+                    end_column: Some(8),
+                    node_ids: vec![0],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 2,
+                    end_line: 2,
+                    start_column: Some(1),
+                    end_column: Some(3),
+                    node_ids: vec![0],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+            ],
+            false,
+        );
+
+        assert_eq!(
+            analysis.node_ref(&graph, 0).src.as_deref(),
+            Some("top.sv:2.1-2.3|top.sv:4.7-4.8|top.sv:9.1-9.3")
+        );
     }
 
     #[test]
