@@ -1,5 +1,10 @@
 use anyhow::{Context, bail};
-use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    routing::post,
+};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -159,8 +164,23 @@ fn web_app(web_root: PathBuf, launcher_state: LauncherState) -> Router {
 
 async fn start_vivado_bridge(
     State(state): State<LauncherState>,
+    headers: HeaderMap,
     Json(request): Json<StartVivadoRequest>,
 ) -> Result<Json<BridgeStatus>, (StatusCode, Json<StartVivadoError>)> {
+    let request_origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
+    if request_origin != Some(state.local_origin.as_str()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(StartVivadoError {
+                error: "Vivado can only be started by this local Synth Explorer application"
+                    .to_owned(),
+                path_required: false,
+            }),
+        ));
+    }
+
     let mut runtime = state.vivado.lock().await;
     if let Some(running) = runtime.running.as_ref()
         && !running.task.is_finished()
@@ -419,6 +439,7 @@ mod tests {
             .oneshot(
                 Request::post("/launcher/vivado/start")
                     .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "http://127.0.0.1:32124")
                     .body(Body::from(request.to_string()))
                     .unwrap(),
             )
@@ -435,5 +456,26 @@ mod tests {
                 .unwrap()
                 .contains("Vivado was not found")
         );
+    }
+
+    #[tokio::test]
+    async fn vivado_start_rejects_requests_outside_the_local_app_origin() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("index.html"), "local app").unwrap();
+        let state = LauncherState::new(None, "http://127.0.0.1:32124".to_owned());
+        let app = web_app(temp.path().to_path_buf(), state);
+
+        let response = app
+            .oneshot(
+                Request::post("/launcher/vivado/start")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://example.com")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }
