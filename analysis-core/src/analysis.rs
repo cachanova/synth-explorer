@@ -32,6 +32,7 @@ const SOURCE_BIT_RANGE_RESPONSE_CAP: usize = 200;
 pub(crate) const SOURCE_RANGE_ASSOCIATION_CAP: usize = 20_000;
 const SOURCE_SPAN_INDEX_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
 const SOURCE_PROBE_TARGET_VISIT_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
+const SOURCE_BIDIRECTIONAL_DEPTH: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
 #[serde(rename_all = "lowercase")]
@@ -1081,6 +1082,18 @@ impl Analysis {
         selection: SourceSelectionRange<'_>,
         options: SourceSelectionOptions,
     ) -> Result<SourceSelectionResult, SourceSelectionError> {
+        self.source_selection_with_fallback(graph, source_index, grouping, selection, None, options)
+    }
+
+    pub fn source_selection_with_fallback(
+        &self,
+        graph: &Graph,
+        source_index: &SourceLineIndex,
+        grouping: &GroupPartition,
+        selection: SourceSelectionRange<'_>,
+        fallback_columns: Option<(usize, usize)>,
+        options: SourceSelectionOptions,
+    ) -> Result<SourceSelectionResult, SourceSelectionError> {
         let SourceSelectionRange {
             file,
             start_line,
@@ -1103,6 +1116,14 @@ impl Analysis {
         if end_line - start_line >= 200 {
             return Err(SourceSelectionError::TooManyLines);
         }
+        let selection = self.nearest_source_span(source_index, selection, fallback_columns);
+        let SourceSelectionRange {
+            file,
+            start_line,
+            end_line,
+            start_column,
+            end_column,
+        } = selection;
         let probe = self
             .source_probe_range(graph, file, start_line, end_line, start_column, end_column)
             .ok_or(SourceSelectionError::UnknownFile)?;
@@ -1112,7 +1133,13 @@ impl Analysis {
             .any(|root| self.has_control_output[*root as usize]);
         let cone_options = ConeOptions {
             dir: probe.direction.unwrap_or(ConeDir::Fanin),
-            max_depth: 64,
+            // An unqualified signal declaration has useful logic on both sides,
+            // but traversing the full connected component makes Focus a no-op.
+            max_depth: if probe.direction.is_none() {
+                SOURCE_BIDIRECTIONAL_DEPTH
+            } else {
+                64
+            },
             max_nodes: options.max_nodes,
             hide_control: options.hide_control && !control,
             hide_const: options.hide_const,
@@ -1176,6 +1203,84 @@ impl Analysis {
             direct_ids,
             direct_bits: probe.direct_bits,
             graph,
+        })
+    }
+
+    fn nearest_source_span<'a>(
+        &self,
+        source_index: &SourceLineIndex,
+        selection: SourceSelectionRange<'a>,
+        fallback_columns: Option<(usize, usize)>,
+    ) -> SourceSelectionRange<'a> {
+        let (Some(caret_column), Some(end_column)) = (selection.start_column, selection.end_column)
+        else {
+            return selection;
+        };
+        if selection.start_line != selection.end_line || caret_column != end_column {
+            return selection;
+        }
+        let Some((fallback_start, fallback_end)) = fallback_columns else {
+            return selection;
+        };
+        if fallback_start < 1
+            || fallback_end < fallback_start
+            || caret_column < fallback_start
+            || caret_column > fallback_end
+        {
+            return selection;
+        }
+        let Some(index) = self.source_ranges.get(selection.file) else {
+            return selection;
+        };
+        if source_index
+            .contains_span(
+                selection.file,
+                selection.start_line,
+                selection.end_line,
+                selection.start_column,
+                selection.end_column,
+            )
+            .unwrap_or(false)
+            || !matching_source_ranges(
+                index,
+                selection.start_line,
+                selection.end_line,
+                selection.start_column,
+                selection.end_column,
+            )
+            .is_empty()
+        {
+            return selection;
+        }
+        let nearest = index
+            .overlapping(selection.start_line, selection.end_line)
+            .iter()
+            .filter(|range| {
+                range.start_line == selection.start_line
+                    && range.end_line == selection.end_line
+                    && range.start_column.is_some()
+                    && range.end_column.is_some()
+                    && range
+                        .start_column
+                        .is_some_and(|start| start >= fallback_start)
+                    && range.end_column.is_some_and(|end| end <= fallback_end)
+            })
+            .min_by_key(|range| {
+                let start = range.start_column.expect("filtered precise source range");
+                let end = range.end_column.expect("filtered precise source range");
+                let distance = if caret_column < start {
+                    start - caret_column
+                } else {
+                    caret_column.saturating_sub(end)
+                };
+                (distance, start, end)
+            });
+        nearest.map_or(selection, |range| SourceSelectionRange {
+            file: selection.file,
+            start_line: range.start_line,
+            end_line: range.end_line,
+            start_column: range.start_column,
+            end_column: range.end_column,
         })
     }
 
@@ -7906,6 +8011,138 @@ mod tests {
         assert_eq!(
             analysis.source_nodes_range(&graph, "top.sv", 5, 6, Some(1), Some(12)),
             Some(vec![0, 1])
+        );
+    }
+
+    #[test]
+    fn collapsed_caret_falls_back_to_the_nearest_span_inside_its_statement() {
+        let graph = graph_from_parts(
+            "nearest_declaration",
+            vec![
+                combinational_node(0, "$and", None),
+                combinational_node(1, "$or", None),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 2],
+            vec![Vec::new(); 2],
+        );
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(7),
+                    end_column: Some(11),
+                    node_ids: vec![0],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+                SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(20),
+                    end_column: Some(25),
+                    node_ids: vec![1],
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                },
+            ],
+            false,
+        );
+        let select = |column, fallback_columns| {
+            analysis
+                .source_selection_with_fallback(
+                    &graph,
+                    &empty_source_index("top.sv"),
+                    &GroupPartition::default(),
+                    SourceSelectionRange {
+                        file: "top.sv",
+                        start_line: 5,
+                        end_line: 5,
+                        start_column: Some(column),
+                        end_column: Some(column),
+                    },
+                    Some(fallback_columns),
+                    selection_options(),
+                )
+                .unwrap()
+                .direct_ids
+        };
+
+        assert_eq!(select(1, (1, 12)), vec![0]);
+        assert_eq!(select(14, (13, 26)), vec![1]);
+        assert!(select(14, (13, 18)).is_empty());
+        assert_eq!(select(22, (1, 26)), vec![1]);
+    }
+
+    #[test]
+    fn bidirectional_source_probe_uses_a_local_neighborhood() {
+        let graph = deep_chain_graph(10);
+        let mut analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        analysis.extend_source_ranges(
+            vec![SourceRangeMapping {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                end_line: 5,
+                start_column: Some(7),
+                end_column: Some(16),
+                node_ids: vec![5],
+                signal_bits: Vec::new(),
+                approximate_signal_bits: Vec::new(),
+                mapping_incomplete: false,
+            }],
+            false,
+        );
+        analysis.set_source_probe_hints(vec![
+            SourceProbeHint {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                start_column: Some(7),
+                end_line: 5,
+                end_column: Some(16),
+                direction: SourceProbeDirection::Fanin,
+                kind: SourceProbeHintKind::Signal,
+            },
+            SourceProbeHint {
+                file: "top.sv".to_owned(),
+                start_line: 5,
+                start_column: Some(7),
+                end_line: 5,
+                end_column: Some(16),
+                direction: SourceProbeDirection::Fanout,
+                kind: SourceProbeHintKind::Signal,
+            },
+        ]);
+
+        let result = analysis
+            .source_selection(
+                &graph,
+                &empty_source_index("top.sv"),
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(10),
+                    end_column: Some(10),
+                },
+                selection_options(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5, 6, 7]
         );
     }
 

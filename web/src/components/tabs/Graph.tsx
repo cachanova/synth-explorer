@@ -348,6 +348,8 @@ export function Graph({ active }: { active: boolean }) {
             startColumn: request.startColumn,
             endLine: request.endLine,
             endColumn: request.endColumn,
+            fallbackStartColumn: request.fallbackStartColumn,
+            fallbackEndColumn: request.fallbackEndColumn,
           }, {
             maxNodes: graphOptions.maxNodes,
             hideControl: graphOptions.hideControl,

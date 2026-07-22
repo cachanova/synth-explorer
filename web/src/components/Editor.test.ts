@@ -20,12 +20,35 @@ describe('editor source coordinates', () => {
       startColumn: 9,
       endLine: 1,
       endColumn: 9,
+      fallbackStartColumn: 1,
+      fallbackEndColumn: 12,
     })
     expect(range(document.indexOf('second') + 2)).toEqual({
       startLine: 1,
       startColumn: 22,
       endLine: 1,
       endColumn: 22,
+      fallbackStartColumn: 13,
+      fallbackEndColumn: 26,
+    })
+  })
+
+  it('bounds a missed caret to the surrounding semicolon statement', () => {
+    expect(range(document.indexOf('logic second'))).toEqual({
+      startLine: 1,
+      startColumn: 14,
+      endLine: 1,
+      endColumn: 14,
+      fallbackStartColumn: 13,
+      fallbackEndColumn: 26,
+    })
+    expect(range(document.indexOf('logic third'))).toEqual({
+      startLine: 2,
+      startColumn: 1,
+      endLine: 2,
+      endColumn: 1,
+      fallbackStartColumn: 1,
+      fallbackEndColumn: 12,
     })
   })
 

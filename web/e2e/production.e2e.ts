@@ -1168,6 +1168,8 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(workerContract.sourcePayloadKeys).toEqual([
     'end_column',
     'end_line',
+    'fallback_end_column',
+    'fallback_start_column',
     'file',
     'group_memories',
     'group_vectors',
@@ -1432,6 +1434,37 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(apiRequests).toEqual([])
 })
 
+test('Round-Robin internal declaration fallback keeps Focus local', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('round_robin_arbiter')
+  })
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeEnabled()
+  await focus.uncheck()
+  const allNodes = page.locator('.g-node-body')
+  await expect(allNodes.first()).toBeVisible()
+  const fullNodeCount = await allNodes.count()
+  expect(fullNodeCount).toBeGreaterThan(0)
+
+  const editor = page.locator('.cm-content')
+  await page.locator('.cm-line', { hasText: 'logic [INDEX_WIDTH-1:0] next_index;' }).click()
+  await editor.press('Home')
+  for (let press = 0; press < 6; press += 1) await editor.press('ArrowRight')
+
+  await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+  const relevantNodes = page.locator('.g-node-body[data-relevant="1"]')
+  await expect.poll(() => relevantNodes.count()).toBeGreaterThan(0)
+  await expect(relevantNodes).not.toHaveCount(fullNodeCount)
+
+  await focus.check()
+  await expect.poll(() => allNodes.count()).toBeLessThan(fullNodeCount)
+  expect(apiRequests).toEqual([])
+})
+
 test('same-line declarations carry column and exact-net identity', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []
@@ -1451,15 +1484,19 @@ test('same-line declarations carry column and exact-net identity', async ({ page
   const top = (await page.getByLabel('Top').inputValue()) || 'top'
   const source = `module ${top}(
   input logic clk,
-  input logic a,
-  output logic y,
-  output logic z
+  input logic [3:0] a,
+  output logic [3:0] y,
+  output logic z,
+  output logic q
 );
+  logic [3:0] state;
   logic first; logic second;
   always_ff @(posedge clk) begin
-    first <= a; second <= ~a;
+    state <= a;
+    first <= a[0]; second <= ~a[0];
   end
-  assign y = first; assign z = second;
+  assign y = state;
+  assign q = first; assign z = second;
 endmodule
 `
   const editor = page.locator('.cm-content')
@@ -1527,6 +1564,68 @@ endmodule
     )
   }
 
+  const selectAbsoluteColumn = async (line: Locator, column: number) => {
+    await line.click()
+    await editor.press('Home')
+    await editor.press('Home')
+    for (let press = 1; press < column; press += 1) {
+      await editor.press('ArrowRight')
+    }
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const requests =
+            (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+          const sourceQueries = requests.filter(
+            (request): request is Record<string, unknown> =>
+              request != null &&
+              typeof request === 'object' &&
+              !Array.isArray(request) &&
+              request.kind === 'query' &&
+              request.method === 'source',
+          )
+          return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
+            ?.start_column
+        }),
+      )
+      .toBe(column)
+    await expect
+      .poll(
+        async () =>
+          (await page.locator('.g-node-body.hl').count()) +
+          (await page.locator('.g-edge.hl').count()),
+      )
+      .toBeGreaterThan(0)
+    return {
+      nodes: await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+      edges: await page.locator('.g-edge.hl').evaluateAll((edges) =>
+        edges.map((edge) => edge.getAttribute('data-first-edge-title') ?? '').sort(),
+      ),
+    }
+  }
+
+  const expectDeclarationFallback = async (
+    lineText: string,
+    identifierColumn: number,
+    fallbackColumns: number[],
+  ) => {
+    const line = page.locator('.cm-line', { hasText: lineText })
+    const exact = await selectAbsoluteColumn(line, identifierColumn)
+    for (const column of fallbackColumns) {
+      expect(await selectAbsoluteColumn(line, column)).toEqual(exact)
+    }
+  }
+
+  await expectDeclarationFallback('input logic [3:0] a,', 21, [1, 3, 9, 15])
+  await expectDeclarationFallback('output logic [3:0] y,', 22, [1, 3, 10, 16])
+  await expectDeclarationFallback('logic [3:0] state;', 15, [1, 3, 9])
+
+  const relevantNodes = page.locator('.g-node-body[data-relevant="1"]')
+  const allNodes = page.locator('.g-node-body')
+  await expect(relevantNodes).not.toHaveCount(await allNodes.count())
+
   const firstEdges = await selectColumn(declarationLine, 8, 11)
   expect(firstEdges.length).toBeGreaterThan(0)
   const secondEdges = await selectColumn(declarationLine, 21, 24)
@@ -1534,20 +1633,20 @@ endmodule
   expect(secondEdges).not.toEqual(firstEdges)
 
   const proceduralLine = page.locator('.cm-line', {
-    hasText: 'first <= a; second <= ~a;',
+    hasText: 'first <= a[0]; second <= ~a[0];',
   })
   await selectColumn(proceduralLine, 0, 5, false)
   const firstProceduralNodes = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
   )
-  await selectColumn(proceduralLine, 12, 17, false)
+  await selectColumn(proceduralLine, 16, 21, false)
   const secondProceduralNodes = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
   )
   expect(secondProceduralNodes).not.toEqual(firstProceduralNodes)
 
   const continuousLine = page.locator('.cm-line', {
-    hasText: 'assign y = first; assign z = second;',
+    hasText: 'assign q = first; assign z = second;',
   })
   const firstContinuousEdges = await selectColumn(continuousLine, 7, 10)
   const secondContinuousEdges = await selectColumn(continuousLine, 25, 28)

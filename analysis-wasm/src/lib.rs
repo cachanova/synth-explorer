@@ -90,6 +90,8 @@ struct SourceSelectionQuery {
     end_line: usize,
     start_column: Option<usize>,
     end_column: Option<usize>,
+    fallback_start_column: Option<usize>,
+    fallback_end_column: Option<usize>,
     max_nodes: Option<usize>,
     hide_control: Option<bool>,
     hide_const: Option<bool>,
@@ -324,7 +326,7 @@ impl AnalysisSession {
         let response = self
             .design
             .analysis
-            .source_selection(
+            .source_selection_with_fallback(
                 &self.design.graph,
                 &self.design.source_index,
                 &self.design.grouping,
@@ -335,6 +337,7 @@ impl AnalysisSession {
                     start_column: query.start_column,
                     end_column: query.end_column,
                 },
+                query.fallback_start_column.zip(query.fallback_end_column),
                 SourceSelectionOptions {
                     max_nodes: query.max_nodes.unwrap_or(400),
                     hide_control: query.hide_control.unwrap_or(true),

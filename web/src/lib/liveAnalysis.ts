@@ -7,6 +7,8 @@ export interface SourceSelection {
   startColumn: number
   endLine: number
   endColumn: number
+  fallbackStartColumn?: number
+  fallbackEndColumn?: number
 }
 
 export function boundedSourceSelection(
@@ -87,6 +89,8 @@ export function normalizeSourceSelection(
   endLine: number,
   startColumn = 1,
   endColumn = startColumn,
+  fallbackStartColumn?: number,
+  fallbackEndColumn?: number,
 ): SourceSelection {
   const first = { line: Math.max(1, startLine), column: Math.max(1, startColumn) }
   const last = { line: Math.max(1, endLine), column: Math.max(1, endColumn) }
@@ -94,12 +98,17 @@ export function normalizeSourceSelection(
     first.line < last.line || (first.line === last.line && first.column <= last.column)
       ? [first, last]
       : [last, first]
+  const fallbackColumns =
+    fallbackStartColumn == null || fallbackEndColumn == null
+      ? {}
+      : { fallbackStartColumn, fallbackEndColumn }
   return {
     file,
     startLine: ordered[0].line,
     startColumn: ordered[0].column,
     endLine: ordered[1].line,
     endColumn: ordered[1].column,
+    ...fallbackColumns,
   }
 }
 

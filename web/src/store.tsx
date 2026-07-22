@@ -97,6 +97,8 @@ export interface SourceGraphRequest {
   startColumn?: number
   endLine: number
   endColumn?: number
+  fallbackStartColumn?: number
+  fallbackEndColumn?: number
   selectionTruncated: boolean
   label: string
   highlight: number[]
@@ -171,6 +173,8 @@ function sourceGraphRequest(
     startColumn: bounded.startColumn,
     endLine,
     endColumn: bounded.endColumn,
+    fallbackStartColumn: selection.fallbackStartColumn,
+    fallbackEndColumn: selection.fallbackEndColumn,
     selectionTruncated: bounded.truncated,
     label: `${selection.file}:${lineLabel}`,
     highlight: [],
@@ -274,6 +278,8 @@ export interface Store {
     endLine: number,
     startColumn?: number,
     endColumn?: number,
+    fallbackStartColumn?: number,
+    fallbackEndColumn?: number,
   ) => void
 }
 
@@ -1120,6 +1126,8 @@ export function StoreProvider({
       endLine: number,
       startColumn = 1,
       endColumn = startColumn,
+      fallbackStartColumn?: number,
+      fallbackEndColumn?: number,
     ) => {
       const selection = normalizeSourceSelection(
         file,
@@ -1127,6 +1135,8 @@ export function StoreProvider({
         endLine,
         startColumn,
         endColumn,
+        fallbackStartColumn,
+        fallbackEndColumn,
       )
       const previous = sourceSelectionRef.current
       if (
@@ -1135,7 +1145,9 @@ export function StoreProvider({
         previous.startLine === selection.startLine &&
         previous.startColumn === selection.startColumn &&
         previous.endLine === selection.endLine &&
-        previous.endColumn === selection.endColumn
+        previous.endColumn === selection.endColumn &&
+        previous.fallbackStartColumn === selection.fallbackStartColumn &&
+        previous.fallbackEndColumn === selection.fallbackEndColumn
       ) {
         return
       }
