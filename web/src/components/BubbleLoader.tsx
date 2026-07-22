@@ -37,8 +37,8 @@ function SynthMarkGraphic({
         <path strokeWidth="6" d="M60 40 Q136 44 170 100 Q136 156 60 160 Q100 100 60 40 Z" />
         <path strokeWidth="6" d="M46 40 Q86 100 46 160" />
       </g>
-      <circle stroke={eye} strokeWidth="4" cx="122" cy="100" r="30" />
-      <circle fill={eye} cx="122" cy="100" r="13" />
+      <circle stroke={eye} strokeWidth="3.2" cx="122" cy="100" r="24" />
+      <circle fill={eye} cx="122" cy="100" r="10.4" />
       {bubbles && (
         <g stroke={body} fill="none">
           <circle className="bub b1" strokeWidth="6" cx="181" cy="100" r="8" />
