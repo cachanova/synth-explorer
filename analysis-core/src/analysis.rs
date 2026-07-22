@@ -2869,7 +2869,9 @@ fn waterfilled_sample_counts(limits: &[usize], budget: usize) -> Vec<usize> {
 
 /// Collapse a per-bit subgraph into its group quotient: every group's member
 /// nodes become one synthetic node, edges are re-merged across the resulting
-/// unit ids, and intra-group edges vanish. Singletons pass through unchanged.
+/// unit ids, and intra-group edges vanish. Ungrouped nodes pass through
+/// unchanged; a singleton logical-memory group still becomes a synthetic node
+/// so its source-level shape remains visible.
 /// Runs after infrastructure collapse and edge capping, so synthetic ids are
 /// never indexed back into `graph.nodes`.
 fn quotient_subgraph(

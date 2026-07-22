@@ -19,9 +19,10 @@ export interface GraphNode extends NodeRef {
   depth?: number // comb depth from startpoints (absent for seq/port nodes)
   params?: Record<string, string> // e.g. { "LUT": "0111...", "WIDTH": "4" }
   controls?: ControlRef[] // omitted when the node has no labeled control connections
-  // A group enabled by group_vectors or group_memories: a synthetic node
-  // collapsing two or more projected graph members. `members` are the real
-  // physical node ids it stands for.
+  // A group enabled by group_vectors or group_memories: a synthetic node.
+  // Structural-vector groups collapse two or more projected graph members;
+  // logical-memory groups may wrap one physical primitive to preserve their
+  // source-level shape. `members` are the real physical node ids represented.
   width?: number
   // Canonical group size; may exceed `width` in a bounded projection.
   member_count?: number

@@ -818,11 +818,27 @@ pub fn is_memory_type(cell_type: &str) -> bool {
             return false;
         }
         let suffix = &bytes[b"RAM".len()..];
-        suffix.first().is_some_and(u8::is_ascii_digit)
-            && (suffix.iter().all(u8::is_ascii_alphanumeric)
-                || suffix
-                    .strip_suffix(b"_1")
-                    .is_some_and(|base| base.iter().all(u8::is_ascii_alphanumeric)))
+        if [b"32M".as_slice(), b"32M16", b"64M", b"64M8"]
+            .iter()
+            .any(|known| suffix.eq_ignore_ascii_case(known))
+        {
+            return true;
+        }
+        let base = suffix.strip_suffix(b"_1").unwrap_or(suffix);
+        let Some(x) = base
+            .iter()
+            .position(|byte| byte.eq_ignore_ascii_case(&b'X'))
+        else {
+            return false;
+        };
+        let (depth, width_and_mode) = base.split_at(x);
+        let width_and_mode = &width_and_mode[1..];
+        let Some((&mode, width)) = width_and_mode.split_last() else {
+            return false;
+        };
+        [b"16".as_slice(), b"32", b"64", b"128", b"256", b"512"].contains(&depth)
+            && [b"1".as_slice(), b"2", b"4", b"8"].contains(&width)
+            && matches!(mode.to_ascii_uppercase(), b'S' | b'D')
     };
     let xilinx_ram = xilinx_lutram()
         || numbered_family(b"RAMB", false)
@@ -1033,6 +1049,8 @@ mod tests {
             "RAMDISK",
             "RAMBUS",
             "RAM64_CONTROLLER",
+            "RAM64CONTROLLER",
+            "RAM64X1CACHE",
             "URAM_CACHE",
             "SPRAM_CONTROLLER",
             "TRELLIS_DPR_CONTROLLER",

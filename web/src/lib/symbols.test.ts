@@ -97,6 +97,8 @@ describe('symbolKind', () => {
       'RAMDISK',
       'RAMBUS',
       'RAM64_CONTROLLER',
+      'RAM64CONTROLLER',
+      'RAM64X1CACHE',
       'URAM_CACHE',
       'SPRAM_CONTROLLER',
       'SB_RAM_WRAPPER',

@@ -144,13 +144,14 @@ const ARITH_GLYPHS: Record<string, string> = {
   REDUCE_XOR: '=1',
 }
 
-const MEMORY_HINT = /^(?:MEM(?:ORY|RD|WR|INIT)?(?:_V\d+)?|RAM|ROM|RAM(?:\d[A-Z0-9]*(?:_1)?|B\d[A-Z0-9]*|D\d[A-Z0-9]*|S\d[A-Z0-9]*)|URAM\d[A-Z0-9]*|DP16KD|TRELLIS_DPR16X4|SPRAM(?:\d[A-Z0-9]*)?|SB_(?:RAM|SPRAM)\d[A-Z0-9_]*|SRL(?:16E|C32E))$/i
+const XILINX_LUTRAM = String.raw`(?:32M(?:16)?|64M(?:8)?|(?:16|32|64|128|256|512)X(?:1|2|4|8)[SD](?:_1)?)`
+const MEMORY_HINT = new RegExp(String.raw`^(?:MEM(?:ORY|RD|WR|INIT)?(?:_V\d+)?|RAM|ROM|RAM(?:${XILINX_LUTRAM}|B\d[A-Z0-9]*|D\d[A-Z0-9]*|S\d[A-Z0-9]*)|URAM\d[A-Z0-9]*|DP16KD|TRELLIS_DPR16X4|SPRAM(?:\d[A-Z0-9]*)?|SB_(?:RAM|SPRAM)\d[A-Z0-9_]*|SRL(?:16E|C32E))$`, 'i')
 const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
 const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
 const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i
 const CARRY_HINT = /^(?:CARRY[48]?|SB_CARRY|CCU2C)$/i
 const DSP_HINT = /^(?:DSP48\w*|MULT18X18D|SB_MAC16)$/i
-const SPECIAL_PRIMITIVE_HINT = /^(?:SB_(?!(?:RAM|SPRAM)(?:_|$))|TRELLIS_|CCU2C|CARRY|DSP48|MULT18X18D|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:\d[A-Z0-9]*|B\d[A-Z0-9]*|D\d[A-Z0-9]*|S\d[A-Z0-9]*)$|URAM\d[A-Z0-9]*$|DP16KD$|SPRAM(?:\d[A-Z0-9]*)?$|SB_(?:RAM|SPRAM)\d[A-Z0-9_]*$|SRL(?:16E|C32E)$|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)/i
+const SPECIAL_PRIMITIVE_HINT = new RegExp(String.raw`^(?:SB_(?!(?:RAM|SPRAM)(?:_|$))|TRELLIS_|CCU2C|CARRY|DSP48|MULT18X18D|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:${XILINX_LUTRAM}|B\d[A-Z0-9]*|D\d[A-Z0-9]*|S\d[A-Z0-9]*)$|URAM\d[A-Z0-9]*$|DP16KD$|SPRAM(?:\d[A-Z0-9]*)?$|SB_(?:RAM|SPRAM)\d[A-Z0-9_]*$|SRL(?:16E|C32E)$|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)`, 'i')
 
 /** Vendor-specific implementation primitive, independent of its symbol shape. */
 export function isSpecialPrimitive(node: NodeRef): boolean {

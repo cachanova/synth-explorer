@@ -209,6 +209,7 @@ pub fn memory_arrays_from_source(
     }
 
     let mut logical = Vec::new();
+    let mut source_cell_paths = BTreeSet::new();
     let mut pending = vec![(source_top.to_owned(), String::new())];
     let mut seen = BTreeSet::new();
     while let Some((module_name, scope)) = pending.pop() {
@@ -232,16 +233,16 @@ pub fn memory_arrays_from_source(
             });
         }
         for (cell_name, cell) in &module.cells {
-            if !source_netlist.modules.contains_key(&cell.cell_type) {
-                continue;
-            }
             let cell_name = clean_name(cell_name);
-            let child_scope = if scope.is_empty() {
+            let cell_path = if scope.is_empty() {
                 cell_name
             } else {
                 format!("{scope}.{cell_name}")
             };
-            pending.push((cell.cell_type.clone(), child_scope));
+            source_cell_paths.insert(cell_path.clone());
+            if source_netlist.modules.contains_key(&cell.cell_type) {
+                pending.push((cell.cell_type.clone(), cell_path));
+            }
         }
     }
 
@@ -268,6 +269,11 @@ pub fn memory_arrays_from_source(
             continue;
         }
         let raw_name = clean_name(&node.raw_name);
+        // An exact source-cell path names an explicitly instantiated primitive,
+        // not an implementation fragment generated for the nearby RTL memory.
+        if source_cell_paths.contains(&raw_name) {
+            continue;
+        }
         let mut candidate = raw_name.as_str();
         let mut matched = None;
         let mut ambiguous = false;
@@ -424,10 +430,16 @@ fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: V
 /// register vector. The wrapper's auxiliary DFF uses another net and remains
 /// separate.
 fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, graph: &Graph) {
+    fn starts_with_ignore_ascii_case(value: &str, prefix: &[u8]) -> bool {
+        value
+            .as_bytes()
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    }
+
     let mut memory_bits: BTreeMap<NodeId, BTreeMap<u32, u32>> = BTreeMap::new();
-    let mut dff_sinks_by_net: BTreeMap<u32, BTreeSet<NodeId>> = BTreeMap::new();
     for edge in &graph.edges {
-        if edge.control {
+        if edge.control || !edge.to_port.eq_ignore_ascii_case("WDATA") {
             continue;
         }
         let Some(net) = edge.bit else {
@@ -436,46 +448,62 @@ fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, grap
         let Some(target_type) = graph.nodes[edge.to as usize].cell_type.as_deref() else {
             continue;
         };
-        if edge.to_port.eq_ignore_ascii_case("WDATA")
-            && is_memory_type(target_type)
-            && target_type.to_ascii_uppercase().starts_with("SB_RAM")
-        {
+        if is_memory_type(target_type) && starts_with_ignore_ascii_case(target_type, b"SB_RAM") {
             memory_bits
                 .entry(edge.to)
                 .or_default()
                 .insert(net, edge.to_port_bit);
-        } else if edge.to_port.eq_ignore_ascii_case("D")
-            && target_type.to_ascii_uppercase().starts_with("SB_DFF")
-        {
-            dff_sinks_by_net.entry(net).or_default().insert(edge.to);
         }
+    }
+    if memory_bits.is_empty() {
+        return;
+    }
+
+    let memory_by_raw_name: HashMap<&str, NodeId> = memory_bits
+        .keys()
+        .map(|&id| (graph.nodes[id as usize].raw_name.as_str(), id))
+        .collect();
+    let mut sinks_by_memory: BTreeMap<NodeId, BTreeMap<u32, Option<NodeId>>> = BTreeMap::new();
+    for edge in &graph.edges {
+        if edge.control || !edge.to_port.eq_ignore_ascii_case("D") {
+            continue;
+        }
+        let Some(net) = edge.bit else {
+            continue;
+        };
+        let target = &graph.nodes[edge.to as usize];
+        let Some(target_type) = target.cell_type.as_deref() else {
+            continue;
+        };
+        if !starts_with_ignore_ascii_case(target_type, b"SB_DFF") {
+            continue;
+        }
+        let Some((memory_raw_name, _)) = target.raw_name.rsplit_once("_RDATA") else {
+            continue;
+        };
+        let Some(&memory) = memory_by_raw_name.get(memory_raw_name) else {
+            continue;
+        };
+        let Some(&bit) = memory_bits
+            .get(&memory)
+            .and_then(|bit_by_net| bit_by_net.get(&net))
+        else {
+            continue;
+        };
+        sinks_by_memory
+            .entry(memory)
+            .or_default()
+            .entry(bit)
+            .and_modify(|sink| {
+                if *sink != Some(edge.to) {
+                    *sink = None;
+                }
+            })
+            .or_insert(Some(edge.to));
     }
 
     for (memory, bit_by_net) in memory_bits {
-        let mut sinks_by_bit: BTreeMap<u32, Option<NodeId>> = BTreeMap::new();
-        let memory_raw_name = &graph.nodes[memory as usize].raw_name;
-        for (net, bit) in &bit_by_net {
-            let Some(sinks) = dff_sinks_by_net.get(net) else {
-                continue;
-            };
-            for &sink_id in sinks {
-                let sink_raw_name = &graph.nodes[sink_id as usize].raw_name;
-                if !sink_raw_name
-                    .strip_prefix(memory_raw_name)
-                    .is_some_and(|suffix| suffix.starts_with("_RDATA"))
-                {
-                    continue;
-                }
-                sinks_by_bit
-                    .entry(*bit)
-                    .and_modify(|sink| {
-                        if *sink != Some(sink_id) {
-                            *sink = None;
-                        }
-                    })
-                    .or_insert(Some(sink_id));
-            }
-        }
+        let sinks_by_bit = sinks_by_memory.remove(&memory).unwrap_or_default();
         let physical_bits: BTreeSet<u32> = bit_by_net.values().copied().collect();
         if sinks_by_bit.len() < 2
             || sinks_by_bit.len() != physical_bits.len()
@@ -1377,6 +1405,80 @@ mod tests {
     }
 
     #[test]
+    fn ice40_shared_write_bus_forms_one_mirror_vector_per_ram() {
+        const MEMORIES: u32 = 64;
+        const WIDTH: u32 = 16;
+        let dff_base = MEMORIES;
+        let port_base = dff_base + MEMORIES * WIDTH;
+        let mut nodes = Vec::new();
+        for memory_index in 0..MEMORIES {
+            let mut memory = comb_cell(memory_index, "SB_RAM40_4K");
+            memory.seq = true;
+            memory.name = format!("memory.0.{memory_index}");
+            memory.raw_name = memory.name.clone();
+            nodes.push(memory);
+        }
+        for memory_index in 0..MEMORIES {
+            for bit in 0..WIDTH {
+                let id = dff_base + memory_index * WIDTH + bit;
+                let mut dff =
+                    dff_cell(id, &format!("memory.0.{memory_index}_RDATA_{bit}_SB_DFF_Q"));
+                dff.cell_type = Some("SB_DFF".to_owned());
+                nodes.push(dff);
+            }
+        }
+        for bit in 0..WIDTH {
+            nodes.push(port_bit(
+                port_base + bit,
+                "push_data",
+                bit as usize,
+                WIDTH as usize,
+                PortDirection::Input,
+            ));
+        }
+        let mut graph = graph_from_nodes("top", nodes);
+        for memory_index in 0..MEMORIES {
+            for bit in 0..WIDTH {
+                let dff = dff_base + memory_index * WIDTH + bit;
+                for (to, to_port, to_port_bit) in [(memory_index, "WDATA", bit), (dff, "D", 0)] {
+                    let edge_index = graph.edges.len();
+                    graph.edges.push(Edge {
+                        from: port_base + bit,
+                        to,
+                        from_port: "push_data".to_owned(),
+                        to_port: to_port.to_owned(),
+                        to_port_bit,
+                        bit: Some(10_000 + bit),
+                        net_name: format!("push_data[{bit}]"),
+                        control: false,
+                    });
+                    graph.outgoing[(port_base + bit) as usize].push(edge_index);
+                    graph.incoming[to as usize].push(edge_index);
+                }
+            }
+        }
+
+        let partition = GroupPartition::build(&graph, &[], Vec::new());
+        let register_groups: Vec<&Group> = partition
+            .groups
+            .iter()
+            .filter(|group| group.kind == GroupKind::Register)
+            .collect();
+
+        assert_eq!(register_groups.len(), MEMORIES as usize);
+        assert!(
+            register_groups
+                .iter()
+                .all(|group| group.members.len() == WIDTH as usize)
+        );
+        assert_eq!(register_groups[0].label, "memory.0.0.WDATA[15:0]");
+        assert_eq!(
+            register_groups.last().unwrap().label,
+            "memory.0.63.WDATA[15:0]",
+        );
+    }
+
+    #[test]
     fn ambiguous_escaped_and_hierarchical_memory_paths_do_not_merge() {
         let graph = graph_from_nodes(
             "top",
@@ -1474,6 +1576,33 @@ mod tests {
         let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
 
         assert!(memories.is_empty());
+    }
+
+    #[test]
+    fn explicit_source_ram_cell_is_not_claimed_by_an_inferred_memory() {
+        for cell_name in ["foo_reg_0", "\\foo.0"] {
+            let mut physical = comb_cell(0, "RAM64M");
+            physical.seq = true;
+            physical.name = cell_name.trim_start_matches('\\').to_owned();
+            physical.raw_name = cell_name.to_owned();
+            let graph = graph_from_nodes("top", vec![physical]);
+            let source_netlist = parse_value(serde_json::json!({
+                "modules": { "top": {
+                    "attributes": { "top": "1" },
+                    "memories": {
+                        "foo": { "width": 1, "start_offset": 0, "size": 64 }
+                    },
+                    "cells": {
+                        cell_name: { "type": "RAM64M" }
+                    }
+                } }
+            }))
+            .unwrap();
+
+            let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
+
+            assert!(memories.is_empty(), "{cell_name}");
+        }
     }
 
     #[test]
