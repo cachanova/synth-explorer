@@ -1,13 +1,17 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
-    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, PathSort, SourceSelectionOptions,
-    SourceSelectionRange, TimingEstimate,
+    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort,
+    SourceSelectionOptions, SourceSelectionRange, TimingEstimate,
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
-use synth_explorer_analysis::grouping::GroupPartition;
+use synth_explorer_analysis::grouping::{GroupPartition, GroupingProjection};
 use synth_explorer_analysis::netlist::{YosysNetlist, select_top};
 use wasm_bindgen::prelude::*;
+
+const MAX_PROJECTION_ROOTS: usize = MAX_SUBGRAPH_NODES / 2;
+const MAX_EXPANDED_GROUP_ROOTS: usize = 256;
 
 #[derive(Deserialize)]
 struct SourceFile {
@@ -60,6 +64,7 @@ struct ConeQuery {
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
     group_vectors: Option<bool>,
+    group_memories: Option<bool>,
     root_port: Option<String>,
     root_port_bit: Option<u32>,
     #[serde(default)]
@@ -75,6 +80,7 @@ struct NetlistQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     group_vectors: Option<bool>,
+    group_memories: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -86,6 +92,7 @@ struct SourceSelectionQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     group_vectors: Option<bool>,
+    group_memories: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -225,9 +232,13 @@ impl AnalysisSession {
         }
         let dir = ConeDir::parse(&query.dir)
             .ok_or_else(|| js_error("cone direction must be fanin or fanout"))?;
-        let grouping = self.grouping(query.group_vectors);
-        let roots = self.resolve_projection_roots(&query.nodes, grouping)?;
-        let response = self
+        let grouping = self.grouping(query.group_vectors, query.group_memories);
+        // Synthetic group ids remain valid request roots when presentation is
+        // toggled back to raw nodes. Resolve through the canonical partition,
+        // then apply grouping only to the returned projection.
+        let (roots, roots_truncated) =
+            self.resolve_projection_roots(&query.nodes, Some(&self.design.grouping))?;
+        let mut response = self
             .design
             .analysis
             .multi_root_cone(
@@ -248,6 +259,7 @@ impl AnalysisSession {
                 grouping,
             )
             .ok_or_else(|| js_error("unknown node"))?;
+        response.truncated |= roots_truncated;
         to_json(&response)
     }
 
@@ -256,9 +268,10 @@ impl AnalysisSession {
         if query.around.len() > 200 {
             return Err(js_error("at most 200 context roots may be requested"));
         }
-        let grouping = self.grouping(query.group_vectors);
-        let roots = self.resolve_projection_roots(&query.around, grouping)?;
-        let response = self.design.analysis.full_netlist(
+        let grouping = self.grouping(query.group_vectors, query.group_memories);
+        let (roots, roots_truncated) =
+            self.resolve_projection_roots(&query.around, Some(&self.design.grouping))?;
+        let mut response = self.design.analysis.full_netlist(
             &self.design.graph,
             FullNetlistOptions {
                 max_nodes: query.max_nodes.unwrap_or(1_500),
@@ -269,6 +282,7 @@ impl AnalysisSession {
             },
             grouping,
         );
+        response.truncated |= roots_truncated;
         to_json(&response)
     }
 
@@ -317,6 +331,7 @@ impl AnalysisSession {
                     hide_control: query.hide_control.unwrap_or(true),
                     hide_const: query.hide_const.unwrap_or(true),
                     group_vectors: query.group_vectors.unwrap_or(false),
+                    group_memories: query.group_memories.unwrap_or(false),
                 },
             )
             .map_err(|error| js_error(error.to_string()))?;
@@ -342,20 +357,43 @@ impl AnalysisSession {
         Ok((base, resolved_profile))
     }
 
-    fn grouping(&self, enabled: Option<bool>) -> Option<&GroupPartition> {
-        enabled.unwrap_or(false).then_some(&self.design.grouping)
+    fn grouping(
+        &self,
+        vectors: Option<bool>,
+        memories: Option<bool>,
+    ) -> Option<GroupingProjection<'_>> {
+        GroupingProjection::from_flags(
+            &self.design.grouping,
+            vectors.unwrap_or(false),
+            memories.unwrap_or(false),
+        )
     }
 
     fn resolve_projection_roots(
         &self,
         requested: &[u32],
         grouping: Option<&GroupPartition>,
-    ) -> Result<Vec<u32>, JsValue> {
+    ) -> Result<(Vec<u32>, bool), JsValue> {
         let base = self.design.graph.nodes.len() as u32;
         let mut roots = Vec::new();
+        let mut requested_seen = HashSet::new();
+        let mut roots_seen = HashSet::new();
+        let mut requested_groups = Vec::new();
+        let mut truncated = false;
         for &id in requested {
+            if !requested_seen.insert(id) {
+                continue;
+            }
             if id < base {
-                roots.push(id);
+                if roots_seen.contains(&id) {
+                    continue;
+                }
+                if roots.len() >= MAX_PROJECTION_ROOTS {
+                    truncated = true;
+                } else {
+                    roots_seen.insert(id);
+                    roots.push(id);
+                }
                 continue;
             }
             let group = grouping
@@ -364,9 +402,61 @@ impl AnalysisSession {
                         .and_then(|group_id| partition.groups.get(group_id as usize))
                 })
                 .ok_or_else(|| js_error("unknown node"))?;
-            roots.extend(group.members.iter().copied());
+            requested_groups.push(group);
         }
-        Ok(roots)
+
+        // Stratify across every canonical membership and distribute sample
+        // positions round-robin, so neither low ids nor an earlier requested
+        // group monopolizes the bounded expansion passed into core traversal.
+        let sample_limits: Vec<usize> = requested_groups
+            .iter()
+            .map(|group| group.members.len().min(MAX_EXPANDED_GROUP_ROOTS))
+            .collect();
+        let mut sample_counts = vec![0usize; requested_groups.len()];
+        let mut remaining = MAX_PROJECTION_ROOTS.saturating_sub(roots.len());
+        while remaining > 0 {
+            let mut advanced = false;
+            for (index, &limit) in sample_limits.iter().enumerate() {
+                if sample_counts[index] >= limit || remaining == 0 {
+                    continue;
+                }
+                sample_counts[index] += 1;
+                remaining -= 1;
+                advanced = true;
+            }
+            if !advanced {
+                break;
+            }
+        }
+        let max_sample = sample_counts.iter().copied().max().unwrap_or(0);
+        'samples: for sample_index in 0..max_sample {
+            for (index, group) in requested_groups.iter().enumerate() {
+                let target = sample_counts[index];
+                if sample_index >= target {
+                    continue;
+                }
+                let member_index = if target == 1 {
+                    0
+                } else {
+                    sample_index * (group.members.len() - 1) / (target - 1)
+                };
+                let member = group.members[member_index];
+                if !roots_seen.insert(member) {
+                    continue;
+                }
+                if roots.len() >= MAX_PROJECTION_ROOTS {
+                    roots_seen.remove(&member);
+                    truncated = true;
+                    break 'samples;
+                }
+                roots.push(member);
+            }
+        }
+        truncated |= requested_groups
+            .iter()
+            .zip(sample_counts)
+            .any(|(group, sampled)| group.members.len() > sampled);
+        Ok((roots, truncated))
     }
 }
 
@@ -414,8 +504,9 @@ fn js_error(message: impl AsRef<str>) -> JsValue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
     use synth_explorer_analysis::analysis::PathsResponse;
+    use synth_explorer_analysis::grouping::{Group, GroupKind};
 
     const PRECOMPUTED: &str = include_str!(
         "../../web/public/precomputed/37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8.json"
@@ -530,5 +621,94 @@ mod tests {
         assert_eq!(path_identities(&depth), path_identities(&delay));
         assert!(path_identities(&depth).is_superset(&response_identities(&depth_only)));
         assert!(path_identities(&depth).len() > depth_only.paths.len());
+    }
+
+    #[test]
+    fn synthetic_cone_root_survives_turning_grouping_off() {
+        let session = session("gates", "series7");
+        let base = session.design.graph.nodes.len() as u32;
+        let group_id = session
+            .design
+            .grouping
+            .groups
+            .iter()
+            .position(|group| group.members.len() >= 2)
+            .expect("fixture has a grouped vector") as u32;
+        let synthetic_id = base + group_id;
+        let response = session
+            .cone_json(
+                &serde_json::json!({
+                    "nodes": [synthetic_id],
+                    "dir": "fanin",
+                    "max_depth": 1,
+                    "max_nodes": 400,
+                    "group_vectors": false
+                })
+                .to_string(),
+            )
+            .expect("synthetic root resolves while the response is ungrouped");
+        let json: serde_json::Value = serde_json::from_str(&response).expect("cone JSON parses");
+        let nodes = json["nodes"].as_array().expect("nodes is an array");
+
+        assert!(!nodes.is_empty());
+        assert!(
+            nodes
+                .iter()
+                .all(|node| node["id"].as_u64().is_some_and(|id| id < u64::from(base)))
+        );
+
+        let (once, once_truncated) = session
+            .resolve_projection_roots(&[synthetic_id], Some(&session.design.grouping))
+            .expect("one synthetic root resolves");
+        let (repeated, repeated_truncated) = session
+            .resolve_projection_roots(&vec![synthetic_id; 200], Some(&session.design.grouping))
+            .expect("repeated synthetic roots resolve");
+        assert_eq!(repeated, once, "duplicate requests must not amplify roots");
+        assert_eq!(repeated_truncated, once_truncated);
+
+        let oversized = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Memory,
+                members: (0..5_000).collect(),
+                label: "memory [5000×1]".to_owned(),
+                cell_type: "$mem".to_owned(),
+            }],
+            group_of: HashMap::new(),
+        };
+        let (bounded, bounded_truncated) = session
+            .resolve_projection_roots(&[base], Some(&oversized))
+            .expect("oversized synthetic root resolves within the raw-node cap");
+        assert_eq!(bounded.len(), MAX_EXPANDED_GROUP_ROOTS);
+        assert!(bounded_truncated);
+        assert_eq!(bounded.first(), Some(&0));
+        assert_eq!(bounded.last(), Some(&4_999));
+
+        let group_count = 25u32;
+        let members_per_group = 2_048u32;
+        let many_groups = GroupPartition {
+            groups: (0..group_count)
+                .map(|group| Group {
+                    kind: GroupKind::Memory,
+                    members: (group * members_per_group..(group + 1) * members_per_group).collect(),
+                    label: format!("memory{group} [2048×1]"),
+                    cell_type: "$mem".to_owned(),
+                })
+                .collect(),
+            group_of: HashMap::new(),
+        };
+        let requested: Vec<u32> = (0..group_count).map(|group| base + group).collect();
+        let (fair, fair_truncated) = session
+            .resolve_projection_roots(&requested, Some(&many_groups))
+            .expect("many synthetic groups share the global root cap fairly");
+        assert_eq!(fair.len(), MAX_PROJECTION_ROOTS);
+        assert!(fair_truncated);
+        for group in 0..group_count as usize {
+            assert_eq!(fair[group], group as u32 * members_per_group);
+            assert_eq!(
+                fair[(MAX_PROJECTION_ROOTS / group_count as usize - 1) * group_count as usize
+                    + group],
+                (group as u32 + 1) * members_per_group - 1
+            );
+        }
     }
 }

@@ -111,6 +111,7 @@ export interface GraphOptions {
   hideConst: boolean
   focus: boolean
   groupVectors: boolean
+  groupMemories: boolean
 }
 
 export interface EditorHighlight {
@@ -137,6 +138,7 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideConst: true,
   focus: true,
   groupVectors: true,
+  groupMemories: true,
 }
 
 function sourceGraphRequest(
@@ -237,7 +239,8 @@ export interface Store {
     rootPortBits?: number[]
   }) => void
   openControlCone: (opts: {
-    node: number
+    node?: number
+    nodes?: number[]
     label: string
     generated?: boolean
   }) => void
@@ -1019,10 +1022,12 @@ export function StoreProvider({
   const openControlCone = useCallback(
     ({
       node,
+      nodes: requestedNodes,
       label,
       generated,
     }: {
-      node: number
+      node?: number
+      nodes?: number[]
       label: string
       generated?: boolean
     }) => {
@@ -1030,14 +1035,22 @@ export function StoreProvider({
       cancelSourceProbe()
       sourceSelectionActiveRef.current = false
       const dir = generated ? 'fanin' : 'fanout'
+      const roots = [...new Set(requestedNodes?.length ? requestedNodes : node == null ? [] : [node])]
+      if (roots.length === 0) return
+      const rootLimit = 200
+      const nodes = roots.length <= rootLimit
+        ? roots
+        : Array.from({ length: rootLimit }, (_, index) =>
+            roots[Math.floor(index * (roots.length - 1) / (rootLimit - 1))],
+          )
       setGraphOptionsState((options) => ({ ...options, hideControl: false }))
       setConeReq({
         kind: 'cone',
         designId: designRef.current?.design_id ?? '',
-        node,
-        nodes: [node],
+        node: nodes[0],
+        nodes,
         dir,
-        label: `${label} (${generated ? 'generated control fanin' : 'control fanout'})`,
+        label: `${label} (${generated ? 'generated control fanin' : 'control fanout'}${nodes.length < roots.length ? `; ${nodes.length}/${roots.length} drivers` : ''})`,
         highlight: [],
         nonce: nextNonce(),
       })

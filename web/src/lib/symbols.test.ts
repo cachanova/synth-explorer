@@ -5,6 +5,7 @@ import {
   boxBadge,
   bubbleAt,
   controlLabel,
+  controlDriverIds,
   controlsFor,
   inferPortDirection,
   inferPortDirections,
@@ -91,12 +92,32 @@ describe('symbolKind', () => {
   })
 
   it('does not classify unrelated RAM-prefixed cells as memories', () => {
-    expect(symbolKind(cell('ramp_generator'))).toBe('box')
+    for (const cellType of [
+      'ramp_generator',
+      'RAMDISK',
+      'RAMBUS',
+      'RAM64_CONTROLLER',
+      'RAM64CONTROLLER',
+      'RAM64X1CACHE',
+      'RAMB36CONTROLLER',
+      'RAMB4_S36',
+      'RAMB16BWE_S1',
+      'RAMB16_S36_S1',
+      'RAMD32CACHE',
+      'URAM_CACHE',
+      'URAM288CACHE',
+      'SPRAM_CONTROLLER',
+      'SB_RAM_WRAPPER',
+      'SB_RAM40_CONTROLLER',
+    ]) {
+      expect(symbolKind(cell(cellType)), cellType).toBe('box')
+      expect(isSpecialPrimitive(cell(cellType)), cellType).toBe(false)
+    }
   })
 
   it('recognizes memory primitives across supported synthesis families', () => {
     for (const primitive of [
-      '$mem_v2', 'RAM32M', 'RAMB36E2', 'URAM288', 'DP16KD', 'SB_RAM40_4K',
+      '$mem_v2', 'RAM32M', 'RAM64X1S_1', 'RAM64X8SW', 'RAM32X16DR8', 'RAMD32', 'RAMD64X1', 'RAMS64E', 'RAMS32X1', 'RAMB4_S8_S8', 'RAMB8BWER', 'RAMB16BWE_S18_S9', 'RAMB36E2', 'URAM288', 'URAM288_BASE', 'DP16KD', 'TRELLIS_DPR16X4', 'SB_RAM40_4K', 'SB_RAM40_4KNRNW',
       'SB_SPRAM256KA',
     ]) {
       expect(symbolKind(cell(primitive)), primitive).toBe('memory')
@@ -208,5 +229,21 @@ describe('operator and control labels', () => {
     expect(controlsFor(n)).toEqual(n.controls)
     expect(controlLabel(n.controls[0])).toBe('CLK sys_clk')
     expect(controlLabel(n.controls[1])).toBe('RST rst_n')
+  })
+
+  it('labels compact grouped controls and preserves every represented driver', () => {
+    const control = {
+      role: 'enable' as const,
+      pin: 'EN',
+      net_name: 'row_en[0]',
+      driver_id: 4,
+      driver_ids: [4, 8, 12],
+      net_count: 3,
+      fanout: 48,
+    }
+    expect(controlLabel(control)).toBe('EN ×3')
+    expect(controlDriverIds(control)).toEqual([4, 8, 12])
+    expect(controlDriverIds({ ...control, driver_ids: undefined, net_count: undefined }))
+      .toEqual([4])
   })
 })

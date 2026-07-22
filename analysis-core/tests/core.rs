@@ -2,8 +2,12 @@ use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions,
 };
+use synth_explorer_analysis::delay_model::DelayProfile;
+use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
-use synth_explorer_analysis::grouping::{GroupKind, GroupPartition};
+use synth_explorer_analysis::grouping::{
+    GroupKind, GroupPartition, GroupingProjection, memory_arrays_from_source,
+};
 use synth_explorer_analysis::netlist::{parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
@@ -77,7 +81,7 @@ fn grouped_register_banks() -> (Graph, Analysis, GroupPartition) {
     let (top, module) = select_top(&netlist, None).unwrap();
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     let analysis = Analysis::new(&graph, vec!["banks.sv".to_owned()]);
-    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, Vec::new());
     (graph, analysis, partition)
 }
 
@@ -122,7 +126,7 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
     let grouped = analysis.full_netlist(
         &graph,
         full_options(2000, false, true, false),
-        Some(&partition),
+        Some(GroupingProjection::all(&partition)),
     );
     assert!(!grouped.truncated);
     // Register banks seed first (ids base+0, base+1); ports follow.
@@ -183,6 +187,156 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
 }
 
 #[test]
+fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "memory.0.0": { "type": "RAM64M" },
+                "memory.0.1": { "type": "RAM64M" },
+                "memory.0.2": { "type": "RAM64M" },
+                "other.0.0": { "type": "RAM64M" },
+                "other.0.1": { "type": "RAM64M" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "memories": {
+                "memory": {
+                    "attributes": { "src": "fifo.sv:18.26-18.32" },
+                    "width": 16,
+                    "start_offset": 0,
+                    "size": 128
+                },
+                "other": {
+                    "width": 8,
+                    "start_offset": 0,
+                    "size": 64
+                }
+            }
+        } }
+    }))
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &final_netlist,
+        &source_netlist,
+        vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
+        "xilinx",
+        DelayProfile::Series7,
+        false,
+    )
+    .unwrap();
+
+    let memory_groups: Vec<_> = design
+        .grouping
+        .groups
+        .iter()
+        .filter(|group| group.kind == GroupKind::Memory)
+        .collect();
+    assert_eq!(memory_groups.len(), 2);
+    assert_eq!(memory_groups[0].label, "memory [128×16]");
+    assert_eq!(memory_groups[0].members.len(), 3);
+    assert_eq!(memory_groups[1].label, "other [64×8]");
+    assert_eq!(memory_groups[1].members.len(), 2);
+
+    let grouped = design.analysis.full_netlist(
+        &design.graph,
+        full_options(2000, false, true, false),
+        Some(GroupingProjection::all(&design.grouping)),
+    );
+    let memory = grouped
+        .nodes
+        .iter()
+        .find(|node| node.node.name == "memory [128×16]")
+        .expect("logical memory renders as one grouped node");
+    assert_eq!(memory.node.cell_type.as_deref(), Some("RAM64M"));
+    assert_eq!(memory.node.seq, Some(true));
+    assert_eq!(memory.node.register, Some(false));
+    assert_eq!(memory.width, Some(3));
+    assert_eq!(memory.member_count, Some(3));
+    assert_eq!(memory.members.as_deref().map(<[_]>::len), Some(3));
+}
+
+#[test]
+fn vivado_memory_matching_prefers_the_longest_logical_reg_prefix() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "foo_regbank_reg_0": { "type": "RAM32M" },
+                "foo_regbank_reg_1": { "type": "RAM32M" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "memories": {
+                "foo": { "width": 8, "start_offset": 0, "size": 32 },
+                "foo_regbank": { "width": 16, "start_offset": 0, "size": 64 }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&final_netlist, None).unwrap();
+    let graph = Graph::from_netlist(&final_netlist, top, module).unwrap();
+
+    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
+
+    assert_eq!(arrays.len(), 1);
+    assert_eq!(arrays[0].name, "foo_regbank");
+    assert_eq!(arrays[0].members.len(), 2);
+}
+
+#[test]
+fn memory_matching_keeps_identical_child_arrays_in_separate_groups() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "u0.memory.0.0": { "type": "RAM64M" },
+                "u0.memory.0.1": { "type": "RAM64M" },
+                "u1.memory.0.0": { "type": "RAM64M" },
+                "u1.memory.0.1": { "type": "RAM64M" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": {
+            "top": {
+                "attributes": { "top": "1" },
+                "cells": {
+                    "u0": { "type": "child" },
+                    "u1": { "type": "child" }
+                }
+            },
+            "child": {
+                "memories": {
+                    "memory": { "width": 16, "start_offset": 0, "size": 128 }
+                }
+            }
+        }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&final_netlist, None).unwrap();
+    let graph = Graph::from_netlist(&final_netlist, top, module).unwrap();
+
+    let arrays = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
+
+    assert_eq!(arrays.len(), 2);
+    assert_eq!(arrays[0].name, "u0.memory");
+    assert_eq!(arrays[0].members.len(), 2);
+    assert_eq!(arrays[1].name, "u1.memory");
+    assert_eq!(arrays[1].members.len(), 2);
+    assert_ne!(arrays[0].members, arrays[1].members);
+}
+
+#[test]
 fn grouped_budgets_count_units_not_member_bits() {
     let (graph, analysis, partition) = grouped_register_banks();
     let base = graph.nodes.len() as u32;
@@ -193,7 +347,7 @@ fn grouped_budgets_count_units_not_member_bits() {
     let full = analysis.full_netlist(
         &graph,
         full_options(units, false, true, false),
-        Some(&partition),
+        Some(GroupingProjection::all(&partition)),
     );
     assert!(!full.truncated, "a cap of one per unit must fit everything");
     assert_eq!(full.nodes.len(), units);
@@ -201,7 +355,7 @@ fn grouped_budgets_count_units_not_member_bits() {
     let capped = analysis.full_netlist(
         &graph,
         full_options(units - 1, false, true, false),
-        Some(&partition),
+        Some(GroupingProjection::all(&partition)),
     );
     assert!(capped.truncated);
     assert!(capped.nodes.len() < units);
@@ -210,7 +364,12 @@ fn grouped_budgets_count_units_not_member_bits() {
     let q_root = partition.groups[0].members[0];
     let y_root = partition.groups[1].members[0];
     let cone = analysis
-        .multi_root_cone(&graph, &[q_root, y_root], cone_options(1), Some(&partition))
+        .multi_root_cone(
+            &graph,
+            &[q_root, y_root],
+            cone_options(1),
+            Some(GroupingProjection::all(&partition)),
+        )
         .unwrap();
     assert!(cone.truncated);
     assert_eq!(cone.nodes.len(), 1);
@@ -226,7 +385,12 @@ fn grouped_cone_from_member_lands_on_its_group_root() {
     let member = partition.groups[1].members[0];
 
     let cone = analysis
-        .cone(&graph, member, cone_options(300), Some(&partition))
+        .cone(
+            &graph,
+            member,
+            cone_options(300),
+            Some(GroupingProjection::all(&partition)),
+        )
         .unwrap();
 
     let root = cone

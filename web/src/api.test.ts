@@ -44,6 +44,7 @@ describe('browser-local API facade', () => {
         max_nodes: 400,
         show_infrastructure: false,
         group_vectors: false,
+        group_memories: false,
         hide_control: true,
         hide_const: false,
         around: undefined,

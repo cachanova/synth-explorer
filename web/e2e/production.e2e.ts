@@ -25,6 +25,21 @@ async function waitForAutomaticSynthesis(
   })
 }
 
+async function setInferredFifoDepth(page: Page, depth: 16 | 64 | 128 | 512) {
+  const editor = page.locator('.cm-content')
+  await expect(editor).toContainText('parameter int unsigned DEPTH = 16')
+  if (depth === 16) return
+  await editor.click()
+  await editor.press('Control+Home')
+  await editor.press('ArrowDown')
+  await editor.press('ArrowDown')
+  await editor.press('End')
+  await editor.press('ArrowLeft')
+  await editor.press('Backspace')
+  await editor.press('Backspace')
+  await editor.pressSequentially(String(depth))
+}
+
 async function startAnalysisStateRecording(page: Page) {
   await page.evaluate(() => {
     const pane = document.querySelector('.pane-right')
@@ -560,7 +575,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const initialLayoutRequests = await page.evaluate(
     () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
   )
-  await page.getByLabel('group buses').uncheck()
+  await page.getByLabel('group vectors').uncheck()
   await expect
     .poll(() =>
       page.evaluate(
@@ -572,7 +587,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await expect(page.locator('.g-node-body')).not.toHaveCount(exactCounts.nodes)
   const ungroupedLayoutRequests = initialLayoutRequests + 1
 
-  await page.getByLabel('group buses').check()
+  await page.getByLabel('group vectors').check()
   await expect(page.locator('.g-node-body')).toHaveCount(exactCounts.nodes)
   await expect
     .poll(() =>
@@ -845,6 +860,183 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   expect(apiRequests).toEqual([])
 })
 
+test('stacks mapped primitives from one inferred memory when memories are grouped', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+    await setInferredFifoDepth(page, 128)
+    await page.getByLabel('Platform').selectOption('xilinx')
+  })
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const groupedMemory = page.locator(
+    '.g-node-body.g-symbol-memory[data-member-count]',
+  )
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(groupedMemory).toHaveAttribute(
+    'data-node-tooltip',
+    'RAM64M — memory [128×16]',
+  )
+  const groupedReadRegister = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="7"][data-node-tooltip*="rdreg[0].q"]',
+  )
+  await expect(groupedReadRegister).toHaveCount(1)
+  const memberCount = Number(await groupedMemory.getAttribute('data-member-count'))
+  expect(memberCount).toBeGreaterThan(1)
+  const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
+  expect(groupedId).not.toBeNull()
+  await expect(groupedMemory).toHaveAttribute('role', 'button')
+  await groupedMemory.focus()
+  await groupedMemory.press('Enter')
+  await expect(
+    page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`),
+  ).toHaveText(`×${memberCount}`)
+  await expect(
+    page.locator(`[data-node-stack-id="${groupedId}"] .g-symbol-stack`),
+  ).toHaveCount(memberCount >= 4 ? 2 : 1)
+
+  await page.getByLabel('group memories').uncheck()
+  await expect(page.locator(`[data-node-detail-id="${groupedId}"]`)).toHaveCount(0)
+  await expect(page.locator('.node-card')).toHaveCount(0)
+  await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)
+  await expect(
+    page.locator('.g-node-body.g-symbol-memory[data-member-count]'),
+  ).toHaveCount(0)
+  await page.getByLabel('group memories').check()
+  await expect(groupedMemory).toHaveCount(1)
+  await groupedMemory.focus()
+  await groupedMemory.press('Enter')
+
+  await page.getByRole('button', { name: 'Fanin cone' }).click()
+  await page.getByLabel('Focus').check()
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
+  await page.getByLabel('group memories').uncheck()
+  await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)
+  await expect(
+    page.locator('.g-node-body.g-symbol-memory[data-member-count]'),
+  ).toHaveCount(0)
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
+  await page.getByLabel('group memories').check()
+  await expect(groupedMemory).toHaveCount(1)
+  expect(apiRequests).toEqual([])
+})
+
+for (const regression of [
+  { platform: 'ice40', primitive: 'SB_RAM40_4K', depth: 16, count: 1 },
+  { platform: 'ice40', primitive: 'SB_RAM40_4K', depth: 64, count: 1 },
+  { platform: 'ice40', primitive: 'SB_RAM40_4K', depth: 512, count: 2 },
+  { platform: 'ecp5', primitive: 'TRELLIS_DPR16X4', depth: 16, count: 4 },
+  { platform: 'ecp5', primitive: 'TRELLIS_DPR16X4', depth: 64, count: 16 },
+  { platform: 'ecp5', primitive: 'DP16KD', depth: 512, count: 1 },
+] as const) {
+  test(`stacks ${regression.platform} inferred FIFO memory at depth ${regression.depth}`, async ({ page }) => {
+    test.setTimeout(240_000)
+    const apiRequests = recordApiRequests(page)
+    await page.goto('/')
+    await waitForAutomaticSynthesis(page, async () => {
+      await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+      await setInferredFifoDepth(page, regression.depth)
+      await page.getByLabel('Platform').selectOption(regression.platform)
+    })
+
+    await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+    const groupedMemory = page.locator(
+      `.g-node-body.g-symbol-memory[data-node-tooltip="${regression.primitive} — memory [${regression.depth}×16]"]`,
+    )
+    await expect(groupedMemory).toHaveCount(1)
+    await expect(groupedMemory).toHaveAttribute(
+      'data-member-count',
+      String(regression.count),
+    )
+    const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
+    expect(groupedId).not.toBeNull()
+    await groupedMemory.focus()
+    await groupedMemory.press('Enter')
+    const badge = page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`)
+    if (regression.count === 1) {
+      await expect(badge).toHaveCount(0)
+    } else {
+      await expect(badge).toHaveText(`×${regression.count}`)
+    }
+
+    if (regression.platform === 'ice40') {
+      if (regression.depth < 512) {
+        await expect(page.locator(
+          '.g-node-body.g-symbol-reg[data-member-count="16"][data-node-tooltip*=".WDATA[15:0]"]',
+        )).toHaveCount(1)
+      } else {
+        await expect(page.locator(
+          '.g-node-body.g-symbol-reg[data-member-count="8"][data-node-tooltip*=".WDATA ×8"]',
+        )).toHaveCount(2)
+      }
+    } else {
+      await expect(page.locator(
+        '.g-node-body.g-symbol-box[data-node-tooltip^="TRELLIS_DPR16X4"]',
+      )).toHaveCount(0)
+    }
+    expect(apiRequests).toEqual([])
+  })
+}
+
+test('stacks DFF-mapped rows from one inferred memory in generic gates', async ({ page }) => {
+  test.setTimeout(240_000)
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+    await setInferredFifoDepth(page, 128)
+    await page.getByLabel('Platform').selectOption('gates')
+  })
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const groupedMemory = page.locator(
+    '.g-node-body.g-symbol-memory[data-member-count]',
+  )
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(groupedMemory).toHaveAttribute(
+    'data-node-tooltip',
+    'MEM — memory [128×16]',
+  )
+  await expect(groupedMemory).toHaveAttribute('data-member-count', '2048')
+  const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
+  expect(groupedId).not.toBeNull()
+  await expect(groupedMemory).toHaveAttribute('role', 'button')
+  await groupedMemory.focus()
+  await groupedMemory.press('Enter')
+  await expect(
+    page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`),
+  ).toHaveText('×2048')
+  const groupedDetails = page.locator(`[data-node-detail-id="${groupedId}"]`)
+  await expect(groupedDetails.locator('.g-control-label')).toHaveCount(2)
+  await expect(groupedDetails.locator('.g-control-label').last()).toContainText('EN ×128')
+  expect(await groupedDetails.evaluate((node) => (node as SVGGElement).getBBox().height))
+    .toBeLessThan(150)
+  await page.getByRole('button', { name: 'Fanin cone' }).click()
+  await page.getByLabel('Focus').check()
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
+  const maxNodes = page.getByTitle('Max nodes to request')
+  for (const expected of ['300', '200', '100', '50']) {
+    await maxNodes.locator('button').first().click()
+    await expect(maxNodes.locator('.val')).toHaveText(expected)
+  }
+  await page.getByLabel('group memories').uncheck()
+  await expect(page.locator('.g-node-body.g-symbol-memory[data-member-count]')).toHaveCount(0)
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThanOrEqual(50)
+  await expect(page.locator('.graph-banner .msg', { hasText: /^truncated/ })).toBeVisible()
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
+  await page.getByLabel('group memories').check()
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(groupedMemory).toHaveAttribute('data-member-count', '2048')
+  expect(apiRequests).toEqual([])
+})
+
 test('source selections and Focus use the in-browser Rust analysis worker', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []
@@ -905,6 +1097,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(workerContract.sourcePayloadKeys).toEqual([
     'end_line',
     'file',
+    'group_memories',
     'group_vectors',
     'hide_const',
     'hide_control',

@@ -32,7 +32,23 @@ pub struct YosysModule {
     #[serde(default)]
     pub cells: BTreeMap<String, YosysCell>,
     #[serde(default)]
+    pub memories: BTreeMap<String, YosysMemory>,
+    #[serde(default)]
     pub netnames: BTreeMap<String, YosysNetname>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct YosysMemory {
+    #[serde(default)]
+    pub hide_name: u8,
+    #[serde(default)]
+    pub attributes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub width: usize,
+    #[serde(default)]
+    pub start_offset: i64,
+    #[serde(default)]
+    pub size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

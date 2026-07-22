@@ -309,8 +309,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
     width = Math.max(width, Math.round(controlWidth))
     height = base.height + controls.length * 13
   }
-  // Reserve a row and width only when a "×N" bit badge will actually render
-  // (grouped nodes whose label does not already show the width).
+  // Reserve a row and width only when a separate "×N" member badge renders.
   const badge = groupBadgeText(node)
   if (badge) {
     width = Math.max(width, Math.round(badge.length * CHAR_WIDTH + PAD_X))

@@ -139,19 +139,19 @@ export function nodeLabel(node: GraphNode | NodeRef): string {
 }
 
 /**
- * "×N" bit-count badge for a grouped (width>=2) node, or null when the width is
- * already visible in the node's own label/name as a "[hi:lo]" range or "×N"
- * suffix — the common case (`q[7:0]`, `a[7:0]`, `sum ×3`) where the badge would
- * just repeat what the label says. Kept only for grouped nodes whose visible
- * text carries no width (e.g. a hidden-name logic vector).
+ * "×N" member-count badge for a grouped node, or null when the count is already
+ * visible in the node's own label/name as a "[hi:lo]" range or trailing "×N".
+ * A logical memory shape such as `[16×16]` is not a physical member count, so it
+ * deliberately keeps the separate badge (`memory [16×16]`, `×4`).
  */
 export function groupBadgeText(node: GraphNode | NodeRef): string | null {
-  const width = (node as GraphNode).width ?? 0
-  if (width < 2) return null
-  const showsWidth = (s: string) => /\[\d+:\d+\]/.test(s) || s.includes('×')
-  if (showsWidth(nodeLabel(node))) return null
-  if (node.name && !isHiddenName(node.name) && showsWidth(node.name)) return null
-  return `×${width}`
+  const graphNode = node as GraphNode
+  const memberCount = graphNode.member_count ?? graphNode.width ?? 0
+  if (memberCount < 2) return null
+  const showsCount = (s: string) => /\[\d+:\d+\]/.test(s) || /×\d+\s*$/.test(s)
+  if (showsCount(nodeLabel(node))) return null
+  if (node.name && !isHiddenName(node.name) && showsCount(node.name)) return null
+  return `×${memberCount}`
 }
 
 /** True for yosys auto-generated / hidden names ("$abc$240$auto$blifparse..."). */

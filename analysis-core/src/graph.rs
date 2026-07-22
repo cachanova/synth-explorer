@@ -130,8 +130,10 @@ impl Graph {
         }
 
         for (cell_name, cell) in &module.cells {
-            let seq_kind = is_sequential_type(&cell.cell_type);
-            let blackbox = is_blackbox_cell(cell, &blackbox_modules, &module_names);
+            let vendor_class = vendor_primitive_class(&cell.cell_type);
+            let seq_kind = is_sequential_type_with_vendor(&cell.cell_type, vendor_class);
+            let blackbox =
+                is_blackbox_cell_with_vendor(cell, &blackbox_modules, &module_names, vendor_class);
             let seq = seq_kind || blackbox;
             let id = builder.add_node(Node {
                 id: 0,
@@ -751,6 +753,13 @@ fn trim_params(params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
 }
 
 pub fn is_sequential_type(cell_type: &str) -> bool {
+    is_sequential_type_with_vendor(cell_type, vendor_primitive_class(cell_type))
+}
+
+fn is_sequential_type_with_vendor(
+    cell_type: &str,
+    vendor_class: Option<VendorPrimitiveClass>,
+) -> bool {
     let upper = cell_type.to_ascii_uppercase();
     cell_type.starts_with("$dff")
         || cell_type.starts_with("$sdff")
@@ -761,17 +770,14 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
         || cell_type.starts_with("$adlatch")
         || cell_type == "$ff"
         || cell_type == "$sr"
-        || cell_type.starts_with("$mem")
+        || is_memory_type(cell_type)
         || upper.starts_with("$_DFF")
         || upper.starts_with("$_SDFF")
         || upper.starts_with("$_ALDFF")
         || upper.starts_with("$_DLATCH")
         || upper.starts_with("$_SR_")
         || upper == "$_FF_"
-        || matches!(
-            vendor_primitive_class(cell_type),
-            Some(VendorPrimitiveClass::Sequential)
-        )
+        || matches!(vendor_class, Some(VendorPrimitiveClass::Sequential))
 }
 
 /// True only for edge-triggered/latch storage whose output is a register value.
@@ -780,8 +786,158 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
 /// top-level-output aliases.
 pub fn is_register_type(cell_type: &str) -> bool {
     is_sequential_type(cell_type)
-        && !cell_type.starts_with("$mem")
+        && !is_memory_type(cell_type)
         && !is_addressable_sequential_type(cell_type)
+}
+
+/// Stateful memory cells emitted by the generic and supported FPGA flows.
+/// Keep this aligned with the frontend's memory-symbol vocabulary: these are
+/// traversal boundaries, but they are neither black boxes nor register bits.
+pub fn is_memory_type(cell_type: &str) -> bool {
+    let bytes = cell_type.as_bytes();
+    let starts_with_ignore_ascii_case = |prefix: &[u8]| {
+        bytes
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    };
+    let equals_any = |known: &[&[u8]]| known.iter().any(|name| bytes.eq_ignore_ascii_case(name));
+    let xilinx_lutram = || {
+        equals_any(&[
+            b"RAM16X1D",
+            b"RAM16X1D_1",
+            b"RAM16X1S",
+            b"RAM16X1S_1",
+            b"RAM16X2S",
+            b"RAM16X4S",
+            b"RAM16X8S",
+            b"RAM32M",
+            b"RAM32M16",
+            b"RAM32X1D",
+            b"RAM32X1D_1",
+            b"RAM32X1S",
+            b"RAM32X1S_1",
+            b"RAM32X2S",
+            b"RAM32X4S",
+            b"RAM32X8S",
+            b"RAM32X16DR8",
+            b"RAM64M",
+            b"RAM64M8",
+            b"RAM64X1D",
+            b"RAM64X1D_1",
+            b"RAM64X1S",
+            b"RAM64X1S_1",
+            b"RAM64X2S",
+            b"RAM64X8SW",
+            b"RAM128X1D",
+            b"RAM128X1S",
+            b"RAM128X1S_1",
+            b"RAM256X1D",
+            b"RAM256X1S",
+            b"RAM512X1S",
+        ])
+    };
+    let xilinx_block_ram = || {
+        equals_any(&[
+            b"RAMB4_S1",
+            b"RAMB4_S1_S1",
+            b"RAMB4_S1_S2",
+            b"RAMB4_S1_S4",
+            b"RAMB4_S1_S8",
+            b"RAMB4_S1_S16",
+            b"RAMB4_S2",
+            b"RAMB4_S2_S2",
+            b"RAMB4_S2_S4",
+            b"RAMB4_S2_S8",
+            b"RAMB4_S2_S16",
+            b"RAMB4_S4",
+            b"RAMB4_S4_S4",
+            b"RAMB4_S4_S8",
+            b"RAMB4_S4_S16",
+            b"RAMB4_S8",
+            b"RAMB4_S8_S8",
+            b"RAMB4_S8_S16",
+            b"RAMB4_S16",
+            b"RAMB4_S16_S16",
+            b"RAMB8BWER",
+            b"RAMB16",
+            b"RAMB16BWER",
+            b"RAMB16BWE_S18",
+            b"RAMB16BWE_S18_S9",
+            b"RAMB16BWE_S18_S18",
+            b"RAMB16BWE_S36",
+            b"RAMB16BWE_S36_S9",
+            b"RAMB16BWE_S36_S18",
+            b"RAMB16BWE_S36_S36",
+            b"RAMB16_S1",
+            b"RAMB16_S1_S1",
+            b"RAMB16_S1_S2",
+            b"RAMB16_S1_S4",
+            b"RAMB16_S1_S9",
+            b"RAMB16_S1_S18",
+            b"RAMB16_S1_S36",
+            b"RAMB16_S2",
+            b"RAMB16_S2_S2",
+            b"RAMB16_S2_S4",
+            b"RAMB16_S2_S9",
+            b"RAMB16_S2_S18",
+            b"RAMB16_S2_S36",
+            b"RAMB16_S4",
+            b"RAMB16_S4_S4",
+            b"RAMB16_S4_S9",
+            b"RAMB16_S4_S18",
+            b"RAMB16_S4_S36",
+            b"RAMB16_S9",
+            b"RAMB16_S9_S9",
+            b"RAMB16_S9_S18",
+            b"RAMB16_S9_S36",
+            b"RAMB16_S18",
+            b"RAMB16_S18_S18",
+            b"RAMB16_S18_S36",
+            b"RAMB16_S36",
+            b"RAMB16_S36_S36",
+            b"RAMB18",
+            b"RAMB18E1",
+            b"RAMB18E2",
+            b"RAMB18SDP",
+            b"RAMB32_S64_ECC",
+            b"RAMB36",
+            b"RAMB36E1",
+            b"RAMB36E2",
+            b"RAMB36SDP",
+        ])
+    };
+    let xilinx_ram = xilinx_lutram()
+        || xilinx_block_ram()
+        || equals_any(&[
+            b"RAMD32",
+            b"RAMD32E",
+            b"RAMD32X1",
+            b"RAMD64",
+            b"RAMD64E",
+            b"RAMD64X1",
+            b"RAMS32",
+            b"RAMS32E",
+            b"RAMS32X1",
+            b"RAMS64",
+            b"RAMS64E",
+            b"RAMS64X1",
+        ]);
+    (starts_with_ignore_ascii_case(b"$mem"))
+        || xilinx_ram
+        || equals_any(&[b"URAM288", b"URAM288_BASE"])
+        || cell_type.eq_ignore_ascii_case("DP16KD")
+        || cell_type.eq_ignore_ascii_case("TRELLIS_DPR16X4")
+        || cell_type.eq_ignore_ascii_case("SPRAM")
+        || cell_type.eq_ignore_ascii_case("SPRAM256KA")
+        || equals_any(&[
+            b"SB_RAM40_4K",
+            b"SB_RAM40_4KNR",
+            b"SB_RAM40_4KNW",
+            b"SB_RAM40_4KNRNW",
+            b"SB_SPRAM256KA",
+        ])
+        || cell_type.eq_ignore_ascii_case("SRL16E")
+        || cell_type.eq_ignore_ascii_case("SRLC32E")
 }
 
 /// Stateful primitives whose output also has a combinational address path.
@@ -798,10 +954,28 @@ pub fn is_blackbox_cell(
     blackbox_modules: &HashSet<String>,
     module_names: &HashSet<&str>,
 ) -> bool {
-    if attr_truthy(&cell.attributes, "blackbox") {
+    is_blackbox_cell_with_vendor(
+        cell,
+        blackbox_modules,
+        module_names,
+        vendor_primitive_class(&cell.cell_type),
+    )
+}
+
+fn is_blackbox_cell_with_vendor(
+    cell: &YosysCell,
+    blackbox_modules: &HashSet<String>,
+    module_names: &HashSet<&str>,
+    vendor_class: Option<VendorPrimitiveClass>,
+) -> bool {
+    let confirmed_primitive = is_memory_type(&cell.cell_type) || vendor_class.is_some();
+    // Yosys carries `blackbox` from FPGA simulation-library declarations onto
+    // otherwise confirmed primitive instances. Exact supported primitive
+    // grammar must win here; arbitrary attributed cells remain blackboxes.
+    if attr_truthy(&cell.attributes, "blackbox") && !confirmed_primitive {
         return true;
     }
-    if vendor_primitive_class(&cell.cell_type).is_some() {
+    if confirmed_primitive {
         return false;
     }
     if blackbox_modules.contains(&cell.cell_type) {
@@ -933,5 +1107,86 @@ mod tests {
         for not_latch in ["FDRE", "$dff", "$dffe", "LUT6"] {
             assert!(!is_latch_type(not_latch), "{not_latch}");
         }
+    }
+
+    #[test]
+    fn memory_types_cover_supported_primitives_without_claiming_named_blackboxes() {
+        for memory in [
+            "$mem_v2",
+            "RAM64M",
+            "RAM64X1S_1",
+            "RAM64X8SW",
+            "RAM32X16DR8",
+            "RAMD32",
+            "RAMD64X1",
+            "RAMS64E",
+            "RAMS32X1",
+            "RAMB4_S8_S8",
+            "RAMB8BWER",
+            "RAMB16BWE_S18_S9",
+            "RAMB36E2",
+            "URAM288",
+            "URAM288_BASE",
+            "DP16KD",
+            "TRELLIS_DPR16X4",
+            "SB_RAM40_4K",
+            "SB_RAM40_4KNRNW",
+            "SB_SPRAM256KA",
+            "SRLC32E",
+        ] {
+            assert!(is_memory_type(memory), "{memory}");
+        }
+        for blackbox in [
+            "RAM_CONTROLLER",
+            "RAMDISK",
+            "RAMBUS",
+            "RAM64_CONTROLLER",
+            "RAM64CONTROLLER",
+            "RAM64X1CACHE",
+            "RAMB36CONTROLLER",
+            "RAMB4_S36",
+            "RAMB16BWE_S1",
+            "RAMB16_S36_S1",
+            "RAMD32CACHE",
+            "URAM_CACHE",
+            "URAM288CACHE",
+            "SPRAM_CONTROLLER",
+            "TRELLIS_DPR_CONTROLLER",
+            "SB_RAM_WRAPPER",
+            "SB_RAM40_CONTROLLER",
+            "memory_wrapper",
+            "my_ram",
+        ] {
+            assert!(!is_memory_type(blackbox), "{blackbox}");
+        }
+    }
+
+    #[test]
+    fn numbered_user_blackboxes_do_not_match_primitive_grammar() {
+        let cell = YosysCell {
+            cell_type: "RAM64_CONTROLLER".to_owned(),
+            hide_name: 0,
+            parameters: BTreeMap::new(),
+            attributes: BTreeMap::new(),
+            port_directions: BTreeMap::new(),
+            connections: BTreeMap::new(),
+        };
+
+        assert!(is_blackbox_cell(
+            &cell,
+            &HashSet::from(["RAM64_CONTROLLER".to_owned()]),
+            &HashSet::from(["RAM64_CONTROLLER"]),
+        ));
+
+        let mut library_primitive = cell;
+        library_primitive.cell_type = "RAM64M".to_owned();
+        library_primitive
+            .attributes
+            .insert("blackbox".to_owned(), "1".to_owned());
+        assert!(!is_blackbox_cell(
+            &library_primitive,
+            &HashSet::from(["RAM64M".to_owned()]),
+            &HashSet::from(["RAM64M"]),
+        ));
     }
 }

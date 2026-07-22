@@ -1,4 +1,9 @@
-import type { Subgraph } from '../types'
+import type { GraphNode, Subgraph } from '../types'
+
+/** Keep grouped nodes synthetic so the worker expands them within its normal budget. */
+export function coneRootIds(node: GraphNode): number[] {
+  return [node.id]
+}
 
 /**
  * Choose the graph whose geometry is rendered. Selection changes are styling-

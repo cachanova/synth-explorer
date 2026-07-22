@@ -117,6 +117,7 @@ export interface ConeOptions {
   hide_const?: boolean
   show_infrastructure?: boolean
   group_vectors?: boolean
+  group_memories?: boolean
   // Restrict the first hop of a single-root cone to one physical sink pin.
   root_port?: string
   root_port_bit?: number
@@ -139,6 +140,7 @@ export interface NetlistOptions {
   max_nodes?: number
   show_infrastructure?: boolean
   group_vectors?: boolean
+  group_memories?: boolean
   hide_control?: boolean
   hide_const?: boolean
   around?: number[]
@@ -155,6 +157,7 @@ export function getNetlist(
       max_nodes: opts.max_nodes ?? DEFAULT_GRAPH_MAX_NODES,
       show_infrastructure: opts.show_infrastructure ?? false,
       group_vectors: opts.group_vectors ?? false,
+      group_memories: opts.group_memories ?? false,
       hide_control: opts.hide_control ?? true,
       hide_const: opts.hide_const ?? false,
       around: opts.around,

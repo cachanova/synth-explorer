@@ -35,6 +35,24 @@ describe('groupBadgeText', () => {
     expect(groupBadgeText(grouped({ cell_type: '$mux', name: 'sel ×3' }))).toBeNull()
   })
 
+  it('shows the physical primitive count beside logical memory dimensions', () => {
+    expect(groupBadgeText(grouped({
+      cell_type: 'RAM64M',
+      name: 'memory [16×16]',
+      width: 4,
+      member_count: 4,
+    }))).toBe('×4')
+  })
+
+  it('uses the canonical member count when the projection is sampled', () => {
+    expect(groupBadgeText(grouped({
+      cell_type: '$mem',
+      name: 'memory [128×16]',
+      width: 256,
+      member_count: 2_048,
+    }))).toBe('×2048')
+  })
+
   it('keeps ×N when the visible text carries no width (hidden vector name)', () => {
     expect(groupBadgeText(grouped({ cell_type: '$_AND_', name: '$_AND_ ×8' }))).toBe('×8')
   })
