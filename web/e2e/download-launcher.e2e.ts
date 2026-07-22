@@ -12,6 +12,10 @@ test('offers the Linux local application and complete run instructions', async (
     name: 'Download local Synth Explorer',
   })
   await expect(trigger).toBeVisible()
+  await expect(page.locator('.app-header > :last-child')).toHaveAttribute(
+    'aria-label',
+    'Download local Synth Explorer',
+  )
   await trigger.click()
 
   const dialog = page.getByRole('dialog', {
