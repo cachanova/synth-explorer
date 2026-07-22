@@ -130,8 +130,10 @@ impl Graph {
         }
 
         for (cell_name, cell) in &module.cells {
-            let seq_kind = is_sequential_type(&cell.cell_type);
-            let blackbox = is_blackbox_cell(cell, &blackbox_modules, &module_names);
+            let vendor_class = vendor_primitive_class(&cell.cell_type);
+            let seq_kind = is_sequential_type_with_vendor(&cell.cell_type, vendor_class);
+            let blackbox =
+                is_blackbox_cell_with_vendor(cell, &blackbox_modules, &module_names, vendor_class);
             let seq = seq_kind || blackbox;
             let id = builder.add_node(Node {
                 id: 0,
@@ -751,6 +753,13 @@ fn trim_params(params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
 }
 
 pub fn is_sequential_type(cell_type: &str) -> bool {
+    is_sequential_type_with_vendor(cell_type, vendor_primitive_class(cell_type))
+}
+
+fn is_sequential_type_with_vendor(
+    cell_type: &str,
+    vendor_class: Option<VendorPrimitiveClass>,
+) -> bool {
     let upper = cell_type.to_ascii_uppercase();
     cell_type.starts_with("$dff")
         || cell_type.starts_with("$sdff")
@@ -768,10 +777,7 @@ pub fn is_sequential_type(cell_type: &str) -> bool {
         || upper.starts_with("$_DLATCH")
         || upper.starts_with("$_SR_")
         || upper == "$_FF_"
-        || matches!(
-            vendor_primitive_class(cell_type),
-            Some(VendorPrimitiveClass::Sequential)
-        )
+        || matches!(vendor_class, Some(VendorPrimitiveClass::Sequential))
 }
 
 /// True only for edge-triggered/latch storage whose output is a register value.
@@ -788,22 +794,50 @@ pub fn is_register_type(cell_type: &str) -> bool {
 /// Keep this aligned with the frontend's memory-symbol vocabulary: these are
 /// traversal boundaries, but they are neither black boxes nor register bits.
 pub fn is_memory_type(cell_type: &str) -> bool {
-    let upper = cell_type.to_ascii_uppercase();
-    let xilinx_ram = upper.strip_prefix("RAM").is_some_and(|suffix| {
-        suffix.starts_with(['B', 'D', 'S'])
-            || suffix
-                .chars()
-                .next()
-                .is_some_and(|character| character.is_ascii_digit())
-    });
-    cell_type.starts_with("$mem")
+    let bytes = cell_type.as_bytes();
+    let starts_with_ignore_ascii_case = |prefix: &[u8]| {
+        bytes
+            .get(..prefix.len())
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
+    };
+    let numbered_family = |prefix: &[u8], allow_underscore: bool| {
+        if !starts_with_ignore_ascii_case(prefix) {
+            return false;
+        }
+        let suffix = &bytes[prefix.len()..];
+        suffix.first().is_some_and(u8::is_ascii_digit)
+            && suffix
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || (allow_underscore && *byte == b'_'))
+    };
+    // Older Xilinx LUTRAM declarations use an exact `_1` variant suffix
+    // (for example RAM64X1S_1). Do not accept arbitrary underscores here:
+    // names such as RAM64_CONTROLLER are user black boxes, not primitives.
+    let xilinx_lutram = || {
+        if !starts_with_ignore_ascii_case(b"RAM") {
+            return false;
+        }
+        let suffix = &bytes[b"RAM".len()..];
+        suffix.first().is_some_and(u8::is_ascii_digit)
+            && (suffix.iter().all(u8::is_ascii_alphanumeric)
+                || suffix
+                    .strip_suffix(b"_1")
+                    .is_some_and(|base| base.iter().all(u8::is_ascii_alphanumeric)))
+    };
+    let xilinx_ram = xilinx_lutram()
+        || numbered_family(b"RAMB", false)
+        || numbered_family(b"RAMD", false)
+        || numbered_family(b"RAMS", false);
+    (starts_with_ignore_ascii_case(b"$mem"))
         || xilinx_ram
-        || upper.starts_with("URAM")
-        || upper == "DP16KD"
-        || upper.starts_with("SPRAM")
-        || upper.starts_with("SB_RAM")
-        || upper.starts_with("SB_SPRAM")
-        || matches!(upper.as_str(), "SRL16E" | "SRLC32E")
+        || numbered_family(b"URAM", false)
+        || cell_type.eq_ignore_ascii_case("DP16KD")
+        || cell_type.eq_ignore_ascii_case("SPRAM")
+        || numbered_family(b"SPRAM", false)
+        || numbered_family(b"SB_RAM", true)
+        || numbered_family(b"SB_SPRAM", true)
+        || cell_type.eq_ignore_ascii_case("SRL16E")
+        || cell_type.eq_ignore_ascii_case("SRLC32E")
 }
 
 /// Stateful primitives whose output also has a combinational address path.
@@ -820,10 +854,28 @@ pub fn is_blackbox_cell(
     blackbox_modules: &HashSet<String>,
     module_names: &HashSet<&str>,
 ) -> bool {
-    if attr_truthy(&cell.attributes, "blackbox") {
+    is_blackbox_cell_with_vendor(
+        cell,
+        blackbox_modules,
+        module_names,
+        vendor_primitive_class(&cell.cell_type),
+    )
+}
+
+fn is_blackbox_cell_with_vendor(
+    cell: &YosysCell,
+    blackbox_modules: &HashSet<String>,
+    module_names: &HashSet<&str>,
+    vendor_class: Option<VendorPrimitiveClass>,
+) -> bool {
+    let confirmed_primitive = is_memory_type(&cell.cell_type) || vendor_class.is_some();
+    // Yosys carries `blackbox` from FPGA simulation-library declarations onto
+    // otherwise confirmed primitive instances. Exact supported primitive
+    // grammar must win here; arbitrary attributed cells remain blackboxes.
+    if attr_truthy(&cell.attributes, "blackbox") && !confirmed_primitive {
         return true;
     }
-    if is_memory_type(&cell.cell_type) || vendor_primitive_class(&cell.cell_type).is_some() {
+    if confirmed_primitive {
         return false;
     }
     if blackbox_modules.contains(&cell.cell_type) {
@@ -962,6 +1014,7 @@ mod tests {
         for memory in [
             "$mem_v2",
             "RAM64M",
+            "RAM64X1S_1",
             "RAMD32",
             "RAMS64E",
             "RAMB36E2",
@@ -973,8 +1026,47 @@ mod tests {
         ] {
             assert!(is_memory_type(memory), "{memory}");
         }
-        for blackbox in ["RAM_CONTROLLER", "memory_wrapper", "my_ram"] {
+        for blackbox in [
+            "RAM_CONTROLLER",
+            "RAMDISK",
+            "RAMBUS",
+            "RAM64_CONTROLLER",
+            "URAM_CACHE",
+            "SPRAM_CONTROLLER",
+            "SB_RAM_WRAPPER",
+            "memory_wrapper",
+            "my_ram",
+        ] {
             assert!(!is_memory_type(blackbox), "{blackbox}");
         }
+    }
+
+    #[test]
+    fn numbered_user_blackboxes_do_not_match_primitive_grammar() {
+        let cell = YosysCell {
+            cell_type: "RAM64_CONTROLLER".to_owned(),
+            hide_name: 0,
+            parameters: BTreeMap::new(),
+            attributes: BTreeMap::new(),
+            port_directions: BTreeMap::new(),
+            connections: BTreeMap::new(),
+        };
+
+        assert!(is_blackbox_cell(
+            &cell,
+            &HashSet::from(["RAM64_CONTROLLER".to_owned()]),
+            &HashSet::from(["RAM64_CONTROLLER"]),
+        ));
+
+        let mut library_primitive = cell;
+        library_primitive.cell_type = "RAM64M".to_owned();
+        library_primitive
+            .attributes
+            .insert("blackbox".to_owned(), "1".to_owned());
+        assert!(!is_blackbox_cell(
+            &library_primitive,
+            &HashSet::from(["RAM64M".to_owned()]),
+            &HashSet::from(["RAM64M"]),
+        ));
     }
 }

@@ -111,6 +111,7 @@ export interface GraphOptions {
   hideConst: boolean
   focus: boolean
   groupVectors: boolean
+  groupMemories: boolean
 }
 
 export interface EditorHighlight {
@@ -137,6 +138,7 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   hideConst: true,
   focus: true,
   groupVectors: true,
+  groupMemories: true,
 }
 
 function sourceGraphRequest(

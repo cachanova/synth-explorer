@@ -91,12 +91,23 @@ describe('symbolKind', () => {
   })
 
   it('does not classify unrelated RAM-prefixed cells as memories', () => {
-    expect(symbolKind(cell('ramp_generator'))).toBe('box')
+    for (const cellType of [
+      'ramp_generator',
+      'RAMDISK',
+      'RAMBUS',
+      'RAM64_CONTROLLER',
+      'URAM_CACHE',
+      'SPRAM_CONTROLLER',
+      'SB_RAM_WRAPPER',
+    ]) {
+      expect(symbolKind(cell(cellType)), cellType).toBe('box')
+      expect(isSpecialPrimitive(cell(cellType)), cellType).toBe(false)
+    }
   })
 
   it('recognizes memory primitives across supported synthesis families', () => {
     for (const primitive of [
-      '$mem_v2', 'RAM32M', 'RAMD32', 'RAMS64E', 'RAMB36E2', 'URAM288', 'DP16KD', 'SB_RAM40_4K',
+      '$mem_v2', 'RAM32M', 'RAM64X1S_1', 'RAMD32', 'RAMS64E', 'RAMB36E2', 'URAM288', 'DP16KD', 'SB_RAM40_4K',
       'SB_SPRAM256KA',
     ]) {
       expect(symbolKind(cell(primitive)), primitive).toBe('memory')

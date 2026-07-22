@@ -21,7 +21,13 @@ describe('source selection analysis client', () => {
       analyzeSourceInBrowser(
         'design',
         { file: 'top.sv', startLine: 4, endLine: 5 },
-        { maxNodes: 400, hideControl: true, hideConst: false, groupVectors: true },
+        {
+          maxNodes: 400,
+          hideControl: true,
+          hideConst: false,
+          groupVectors: true,
+          groupMemories: false,
+        },
       ),
     ).resolves.toBe(response)
 
@@ -33,6 +39,7 @@ describe('source selection analysis client', () => {
       hide_control: true,
       hide_const: false,
       group_vectors: true,
+      group_memories: false,
     })
   })
 
@@ -45,7 +52,13 @@ describe('source selection analysis client', () => {
       analyzeSourceInBrowser(
         'design',
         { file: 'top.sv', startLine: 4, endLine: 4 },
-        { maxNodes: 400, hideControl: true, hideConst: true, groupVectors: false },
+        {
+          maxNodes: 400,
+          hideControl: true,
+          hideConst: true,
+          groupVectors: false,
+          groupMemories: true,
+        },
         controller.signal,
       ),
     ).rejects.toMatchObject({ name: 'AbortError' })

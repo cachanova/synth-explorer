@@ -129,9 +129,9 @@ export function Graph({ active }: { active: boolean }) {
 
   // Every option changes a graph projection. Source projections are local;
   // full and node-cone projections still come from the analysis worker.
-  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}`
+  const optsKey = `${graphOptions.maxDepth}|${graphOptions.maxNodes}|${graphOptions.hideControl}|${graphOptions.hideConst}|${graphOptions.groupVectors}|${graphOptions.groupMemories}`
   const fullGraphKey = design
-    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.groupVectors}|${graphOptions.hideControl}|${graphOptions.hideConst}`
+    ? `${design.design_id}|${graphOptions.maxNodes}|${graphOptions.groupVectors}|${graphOptions.groupMemories}|${graphOptions.hideControl}|${graphOptions.hideConst}`
     : null
   const currentRequestKey = design
     ? `${design.design_id}|${coneReq?.nonce ?? 'full'}|${optsKey}`
@@ -139,6 +139,10 @@ export function Graph({ active }: { active: boolean }) {
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
+
+  // Grouped projections use synthetic ids while raw projections use physical
+  // ids. Never carry a detail card across a policy change.
+  useEffect(() => setSelected(null), [graphOptions.groupMemories, graphOptions.groupVectors])
 
   // The full projection changes only with the design or analysis options.
   useEffect(() => {
@@ -178,6 +182,7 @@ export function Graph({ active }: { active: boolean }) {
               max_nodes: graphOptions.maxNodes,
               show_infrastructure: false,
               group_vectors: graphOptions.groupVectors,
+              group_memories: graphOptions.groupMemories,
               hide_control: graphOptions.hideControl,
               hide_const: graphOptions.hideConst,
             },
@@ -195,6 +200,7 @@ export function Graph({ active }: { active: boolean }) {
     [
       fullGraphKey,
       graphOptions.groupVectors,
+      graphOptions.groupMemories,
       graphOptions.hideConst,
       graphOptions.hideControl,
       graphOptions.maxNodes,
@@ -272,6 +278,7 @@ export function Graph({ active }: { active: boolean }) {
             hideControl: graphOptions.hideControl,
             hideConst: graphOptions.hideConst,
             groupVectors: graphOptions.groupVectors,
+            groupMemories: graphOptions.groupMemories,
           }, controller.signal).then((response) => ({
             graph: response.graph,
             status: response.status,
@@ -288,6 +295,7 @@ export function Graph({ active }: { active: boolean }) {
             hide_const: graphOptions.hideConst,
             show_infrastructure: false,
             group_vectors: graphOptions.groupVectors,
+            group_memories: graphOptions.groupMemories,
             root_port: request.rootPort,
             root_port_bit: request.rootPortBit,
             root_port_bits: request.rootPortBits,
@@ -517,6 +525,7 @@ export function Graph({ active }: { active: boolean }) {
         hide_const: graphOptions.hideConst,
         show_infrastructure: false,
         group_vectors: graphOptions.groupVectors,
+        group_memories: graphOptions.groupMemories,
       }
       Promise.all([
         getCone(designId, { ...shared, dir: 'fanin' }, controller.signal),
@@ -577,6 +586,7 @@ export function Graph({ active }: { active: boolean }) {
       displayedGraph?.projectionKey,
       graphInteractive,
       graphOptions.groupVectors,
+      graphOptions.groupMemories,
       graphOptions.hideConst,
       graphOptions.hideControl,
       graphOptions.maxNodes,
@@ -792,14 +802,26 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
 
       <label
         className="toggle"
-        title="Collapse bit-parallel vectors and mapped primitives from one logical memory"
+        title="Collapse bit-parallel ports, registers, and combinational logic"
       >
         <input
           type="checkbox"
           checked={graphOptions.groupVectors}
           onChange={(event) => setOpt({ groupVectors: event.target.checked })}
         />
-        group buses
+        group vectors
+      </label>
+
+      <label
+        className="toggle"
+        title="Collapse mapped RAM or DFF primitives from each logical memory"
+      >
+        <input
+          type="checkbox"
+          checked={graphOptions.groupMemories}
+          onChange={(event) => setOpt({ groupMemories: event.target.checked })}
+        />
+        group memories
       </label>
 
       <label

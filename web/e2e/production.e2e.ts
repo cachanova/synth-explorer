@@ -560,7 +560,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   const initialLayoutRequests = await page.evaluate(
     () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
   )
-  await page.getByLabel('group buses').uncheck()
+  await page.getByLabel('group vectors').uncheck()
   await expect
     .poll(() =>
       page.evaluate(
@@ -572,7 +572,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await expect(page.locator('.g-node-body')).not.toHaveCount(exactCounts.nodes)
   const ungroupedLayoutRequests = initialLayoutRequests + 1
 
-  await page.getByLabel('group buses').check()
+  await page.getByLabel('group vectors').check()
   await expect(page.locator('.g-node-body')).toHaveCount(exactCounts.nodes)
   await expect
     .poll(() =>
@@ -845,7 +845,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   expect(apiRequests).toEqual([])
 })
 
-test('stacks mapped primitives from one inferred memory when buses are grouped', async ({ page }) => {
+test('stacks mapped primitives from one inferred memory when memories are grouped', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
@@ -873,6 +873,10 @@ test('stacks mapped primitives from one inferred memory when buses are grouped',
     'data-node-tooltip',
     'RAM64M — memory [128×16]',
   )
+  const groupedReadRegister = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="7"][data-node-tooltip*="rdreg[0].q"]',
+  )
+  await expect(groupedReadRegister).toHaveCount(1)
   const memberCount = Number(await groupedMemory.getAttribute('data-member-count'))
   expect(memberCount).toBeGreaterThan(1)
   const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
@@ -887,21 +891,36 @@ test('stacks mapped primitives from one inferred memory when buses are grouped',
     page.locator(`[data-node-stack-id="${groupedId}"] .g-symbol-stack`),
   ).toHaveCount(memberCount >= 4 ? 2 : 1)
 
+  await page.getByLabel('group memories').uncheck()
+  await expect(page.locator(`[data-node-detail-id="${groupedId}"]`)).toHaveCount(0)
+  await expect(page.locator('.node-card')).toHaveCount(0)
+  await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)
+  await expect(
+    page.locator('.g-node-body.g-symbol-memory[data-member-count]'),
+  ).toHaveCount(0)
+  await page.getByLabel('group memories').check()
+  await expect(groupedMemory).toHaveCount(1)
+  await groupedMemory.focus()
+  await groupedMemory.press('Enter')
+
   await page.getByRole('button', { name: 'Fanin cone' }).click()
   await page.getByLabel('Focus').check()
   await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
 
-  await page.getByLabel('group buses').uncheck()
+  await page.getByLabel('group memories').uncheck()
   await expect(page.locator('.g-node-body.g-symbol-memory')).toHaveCount(memberCount)
-  await expect(page.locator('.g-node-body[data-member-count]')).toHaveCount(0)
+  await expect(
+    page.locator('.g-node-body.g-symbol-memory[data-member-count]'),
+  ).toHaveCount(0)
   await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
 
-  await page.getByLabel('group buses').check()
+  await page.getByLabel('group memories').check()
   await expect(groupedMemory).toHaveCount(1)
   expect(apiRequests).toEqual([])
 })
 
 test('stacks DFF-mapped rows from one inferred memory in generic gates', async ({ page }) => {
+  test.setTimeout(240_000)
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
@@ -942,6 +961,22 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await page.getByLabel('Focus').check()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)
   await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
+  const maxNodes = page.getByTitle('Max nodes to request')
+  for (const expected of ['300', '200', '100', '50']) {
+    await maxNodes.locator('button').first().click()
+    await expect(maxNodes.locator('.val')).toHaveText(expected)
+  }
+  await page.getByLabel('group memories').uncheck()
+  await expect(page.locator('.g-node-body.g-symbol-memory[data-member-count]')).toHaveCount(0)
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)
+  await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThanOrEqual(50)
+  await expect(page.locator('.graph-banner .msg', { hasText: /^truncated/ })).toBeVisible()
+  await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+
+  await page.getByLabel('group memories').check()
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(groupedMemory).toHaveAttribute('data-member-count', '2048')
   expect(apiRequests).toEqual([])
 })
 
@@ -1005,6 +1040,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(workerContract.sourcePayloadKeys).toEqual([
     'end_line',
     'file',
+    'group_memories',
     'group_vectors',
     'hide_const',
     'hide_control',

@@ -6,7 +6,7 @@ use synth_explorer_analysis::analysis::{
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
-use synth_explorer_analysis::grouping::GroupPartition;
+use synth_explorer_analysis::grouping::{GroupPartition, GroupingProjection};
 use synth_explorer_analysis::netlist::{YosysNetlist, select_top};
 use wasm_bindgen::prelude::*;
 
@@ -64,6 +64,7 @@ struct ConeQuery {
     hide_const: Option<bool>,
     show_infrastructure: Option<bool>,
     group_vectors: Option<bool>,
+    group_memories: Option<bool>,
     root_port: Option<String>,
     root_port_bit: Option<u32>,
     #[serde(default)]
@@ -79,6 +80,7 @@ struct NetlistQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     group_vectors: Option<bool>,
+    group_memories: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -90,6 +92,7 @@ struct SourceSelectionQuery {
     hide_control: Option<bool>,
     hide_const: Option<bool>,
     group_vectors: Option<bool>,
+    group_memories: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -229,7 +232,7 @@ impl AnalysisSession {
         }
         let dir = ConeDir::parse(&query.dir)
             .ok_or_else(|| js_error("cone direction must be fanin or fanout"))?;
-        let grouping = self.grouping(query.group_vectors);
+        let grouping = self.grouping(query.group_vectors, query.group_memories);
         // Synthetic group ids remain valid request roots when presentation is
         // toggled back to raw nodes. Resolve through the canonical partition,
         // then apply grouping only to the returned projection.
@@ -265,7 +268,7 @@ impl AnalysisSession {
         if query.around.len() > 200 {
             return Err(js_error("at most 200 context roots may be requested"));
         }
-        let grouping = self.grouping(query.group_vectors);
+        let grouping = self.grouping(query.group_vectors, query.group_memories);
         let (roots, roots_truncated) =
             self.resolve_projection_roots(&query.around, Some(&self.design.grouping))?;
         let mut response = self.design.analysis.full_netlist(
@@ -328,6 +331,7 @@ impl AnalysisSession {
                     hide_control: query.hide_control.unwrap_or(true),
                     hide_const: query.hide_const.unwrap_or(true),
                     group_vectors: query.group_vectors.unwrap_or(false),
+                    group_memories: query.group_memories.unwrap_or(false),
                 },
             )
             .map_err(|error| js_error(error.to_string()))?;
@@ -353,8 +357,16 @@ impl AnalysisSession {
         Ok((base, resolved_profile))
     }
 
-    fn grouping(&self, enabled: Option<bool>) -> Option<&GroupPartition> {
-        enabled.unwrap_or(false).then_some(&self.design.grouping)
+    fn grouping(
+        &self,
+        vectors: Option<bool>,
+        memories: Option<bool>,
+    ) -> Option<GroupingProjection<'_>> {
+        GroupingProjection::from_flags(
+            &self.design.grouping,
+            vectors.unwrap_or(false),
+            memories.unwrap_or(false),
+        )
     }
 
     fn resolve_projection_roots(
@@ -393,42 +405,57 @@ impl AnalysisSession {
             requested_groups.push(group);
         }
 
-        // Give every requested group one representative root before filling
-        // larger samples, leaving half the raw-node budget for traversal
-        // context around those roots.
-        let mut group_added = vec![0usize; requested_groups.len()];
-        for (index, group) in requested_groups.iter().enumerate() {
-            let Some(&member) = group
-                .members
-                .iter()
-                .find(|member| !roots_seen.contains(member))
-            else {
-                continue;
-            };
-            if roots.len() >= MAX_PROJECTION_ROOTS {
-                truncated = true;
-                continue;
-            }
-            roots_seen.insert(member);
-            roots.push(member);
-            group_added[index] = 1;
-        }
-        for (index, group) in requested_groups.iter().enumerate() {
-            for &member in &group.members {
-                if roots_seen.contains(&member) {
+        // Stratify across every canonical membership and distribute sample
+        // positions round-robin, so neither low ids nor an earlier requested
+        // group monopolizes the bounded expansion passed into core traversal.
+        let sample_limits: Vec<usize> = requested_groups
+            .iter()
+            .map(|group| group.members.len().min(MAX_EXPANDED_GROUP_ROOTS))
+            .collect();
+        let mut sample_counts = vec![0usize; requested_groups.len()];
+        let mut remaining = MAX_PROJECTION_ROOTS.saturating_sub(roots.len());
+        while remaining > 0 {
+            let mut advanced = false;
+            for (index, &limit) in sample_limits.iter().enumerate() {
+                if sample_counts[index] >= limit || remaining == 0 {
                     continue;
                 }
-                if roots.len() >= MAX_PROJECTION_ROOTS
-                    || group_added[index] >= MAX_EXPANDED_GROUP_ROOTS
-                {
-                    truncated = true;
-                    break;
-                }
-                roots_seen.insert(member);
-                roots.push(member);
-                group_added[index] += 1;
+                sample_counts[index] += 1;
+                remaining -= 1;
+                advanced = true;
+            }
+            if !advanced {
+                break;
             }
         }
+        let max_sample = sample_counts.iter().copied().max().unwrap_or(0);
+        'samples: for sample_index in 0..max_sample {
+            for (index, group) in requested_groups.iter().enumerate() {
+                let target = sample_counts[index];
+                if sample_index >= target {
+                    continue;
+                }
+                let member_index = if target == 1 {
+                    0
+                } else {
+                    sample_index * (group.members.len() - 1) / (target - 1)
+                };
+                let member = group.members[member_index];
+                if !roots_seen.insert(member) {
+                    continue;
+                }
+                if roots.len() >= MAX_PROJECTION_ROOTS {
+                    roots_seen.remove(&member);
+                    truncated = true;
+                    break 'samples;
+                }
+                roots.push(member);
+            }
+        }
+        truncated |= requested_groups
+            .iter()
+            .zip(sample_counts)
+            .any(|(group, sampled)| group.members.len() > sampled);
         Ok((roots, truncated))
     }
 }
@@ -653,5 +680,35 @@ mod tests {
             .expect("oversized synthetic root resolves within the raw-node cap");
         assert_eq!(bounded.len(), MAX_EXPANDED_GROUP_ROOTS);
         assert!(bounded_truncated);
+        assert_eq!(bounded.first(), Some(&0));
+        assert_eq!(bounded.last(), Some(&4_999));
+
+        let group_count = 25u32;
+        let members_per_group = 2_048u32;
+        let many_groups = GroupPartition {
+            groups: (0..group_count)
+                .map(|group| Group {
+                    kind: GroupKind::Memory,
+                    members: (group * members_per_group..(group + 1) * members_per_group).collect(),
+                    label: format!("memory{group} [2048×1]"),
+                    cell_type: "$mem".to_owned(),
+                })
+                .collect(),
+            group_of: HashMap::new(),
+        };
+        let requested: Vec<u32> = (0..group_count).map(|group| base + group).collect();
+        let (fair, fair_truncated) = session
+            .resolve_projection_roots(&requested, Some(&many_groups))
+            .expect("many synthetic groups share the global root cap fairly");
+        assert_eq!(fair.len(), MAX_PROJECTION_ROOTS);
+        assert!(fair_truncated);
+        for group in 0..group_count as usize {
+            assert_eq!(fair[group], group as u32 * members_per_group);
+            assert_eq!(
+                fair[(MAX_PROJECTION_ROOTS / group_count as usize - 1) * group_count as usize
+                    + group],
+                (group as u32 + 1) * members_per_group - 1
+            );
+        }
     }
 }

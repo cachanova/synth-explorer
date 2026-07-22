@@ -6,6 +6,7 @@ export interface SelectionOptions {
   hideControl: boolean
   hideConst: boolean
   groupVectors: boolean
+  groupMemories: boolean
 }
 
 export function analyzeSourceInBrowser(
@@ -23,6 +24,7 @@ export function analyzeSourceInBrowser(
       hide_control: options.hideControl,
       hide_const: options.hideConst,
       group_vectors: options.groupVectors,
+      group_memories: options.groupMemories,
     }),
     signal,
   )

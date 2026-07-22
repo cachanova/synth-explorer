@@ -5,7 +5,9 @@ use synth_explorer_analysis::analysis::{
 use synth_explorer_analysis::delay_model::DelayProfile;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
-use synth_explorer_analysis::grouping::{GroupKind, GroupPartition, memory_arrays_from_source};
+use synth_explorer_analysis::grouping::{
+    GroupKind, GroupPartition, GroupingProjection, memory_arrays_from_source,
+};
 use synth_explorer_analysis::netlist::{parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
@@ -124,7 +126,7 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
     let grouped = analysis.full_netlist(
         &graph,
         full_options(2000, false, true, false),
-        Some(&partition),
+        Some(GroupingProjection::all(&partition)),
     );
     assert!(!grouped.truncated);
     // Register banks seed first (ids base+0, base+1); ports follow.
@@ -243,7 +245,7 @@ fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
     let grouped = design.analysis.full_netlist(
         &design.graph,
         full_options(2000, false, true, false),
-        Some(&design.grouping),
+        Some(GroupingProjection::all(&design.grouping)),
     );
     let memory = grouped
         .nodes
@@ -345,7 +347,7 @@ fn grouped_budgets_count_units_not_member_bits() {
     let full = analysis.full_netlist(
         &graph,
         full_options(units, false, true, false),
-        Some(&partition),
+        Some(GroupingProjection::all(&partition)),
     );
     assert!(!full.truncated, "a cap of one per unit must fit everything");
     assert_eq!(full.nodes.len(), units);
@@ -353,7 +355,7 @@ fn grouped_budgets_count_units_not_member_bits() {
     let capped = analysis.full_netlist(
         &graph,
         full_options(units - 1, false, true, false),
-        Some(&partition),
+        Some(GroupingProjection::all(&partition)),
     );
     assert!(capped.truncated);
     assert!(capped.nodes.len() < units);
@@ -362,7 +364,12 @@ fn grouped_budgets_count_units_not_member_bits() {
     let q_root = partition.groups[0].members[0];
     let y_root = partition.groups[1].members[0];
     let cone = analysis
-        .multi_root_cone(&graph, &[q_root, y_root], cone_options(1), Some(&partition))
+        .multi_root_cone(
+            &graph,
+            &[q_root, y_root],
+            cone_options(1),
+            Some(GroupingProjection::all(&partition)),
+        )
         .unwrap();
     assert!(cone.truncated);
     assert_eq!(cone.nodes.len(), 1);
@@ -378,7 +385,12 @@ fn grouped_cone_from_member_lands_on_its_group_root() {
     let member = partition.groups[1].members[0];
 
     let cone = analysis
-        .cone(&graph, member, cone_options(300), Some(&partition))
+        .cone(
+            &graph,
+            member,
+            cone_options(300),
+            Some(GroupingProjection::all(&partition)),
+        )
         .unwrap();
 
     let root = cone

@@ -48,6 +48,53 @@ pub struct GroupPartition {
     pub group_of: HashMap<NodeId, GroupId>,
 }
 
+/// Borrowed view of the canonical partition with independently selectable
+/// structural-vector and logical-memory groups. Group ids never change when a
+/// presentation policy changes, so synthetic ids remain stable across toggles.
+#[derive(Clone, Copy)]
+pub struct GroupingProjection<'a> {
+    pub partition: &'a GroupPartition,
+    pub vectors: bool,
+    pub memories: bool,
+}
+
+impl<'a> GroupingProjection<'a> {
+    pub fn from_flags(
+        partition: &'a GroupPartition,
+        vectors: bool,
+        memories: bool,
+    ) -> Option<Self> {
+        (vectors || memories).then_some(Self {
+            partition,
+            vectors,
+            memories,
+        })
+    }
+
+    pub fn all(partition: &'a GroupPartition) -> Self {
+        Self {
+            partition,
+            vectors: true,
+            memories: true,
+        }
+    }
+
+    pub fn group_id(self, id: NodeId) -> Option<GroupId> {
+        let group_id = *self.partition.group_of.get(&id)?;
+        let group = self.partition.groups.get(group_id as usize)?;
+        let enabled = match group.kind {
+            GroupKind::Memory => self.memories,
+            GroupKind::Register | GroupKind::Comb | GroupKind::Port => self.vectors,
+        };
+        enabled.then_some(group_id)
+    }
+
+    pub fn group(self, id: NodeId) -> Option<(GroupId, &'a Group)> {
+        let group_id = self.group_id(id)?;
+        Some((group_id, &self.partition.groups[group_id as usize]))
+    }
+}
+
 /// Refinement stops once the class count is stable, but never runs more than
 /// this many rounds so pathological structures (long chains) stay near-linear.
 const MAX_REFINEMENT_ROUNDS: usize = 8;
@@ -142,6 +189,22 @@ pub fn memory_arrays_from_source(
         name.trim_start_matches('\\').replace('\\', "")
     }
 
+    fn generated_reg_suffix(mut suffix: &str) -> bool {
+        let mut stripped_reg = false;
+        while let Some(rest) = suffix.strip_prefix("_reg") {
+            stripped_reg = true;
+            suffix = rest;
+        }
+        while let Some(rest) = suffix.strip_prefix('_') {
+            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 {
+                return false;
+            }
+            suffix = &rest[digits..];
+        }
+        stripped_reg && suffix.is_empty()
+    }
+
     let mut logical = Vec::new();
     let mut pending = vec![(source_top.to_owned(), String::new())];
     let mut seen = BTreeSet::new();
@@ -180,6 +243,9 @@ pub fn memory_arrays_from_source(
     }
 
     logical.sort_by(|left, right| left.name.cmp(&right.name));
+    if logical.is_empty() {
+        return Vec::new();
+    }
     // Escaped identifiers may contain the same `.` used as our flattened
     // hierarchy separator. Treat duplicate normalized paths as ambiguous
     // rather than assigning their primitives to whichever entry wins.
@@ -192,7 +258,10 @@ pub fn memory_arrays_from_source(
     }
     let mut members = vec![Vec::new(); logical.len()];
     for node in &graph.nodes {
-        if node.kind != NodeKind::Cell || !node.cell_type.as_deref().is_some_and(is_memory_type) {
+        if node.kind != NodeKind::Cell
+            || node.blackbox
+            || !node.cell_type.as_deref().is_some_and(is_memory_type)
+        {
             continue;
         }
         let raw_name = clean_name(&node.raw_name);
@@ -225,6 +294,9 @@ pub fn memory_arrays_from_source(
             // Vivado commonly maps `foo` to `foo_reg...`. Search from the
             // right so a logical `foo_regbank` wins over the shorter `foo`.
             for (offset, _) in raw_name.rmatch_indices("_reg") {
+                if !generated_reg_suffix(&raw_name[offset..]) {
+                    continue;
+                }
                 match logical_by_name.get(&raw_name[..offset]).copied() {
                     Some(Some(index)) => {
                         matched = Some(index);
@@ -590,14 +662,19 @@ fn bit_correspondence_holds(
 /// `"name[hi:lo]"` when the group's bit indices are one contiguous run with
 /// no duplicates, otherwise `"name ×N"`.
 fn register_label(register: &RegisterGroup) -> String {
+    let name = if register.name.starts_with('$') {
+        register.name.trim_start_matches('$').replace('$', ".")
+    } else {
+        register.name.clone()
+    };
     let bits: BTreeSet<usize> = register.bits.iter().map(|bit| bit.bit).collect();
     if bits.len() == register.bits.len()
         && let (Some(&lo), Some(&hi)) = (bits.first(), bits.last())
         && hi - lo + 1 == bits.len()
     {
-        return format!("{}[{hi}:{lo}]", register.name);
+        return format!("{name}[{hi}:{lo}]");
     }
-    format!("{} ×{}", register.name, register.bits.len())
+    format!("{name} ×{}", register.bits.len())
 }
 
 /// Label from the dominant visible driven-net stem: `"stem[hi:lo]"` when every
@@ -954,6 +1031,66 @@ mod tests {
     }
 
     #[test]
+    fn generated_memory_read_register_bits_form_distinct_vectors() {
+        let width = 8;
+        let mut graph = register_bank_graph(2, width);
+        for group in 0..2 {
+            for bit in 0..width {
+                let id = (1 + group * width + bit) as NodeId;
+                let name = format!("$memory$rdreg[{group}]$q[{bit}]");
+                graph.nodes[id as usize].name = name.clone();
+                graph.nodes[id as usize].raw_name = name.clone();
+                let q_net = (1_000_000 + group * width + bit) as u32;
+                graph
+                    .net_aliases
+                    .insert(q_net, vec![format!("$abc$net_{q_net}")]);
+            }
+        }
+
+        let analysis = Analysis::new(&graph, vec!["bank.sv".to_owned()]);
+        let registers = &analysis.endpoints().registers;
+        assert_eq!(registers.len(), 2);
+        assert_eq!(registers[0].name, "$memory$rdreg[0]$q");
+        assert_eq!(registers[1].name, "$memory$rdreg[1]$q");
+
+        let partition = GroupPartition::build(&graph, registers, Vec::new());
+        assert_eq!(partition.groups.len(), 2);
+        assert_eq!(partition.groups[0].label, "memory.rdreg[0].q[7:0]");
+        assert_eq!(partition.groups[1].label, "memory.rdreg[1].q[7:0]");
+        assert!(
+            partition
+                .groups
+                .iter()
+                .all(|group| group.members.len() == width)
+        );
+    }
+
+    #[test]
+    fn visible_register_alias_wins_over_deeper_generated_alias() {
+        let width = 8;
+        let mut graph = register_bank_graph(1, width);
+        for bit in 0..width {
+            let id = (1 + bit) as NodeId;
+            let hidden = format!("$memory$rdreg[0]$q[{bit}]");
+            graph.nodes[id as usize].name = hidden.clone();
+            graph.nodes[id as usize].raw_name = hidden.clone();
+            let q_net = (1_000_000 + bit) as u32;
+            graph
+                .net_aliases
+                .insert(q_net, vec![hidden, format!("status_q[{bit}]")]);
+        }
+
+        let analysis = Analysis::new(&graph, vec!["bank.sv".to_owned()]);
+        let registers = &analysis.endpoints().registers;
+        assert_eq!(registers.len(), 1);
+        assert_eq!(registers[0].name, "status_q");
+
+        let partition = GroupPartition::build(&graph, registers, Vec::new());
+        assert_eq!(partition.groups.len(), 1);
+        assert_eq!(partition.groups[0].label, "status_q[7:0]");
+    }
+
+    #[test]
     fn logical_memory_claims_dff_mapped_rows_before_register_grouping() {
         let graph = graph_from_nodes(
             "top",
@@ -1077,6 +1214,34 @@ mod tests {
                     }
                 }
             }
+        }))
+        .unwrap();
+
+        let memories = memory_arrays_from_source(&graph, &source_netlist, "top", &[]);
+
+        assert!(memories.is_empty());
+    }
+
+    #[test]
+    fn named_regulator_primitive_does_not_match_a_shorter_memory() {
+        let graph = graph_from_nodes(
+            "top",
+            (0..2)
+                .map(|id| {
+                    let mut node = comb_cell(id, "$mem_v2");
+                    node.name = format!("foo_regulator_reg_{id}");
+                    node.raw_name = node.name.clone();
+                    node
+                })
+                .collect(),
+        );
+        let source_netlist = parse_value(serde_json::json!({
+            "modules": { "top": {
+                "attributes": { "top": "1" },
+                "memories": {
+                    "foo": { "width": 1, "start_offset": 0, "size": 2 }
+                }
+            } }
         }))
         .unwrap();
 
