@@ -169,6 +169,24 @@ jobs:
             --latest \
             release-assets/*/*
 
+      - name: Remove superseded rolling releases
+        if: github.ref_type == 'branch'
+        run: |
+          current_tag="local-main-${GITHUB_SHA}"
+          gh release list \
+            --repo "$GITHUB_REPOSITORY" \
+            --limit 1000 \
+            --json tagName \
+            --jq '.[].tagName' |
+            while IFS= read -r release_tag; do
+              if [[ "$release_tag" == local-main-* && "$release_tag" != "$current_tag" ]]; then
+                gh release delete "$release_tag" \
+                  --repo "$GITHUB_REPOSITORY" \
+                  --cleanup-tag \
+                  --yes
+              fi
+            done
+
       - name: Publish versioned release
         if: github.ref_type == 'tag'
         run: >-
