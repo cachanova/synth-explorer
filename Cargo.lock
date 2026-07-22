@@ -495,6 +495,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "schemweave"
+version = "0.1.0"
+source = "git+https://github.com/cachanova/schemweave.git?rev=e270c3e272401097d7d29c763aa9ac40e9c5a734#e270c3e272401097d7d29c763aa9ac40e9c5a734"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -655,6 +664,15 @@ dependencies = [
  "serde_json",
  "synth-explorer-analysis",
  "tempfile",
+]
+
+[[package]]
+name = "synth-explorer-layout-wasm"
+version = "0.1.0"
+dependencies = [
+ "schemweave",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

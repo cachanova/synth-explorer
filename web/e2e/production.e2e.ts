@@ -451,17 +451,17 @@ test('synthesizes and analyzes locally, then reuses the per-browser cache', asyn
 test('renders and resizes the browser-produced graph without resetting user zoom', async ({ page }) => {
   await page.addInitScript(() => {
     const workerURLs: string[] = []
-    const elkRequests: unknown[] = []
+    const layoutRequests: unknown[] = []
     const NativeWorker = Worker
     const InstrumentedWorker = new Proxy(NativeWorker, {
       construct(target, args, newTarget) {
         const url = String(args[0])
         workerURLs.push(url)
         const worker = Reflect.construct(target, args, newTarget)
-        if (url.includes('elk.worker')) {
+        if (url.includes('schemweave.worker')) {
           const nativePostMessage = worker.postMessage.bind(worker)
           worker.postMessage = (...postArgs: Parameters<Worker['postMessage']>) => {
-            elkRequests.push(postArgs[0])
+            layoutRequests.push(postArgs[0])
             nativePostMessage(...postArgs)
           }
         }
@@ -472,7 +472,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       configurable: true,
       value: InstrumentedWorker,
     })
-    Object.assign(window, { __workerURLs: workerURLs, __elkRequests: elkRequests })
+    Object.assign(window, { __workerURLs: workerURLs, __layoutRequests: layoutRequests })
   })
   await page.setViewportSize({ width: 1280, height: 720 })
   const apiRequests = recordApiRequests(page)
@@ -485,14 +485,14 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       page.evaluate(
         () =>
           (window as typeof window & { __workerURLs?: string[] }).__workerURLs?.filter(
-            (url) => url.includes('elk.worker'),
+            (url) => url.includes('schemweave.worker'),
           ).length ?? 0,
       ),
     )
     .toBe(1)
   expect(
     await page.evaluate(
-      () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? [],
+      () => (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests ?? [],
     ),
   ).toEqual([])
   await waitForAutomaticSynthesis(page, () =>
@@ -503,14 +503,14 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       page.evaluate(
         () =>
           (window as typeof window & { __workerURLs?: string[] }).__workerURLs?.filter(
-            (url) => url.includes('elk.worker'),
+            (url) => url.includes('schemweave.worker'),
           ).length ?? 0,
       ),
     )
     .toBe(1)
   expect(
     await page.evaluate(
-      () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? [],
+      () => (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests ?? [],
     ),
   ).toEqual([])
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
@@ -524,7 +524,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
     .poll(() =>
       page.evaluate(() => {
         const requests =
-          (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? []
+          (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests ?? []
         const latest = requests.at(-1) as
           | { input?: { nodes?: unknown[]; edges?: unknown[] } }
           | undefined
@@ -535,7 +535,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
     .not.toBeNull()
   const exactCounts = await page.evaluate(() => {
     const requests =
-      (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? []
+      (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests ?? []
     const latest = requests.at(-1) as {
       input: { nodes: unknown[]; edges: unknown[] }
     }
@@ -558,14 +558,14 @@ test('renders and resizes the browser-produced graph without resetting user zoom
     .toBe(exactCounts.edges)
 
   const initialLayoutRequests = await page.evaluate(
-    () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+    () => (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests?.length ?? 0,
   )
   await page.getByLabel('group buses').uncheck()
   await expect
     .poll(() =>
       page.evaluate(
         () =>
-          (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+          (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests?.length ?? 0,
       ),
     )
     .toBe(initialLayoutRequests + 1)
@@ -578,7 +578,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
     .poll(() =>
       page.evaluate(
         () =>
-          (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+          (window as typeof window & { __layoutRequests?: unknown[] }).__layoutRequests?.length ?? 0,
       ),
     )
     .toBe(ungroupedLayoutRequests)

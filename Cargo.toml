@@ -1,3 +1,10 @@
 [workspace]
-members = ["analysis-core", "analysis-wasm", "calibration", "vivado-bridge"]
+members = ["analysis-core", "analysis-wasm", "calibration", "layout-wasm", "vivado-bridge"]
 resolver = "3"
+
+[profile.wasm-release]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

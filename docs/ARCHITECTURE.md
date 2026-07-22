@@ -28,7 +28,7 @@ on the user's computer.
 7. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
    projections, source maps, source selections, and node details are worker
    messages. Results are bounded before crossing the worker boundary.
-8. elkjs lays out bounded subgraphs in its own worker.
+8. SchemWeave lays out bounded subgraphs in a dedicated Rust/WebAssembly worker.
 
 Local Vivado is a manual branch after validation. The user starts
 `synth-explorer-vivado-bridge` with an exact-origin allowlist, authorizes
@@ -53,6 +53,8 @@ only a display prefix of the full local cache digest.
 - `vivado-bridge/` is the only runtime Vivado executor and Tcl builder.
 - `web/src/lib/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
 - `analysis-core/` is the only netlist/graph and source-selection analysis
+  implementation.
+- `layout-wasm/` pins and exposes SchemWeave as the only schematic layout
   implementation.
 - IndexedDB stores the current editor workspace and is the only mutable
   completed-design cache. Those records live in separate databases and have
@@ -91,16 +93,19 @@ worker is reused so its streamed, compiled Yosys module and unpacked resources
 stay warm; cancellation or a worker failure terminates it and immediately
 starts a clean replacement. Each run still creates a new WebAssembly instance
 and WASI filesystem. Analysis and layout remain in separate workers so
-expensive work does not block the React thread. The layout worker owns ELK graph
-preparation, layered layout, and route/result adaptation; the React thread sends
+expensive work does not block the React thread. The layout worker owns
+SchemWeave graph preparation, layered placement, orthogonal routing, and result
+adaptation; the React thread sends
 only compact, bounded layout fields and reattaches its resident graph metadata
 to the compact geometry response. The graph surface stays mounted across tabs,
-so it starts that reusable worker once at mount and completes a two-node layered
-layout. This lets module startup overlap the editor's initial idle/debounce
-window and finish before the first design layout request. No design-sized graph
-is laid out speculatively. Large schematics use ELK's robust
-`BRANDES_KOEPF` placement with measured thoroughness 4; the small-graph
-`NETWORK_SIMPLEX` output remains unchanged. In the browser, the memoized edge
+so it starts that reusable worker once at mount and preloads the SchemWeave WASM
+module. This lets fetch and compilation overlap the editor's initial idle/debounce
+window and finish before the first design layout request. A failed speculative
+load is discarded so the first real request retries, and no design-sized graph
+is laid out speculatively. Register D, Q, clock, reset, set, and enable pins use
+the same fixed offsets in the renderer and layout ABI; non-register pins use a
+stable sorted order, and fanout edges sharing a source pin carry one electrical
+net identity for shared routing. In the browser, the memoized edge
 layer groups routes into at most 16 SVG paths by control, bus, highlight, and
 relevance style. Arrowheads are equivalent batched triangle geometry, while bus
 labels stay individually positioned. A small spatial index resolves the exact
@@ -142,8 +147,8 @@ tool.
 `vercel.json` builds `web/`, publishes `web/dist/`, rewrites SPA routes to
 `index.html`, serves WebAssembly with the correct content type, and applies
 immutable caching to versioned assets. CI verifies Rust, regenerates and checks
-the analysis WASM package, verifies pinned Yosys and GHDL hashes and precomputed example
-contracts, builds the static app, and runs browser-local synthesis E2Es that
+the analysis and layout WASM packages, verifies pinned Yosys and GHDL hashes
+and precomputed example contracts, builds the static app, and runs browser-local synthesis E2Es that
 assert zero `/api` traffic.
 Vercel Web Analytics and Speed Insights collect page-level usage and browser
 performance metrics; they are not part of the synthesis path and receive no RTL
