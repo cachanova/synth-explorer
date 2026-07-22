@@ -924,6 +924,39 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   expect(apiRequests).toEqual([])
 })
 
+test('stacks parallel SRL lanes as one memory vector', async ({ page }) => {
+  const apiRequests = recordApiRequests(page)
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('srl_pipe')
+    await page.getByLabel('Platform').selectOption('xilinx')
+  })
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const groupedSrl = page.locator(
+    '.g-node-body.g-symbol-memory[data-node-tooltip="SRL16E — data_out [16×8]"]',
+  )
+  await expect(groupedSrl).toHaveCount(1)
+  await expect(groupedSrl).toHaveAttribute('data-member-count', '8')
+  const groupedId = await groupedSrl.getAttribute('data-graph-node-id')
+  expect(groupedId).not.toBeNull()
+  await groupedSrl.focus()
+  await groupedSrl.press('Enter')
+  await expect(
+    page.locator(`[data-node-detail-id="${groupedId}"] .g-group-badge`),
+  ).toHaveText('×8')
+
+  await page.getByLabel('group memories').uncheck()
+  await expect(groupedSrl).toHaveCount(0)
+  await expect(
+    page.locator('.g-node-body.g-symbol-memory[data-node-tooltip^="SRL16E"]'),
+  ).toHaveCount(8)
+
+  await page.getByLabel('group memories').check()
+  await expect(groupedSrl).toHaveCount(1)
+  expect(apiRequests).toEqual([])
+})
+
 for (const regression of [
   { platform: 'ice40', primitive: 'SB_RAM40_4K', depth: 16, count: 1 },
   { platform: 'ice40', primitive: 'SB_RAM40_4K', depth: 64, count: 1 },
