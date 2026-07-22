@@ -11,7 +11,7 @@ use crate::graph::{Graph, NodeId, NodeKind, is_memory_type, strip_bit_suffix};
 use crate::netlist::YosysNetlist;
 use deepsize::DeepSizeOf;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub type GroupId = u32;
 
@@ -209,7 +209,7 @@ pub fn memory_arrays_from_source(
     }
 
     let mut logical = Vec::new();
-    let mut source_cell_paths = BTreeSet::new();
+    let mut source_memory_cell_paths = HashSet::new();
     let mut pending = vec![(source_top.to_owned(), String::new())];
     let mut seen = BTreeSet::new();
     while let Some((module_name, scope)) = pending.pop() {
@@ -233,14 +233,21 @@ pub fn memory_arrays_from_source(
             });
         }
         for (cell_name, cell) in &module.cells {
+            let child_module = source_netlist.modules.contains_key(&cell.cell_type);
+            let explicit_memory = is_memory_type(&cell.cell_type);
+            if !child_module && !explicit_memory {
+                continue;
+            }
             let cell_name = clean_name(cell_name);
             let cell_path = if scope.is_empty() {
                 cell_name
             } else {
                 format!("{scope}.{cell_name}")
             };
-            source_cell_paths.insert(cell_path.clone());
-            if source_netlist.modules.contains_key(&cell.cell_type) {
+            if explicit_memory {
+                source_memory_cell_paths.insert(cell_path.clone());
+            }
+            if child_module {
                 pending.push((cell.cell_type.clone(), cell_path));
             }
         }
@@ -271,7 +278,7 @@ pub fn memory_arrays_from_source(
         let raw_name = clean_name(&node.raw_name);
         // An exact source-cell path names an explicitly instantiated primitive,
         // not an implementation fragment generated for the nearby RTL memory.
-        if source_cell_paths.contains(&raw_name) {
+        if source_memory_cell_paths.contains(&raw_name) {
             continue;
         }
         let mut candidate = raw_name.as_str();
@@ -429,7 +436,10 @@ fn seed_memory_groups(partition: &mut GroupPartition, graph: &Graph, memories: V
 /// that mirror every bit of one `SB_RAM*` WDATA input form one structural
 /// register vector. The wrapper's auxiliary DFF uses another net and remains
 /// separate.
-fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, graph: &Graph) {
+fn seed_memory_input_mirror_register_groups(
+    partition: &mut GroupPartition,
+    graph: &Graph,
+) -> usize {
     fn starts_with_ignore_ascii_case(value: &str, prefix: &[u8]) -> bool {
         value
             .as_bytes()
@@ -438,7 +448,9 @@ fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, grap
     }
 
     let mut memory_bits: BTreeMap<NodeId, BTreeMap<u32, u32>> = BTreeMap::new();
+    let mut examined_edges = 0;
     for edge in &graph.edges {
+        examined_edges += 1;
         if edge.control || !edge.to_port.eq_ignore_ascii_case("WDATA") {
             continue;
         }
@@ -456,7 +468,7 @@ fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, grap
         }
     }
     if memory_bits.is_empty() {
-        return;
+        return examined_edges;
     }
 
     let memory_by_raw_name: HashMap<&str, NodeId> = memory_bits
@@ -465,6 +477,7 @@ fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, grap
         .collect();
     let mut sinks_by_memory: BTreeMap<NodeId, BTreeMap<u32, Option<NodeId>>> = BTreeMap::new();
     for edge in &graph.edges {
+        examined_edges += 1;
         if edge.control || !edge.to_port.eq_ignore_ascii_case("D") {
             continue;
         }
@@ -545,6 +558,7 @@ fn seed_memory_input_mirror_register_groups(partition: &mut GroupPartition, grap
             cell_type: cell_types.first().copied().unwrap_or("SB_DFF").to_owned(),
         });
     }
+    examined_edges
 }
 
 /// Port bits of one named vector (`data[7:0]`) collapse into a single bus port
@@ -1458,7 +1472,8 @@ mod tests {
             }
         }
 
-        let partition = GroupPartition::build(&graph, &[], Vec::new());
+        let mut partition = GroupPartition::default();
+        let examined_edges = seed_memory_input_mirror_register_groups(&mut partition, &graph);
         let register_groups: Vec<&Group> = partition
             .groups
             .iter()
@@ -1476,6 +1491,7 @@ mod tests {
             register_groups.last().unwrap().label,
             "memory.0.63.WDATA[15:0]",
         );
+        assert_eq!(examined_edges, graph.edges.len() * 2);
     }
 
     #[test]

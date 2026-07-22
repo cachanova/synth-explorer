@@ -99,9 +99,13 @@ describe('symbolKind', () => {
       'RAM64_CONTROLLER',
       'RAM64CONTROLLER',
       'RAM64X1CACHE',
+      'RAMB36CONTROLLER',
+      'RAMD32CACHE',
       'URAM_CACHE',
+      'URAM288CACHE',
       'SPRAM_CONTROLLER',
       'SB_RAM_WRAPPER',
+      'SB_RAM40_CONTROLLER',
     ]) {
       expect(symbolKind(cell(cellType)), cellType).toBe('box')
       expect(isSpecialPrimitive(cell(cellType)), cellType).toBe(false)
@@ -110,7 +114,7 @@ describe('symbolKind', () => {
 
   it('recognizes memory primitives across supported synthesis families', () => {
     for (const primitive of [
-      '$mem_v2', 'RAM32M', 'RAM64X1S_1', 'RAMD32', 'RAMS64E', 'RAMB36E2', 'URAM288', 'DP16KD', 'TRELLIS_DPR16X4', 'SB_RAM40_4K',
+      '$mem_v2', 'RAM32M', 'RAM64X1S_1', 'RAM64X8SW', 'RAM32X16DR8', 'RAMD32', 'RAMD64X1', 'RAMS64E', 'RAMS32X1', 'RAMB4_S8_S8', 'RAMB8BWER', 'RAMB16_S18_S9', 'RAMB36E2', 'URAM288', 'URAM288_BASE', 'DP16KD', 'TRELLIS_DPR16X4', 'SB_RAM40_4K', 'SB_RAM40_4KNRNW',
       'SB_SPRAM256KA',
     ]) {
       expect(symbolKind(cell(primitive)), primitive).toBe('memory')

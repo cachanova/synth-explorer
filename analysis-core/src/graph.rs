@@ -800,59 +800,135 @@ pub fn is_memory_type(cell_type: &str) -> bool {
             .get(..prefix.len())
             .is_some_and(|candidate| candidate.eq_ignore_ascii_case(prefix))
     };
-    let numbered_family = |prefix: &[u8], allow_underscore: bool| {
-        if !starts_with_ignore_ascii_case(prefix) {
-            return false;
-        }
-        let suffix = &bytes[prefix.len()..];
-        suffix.first().is_some_and(u8::is_ascii_digit)
-            && suffix
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || (allow_underscore && *byte == b'_'))
-    };
-    // Older Xilinx LUTRAM declarations use an exact `_1` variant suffix
-    // (for example RAM64X1S_1). Do not accept arbitrary underscores here:
-    // names such as RAM64_CONTROLLER are user black boxes, not primitives.
+    let equals_any = |known: &[&[u8]]| known.iter().any(|name| bytes.eq_ignore_ascii_case(name));
     let xilinx_lutram = || {
-        if !starts_with_ignore_ascii_case(b"RAM") {
+        equals_any(&[
+            b"RAM16X1D",
+            b"RAM16X1D_1",
+            b"RAM16X1S",
+            b"RAM16X1S_1",
+            b"RAM16X2S",
+            b"RAM16X4S",
+            b"RAM16X8S",
+            b"RAM32M",
+            b"RAM32M16",
+            b"RAM32X1D",
+            b"RAM32X1D_1",
+            b"RAM32X1S",
+            b"RAM32X1S_1",
+            b"RAM32X2S",
+            b"RAM32X4S",
+            b"RAM32X8S",
+            b"RAM32X16DR8",
+            b"RAM64M",
+            b"RAM64M8",
+            b"RAM64X1D",
+            b"RAM64X1D_1",
+            b"RAM64X1S",
+            b"RAM64X1S_1",
+            b"RAM64X2S",
+            b"RAM64X8SW",
+            b"RAM128X1D",
+            b"RAM128X1S",
+            b"RAM128X1S_1",
+            b"RAM256X1D",
+            b"RAM256X1S",
+            b"RAM512X1S",
+        ])
+    };
+    let ramb_width_segments = |suffix: &[u8]| {
+        let mut segments = suffix.split(|byte| *byte == b'_');
+        let valid = |segment: &[u8]| {
+            [
+                b"S1".as_slice(),
+                b"S2",
+                b"S4",
+                b"S8",
+                b"S9",
+                b"S16",
+                b"S18",
+                b"S36",
+            ]
+            .iter()
+            .any(|width| segment.eq_ignore_ascii_case(width))
+        };
+        let first = segments.next().is_some_and(valid);
+        let second = segments.next().is_none_or(valid);
+        first && second && segments.next().is_none()
+    };
+    let xilinx_block_ram = || {
+        if !starts_with_ignore_ascii_case(b"RAMB") {
             return false;
         }
-        let suffix = &bytes[b"RAM".len()..];
-        if [b"32M".as_slice(), b"32M16", b"64M", b"64M8"]
-            .iter()
-            .any(|known| suffix.eq_ignore_ascii_case(known))
+        let suffix = &bytes[b"RAMB".len()..];
+        if [
+            b"8BWER".as_slice(),
+            b"18",
+            b"18E1",
+            b"18E2",
+            b"18SDP",
+            b"32_S64_ECC",
+            b"36",
+            b"36E1",
+            b"36E2",
+            b"36SDP",
+        ]
+        .iter()
+        .any(|known| suffix.eq_ignore_ascii_case(known))
         {
             return true;
         }
-        let base = suffix.strip_suffix(b"_1").unwrap_or(suffix);
-        let Some(x) = base
-            .iter()
-            .position(|byte| byte.eq_ignore_ascii_case(&b'X'))
-        else {
-            return false;
-        };
-        let (depth, width_and_mode) = base.split_at(x);
-        let width_and_mode = &width_and_mode[1..];
-        let Some((&mode, width)) = width_and_mode.split_last() else {
-            return false;
-        };
-        [b"16".as_slice(), b"32", b"64", b"128", b"256", b"512"].contains(&depth)
-            && [b"1".as_slice(), b"2", b"4", b"8"].contains(&width)
-            && matches!(mode.to_ascii_uppercase(), b'S' | b'D')
+        for depth in [b"4".as_slice(), b"16"] {
+            let Some(rest) = suffix.strip_prefix(depth) else {
+                continue;
+            };
+            let depth16 = depth == b"16";
+            if depth16 && (rest.is_empty() || rest.eq_ignore_ascii_case(b"BWER")) {
+                return true;
+            }
+            let width_segments = rest.strip_prefix(b"_").or_else(|| {
+                (depth16
+                    && rest
+                        .get(..b"BWE_".len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"BWE_")))
+                .then(|| &rest[b"BWE_".len()..])
+            });
+            if width_segments.is_some_and(ramb_width_segments) {
+                return true;
+            }
+        }
+        false
     };
     let xilinx_ram = xilinx_lutram()
-        || numbered_family(b"RAMB", false)
-        || numbered_family(b"RAMD", false)
-        || numbered_family(b"RAMS", false);
+        || xilinx_block_ram()
+        || equals_any(&[
+            b"RAMD32",
+            b"RAMD32E",
+            b"RAMD32X1",
+            b"RAMD64",
+            b"RAMD64E",
+            b"RAMD64X1",
+            b"RAMS32",
+            b"RAMS32E",
+            b"RAMS32X1",
+            b"RAMS64",
+            b"RAMS64E",
+            b"RAMS64X1",
+        ]);
     (starts_with_ignore_ascii_case(b"$mem"))
         || xilinx_ram
-        || numbered_family(b"URAM", false)
+        || equals_any(&[b"URAM288", b"URAM288_BASE"])
         || cell_type.eq_ignore_ascii_case("DP16KD")
         || cell_type.eq_ignore_ascii_case("TRELLIS_DPR16X4")
         || cell_type.eq_ignore_ascii_case("SPRAM")
-        || numbered_family(b"SPRAM", false)
-        || numbered_family(b"SB_RAM", true)
-        || numbered_family(b"SB_SPRAM", true)
+        || cell_type.eq_ignore_ascii_case("SPRAM256KA")
+        || equals_any(&[
+            b"SB_RAM40_4K",
+            b"SB_RAM40_4KNR",
+            b"SB_RAM40_4KNW",
+            b"SB_RAM40_4KNRNW",
+            b"SB_SPRAM256KA",
+        ])
         || cell_type.eq_ignore_ascii_case("SRL16E")
         || cell_type.eq_ignore_ascii_case("SRLC32E")
 }
@@ -1032,13 +1108,22 @@ mod tests {
             "$mem_v2",
             "RAM64M",
             "RAM64X1S_1",
+            "RAM64X8SW",
+            "RAM32X16DR8",
             "RAMD32",
+            "RAMD64X1",
             "RAMS64E",
+            "RAMS32X1",
+            "RAMB4_S8_S8",
+            "RAMB8BWER",
+            "RAMB16_S18_S9",
             "RAMB36E2",
             "URAM288",
+            "URAM288_BASE",
             "DP16KD",
             "TRELLIS_DPR16X4",
             "SB_RAM40_4K",
+            "SB_RAM40_4KNRNW",
             "SB_SPRAM256KA",
             "SRLC32E",
         ] {
@@ -1051,10 +1136,14 @@ mod tests {
             "RAM64_CONTROLLER",
             "RAM64CONTROLLER",
             "RAM64X1CACHE",
+            "RAMB36CONTROLLER",
+            "RAMD32CACHE",
             "URAM_CACHE",
+            "URAM288CACHE",
             "SPRAM_CONTROLLER",
             "TRELLIS_DPR_CONTROLLER",
             "SB_RAM_WRAPPER",
+            "SB_RAM40_CONTROLLER",
             "memory_wrapper",
             "my_ram",
         ] {
