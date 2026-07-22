@@ -1139,6 +1139,8 @@ export function StoreProvider({
         fallbackEndColumn,
       )
       const previous = sourceSelectionRef.current
+      graphProbeResetRef.current?.()
+      setEditorHighlight(null)
       if (
         sourceSelectionActiveRef.current &&
         previous.file === selection.file &&
@@ -1151,7 +1153,6 @@ export function StoreProvider({
       ) {
         return
       }
-      graphProbeResetRef.current?.()
       sourceSelectionRef.current = selection
       sourceSelectionActiveRef.current = true
       setSourceSelectionState(selection)

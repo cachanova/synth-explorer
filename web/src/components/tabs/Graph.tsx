@@ -168,8 +168,30 @@ export function Graph({ active }: { active: boolean }) {
     )
   }
   const resetGraphProbe = useCallback(() => {
+    // Reject an in-flight source result immediately; the replacement request
+    // is debounced, so waiting for its effect cleanup leaves a stale commit gap.
+    reqSeq.current += 1
+    setFetchingRelevant(false)
     edgeSourceProbeRef.current?.cancel()
     setSourceProbeNotice(null)
+    setSourceStatus(null)
+    setSourceControl(false)
+    setRelevantSubgraph((current) => {
+      if (
+        current == null ||
+        (current.relevantIds.length === 0 &&
+          current.overlayIds.length === 0 &&
+          current.highlightedBits.length === 0)
+      ) {
+        return current
+      }
+      return {
+        ...current,
+        relevantIds: [],
+        overlayIds: [],
+        highlightedBits: [],
+      }
+    })
     setSelected(null)
   }, [])
 
@@ -697,6 +719,7 @@ export function Graph({ active }: { active: boolean }) {
     (bits: number[]) => {
       if (!designId || bits.length === 0) return
       setSourceProbeNotice(null)
+      setError(null)
       setSelected(null)
       edgeSourceProbeRef.current?.schedule({ designId, bits })
     },

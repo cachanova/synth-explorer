@@ -52,6 +52,39 @@ describe('editor source coordinates', () => {
     })
   })
 
+  it('omits fallback coordinates instead of scanning an oversized line', () => {
+    const longDocument = `logic value;${' '.repeat(4096)}`
+    const selected = selectedSourceRange(
+      EditorState.create({
+        doc: longDocument,
+        selection: EditorSelection.cursor(longDocument.indexOf('value')),
+      }),
+    )
+
+    expect(selected).toEqual({
+      startLine: 1,
+      startColumn: 7,
+      endLine: 1,
+      endColumn: 7,
+    })
+  })
+
+  it('ignores semicolons inside comments and strings', () => {
+    const complex = 'logic first = "a;b" /* ; */; logic second;'
+    const second = complex.indexOf('logic second')
+    const separator = complex.indexOf(';', complex.indexOf('*/'))
+    const terminator = complex.indexOf(';', second)
+    const selected = selectedSourceRange(
+      EditorState.create({
+        doc: complex,
+        selection: EditorSelection.cursor(second),
+      }),
+    )
+
+    expect(selected.fallbackStartColumn).toBe(separator + 2)
+    expect(selected.fallbackEndColumn).toBe(terminator + 1)
+  })
+
   it('uses inclusive endpoints for forward and backward selections', () => {
     const first = document.indexOf('first')
     const secondEnd = document.indexOf('second') + 'second'.length
