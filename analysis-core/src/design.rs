@@ -112,7 +112,11 @@ fn procedural_ranges(targets: &HashMap<(String, usize), Vec<u32>>) -> Vec<Source
             file: file.clone(),
             start_line: *line,
             end_line: *line,
+            start_column: None,
+            end_column: None,
             node_ids: node_ids.clone(),
+            signal_bits: Vec::new(),
+            approximate_signal_bits: Vec::new(),
             mapping_incomplete: false,
         })
         .collect::<Vec<_>>();

@@ -63,11 +63,15 @@ interface Props {
   rootId: number
   relevantIds: Set<number>
   overlayIds: Set<number>
+  /** Final Yosys net bits named directly by the selected source declaration. */
+  highlightedBits?: Set<number>
   /** Extend source-selection overlays across adjacent port/constant nets. */
   extendOverlayToBoundaryNets?: boolean
   selectedId: number | null
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
+  /** Cross-probes the exact final-net bits carried by a clicked edge. */
+  onEdgeSelect?: (bits: number[]) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlRef, node: GraphNode) => void
   /** Double-click a node to additively render its fanin/fanout connections. */
@@ -83,6 +87,7 @@ interface NodePins {
 }
 
 const EMPTY_NODE_PINS: NodePins = { incoming: [], outgoing: [], controlInputs: [] }
+const EMPTY_HIGHLIGHTED_BITS = new Set<number>()
 
 interface MutableNodePins {
   incoming: Set<string>
@@ -1095,6 +1100,7 @@ interface PreparedSchematicEdge {
   points: Point[]
   title: string
   bits: number
+  netBits: number[]
   isBus: boolean
   relevant: boolean
   control: boolean
@@ -1213,12 +1219,14 @@ function prepareSchematicEdges({
   nodeById,
   relevantIds,
   overlayIds,
+  highlightedBits,
   extendOverlayToBoundaryNets,
 }: {
   edges: LaidOutEdge[]
   nodeById: Map<number, LaidOutNode>
   relevantIds: Set<number>
   overlayIds: Set<number>
+  highlightedBits: Set<number>
   extendOverlayToBoundaryNets: boolean
 }): PreparedSchematicEdges {
   const prepared: PreparedSchematicEdge[] = []
@@ -1242,12 +1250,17 @@ function prepareSchematicEdges({
     // Source overlays name logic cells, not their port/constant boundary
     // nodes. Keep those terminal nets continuous without lighting up branches
     // from the selected logic into unrelated context cells.
+    const exactBitHighlighted = laidOutEdge.edge.bits.some((bit) =>
+      highlightedBits.has(bit),
+    )
     const highlighted =
-      (fromHighlighted && toHighlighted) ||
-      (extendOverlayToBoundaryNets &&
-        relevant &&
-        ((fromHighlighted && toKind != null && toKind !== 'cell') ||
-          (toHighlighted && fromKind != null && fromKind !== 'cell')))
+      exactBitHighlighted ||
+      (highlightedBits.size === 0 &&
+        ((fromHighlighted && toHighlighted) ||
+          (extendOverlayToBoundaryNets &&
+            relevant &&
+            ((fromHighlighted && toKind != null && toKind !== 'cell') ||
+              (toHighlighted && fromKind != null && fromKind !== 'cell')))))
     let points = laidOutEdge.points
     if (points.length < 2) {
       const from = nodeById.get(laidOutEdge.from)
@@ -1270,6 +1283,7 @@ function prepareSchematicEdges({
       points,
       title,
       bits,
+      netBits: laidOutEdge.edge.bits,
       isBus,
       relevant,
       control,
@@ -1389,7 +1403,7 @@ interface EdgeHitSegment {
 }
 
 interface EdgeHitIndex {
-  batches: Map<string, Map<string, EdgeHitSegment[]>>
+  cells: Map<string, EdgeHitSegment[]>
 }
 
 interface EdgeTooltipState {
@@ -1400,14 +1414,9 @@ interface EdgeTooltipState {
 }
 
 function buildEdgeHitIndex(edges: PreparedSchematicEdge[]): EdgeHitIndex {
-  const batches = new Map<string, Map<string, EdgeHitSegment[]>>()
+  const cells = new Map<string, EdgeHitSegment[]>()
   let segmentId = 0
   for (const edge of edges) {
-    let cells = batches.get(edge.batchKey)
-    if (!cells) {
-      cells = new Map()
-      batches.set(edge.batchKey, cells)
-    }
     for (let pointIndex = 1; pointIndex < edge.points.length; pointIndex += 1) {
       const from = edge.points[pointIndex - 1]
       const to = edge.points[pointIndex]
@@ -1421,7 +1430,7 @@ function buildEdgeHitIndex(edges: PreparedSchematicEdge[]): EdgeHitIndex {
       }
     }
   }
-  return { batches }
+  return { cells }
 }
 
 function pointSegmentDistanceSquared(point: Point, from: Point, to: Point): number {
@@ -1446,12 +1455,9 @@ function pointSegmentDistanceSquared(point: Point, from: Point, to: Point): numb
 
 function hitTestEdge(
   index: EdgeHitIndex,
-  batchKey: string,
   point: Point,
   tolerance: number,
 ): PreparedSchematicEdge | null {
-  const cells = index.batches.get(batchKey)
-  if (!cells) return null
   const minCellX = Math.floor((point.x - tolerance) / EDGE_HIT_CELL_SIZE)
   const maxCellX = Math.floor((point.x + tolerance) / EDGE_HIT_CELL_SIZE)
   const minCellY = Math.floor((point.y - tolerance) / EDGE_HIT_CELL_SIZE)
@@ -1461,7 +1467,7 @@ function hitTestEdge(
   let best: { edge: PreparedSchematicEdge; distanceSquared: number } | null = null
   for (let cellX = minCellX; cellX <= maxCellX; cellX += 1) {
     for (let cellY = minCellY; cellY <= maxCellY; cellY += 1) {
-      for (const segment of cells.get(edgeHitCellKey(cellX, cellY)) ?? []) {
+      for (const segment of index.cells.get(edgeHitCellKey(cellX, cellY)) ?? []) {
         if (visitedSegments.has(segment.id)) continue
         visitedSegments.add(segment.id)
         const distanceSquared = pointSegmentDistanceSquared(
@@ -1572,23 +1578,33 @@ const SchematicNodeTooltip = memo(function SchematicNodeTooltip({
 const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
   active,
   edges,
+  geometryKey,
   stageRef,
   svgRef,
   viewportRef,
   hideRef,
+  suppressClickRef,
+  onSelect,
 }: {
   active: boolean
   edges: PreparedSchematicEdge[]
+  geometryKey: object
   stageRef: RefObject<HTMLDivElement | null>
   svgRef: RefObject<SVGSVGElement | null>
   viewportRef: RefObject<SVGGElement | null>
   hideRef: MutableRefObject<(() => void) | null>
+  suppressClickRef: MutableRefObject<boolean>
+  onSelect?: (bits: number[]) => void
 }) {
   const hitIndexRef = useRef<{
-    edges: PreparedSchematicEdge[]
+    geometryKey: object
     index: EdgeHitIndex
   } | null>(null)
-  if (hitIndexRef.current?.edges !== edges) hitIndexRef.current = null
+  const geometryEdgesRef = useRef({ geometryKey, edges })
+  if (geometryEdgesRef.current.geometryKey !== geometryKey) {
+    geometryEdgesRef.current = { geometryKey, edges }
+  }
+  if (hitIndexRef.current?.geometryKey !== geometryKey) hitIndexRef.current = null
   const [tooltip, setTooltip] = useState<EdgeTooltipState | null>(null)
 
   useEffect(() => {
@@ -1600,12 +1616,12 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
     if (!svg || !stage || !viewport) return
     let frame: number | null = null
     let idle: number | null = null
-    let pending: { clientX: number; clientY: number; batchKey: string } | null = null
+    let pending: { clientX: number; clientY: number } | null = null
     let tooltipVisible = false
     const ensureHitIndex = () => {
-      if (hitIndexRef.current?.edges === edges) return hitIndexRef.current.index
-      const index = buildEdgeHitIndex(edges)
-      hitIndexRef.current = { edges, index }
+      if (hitIndexRef.current?.geometryKey === geometryKey) return hitIndexRef.current.index
+      const index = buildEdgeHitIndex(geometryEdgesRef.current.edges)
+      hitIndexRef.current = { geometryKey, index }
       return index
     }
 
@@ -1628,6 +1644,18 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
       }
     }
     hideRef.current = hide
+    const edgeAt = (clientX: number, clientY: number) => {
+      const matrix = viewport.getScreenCTM()
+      if (!matrix) return null
+      const scale = Math.hypot(matrix.a, matrix.b)
+      if (!Number.isFinite(scale) || scale <= 0) return null
+      const graphPoint = new DOMPoint(clientX, clientY).matrixTransform(matrix.inverse())
+      return hitTestEdge(
+        ensureHitIndex(),
+        graphPoint,
+        EDGE_HIT_TOLERANCE_PX / scale,
+      )
+    }
     const resolvePending = () => {
       frame = null
       const current = pending
@@ -1636,25 +1664,7 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
         hide()
         return
       }
-      const matrix = viewport.getScreenCTM()
-      if (!matrix) {
-        hide()
-        return
-      }
-      const scale = Math.hypot(matrix.a, matrix.b)
-      if (!Number.isFinite(scale) || scale <= 0) {
-        hide()
-        return
-      }
-      const graphPoint = new DOMPoint(current.clientX, current.clientY).matrixTransform(
-        matrix.inverse(),
-      )
-      const edge = hitTestEdge(
-        ensureHitIndex(),
-        current.batchKey,
-        graphPoint,
-        EDGE_HIT_TOLERANCE_PX / scale,
-      )
+      const edge = edgeAt(current.clientX, current.clientY)
       if (!edge) {
         hide()
         return
@@ -1681,25 +1691,33 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
         hide()
         return
       }
-      const edgePath = target?.closest<SVGPathElement>('.g-edge[data-edge-batch]')
-      const batchKey = edgePath?.dataset.edgeBatch
-      if (!edgePath || !batchKey || !svg.contains(edgePath)) {
-        hide()
+      pending = { clientX: event.clientX, clientY: event.clientY }
+      if (frame == null) frame = window.requestAnimationFrame(resolvePending)
+    }
+    const onClick = (event: MouseEvent) => {
+      if (!onSelect || svg.classList.contains('panning')) return
+      if (suppressClickRef.current) {
         return
       }
-      pending = { clientX: event.clientX, clientY: event.clientY, batchKey }
-      if (frame == null) frame = window.requestAnimationFrame(resolvePending)
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('.g-node-body')) return
+      const edge = edgeAt(event.clientX, event.clientY)
+      if (!edge) return
+      event.stopPropagation()
+      onSelect(edge.netBits)
     }
 
     svg.addEventListener('pointermove', onPointerMove)
     svg.addEventListener('pointerleave', hide)
     svg.addEventListener('pointerdown', hide)
     svg.addEventListener('wheel', hide)
+    svg.addEventListener('click', onClick)
     return () => {
       svg.removeEventListener('pointermove', onPointerMove)
       svg.removeEventListener('pointerleave', hide)
       svg.removeEventListener('pointerdown', hide)
       svg.removeEventListener('wheel', hide)
+      svg.removeEventListener('click', onClick)
       if (hideRef.current === hide) hideRef.current = null
       if (frame != null) window.cancelAnimationFrame(frame)
       if (idle != null) {
@@ -1710,7 +1728,16 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
         }
       }
     }
-  }, [active, edges, hideRef, stageRef, svgRef, viewportRef])
+  }, [
+    active,
+    geometryKey,
+    hideRef,
+    onSelect,
+    stageRef,
+    suppressClickRef,
+    svgRef,
+    viewportRef,
+  ])
 
   if (!tooltip) return null
   return (
@@ -1730,10 +1757,12 @@ export const GraphView = memo(function GraphView({
   rootId,
   relevantIds,
   overlayIds,
+  highlightedBits = EMPTY_HIGHLIGHTED_BITS,
   extendOverlayToBoundaryNets = false,
   selectedId,
   interactive,
   onSelect,
+  onEdgeSelect,
   onControlSelect,
   onExpand,
   active,
@@ -1815,11 +1844,13 @@ export const GraphView = memo(function GraphView({
       nodeById: metadata.nodeById,
       relevantIds,
       overlayIds,
+      highlightedBits,
       extendOverlayToBoundaryNets,
     }),
     [
       extendOverlayToBoundaryNets,
       graph.edges,
+      highlightedBits,
       metadata.nodeById,
       overlayIds,
       relevantIds,
@@ -2521,10 +2552,13 @@ export const GraphView = memo(function GraphView({
       <SchematicEdgeTooltip
         active={active}
         edges={preparedEdges.edges}
+        geometryKey={graph.edges}
         stageRef={stageRef}
         svgRef={svgRef}
         viewportRef={viewportRef}
         hideRef={hideEdgeTooltipRef}
+        suppressClickRef={suppressClick}
+        onSelect={interactive ? onEdgeSelect : undefined}
       />
 
       <SchematicNodeTooltip

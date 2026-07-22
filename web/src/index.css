@@ -1231,6 +1231,14 @@ a:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   transition: background 0.4s ease;
 }
+.cm-src-range-hl {
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
+  border-radius: 2px;
+}
+.cm-src-range-hl-secondary {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 2px;
+}
 .cm-src-hl-fade {
   background: color-mix(in srgb, var(--accent) 0%, transparent);
 }
@@ -1792,6 +1800,7 @@ th.sortable:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-height: 63px;
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;

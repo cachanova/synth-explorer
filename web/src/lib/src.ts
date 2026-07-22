@@ -14,22 +14,24 @@ export interface SrcSpan {
   startCol: number // 1-based; 1 when unknown
   endLine: number
   endCol: number // 1-based inclusive-ish; equals startCol when unknown
+  /** True when both columns came from an authoritative source range. */
+  exact?: boolean
 }
 
 const ONE = 1
 
-function parsePoint(s: string): { line: number; col: number } | null {
+function parsePoint(s: string): { line: number; col: number; exact: boolean } | null {
   // "12.16" or "12"
   const dot = s.indexOf('.')
   if (dot === -1) {
     const line = Number(s)
     if (!Number.isFinite(line)) return null
-    return { line, col: ONE }
+    return { line, col: ONE, exact: false }
   }
   const line = Number(s.slice(0, dot))
   const col = Number(s.slice(dot + 1))
   if (!Number.isFinite(line) || !Number.isFinite(col)) return null
-  return { line, col }
+  return { line, col, exact: true }
 }
 
 /** Parse a single "file:loc" fragment. Returns null if unparseable. */
@@ -54,6 +56,7 @@ export function parseSrcFragment(fragment: string): SrcSpan | null {
       startCol: p.col,
       endLine: p.line,
       endCol: p.col,
+      exact: p.exact || undefined,
     }
   }
   const start = parsePoint(loc.slice(0, dash))
@@ -65,6 +68,7 @@ export function parseSrcFragment(fragment: string): SrcSpan | null {
     startCol: start.col,
     endLine: end.line,
     endCol: end.col,
+    exact: (start.exact && end.exact) || undefined,
   }
 }
 
@@ -105,5 +109,11 @@ export function designSrcSpans(
   designFiles: ReadonlyArray<{ name: string }>,
 ): SrcSpan[] {
   const names = new Set(designFiles.map((file) => file.name))
-  return parseSrc(src).filter((span) => names.has(span.file))
+  return parseSrc(src)
+    .filter((span) => names.has(span.file))
+    .map((span) => {
+      const lower = span.file.toLowerCase()
+      if (!lower.endsWith('.vhd') && !lower.endsWith('.vhdl')) return span
+      return { ...span, startCol: ONE, endCol: ONE, exact: undefined }
+    })
 }

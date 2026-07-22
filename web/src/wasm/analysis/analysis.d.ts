@@ -12,6 +12,7 @@ export class AnalysisSession {
     nodes_json(ids_json: string): string;
     paths_json(query_json: string): string;
     source_map_json(): string;
+    source_ranges_for_bits_json(bits_json: string): string;
     source_selection_json(query_json: string): string;
     summary_json(): string;
     timing_json(query_json: string): string;
@@ -30,6 +31,7 @@ export interface InitOutput {
     readonly analysissession_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_paths_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_source_map_json: (a: number) => [number, number, number, number];
+    readonly analysissession_source_ranges_for_bits_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_source_selection_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_summary_json: (a: number) => [number, number, number, number];
     readonly analysissession_timing_json: (a: number, b: number, c: number) => [number, number, number, number];

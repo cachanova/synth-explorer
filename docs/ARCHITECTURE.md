@@ -27,7 +27,10 @@ on the user's computer.
    `analysis-core` compiled to WebAssembly.
 7. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
    projections, source maps, source selections, and node details are worker
-   messages. Results are bounded before crossing the worker boundary.
+   messages. Source selections carry inclusive one-based line and column spans;
+   declaration mappings retain final synthesized net-bit identities so exact
+   visible wires can be highlighted and clicked back to source even when nodes
+   are grouped. Results are bounded before crossing the worker boundary.
 8. elkjs lays out bounded subgraphs in its own worker.
 
 Local Vivado is a manual branch after validation. The user starts

@@ -272,6 +272,87 @@ describe('GraphView LUT labels', () => {
     expect(markup).toMatch(/g-node-body[^>]*\bhl\b/)
   })
 
+  it('highlights the exact Yosys net bits selected from source', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 1,
+          x: 0,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 1, kind: 'cell' as const, name: 'driver', cell_type: '$_BUF_' },
+        },
+        {
+          id: 2,
+          x: 140,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 2, kind: 'cell' as const, name: 'first', cell_type: '$_BUF_' },
+        },
+        {
+          id: 3,
+          x: 140,
+          y: 80,
+          width: 76,
+          height: 52,
+          node: { id: 3, kind: 'cell' as const, name: 'second', cell_type: '$_BUF_' },
+        },
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          points: [{ x: 76, y: 26 }, { x: 140, y: 26 }],
+          edge: {
+            from: 1,
+            to: 2,
+            from_port: 'Y',
+            to_port: 'A',
+            net_name: 'first_net',
+            bits: [41],
+          },
+        },
+        {
+          from: 1,
+          to: 3,
+          points: [{ x: 76, y: 26 }, { x: 140, y: 106 }],
+          edge: {
+            from: 1,
+            to: 3,
+            from_port: 'Y',
+            to_port: 'A',
+            net_name: 'second_net',
+            bits: [42],
+          },
+        },
+      ],
+      width: 216,
+      height: 132,
+    }
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set(graph.nodes.map((node) => node.id))}
+        highlightedBits={new Set([41])}
+        relevantIds={new Set(graph.nodes.map((node) => node.id))}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    const highlighted = markup.match(
+      /<path class="g-edge(?: [^"]*)?\bhl\b[^"]*"[^>]*data-edge-count="\d+"[^>]*>/g,
+    ) ?? []
+    expect(highlighted).toHaveLength(1)
+    expect(highlighted[0]).toContain('data-edge-count="1"')
+  })
+
   it('highlights boundary and interior nets without context-logic branch bleed', () => {
     const props = {
       graph: boundaryHighlightGraph(),

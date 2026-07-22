@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  boundedSourceSelection,
   createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
@@ -64,7 +65,9 @@ describe('source selection normalization', () => {
     expect(normalizeSourceSelection('top.sv', 18, 12)).toEqual({
       file: 'top.sv',
       startLine: 12,
+      startColumn: 1,
       endLine: 18,
+      endColumn: 1,
     })
   })
 
@@ -72,12 +75,43 @@ describe('source selection normalization', () => {
     expect(normalizeSourceSelection('top.sv', 0, -4)).toEqual({
       file: 'top.sv',
       startLine: 1,
+      startColumn: 1,
       endLine: 1,
+      endColumn: 1,
+    })
+  })
+
+  it('normalizes line and column positions together', () => {
+    expect(normalizeSourceSelection('top.sv', 8, 3, 17, 4)).toEqual({
+      file: 'top.sv',
+      startLine: 3,
+      startColumn: 4,
+      endLine: 8,
+      endColumn: 17,
+    })
+    expect(normalizeSourceSelection('top.sv', 5, 5, 20, 7)).toEqual({
+      file: 'top.sv',
+      startLine: 5,
+      startColumn: 7,
+      endLine: 5,
+      endColumn: 20,
     })
   })
 })
 
 describe('source probe debounce', () => {
+  it('falls back to a whole-line range when a selection is capped', () => {
+    const request = boundedSourceSelection(
+      normalizeSourceSelection('top.sv', 4, 500, 8, 19),
+      200,
+    )
+
+    expect(request.endLine).toBe(203)
+    expect(request.truncated).toBe(true)
+    expect(request.startColumn).toBeUndefined()
+    expect(request.endColumn).toBeUndefined()
+  })
+
   it('runs only the latest scheduled selection after the quiet period', () => {
     vi.useFakeTimers()
     const selections: ReturnType<typeof normalizeSourceSelection>[] = []
@@ -93,7 +127,13 @@ describe('source probe debounce', () => {
 
     vi.advanceTimersByTime(1)
     expect(selections).toEqual([
-      { file: 'top.sv', startLine: 9, endLine: 11 },
+      {
+        file: 'top.sv',
+        startLine: 9,
+        startColumn: 1,
+        endLine: 11,
+        endColumn: 1,
+      },
     ])
     vi.useRealTimers()
   })

@@ -12,6 +12,7 @@ import { DEFAULT_FILE, defaultWorkspace } from './data/defaultWorkspace'
 import { StoreContext } from './storeContext'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
+  boundedSourceSelection,
   createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
@@ -93,7 +94,9 @@ export interface SourceGraphRequest {
   kind: 'source'
   file: string
   startLine: number
+  startColumn?: number
   endLine: number
+  endColumn?: number
   selectionTruncated: boolean
   label: string
   highlight: number[]
@@ -141,14 +144,22 @@ const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   groupMemories: true,
 }
 
+function sourceCaret(file: string, line = 1, column = 1): SourceSelection {
+  return {
+    file,
+    startLine: line,
+    startColumn: column,
+    endLine: line,
+    endColumn: column,
+  }
+}
+
 function sourceGraphRequest(
   selection: SourceSelection,
   nonce: number,
 ): SourceGraphRequest {
-  const endLine = Math.min(
-    selection.endLine,
-    selection.startLine + MAX_SOURCE_LINES - 1,
-  )
+  const bounded = boundedSourceSelection(selection, MAX_SOURCE_LINES)
+  const { endLine } = bounded
   const lineLabel =
     selection.startLine === endLine
       ? `line ${selection.startLine}`
@@ -156,9 +167,11 @@ function sourceGraphRequest(
   return {
     kind: 'source',
     file: selection.file,
-    startLine: selection.startLine,
+    startLine: bounded.startLine,
+    startColumn: bounded.startColumn,
     endLine,
-    selectionTruncated: endLine !== selection.endLine,
+    endColumn: bounded.endColumn,
+    selectionTruncated: bounded.truncated,
     label: `${selection.file}:${lineLabel}`,
     highlight: [],
     nonce,
@@ -254,7 +267,13 @@ export interface Store {
 
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
-  setSourceSelection: (file: string, startLine: number, endLine: number) => void
+  setSourceSelection: (
+    file: string,
+    startLine: number,
+    endLine: number,
+    startColumn?: number,
+    endColumn?: number,
+  ) => void
 }
 
 export interface StoreApi {
@@ -349,7 +368,9 @@ export function StoreProvider({
   const [sourceSelection, setSourceSelectionState] = useState<SourceSelection>({
     file: initial.activeFileName,
     startLine: 1,
+    startColumn: 1,
     endLine: 1,
+    endColumn: 1,
   })
 
   const nonceGuardRef = useRef<ReturnType<typeof createLatestGuard> | null>(null)
@@ -578,7 +599,7 @@ export function StoreProvider({
     markInputChanged()
     setFiles(next)
     setActiveFileNameState(name)
-    const selection = { file: name, startLine: 1, endLine: 1 }
+    const selection = sourceCaret(name)
     sourceSelectionRef.current = selection
     sourceSelectionActiveRef.current = false
     setSourceSelectionState(selection)
@@ -606,7 +627,7 @@ export function StoreProvider({
       setDocRevision((revision) => revision + 1)
       const active = imported[0].name
       setActiveFileNameState(active)
-      const selection = { file: active, startLine: 1, endLine: 1 }
+      const selection = sourceCaret(active)
       sourceSelectionRef.current = selection
       sourceSelectionActiveRef.current = false
       setSourceSelectionState(selection)
@@ -653,14 +674,14 @@ export function StoreProvider({
       setFiles(next)
       setActiveFileNameState((cur) => (cur === name ? next[0].name : cur))
       if (sourceSelectionRef.current.file === name) {
-        const selection = { file: next[0].name, startLine: 1, endLine: 1 }
+        const selection = sourceCaret(next[0].name)
         sourceSelectionRef.current = selection
         sourceSelectionActiveRef.current = false
         setConeReq((request) => (request?.kind === 'source' ? null : request))
       }
       setSourceSelectionState((cur) =>
         cur.file === name
-          ? { file: next[0].name, startLine: 1, endLine: 1 }
+          ? sourceCaret(next[0].name)
           : cur,
       )
     },
@@ -687,7 +708,7 @@ export function StoreProvider({
     setActiveFileNameState(next.activeFileName)
     setDocRevision((revision) => revision + 1)
     setTopState(next.top)
-    const selection = { file: DEFAULT_FILE.name, startLine: 1, endLine: 1 }
+    const selection = sourceCaret(DEFAULT_FILE.name)
     sourceSelectionRef.current = selection
     sourceSelectionActiveRef.current = false
     setSourceSelectionState(selection)
@@ -842,7 +863,7 @@ export function StoreProvider({
       setDocRevision((r) => r + 1)
       const firstFile = variant.files[0]?.name ?? DEFAULT_FILE.name
       setActiveFileNameState(firstFile)
-      const selection = { file: firstFile, startLine: 1, endLine: 1 }
+      const selection = sourceCaret(firstFile)
       sourceSelectionRef.current = selection
       sourceSelectionActiveRef.current = false
       setSourceSelectionState(selection)
@@ -1085,14 +1106,28 @@ export function StoreProvider({
   )
 
   const setSourceSelection = useCallback(
-    (file: string, startLine: number, endLine: number) => {
-      const selection = normalizeSourceSelection(file, startLine, endLine)
+    (
+      file: string,
+      startLine: number,
+      endLine: number,
+      startColumn = 1,
+      endColumn = startColumn,
+    ) => {
+      const selection = normalizeSourceSelection(
+        file,
+        startLine,
+        endLine,
+        startColumn,
+        endColumn,
+      )
       const previous = sourceSelectionRef.current
       if (
         sourceSelectionActiveRef.current &&
         previous.file === selection.file &&
         previous.startLine === selection.startLine &&
-        previous.endLine === selection.endLine
+        previous.startColumn === selection.startColumn &&
+        previous.endLine === selection.endLine &&
+        previous.endColumn === selection.endColumn
       ) {
         return
       }
@@ -1110,7 +1145,7 @@ export function StoreProvider({
     (name: string) => {
       cancelSourceProbe()
       setActiveFileNameState(name)
-      const selection = { file: name, startLine: 1, endLine: 1 }
+      const selection = sourceCaret(name)
       sourceSelectionRef.current = selection
       sourceSelectionActiveRef.current = false
       setSourceSelectionState(selection)

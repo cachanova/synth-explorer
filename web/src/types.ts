@@ -73,6 +73,8 @@ export interface SourceSelectionResult {
   control: boolean
   /** Displayed graph nodes directly attributable to the selected source range. */
   directIds: number[]
+  /** Final Yosys net-bit ids directly named by the selected declaration. */
+  directBits: number[]
   graph: Subgraph
 }
 
@@ -369,7 +371,11 @@ export interface SourceRangeMapping {
   file: string
   start_line: number
   end_line: number
+  start_column?: number
+  end_column?: number
   node_ids: number[]
+  signalBits?: number[]
+  approximateSignalBits?: number[]
   mapping_incomplete: boolean
 }
 
@@ -378,6 +384,12 @@ export interface SourceMapResponse {
   by_line: Record<string, number[]> // "file.sv:12" -> node ids
   ranges: SourceRangeMapping[]
   truncated: boolean
+}
+
+export interface SourceBitRangesResponse {
+  ranges: SourceRangeMapping[]
+  truncated: boolean
+  approximate: boolean
 }
 
 // --- Bundled examples ---

@@ -13,6 +13,7 @@ describe('source selection analysis client', () => {
       status: 'mapped',
       control: false,
       directIds: [1],
+      directBits: [17],
       graph: { nodes: [], edges: [], truncated: false },
     }
     queryAnalysis.mockResolvedValue(response)
@@ -20,7 +21,13 @@ describe('source selection analysis client', () => {
     await expect(
       analyzeSourceInBrowser(
         'design',
-        { file: 'top.sv', startLine: 4, endLine: 5 },
+        {
+          file: 'top.sv',
+          startLine: 4,
+          startColumn: 7,
+          endLine: 5,
+          endColumn: 11,
+        },
         {
           maxNodes: 400,
           hideControl: true,
@@ -34,7 +41,9 @@ describe('source selection analysis client', () => {
     expect(queryAnalysis).toHaveBeenCalledWith('source', {
       file: 'top.sv',
       start_line: 4,
+      start_column: 7,
       end_line: 5,
+      end_column: 11,
       max_nodes: 400,
       hide_control: true,
       hide_const: false,
@@ -51,7 +60,13 @@ describe('source selection analysis client', () => {
     await expect(
       analyzeSourceInBrowser(
         'design',
-        { file: 'top.sv', startLine: 4, endLine: 4 },
+        {
+          file: 'top.sv',
+          startLine: 4,
+          startColumn: 1,
+          endLine: 4,
+          endColumn: 1,
+        },
         {
           maxNodes: 400,
           hideControl: true,
