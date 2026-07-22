@@ -408,8 +408,15 @@ function NodeContents({
   const primaryHeight = kind === 'reg' ? Math.min(height, 58) : height
 
   const badgeText = groupBadgeText(node)
-  const groupBadge = detailLevel === 'full' && badgeText ? (
-    <text className="g-group-badge" x={width - 4} y={11} textAnchor="end">
+  const showCompactMemoryGroupDetails = detailLevel === 'compact'
+    && isGroupedMemory(node, kind)
+  const groupBadge = (detailLevel === 'full' || showCompactMemoryGroupDetails) && badgeText ? (
+    <text
+      className={`g-group-badge${showCompactMemoryGroupDetails ? ' g-memory-group-detail' : ''}`}
+      x={width - 4}
+      y={11}
+      textAnchor="end"
+    >
       {badgeText}
     </text>
   ) : null
@@ -475,13 +482,22 @@ function NodeContents({
       <text className="g-node-label" x={width / 2} y={labelY} textAnchor="middle">
         {truncate(label, maxChars)}
       </text>
-      {detailLevel === 'full' && showName && (
-        <text className="g-node-name" x={width / 2} y={labelY + 13} textAnchor="middle">
+      {(detailLevel === 'full' || showCompactMemoryGroupDetails) && showName && (
+        <text
+          className={`g-node-name${showCompactMemoryGroupDetails ? ' g-memory-group-detail' : ''}`}
+          x={width / 2}
+          y={labelY + 13}
+          textAnchor="middle"
+        >
           {truncate(name, maxChars)}
         </text>
       )}
     </>
   )
+}
+
+function isGroupedMemory(node: GraphNode, kind: SymbolKind): boolean {
+  return kind === 'memory' && (node.member_count != null || node.members != null)
 }
 
 function PinLabels({ pins, width, height }: { pins: NodePins; width: number; height: number }) {
@@ -721,6 +737,18 @@ const SchematicNode = memo(function SchematicNode({
         showDetails={false}
         showStack={false}
       />
+      {isGroupedMemory(node, kind) && (
+        <g className="g-memory-overview-details" aria-hidden="true">
+          <NodeContents
+            node={node}
+            kind={kind}
+            width={laidOutNode.width}
+            height={Math.max(1, laidOutNode.height - controlsFor(node).length * 13)}
+            name={name}
+            detailLevel="full"
+          />
+        </g>
+      )}
     </g>
   )
 })

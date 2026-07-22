@@ -2295,6 +2295,22 @@ th.sortable:hover {
 .g-viewport[data-detail-level='overview'] .g-symbol-stack {
   display: none;
 }
+.g-viewport[data-detail-level='compact'] .g-memory-group-detail {
+  display: inline;
+}
+.g-memory-overview-details {
+  display: none;
+}
+.g-viewport[data-detail-level='overview'] .g-memory-overview-details,
+.g-viewport[data-detail-level='overview'] .g-memory-overview-details .g-node-label,
+.g-viewport[data-detail-level='overview'] .g-memory-overview-details .g-node-name,
+.g-viewport[data-detail-level='overview'] .g-memory-overview-details .g-group-badge {
+  display: inline;
+}
+.g-viewport[data-detail-level='overview'] .g-node-body.selected .g-memory-overview-details,
+.g-viewport[data-detail-level='overview'] .g-node-body:focus .g-memory-overview-details {
+  display: none;
+}
 .g-viewport[data-detail-level] .g-node-body.selected .g-node-label,
 .g-viewport[data-detail-level] .g-node-body.selected .g-node-name,
 .g-viewport[data-detail-level] .g-node-body.selected .g-reg-type,
