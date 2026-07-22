@@ -22,6 +22,27 @@ const structuralNetlist = [
   '',
 ].join('\n')
 
+const srlNetlist = [
+  '`timescale 1 ps / 1 ps',
+  'module top (',
+  '  input wire clk,',
+  '  input wire en,',
+  '  input wire [7:0] data_in,',
+  '  output wire [7:0] data_out',
+  ');',
+  '  wire [7:0] wrapped_data;',
+  ...Array.from({ length: 8 }, (_, bit) => [
+    `  LUT1 #(.INIT(2'h1)) lut_${bit} (.I0(data_in[${bit}]), .O(wrapped_data[${bit}]));`,
+    `  SRL16E srl_${bit} (`,
+    `    .Q(data_out[${bit}]),`,
+    "    .A0(1'b1), .A1(1'b1), .A2(1'b1), .A3(1'b1),",
+    `    .CE(en), .CLK(clk), .D(wrapped_data[${bit}])`,
+    '  );',
+  ]).flat(),
+  'endmodule',
+  '',
+].join('\n')
+
 async function replaceEditorText(page: Page, text: string) {
   const editor = page.locator('.cm-content')
   await editor.click()
@@ -123,6 +144,60 @@ test('connects to loopback Vivado and analyzes its returned netlist in browser w
     'CARRY4 — one_hot[3] (one_hot_OBUF[3]_inst_i_1)',
   )
   await expect(carry.locator('.g-symbol-outline')).toHaveAttribute('stroke', 'var(--green)')
+})
+
+test('stacks parallel Vivado SRL lanes through per-lane LUTs', async ({ page }) => {
+  await page.route('http://127.0.0.1:32123/v1/status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        protocol_version: 2,
+        bridge_version: '0.2.0-test',
+        vivado_version: 'Vivado v2026.1',
+        parts: [{ name: 'xc7a35tcpg236-1', family: 'artix7', speed: '-1' }],
+      }),
+    })
+  })
+  await page.route('http://127.0.0.1:32123/v1/synthesize', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        top: 'top',
+        target: 'xc7a35tcpg236-1',
+        netlist: srlNetlist,
+        log: 'fake Vivado SRL synthesis complete',
+      }),
+    })
+  })
+
+  await page.goto('/')
+  await replaceEditorText(page, [
+    'module top(',
+    '  input wire clk,',
+    '  input wire en,',
+    '  input wire [7:0] data_in,',
+    '  output wire [7:0] data_out',
+    ');',
+    '  assign data_out = data_in;',
+    'endmodule',
+    '',
+  ].join('\n'))
+  await page.getByLabel('Top').fill('top')
+  await page.getByLabel('Synthesis tool').selectOption('vivado')
+  await page.getByRole('button', { name: 'Synthesize' }).click()
+  await page.getByRole('tab', { name: 'Schematic' }).click()
+
+  const groupedSrl = page.locator(
+    '.g-node-body.g-symbol-memory[data-node-tooltip="SRL16E — data_out [16×8]"]',
+  )
+  await expect(groupedSrl).toHaveCount(1)
+  await expect(groupedSrl).toHaveAttribute('data-member-count', '8')
+
+  await page.getByLabel('group memories').uncheck()
+  await expect(groupedSrl).toHaveCount(0)
+  await expect(
+    page.locator('.g-node-body.g-symbol-memory[data-node-tooltip^="SRL16E"]'),
+  ).toHaveCount(8)
 })
 
 test('marks Vivado disconnected when the bridge disappears during synthesis', async ({ page }) => {

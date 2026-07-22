@@ -896,7 +896,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
 
       <label
         className="toggle"
-        title="Collapse mapped RAM or DFF primitives from each logical memory"
+        title="Collapse logical memories and parallel mapped memory primitives"
       >
         <input
           type="checkbox"

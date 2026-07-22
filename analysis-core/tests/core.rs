@@ -261,6 +261,144 @@ fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
 }
 
 #[test]
+fn grouped_netlist_keeps_mixed_vivado_lutram_shapes_in_one_memory() {
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "cells": {
+                "memory_reg_0_63_0_5": { "type": "RAM32M" },
+                "memory_reg_0_63_6_11": { "type": "RAM32M" },
+                "memory_reg_0_63_12_15": { "type": "RAM32X1D" }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "memories": {
+                "memory": { "width": 16, "start_offset": 0, "size": 64 }
+            }
+        } }
+    }))
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &final_netlist,
+        &source_netlist,
+        vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
+        "xilinx",
+        DelayProfile::Series7,
+        false,
+    )
+    .unwrap();
+
+    let memories: Vec<_> = design
+        .grouping
+        .groups
+        .iter()
+        .filter(|group| group.kind == GroupKind::Memory)
+        .collect();
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].label, "memory [64×16]");
+    assert_eq!(memories[0].cell_type, "$mem");
+    assert_eq!(memories[0].members.len(), 3);
+
+    let grouped = design.analysis.full_netlist(
+        &design.graph,
+        full_options(100, false, true, false),
+        Some(GroupingProjection::all(&design.grouping)),
+    );
+    let memory_nodes: Vec<_> = grouped
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.node
+                .cell_type
+                .as_deref()
+                .is_some_and(|cell_type| cell_type == "$mem")
+        })
+        .collect();
+    assert_eq!(memory_nodes.len(), 1);
+    assert_eq!(memory_nodes[0].member_count, Some(3));
+}
+
+#[test]
+fn grouped_netlist_stacks_parallel_srl_lanes_without_a_source_memory() {
+    let cells = (0..8)
+        .map(|bit| {
+            (
+                format!("$auto$srl${bit}"),
+                serde_json::json!({
+                    "type": "SRL16E",
+                    "port_directions": { "D": "input", "Q": "output" },
+                    "connections": { "D": [2 + bit], "Q": [10 + bit] }
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let final_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "data_in": { "direction": "input", "bits": [2, 3, 4, 5, 6, 7, 8, 9] },
+                "data_out": { "direction": "output", "bits": [10, 11, 12, 13, 14, 15, 16, 17] }
+            },
+            "cells": cells,
+            "netnames": {
+                "data_in": { "bits": [2, 3, 4, 5, 6, 7, 8, 9] },
+                "data_out": { "bits": [10, 11, 12, 13, 14, 15, 16, 17] }
+            }
+        } }
+    }))
+    .unwrap();
+    let source_netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "data_in": { "direction": "input", "bits": [2, 3, 4, 5, 6, 7, 8, 9] },
+                "data_out": { "direction": "output", "bits": [10, 11, 12, 13, 14, 15, 16, 17] }
+            }
+        } }
+    }))
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &final_netlist,
+        &source_netlist,
+        vec![("srl_pipe.sv".to_owned(), "module top; endmodule".to_owned())],
+        "xilinx",
+        DelayProfile::Series7,
+        false,
+    )
+    .unwrap();
+
+    let memory = design
+        .grouping
+        .groups
+        .iter()
+        .find(|group| group.kind == GroupKind::Memory)
+        .expect("parallel SRLs form one memory group");
+    assert_eq!(memory.label, "data_out [16×8]");
+    assert_eq!(memory.cell_type, "SRL16E");
+    assert_eq!(memory.members.len(), 8);
+
+    let grouped = design.analysis.full_netlist(
+        &design.graph,
+        full_options(100, false, true, false),
+        Some(GroupingProjection::all(&design.grouping)),
+    );
+    let srl = grouped
+        .nodes
+        .iter()
+        .find(|node| node.node.name == "data_out [16×8]")
+        .expect("SRL vector renders as one grouped node");
+    assert_eq!(srl.node.cell_type.as_deref(), Some("SRL16E"));
+    assert_eq!(srl.node.seq, Some(true));
+    assert_eq!(srl.node.register, Some(false));
+    assert_eq!(srl.width, Some(8));
+    assert_eq!(srl.member_count, Some(8));
+}
+
+#[test]
 fn vivado_memory_matching_prefers_the_longest_logical_reg_prefix() {
     let final_netlist = parse_value(serde_json::json!({
         "modules": { "top": {
