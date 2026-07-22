@@ -167,6 +167,49 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('>×12<')
   })
 
+  it('keeps grouped memory shape and primitive count in compact detail and the overview shell', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 20,
+            x: 120,
+            y: 120,
+            width: 180,
+            height: 62,
+            node: {
+              id: 20,
+              kind: 'cell',
+              name: 'fifo.bank [64×16]',
+              cell_type: '$mem',
+              seq: true,
+              register: false,
+              width: 3,
+              member_count: 3,
+            },
+          }],
+          edges: [],
+          width: 1600,
+          height: 1000,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('>MEM<')
+    expect(markup).toContain('>fifo.bank [64×16]<')
+    expect(markup).toContain('>×3<')
+    expect(markup).toContain('g-memory-group-detail')
+    expect(markup).toContain('g-memory-overview-details')
+  })
+
   it('renders only the grouped count and no decorative LUT separators', () => {
     const markup = renderToStaticMarkup(
       <GraphView

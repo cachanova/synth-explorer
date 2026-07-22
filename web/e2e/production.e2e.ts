@@ -40,6 +40,33 @@ async function setInferredFifoDepth(page: Page, depth: 16 | 64 | 128 | 512) {
   await editor.pressSequentially(String(depth))
 }
 
+async function zoomSchematicToScale(
+  page: Page,
+  targetScale: number,
+  anchor?: Locator,
+) {
+  const svg = page.locator('.graph-stage svg')
+  const anchorBox = await anchor?.boundingBox()
+  await svg.evaluate((element, options) => {
+    const transform = element.querySelector(':scope > g')?.getAttribute('transform') ?? ''
+    const current = Number(/scale\(([^)]+)\)/.exec(transform)?.[1])
+    if (!Number.isFinite(current) || current <= 0) {
+      throw new Error(`Could not read viewport scale from ${transform}`)
+    }
+    element.dispatchEvent(new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      clientX: options.clientX,
+      clientY: options.clientY,
+      deltaY: -Math.log(options.targetScale / current) / 0.0016,
+    }))
+  }, {
+    targetScale,
+    clientX: anchorBox ? anchorBox.x + anchorBox.width / 2 : 0,
+    clientY: anchorBox ? anchorBox.y + anchorBox.height / 2 : 0,
+  })
+}
+
 async function startAnalysisStateRecording(page: Page) {
   await page.evaluate(() => {
     const pane = document.querySelector('.pane-right')
@@ -797,26 +824,11 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await svg.dispatchEvent('click')
   await expect(labelDetails).toHaveCount(0)
 
-  const zoomToScale = async (targetScale: number) => {
-    await svg.evaluate((element, target) => {
-      const transform = element.querySelector(':scope > g')?.getAttribute('transform') ?? ''
-      const current = Number(/scale\(([^)]+)\)/.exec(transform)?.[1])
-      if (!Number.isFinite(current) || current <= 0) {
-        throw new Error(`Could not read viewport scale from ${transform}`)
-      }
-      element.dispatchEvent(new WheelEvent('wheel', {
-        bubbles: true,
-        cancelable: true,
-        deltaY: -Math.log(target / current) / 0.0016,
-      }))
-    }, targetScale)
-  }
-
   // Overview keeps its tier inside the 0.35-0.45 hysteresis band. Restoring
   // richer detail at 0.5 waits until the viewport has been idle for 160 ms.
-  await zoomToScale(0.42)
+  await zoomSchematicToScale(page, 0.42)
   expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
-  await zoomToScale(0.5)
+  await zoomSchematicToScale(page, 0.5)
   expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
   await expect(page.locator('.g-node-details')).not.toHaveCount(0)
@@ -825,9 +837,9 @@ test('renders and resizes the browser-produced graph without resetting user zoom
 
   // Compact likewise remains stable inside the 0.65-0.80 band, then restores
   // full detail only after the richer transition has been idle.
-  await zoomToScale(0.72)
+  await zoomSchematicToScale(page, 0.72)
   expect(await viewport.getAttribute('data-detail-level')).toBe('compact')
-  await zoomToScale(0.85)
+  await zoomSchematicToScale(page, 0.85)
   expect(await viewport.getAttribute('data-detail-level')).toBe('compact')
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
   await svg.press('0')
@@ -836,15 +848,15 @@ test('renders and resizes the browser-produced graph without resetting user zoom
 
   // Leaving the tab cancels the pending restore; returning must reschedule it
   // against the preserved user transform rather than stranding overview LOD.
-  await zoomToScale(0.3)
+  await zoomSchematicToScale(page, 0.3)
   expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
-  await zoomToScale(0.85)
+  await zoomSchematicToScale(page, 0.85)
   expect(await viewport.getAttribute('data-detail-level')).toBe('overview')
   await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
 
-  await zoomToScale(0.3)
+  await zoomSchematicToScale(page, 0.3)
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('overview')
   const controlNode = page.locator('.g-node-body.g-symbol-reg, .g-node-body.g-symbol-latch').first()
   await controlNode.focus()
@@ -887,6 +899,56 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
   expect(groupedId).not.toBeNull()
   await expect(groupedMemory).toHaveAttribute('role', 'button')
+
+  const viewport = page.locator('.g-viewport')
+  await zoomSchematicToScale(page, 0.5, groupedMemory)
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
+  const compactDetails = page.locator(`[data-node-detail-id="${groupedId}"]`)
+  await expect(compactDetails.locator('.g-node-label')).toHaveText('RAM64M')
+  await expect(compactDetails.locator('.g-node-label')).toBeVisible()
+  await expect(compactDetails.locator('.g-node-name.g-memory-group-detail')).toHaveText(
+    'memory [128×16]',
+  )
+  await expect(compactDetails.locator('.g-node-name.g-memory-group-detail')).toBeVisible()
+  await expect(compactDetails.locator('.g-group-badge.g-memory-group-detail')).toHaveText(
+    `×${memberCount}`,
+  )
+  await expect(compactDetails.locator('.g-group-badge.g-memory-group-detail')).toBeVisible()
+  await expect(page.locator(
+    `[data-graph-node-id="${groupedId}"] .g-node-label:visible, `
+      + `[data-node-detail-id="${groupedId}"] .g-node-label:visible`,
+  )).toHaveCount(1)
+
+  await zoomSchematicToScale(page, 0.3)
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('overview')
+  await expect(compactDetails).toHaveCount(0)
+  const overviewDetails = groupedMemory.locator('.g-memory-overview-details')
+  await expect(overviewDetails.locator('.g-node-label')).toHaveText('RAM64M')
+  await expect(overviewDetails.locator('.g-node-label')).toBeVisible()
+  await expect(overviewDetails.locator('.g-node-name')).toHaveText('memory [128×16]')
+  await expect(overviewDetails.locator('.g-node-name')).toBeVisible()
+  await expect(overviewDetails.locator('.g-group-badge')).toHaveText(`×${memberCount}`)
+  await expect(overviewDetails.locator('.g-group-badge')).toBeVisible()
+
+  const schematic = page.locator('.graph-stage svg')
+  const visibleGroupedLabels = page.locator(
+    `[data-graph-node-id="${groupedId}"] .g-node-label:visible, `
+      + `[data-node-detail-id="${groupedId}"] .g-node-label:visible`,
+  )
+  await groupedMemory.focus()
+  await expect(overviewDetails).not.toBeVisible()
+  await expect(visibleGroupedLabels).toHaveCount(1)
+  await groupedMemory.press('Enter')
+  await schematic.focus()
+  await expect(groupedMemory).toHaveClass(/selected/)
+  await expect(overviewDetails).not.toBeVisible()
+  await expect(visibleGroupedLabels).toHaveCount(1)
+  await schematic.dispatchEvent('click')
+  await expect(groupedMemory).not.toHaveClass(/selected/)
+  await expect(overviewDetails).toBeVisible()
+
+  await zoomSchematicToScale(page, 0.85)
+  await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
   await groupedMemory.focus()
   await groupedMemory.press('Enter')
   await expect(
