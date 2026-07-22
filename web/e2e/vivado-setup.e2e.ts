@@ -23,8 +23,20 @@ test('shows complete local Vivado setup and direct connection instructions in th
   await expect(dialog).toContainText('ssh -N -L 32123:127.0.0.1:32123 user@vivado-host')
 })
 
-test('uses the built-in connector and dedicated port in the downloadable launcher', async ({ page }) => {
+test('starts the built-in connector and offers a Vivado path in the downloadable launcher', async ({ page }) => {
+  let launcherStartRequests = 0
   let localConnectorRequests = 0
+  await page.route('**/launcher/vivado/start', async (route) => {
+    launcherStartRequests += 1
+    await route.fulfill({
+      status: 422,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        error: 'Vivado was not found or could not start',
+        path_required: true,
+      }),
+    })
+  })
   await page.route('http://127.0.0.1:32125/v1/status', async (route) => {
     localConnectorRequests += 1
     await route.abort('connectionrefused')
@@ -32,10 +44,12 @@ test('uses the built-in connector and dedicated port in the downloadable launche
   await page.goto('/?launcher=1')
   await page.getByLabel('Synthesis tool').selectOption('vivado')
 
+  await expect.poll(() => launcherStartRequests).toBe(1)
   await expect.poll(() => localConnectorRequests).toBe(1)
   const dialog = page.getByRole('dialog', { name: 'Use Vivado on this computer' })
-  await expect(dialog).toContainText('The connector is built into this launcher')
-  await expect(dialog).toContainText('--vivado /path/to/Vivado/bin/vivado')
+  await expect(dialog.getByText('Vivado was not found', { exact: true })).toBeVisible()
+  await expect(dialog.getByLabel('Vivado executable path')).toBeVisible()
+  await expect(dialog.getByRole('button', { name: 'Start Vivado' })).toBeVisible()
   await expect(dialog).not.toContainText('Start the local connector')
   await expect(dialog.getByRole('link', { name: /Download/ })).toHaveCount(0)
   await expect(dialog).not.toContainText('Vivado runs on another computer')
