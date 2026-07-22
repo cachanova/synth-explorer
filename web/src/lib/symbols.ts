@@ -145,8 +145,21 @@ const ARITH_GLYPHS: Record<string, string> = {
 }
 
 const XILINX_LUTRAM = String.raw`(?:16X(?:1[DS](?:_1)?|2S|4S|8S)|32(?:M(?:16)?|X(?:1[DS](?:_1)?|2S|4S|8S|16DR8))|64(?:M(?:8)?|X(?:1[DS](?:_1)?|2S|8SW))|128X1(?:D|S(?:_1)?)|256X1[DS]|512X1S)`
-const RAMB_WIDTHS = String.raw`S(?:1|2|4|8|9|16|18|36)`
-const XILINX_BLOCK_RAM = String.raw`(?:4_${RAMB_WIDTHS}(?:_${RAMB_WIDTHS})?|8BWER|16(?:BWER|BWE_${RAMB_WIDTHS}(?:_${RAMB_WIDTHS})?|_${RAMB_WIDTHS}(?:_${RAMB_WIDTHS})?)?|18(?:E[12]|SDP)?|32_S64_ECC|36(?:E[12]|SDP)?)`
+const XILINX_BLOCK_RAM = `(?:${[
+  '4_S1', '4_S1_S1', '4_S1_S2', '4_S1_S4', '4_S1_S8', '4_S1_S16',
+  '4_S2', '4_S2_S2', '4_S2_S4', '4_S2_S8', '4_S2_S16',
+  '4_S4', '4_S4_S4', '4_S4_S8', '4_S4_S16',
+  '4_S8', '4_S8_S8', '4_S8_S16', '4_S16', '4_S16_S16',
+  '8BWER', '16', '16BWER',
+  '16BWE_S18', '16BWE_S18_S9', '16BWE_S18_S18',
+  '16BWE_S36', '16BWE_S36_S9', '16BWE_S36_S18', '16BWE_S36_S36',
+  '16_S1', '16_S1_S1', '16_S1_S2', '16_S1_S4', '16_S1_S9', '16_S1_S18', '16_S1_S36',
+  '16_S2', '16_S2_S2', '16_S2_S4', '16_S2_S9', '16_S2_S18', '16_S2_S36',
+  '16_S4', '16_S4_S4', '16_S4_S9', '16_S4_S18', '16_S4_S36',
+  '16_S9', '16_S9_S9', '16_S9_S18', '16_S9_S36',
+  '16_S18', '16_S18_S18', '16_S18_S36', '16_S36', '16_S36_S36',
+  '18', '18E1', '18E2', '18SDP', '32_S64_ECC', '36', '36E1', '36E2', '36SDP',
+].join('|')})`
 const MEMORY_HINT = new RegExp(String.raw`^(?:MEM(?:ORY|RD|WR|INIT)?(?:_V\d+)?|RAM|ROM|RAM(?:${XILINX_LUTRAM}|B${XILINX_BLOCK_RAM}|D(?:32|64)(?:X1|E)?|S(?:32|64)(?:X1|E)?)|URAM288(?:_BASE)?|DP16KD|TRELLIS_DPR16X4|SPRAM(?:256KA)?|SB_RAM40_4K(?:NR|NW|NRNW)?|SB_SPRAM256KA|SRL(?:16E|C32E))$`, 'i')
 const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
 const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i

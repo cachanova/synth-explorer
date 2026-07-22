@@ -836,68 +836,75 @@ pub fn is_memory_type(cell_type: &str) -> bool {
             b"RAM512X1S",
         ])
     };
-    let ramb_width_segments = |suffix: &[u8]| {
-        let mut segments = suffix.split(|byte| *byte == b'_');
-        let valid = |segment: &[u8]| {
-            [
-                b"S1".as_slice(),
-                b"S2",
-                b"S4",
-                b"S8",
-                b"S9",
-                b"S16",
-                b"S18",
-                b"S36",
-            ]
-            .iter()
-            .any(|width| segment.eq_ignore_ascii_case(width))
-        };
-        let first = segments.next().is_some_and(valid);
-        let second = segments.next().is_none_or(valid);
-        first && second && segments.next().is_none()
-    };
     let xilinx_block_ram = || {
-        if !starts_with_ignore_ascii_case(b"RAMB") {
-            return false;
-        }
-        let suffix = &bytes[b"RAMB".len()..];
-        if [
-            b"8BWER".as_slice(),
-            b"18",
-            b"18E1",
-            b"18E2",
-            b"18SDP",
-            b"32_S64_ECC",
-            b"36",
-            b"36E1",
-            b"36E2",
-            b"36SDP",
-        ]
-        .iter()
-        .any(|known| suffix.eq_ignore_ascii_case(known))
-        {
-            return true;
-        }
-        for depth in [b"4".as_slice(), b"16"] {
-            let Some(rest) = suffix.strip_prefix(depth) else {
-                continue;
-            };
-            let depth16 = depth == b"16";
-            if depth16 && (rest.is_empty() || rest.eq_ignore_ascii_case(b"BWER")) {
-                return true;
-            }
-            let width_segments = rest.strip_prefix(b"_").or_else(|| {
-                (depth16
-                    && rest
-                        .get(..b"BWE_".len())
-                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"BWE_")))
-                .then(|| &rest[b"BWE_".len()..])
-            });
-            if width_segments.is_some_and(ramb_width_segments) {
-                return true;
-            }
-        }
-        false
+        equals_any(&[
+            b"RAMB4_S1",
+            b"RAMB4_S1_S1",
+            b"RAMB4_S1_S2",
+            b"RAMB4_S1_S4",
+            b"RAMB4_S1_S8",
+            b"RAMB4_S1_S16",
+            b"RAMB4_S2",
+            b"RAMB4_S2_S2",
+            b"RAMB4_S2_S4",
+            b"RAMB4_S2_S8",
+            b"RAMB4_S2_S16",
+            b"RAMB4_S4",
+            b"RAMB4_S4_S4",
+            b"RAMB4_S4_S8",
+            b"RAMB4_S4_S16",
+            b"RAMB4_S8",
+            b"RAMB4_S8_S8",
+            b"RAMB4_S8_S16",
+            b"RAMB4_S16",
+            b"RAMB4_S16_S16",
+            b"RAMB8BWER",
+            b"RAMB16",
+            b"RAMB16BWER",
+            b"RAMB16BWE_S18",
+            b"RAMB16BWE_S18_S9",
+            b"RAMB16BWE_S18_S18",
+            b"RAMB16BWE_S36",
+            b"RAMB16BWE_S36_S9",
+            b"RAMB16BWE_S36_S18",
+            b"RAMB16BWE_S36_S36",
+            b"RAMB16_S1",
+            b"RAMB16_S1_S1",
+            b"RAMB16_S1_S2",
+            b"RAMB16_S1_S4",
+            b"RAMB16_S1_S9",
+            b"RAMB16_S1_S18",
+            b"RAMB16_S1_S36",
+            b"RAMB16_S2",
+            b"RAMB16_S2_S2",
+            b"RAMB16_S2_S4",
+            b"RAMB16_S2_S9",
+            b"RAMB16_S2_S18",
+            b"RAMB16_S2_S36",
+            b"RAMB16_S4",
+            b"RAMB16_S4_S4",
+            b"RAMB16_S4_S9",
+            b"RAMB16_S4_S18",
+            b"RAMB16_S4_S36",
+            b"RAMB16_S9",
+            b"RAMB16_S9_S9",
+            b"RAMB16_S9_S18",
+            b"RAMB16_S9_S36",
+            b"RAMB16_S18",
+            b"RAMB16_S18_S18",
+            b"RAMB16_S18_S36",
+            b"RAMB16_S36",
+            b"RAMB16_S36_S36",
+            b"RAMB18",
+            b"RAMB18E1",
+            b"RAMB18E2",
+            b"RAMB18SDP",
+            b"RAMB32_S64_ECC",
+            b"RAMB36",
+            b"RAMB36E1",
+            b"RAMB36E2",
+            b"RAMB36SDP",
+        ])
     };
     let xilinx_ram = xilinx_lutram()
         || xilinx_block_ram()
@@ -1116,7 +1123,7 @@ mod tests {
             "RAMS32X1",
             "RAMB4_S8_S8",
             "RAMB8BWER",
-            "RAMB16_S18_S9",
+            "RAMB16BWE_S18_S9",
             "RAMB36E2",
             "URAM288",
             "URAM288_BASE",
@@ -1137,6 +1144,9 @@ mod tests {
             "RAM64CONTROLLER",
             "RAM64X1CACHE",
             "RAMB36CONTROLLER",
+            "RAMB4_S36",
+            "RAMB16BWE_S1",
+            "RAMB16_S36_S1",
             "RAMD32CACHE",
             "URAM_CACHE",
             "URAM288CACHE",
