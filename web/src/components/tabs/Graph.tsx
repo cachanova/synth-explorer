@@ -23,6 +23,8 @@ import {
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
+  comparisonLayoutEngine,
+  layoutExpandedGroupInPlace,
   layoutSubgraph,
   prewarmLayoutWorker,
   shouldRefitProjection,
@@ -86,6 +88,10 @@ interface EdgeSourceProbe {
 }
 
 export function Graph({ active }: { active: boolean }) {
+  const layoutEngine = useMemo(
+    () => comparisonLayoutEngine(window.location.search),
+    [],
+  )
   const store = useStore(
     ({
       analysisState,
@@ -219,12 +225,12 @@ export function Graph({ active }: { active: boolean }) {
     return () => registerGraphProbeReset(null)
   }, [registerGraphProbeReset, resetGraphProbe])
 
-  // ELK is a large module and this graph surface stays mounted across tabs.
-  // Start its reusable worker once at mount so module startup can overlap the
-  // editor's initial idle/debounce window instead of the first real layout.
+  // Layout engines are large modules and this graph surface stays mounted
+  // across tabs. Start the selected reusable worker once at mount so startup
+  // overlaps the editor's initial idle/debounce window.
   useEffect(() => {
-    prewarmLayoutWorker()
-  }, [])
+    prewarmLayoutWorker(layoutEngine)
+  }, [layoutEngine])
 
   useEffect(() => {
     if (!active) return
@@ -606,12 +612,14 @@ export function Graph({ active }: { active: boolean }) {
     )
     return {
       graph: applied.graph,
+      groupedBaseGraph: groupedBase.graph,
       expandedGroups: applied.groups,
       expansionDroppedNodes: groupedBase.expansionDroppedNodes,
       expansionDroppedEdges: groupedBase.expansionDroppedEdges,
     }
   }, [activeGroupExpansions, groupedBase])
   const combinedSubgraph = combined?.graph ?? null
+  const groupedBaseSubgraph = combined?.groupedBaseGraph ?? null
   const visibleExpandedGroups = useMemo(
     () => combined?.expandedGroups ?? [],
     [combined],
@@ -663,13 +671,45 @@ export function Graph({ active }: { active: boolean }) {
       if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
       return
     }
+    const expandedGroup = visibleExpandedGroups[0]
+    const groupedBaseLayout = groupedBaseSubgraph
+      ? layoutCache.current.get(groupedBaseSubgraph)
+      : null
+    const displayedBaseLayout =
+      expandedGroup &&
+      sameProjection &&
+      previousDisplay?.graph.nodes.some((node) => node.id === expandedGroup.id)
+        ? previousDisplay.graph
+        : null
+    const localBaseLayout = displayedBaseLayout ?? groupedBaseLayout
+    const inPlaceLayout =
+      layoutEngine === 'schemweave' && expandedGroup && localBaseLayout
+        ? layoutExpandedGroupInPlace(toLayout, localBaseLayout, expandedGroup)
+        : null
+    if (inPlaceLayout) {
+      const nextDisplay = {
+        designId: ownerDesignId,
+        projectionKey,
+        subgraph: toLayout,
+        graph: inPlaceLayout,
+      }
+      layoutCache.current.set(toLayout, inPlaceLayout)
+      displayedGraphRef.current = nextDisplay
+      setDisplayedGraph(nextDisplay)
+      laidOutSubgraph.current = toLayout
+      setLayingOut(false)
+      if (shouldRefit(inPlaceLayout)) setFitNonce((n) => n + 1)
+      return
+    }
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    // Opening or closing a group replaces the quotient node with an ELK
-    // compound. ELK re-renders the complete projection so the members remain
-    // together and surrounding nets route around their dashed boundary.
-    layoutSubgraph(toLayout, controller.signal, expandedGroupsForLayout)
+    layoutSubgraph(
+      toLayout,
+      controller.signal,
+      layoutEngine,
+      expandedGroupsForLayout,
+    )
       .then((g) => {
         if (cancelled) return
         const nextDisplay = {
@@ -701,9 +741,12 @@ export function Graph({ active }: { active: boolean }) {
     combinedSubgraph,
     focusActive,
     fullSubgraph?.designId,
+    groupedBaseSubgraph,
+    layoutEngine,
     projectionKey,
     relevantSubgraph?.designId,
     expandedGroupsForLayout,
+    visibleExpandedGroups,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(

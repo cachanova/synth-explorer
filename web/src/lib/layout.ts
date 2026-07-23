@@ -12,6 +12,11 @@ import type {
 } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import {
+  SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+  type SchemWeaveRequest,
+  type SchemWeaveResponse,
+} from '../workers/schemweaveRuntime'
+import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
@@ -50,6 +55,7 @@ export interface LaidOutGraph {
   nodes: LaidOutNode[]
   edges: LaidOutEdge[]
   groups?: LaidOutGroup[]
+  boundaryBundles?: LaidOutBoundaryBundle[]
   width: number
   height: number
 }
@@ -60,6 +66,21 @@ export interface LaidOutGroup {
   y: number
   width: number
   height: number
+}
+
+export interface BoundaryBundleSegment {
+  start: Point
+  end: Point
+}
+
+export interface LaidOutBoundaryBundle {
+  id: number
+  endpoint: { node: number; port: number }
+  role: 'input' | 'output'
+  width: number
+  collector: BoundaryBundleSegment
+  spine: BoundaryBundleSegment
+  ownerIndexes: number[]
 }
 
 export function layoutsShareNode(
@@ -95,7 +116,9 @@ export interface LayoutInputNode {
   baseHeight: number
   controlHeight: number
   register: boolean
+  cycleBreaker?: boolean
   boundary: PortBoundaryRole
+  boundaryWidth?: number
   boundaryMembers?: BoundaryMember[]
 }
 
@@ -105,6 +128,7 @@ export interface LayoutInputEdge {
   fromPort: string
   toPort: string
   control: boolean
+  net?: number
   sourceBoundaryMembers?: EdgeBoundaryMember[]
   targetBoundaryMembers?: EdgeBoundaryMember[]
 }
@@ -209,6 +233,15 @@ export interface LayoutGeometry {
   nodes: Array<Omit<LaidOutNode, 'node'>>
   edges: Array<{ inputIndex: number; points: Point[] }>
   groups?: LaidOutGroup[]
+  boundaryBundles?: Array<{
+    id: number
+    endpoint: { node: number; port: number }
+    role: 'input' | 'output'
+    width: number
+    collector: BoundaryBundleSegment
+    spine: BoundaryBundleSegment
+    ownerIndexes: number[]
+  }>
   width: number
   height: number
 }
@@ -228,8 +261,25 @@ export const LAYOUT_GEOMETRY_CACHE_MAX_BYTES = 16 * 1024 * 1024
 const layoutGeometryCache = new Map<string, CachedLayoutGeometry>()
 let layoutGeometryCacheBytes = 0
 
-function layoutGeometryKey(input: LayoutInput, placement: NodePlacement): string {
-  return `${placement}:${JSON.stringify(input)}`
+export type LayoutEngine = 'elk' | 'schemweave'
+
+function layoutGeometryKey(
+  input: LayoutInput,
+  engine: LayoutEngine,
+  placement?: NodePlacement,
+): string {
+  return `${engine}:${placement ?? 'max'}:${JSON.stringify(input)}`
+}
+
+/** SchemWeave is selectable only in local development; ELK remains default. */
+export function comparisonLayoutEngine(
+  search: string,
+  development = import.meta.env.DEV,
+): LayoutEngine {
+  return development &&
+    new URLSearchParams(search).get('layout') === 'schemweave'
+    ? 'schemweave'
+    : 'elk'
 }
 
 function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
@@ -244,6 +294,7 @@ function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
     geometry.nodes.length * 128 +
     geometry.edges.length * 96 +
     (geometry.groups?.length ?? 0) * 80 +
+    (geometry.boundaryBundles?.length ?? 0) * 320 +
     pointCount * 48 +
     256
   )
@@ -720,6 +771,22 @@ export function prepareLayoutInput(
         }]
       : []
   })
+  const netByBits = new Map<string, number>()
+  const netForEdge = (edge: GraphEdge, index: number): number => {
+    const boundaryNetBits = [
+      ...(edge.source_boundary_members ?? []),
+      ...(edge.target_boundary_members ?? []),
+    ].flatMap((mapping) => mapping.net_bits)
+    const bits = [...new Set(
+      boundaryNetBits.length > 0 ? boundaryNetBits : edge.bits,
+    )].sort((left, right) => left - right)
+    const key = bits.length > 0 ? `bits:${bits.join(',')}` : `edge:${index}`
+    const existing = netByBits.get(key)
+    if (existing != null) return existing
+    const net = netByBits.size
+    netByBits.set(key, net)
+    return net
+  }
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -730,11 +797,15 @@ export function prepareLayoutInput(
         baseHeight: height,
         controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
         register: isRegKind(node),
+        cycleBreaker: node.seq === true,
         boundary: boundaryById.get(node.id) ?? 'internal',
+        ...(node.member_count != null
+          ? { boundaryWidth: node.member_count }
+          : {}),
         ...(boundaryMembers != null ? { boundaryMembers } : {}),
       }
     }),
-    edges: sub.edges.map((edge) => {
+    edges: sub.edges.map((edge, index) => {
       const target = nodeById.get(edge.to)
       const sourceBoundaryMembers = normalizeEdgeBoundaryMembers(
         edge.source_boundary_members,
@@ -755,11 +826,490 @@ export function prepareLayoutInput(
         control:
           edge.control === true ||
           Boolean(target && isRegKind(target) && isRegisterControlPin(edge.to_port)),
+        net: netForEdge(edge, index),
         ...(sourceBoundaryMembers != null ? { sourceBoundaryMembers } : {}),
         ...(targetBoundaryMembers != null ? { targetBoundaryMembers } : {}),
       }
     }),
     ...(groups.length > 0 ? { groups } : {}),
+  }
+}
+
+export interface SchemWeavePort {
+  id: number
+  side: 'east' | 'west'
+  offset: number
+}
+
+export interface SchemWeaveGraph {
+  nodes: Array<{
+    id: number
+    width: number
+    height: number
+    cycle_breaker: boolean
+    ports: SchemWeavePort[]
+  }>
+  edges: Array<{
+    id: number
+    source: { node: number; port: number }
+    target: { node: number; port: number }
+    net: number
+    participates_in_ranking: boolean
+  }>
+}
+
+export interface SchemWeaveBoundaryBundleConstraint {
+  id: number
+  endpoint: { node: number; port: number }
+  width: number
+  members: Array<{ edge: number; slots: number[] }>
+}
+
+export interface SchemWeaveLayoutRequest {
+  graph: SchemWeaveGraph
+  constraints: {
+    inputs: number[]
+    outputs: number[]
+    boundary_bundles?: SchemWeaveBoundaryBundleConstraint[]
+  }
+}
+
+export interface SchemWeaveLayout {
+  nodes: LayoutGeometry['nodes']
+  edges: Array<{ id: number; points: Point[] }>
+  boundary_bundles?: Array<{
+    id: number
+    endpoint: { node: number; port: number }
+    role: 'input' | 'output'
+    width: number
+    collector: BoundaryBundleSegment
+    spine: BoundaryBundleSegment
+    members: Array<{ edge: number; slots: number[]; tap: Point }>
+  }>
+  width: number
+  height: number
+}
+
+interface SchemWeaveGraphCatalog {
+  graph: SchemWeaveGraph
+  portIds: Map<string, number>
+}
+
+/** Map the renderer's fixed-pin contract to SchemWeave's numeric graph ABI. */
+function buildSchemWeaveGraph(input: LayoutInput): SchemWeaveGraphCatalog {
+  const pins = collectPinCatalog(input.edges)
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
+  const controlPins = new Map<number, Map<string, ControlRole>>()
+  for (const edge of input.edges) {
+    const node = nodeById.get(edge.to)
+    if (!edge.control || !node?.register) continue
+    let controls = controlPins.get(edge.to)
+    if (!controls) {
+      controls = new Map()
+      controlPins.set(edge.to, controls)
+    }
+    controls.set(edge.toPort, controlRoleForPin(edge.toPort))
+  }
+
+  const portIds = new Map<string, number>()
+  const nodes = [...input.nodes]
+    .sort((left, right) => left.id - right.id)
+    .map((node) => {
+      const incoming = pins.incoming.get(node.id) ?? []
+      const outgoing = pins.outgoing.get(node.id) ?? []
+      const { width, height } = dimensionsForPins(
+        node,
+        incoming.length,
+        outgoing.length,
+      )
+      const ports: SchemWeavePort[] = []
+      const add = (
+        key: string,
+        side: SchemWeavePort['side'],
+        offset: number,
+      ) => {
+        const id = ports.length
+        ports.push({ id, side, offset })
+        portIds.set(`${node.id}:${key}`, id)
+      }
+      if (node.register) {
+        const body = Math.min(height, REG_BODY_HEIGHT)
+        add('in', 'west', body * REG_DATA_IN_Y_FRAC)
+        const controls = [...(controlPins.get(node.id)?.entries() ?? [])].sort(
+          ([pinA, roleA], [pinB, roleB]) =>
+            registerControlYFraction(roleA) -
+              registerControlYFraction(roleB) ||
+            pinA.localeCompare(pinB),
+        )
+        for (const [pin, role] of controls) {
+          add(
+            `control:${pin}`,
+            'west',
+            body * registerControlYFraction(role),
+          )
+        }
+        add('out', 'east', body * REG_DATA_OUT_Y_FRAC)
+      } else {
+        const body = pinBodyHeight(node, height)
+        incoming.forEach((pin, index) =>
+          add(
+            `i:${pin}`,
+            'west',
+            ((index + 1) * body) / (incoming.length + 1),
+          ),
+        )
+        outgoing.forEach((pin, index) =>
+          add(
+            `o:${pin}`,
+            'east',
+            ((index + 1) * body) / (outgoing.length + 1),
+          ),
+        )
+      }
+      return {
+        id: node.id,
+        width,
+        height,
+        cycle_breaker: node.cycleBreaker === true,
+        ports,
+      }
+    })
+
+  const portId = (node: number, key: string): number => {
+    const id = portIds.get(`${node}:${key}`)
+    if (id == null) throw new Error(`missing layout port ${node}:${key}`)
+    return id
+  }
+  const edges = input.edges.map((edge, id) => {
+    const sourceNode = nodeById.get(edge.from)
+    const targetNode = nodeById.get(edge.to)
+    if (!sourceNode || !targetNode) {
+      throw new Error('layout edge references an unknown node')
+    }
+    const sourceKey = sourceNode.register ? 'out' : `o:${edge.fromPort}`
+    const targetKey = targetNode.register
+      ? edge.control
+        ? `control:${edge.toPort}`
+        : 'in'
+      : `i:${edge.toPort}`
+    return {
+      id,
+      source: { node: edge.from, port: portId(edge.from, sourceKey) },
+      target: { node: edge.to, port: portId(edge.to, targetKey) },
+      net: edge.net ?? id,
+      participates_in_ranking: true,
+    }
+  })
+  return { graph: { nodes, edges }, portIds }
+}
+
+export function toSchemWeaveGraph(input: LayoutInput): SchemWeaveGraph {
+  return buildSchemWeaveGraph(input).graph
+}
+
+function boundaryBundleConstraints(
+  input: LayoutInput,
+  graph: SchemWeaveGraph,
+): SchemWeaveBoundaryBundleConstraint[] {
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
+  const builders = new Map<string, {
+    role: 'input' | 'output'
+    endpoint: { node: number; port: number }
+    width: number
+    members: Array<{ edge: number; slots: number[] }>
+  }>()
+
+  const addMember = (
+    role: 'input' | 'output',
+    edgeIndex: number,
+    nodeId: number,
+    portId: number,
+    mappings: EdgeBoundaryMember[] | undefined,
+  ) => {
+    if (!mappings || mappings.length === 0) return
+    const node = nodeById.get(nodeId)
+    if (!node) throw new Error(`boundary bundle references unknown node ${nodeId}`)
+    // Quotient metadata describes the grouped declaration even when the
+    // visible topology proves that declaration is not a primary boundary
+    // (notably inouts and direction-conflicting partial projections). Keep
+    // those nodes internal and omit an impossible boundary constraint.
+    if (node.boundary === 'internal') return
+    if (node.boundary !== role) {
+      throw new Error(
+        `boundary bundle ${role} metadata references ${node.boundary} node ${nodeId}`,
+      )
+    }
+    const slotByMember = new Map(
+      node.boundaryMembers?.map((member) => [member.member, member.bit] as const),
+    )
+    const slots = [...new Set(mappings.map((mapping) => {
+      const slot = slotByMember.get(mapping.member)
+      if (slot == null) {
+        throw new Error(
+          `boundary bundle node ${nodeId} has no declaration slot for member ${mapping.member}`,
+        )
+      }
+      return slot
+    }))].sort((left, right) => left - right)
+    if (slots.length === 0) return
+    const requiredWidth = slots[slots.length - 1] + 1
+    const width = node.boundaryWidth ??
+      Math.max(
+        requiredWidth,
+        ...(node.boundaryMembers?.map((member) => member.bit + 1) ?? [1]),
+      )
+    if (width < requiredWidth) {
+      throw new Error(
+        `boundary bundle node ${nodeId} width ${width} excludes slot ${requiredWidth - 1}`,
+      )
+    }
+    const key = `${role}:${nodeId}:${portId}`
+    const existing = builders.get(key)
+    if (existing && existing.width !== width) {
+      throw new Error(`inconsistent boundary bundle width for node ${nodeId}`)
+    }
+    const builder = existing ?? {
+      role,
+      endpoint: { node: nodeId, port: portId },
+      width,
+      members: [],
+    }
+    builder.members.push({ edge: edgeIndex, slots })
+    builders.set(key, builder)
+  }
+
+  input.edges.forEach((edge, edgeIndex) => {
+    const schemEdge = graph.edges[edgeIndex]
+    addMember(
+      'input',
+      edgeIndex,
+      edge.from,
+      schemEdge.source.port,
+      edge.sourceBoundaryMembers,
+    )
+    addMember(
+      'output',
+      edgeIndex,
+      edge.to,
+      schemEdge.target.port,
+      edge.targetBoundaryMembers,
+    )
+  })
+
+  return [...builders.values()]
+    .sort((left, right) =>
+      (left.role === right.role ? 0 : left.role === 'input' ? -1 : 1) ||
+      left.endpoint.node - right.endpoint.node ||
+      left.endpoint.port - right.endpoint.port,
+    )
+    .map((bundle, id) => ({
+      id,
+      endpoint: bundle.endpoint,
+      width: bundle.width,
+      members: bundle.members.sort((left, right) => left.edge - right.edge),
+    }))
+}
+
+/** Wrap graph geometry and exact grouped-boundary semantics for WASM. */
+export function toSchemWeaveLayoutRequest(
+  input: LayoutInput,
+): SchemWeaveLayoutRequest {
+  const { graph } = buildSchemWeaveGraph(input)
+  const boundaryIds = (boundary: LayoutInputNode['boundary']) =>
+    input.nodes
+      .filter((node) => node.boundary === boundary)
+      .map((node) => node.id)
+      .sort((left, right) => left - right)
+  const boundaryBundles = boundaryBundleConstraints(input, graph)
+  return {
+    graph,
+    constraints: {
+      inputs: boundaryIds('input'),
+      outputs: boundaryIds('output'),
+      ...(boundaryBundles.length > 0
+        ? { boundary_bundles: boundaryBundles }
+        : {}),
+    },
+  }
+}
+
+export function interpretSchemWeaveResult(
+  layout: SchemWeaveLayout,
+): LayoutGeometry {
+  const raw = layout as unknown as Record<string, unknown> | null
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('layout result must be an object')
+  }
+  if (!Array.isArray(raw.nodes)) {
+    throw new Error('layout nodes must be an array')
+  }
+  if (!Array.isArray(raw.edges)) {
+    throw new Error('layout edges must be an array')
+  }
+  const finite = (value: unknown, label: string, nonnegative = false) => {
+    if (
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      (nonnegative && value < 0)
+    ) {
+      throw new Error(
+        `${label} must be a finite${nonnegative ? ' nonnegative' : ''} number`,
+      )
+    }
+  }
+  const integer = (value: unknown, label: string, nonnegative = false) => {
+    if (
+      typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      (nonnegative && value < 0)
+    ) {
+      throw new Error(
+        `${label} must be a safe${nonnegative ? ' nonnegative' : ''} integer`,
+      )
+    }
+  }
+  const record = (value: unknown, label: string): Record<string, unknown> => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`${label} must be an object`)
+    }
+    return value as Record<string, unknown>
+  }
+  const point = (value: unknown, label: string) => {
+    const candidate = record(value, label)
+    finite(candidate.x, `${label}.x`)
+    finite(candidate.y, `${label}.y`)
+  }
+  const segment = (value: unknown, label: string) => {
+    const candidate = record(value, label)
+    point(candidate.start, `${label}.start`)
+    point(candidate.end, `${label}.end`)
+  }
+
+  finite(raw.width, 'layout width', true)
+  finite(raw.height, 'layout height', true)
+  const nodeIds = new Set<number>()
+  raw.nodes.forEach((value, index) => {
+    const node = record(value, `layout node ${index}`)
+    integer(node.id, `layout node ${index} id`, true)
+    const id = node.id as number
+    if (nodeIds.has(id)) throw new Error(`layout returned duplicate node ${id}`)
+    nodeIds.add(id)
+    finite(node.x, `layout node ${id} x`)
+    finite(node.y, `layout node ${id} y`)
+    finite(node.width, `layout node ${id} width`, true)
+    finite(node.height, `layout node ${id} height`, true)
+  })
+
+  const edgeIds = new Set<number>()
+  raw.edges.forEach((value, index) => {
+    const edge = record(value, `layout edge ${index}`)
+    integer(edge.id, `layout edge ${index} id`, true)
+    const id = edge.id as number
+    if (edgeIds.has(id)) throw new Error(`layout returned duplicate edge ${id}`)
+    edgeIds.add(id)
+    if (!Array.isArray(edge.points)) {
+      throw new Error(`layout edge ${id} points must be an array`)
+    }
+    edge.points.forEach((value, pointIndex) =>
+      point(value, `layout edge ${id} point ${pointIndex}`))
+  })
+
+  if (raw.boundary_bundles != null) {
+    if (!Array.isArray(raw.boundary_bundles)) {
+      throw new Error('layout boundary bundles must be an array')
+    }
+    const bundleIds = new Set<number>()
+    raw.boundary_bundles.forEach((value, index) => {
+      const bundle = record(value, `boundary bundle ${index}`)
+      integer(bundle.id, `boundary bundle ${index} id`, true)
+      const id = bundle.id as number
+      if (bundleIds.has(id)) {
+        throw new Error(`layout returned duplicate boundary bundle ${id}`)
+      }
+      bundleIds.add(id)
+      const endpoint = record(
+        bundle.endpoint,
+        `boundary bundle ${id} endpoint`,
+      )
+      integer(endpoint.node, `boundary bundle ${id} endpoint node`, true)
+      integer(endpoint.port, `boundary bundle ${id} endpoint port`, true)
+      if (!nodeIds.has(endpoint.node as number)) {
+        throw new Error(
+          `boundary bundle ${id} references unknown node ${endpoint.node}`,
+        )
+      }
+      if (bundle.role !== 'input' && bundle.role !== 'output') {
+        throw new Error(`boundary bundle ${id} has invalid role`)
+      }
+      integer(bundle.width, `boundary bundle ${id} width`, true)
+      if (bundle.width === 0) {
+        throw new Error(`boundary bundle ${id} width must be positive`)
+      }
+      segment(bundle.collector, `boundary bundle ${id} collector`)
+      segment(bundle.spine, `boundary bundle ${id} spine`)
+      if (!Array.isArray(bundle.members)) {
+        throw new Error(`boundary bundle ${id} members must be an array`)
+      }
+      bundle.members.forEach((value, memberIndex) => {
+        const member = record(
+          value,
+          `boundary bundle ${id} member ${memberIndex}`,
+        )
+        integer(
+          member.edge,
+          `boundary bundle ${id} member ${memberIndex} edge`,
+          true,
+        )
+        if (!edgeIds.has(member.edge as number)) {
+          throw new Error(
+            `boundary bundle ${id} references unknown edge ${member.edge}`,
+          )
+        }
+        if (!Array.isArray(member.slots)) {
+          throw new Error(
+            `boundary bundle ${id} member ${memberIndex} slots must be an array`,
+          )
+        }
+        member.slots.forEach((slot, slotIndex) => {
+          integer(
+            slot,
+            `boundary bundle ${id} member ${memberIndex} slot ${slotIndex}`,
+            true,
+          )
+          if ((slot as number) >= (bundle.width as number)) {
+            throw new Error(
+              `boundary bundle ${id} slot ${slot} exceeds width ${bundle.width}`,
+            )
+          }
+        })
+        point(member.tap, `boundary bundle ${id} member ${memberIndex} tap`)
+      })
+    })
+  }
+
+  return {
+    nodes: layout.nodes,
+    edges: layout.edges.map((edge) => ({
+      inputIndex: edge.id,
+      points: edge.points,
+    })),
+    ...(layout.boundary_bundles && layout.boundary_bundles.length > 0
+      ? {
+          boundaryBundles: layout.boundary_bundles.map((bundle) => ({
+            id: bundle.id,
+            endpoint: bundle.endpoint,
+            role: bundle.role,
+            width: bundle.width,
+            collector: bundle.collector,
+            spine: bundle.spine,
+            ownerIndexes: [...new Set(
+              bundle.members.map((member) => member.edge),
+            )].sort((left, right) => left - right),
+          })),
+        }
+      : {}),
+    width: layout.width,
+    height: layout.height,
   }
 }
 
@@ -1442,6 +1992,7 @@ export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): La
       return { from: edge.from, to: edge.to, points, edge }
     }),
     ...(geometry.groups ? { groups: geometry.groups } : {}),
+    boundaryBundles: geometry.boundaryBundles ?? [],
     width: geometry.width,
     height: geometry.height,
   }
@@ -1722,7 +2273,7 @@ function trunkSuffixFromRouteFrame(
 }
 
 /**
- * Open one quotient group without asking ELK to redraw the whole projection.
+ * Open one quotient group without asking the selected engine to redraw the whole projection.
  * Existing nodes and routes keep their exact geometry. Members form a compact
  * grid centered on the quotient node's former position, while new boundary
  * wiring reuses the quotient edge trunks where possible.
@@ -1732,6 +2283,10 @@ export function layoutExpandedGroupInPlace(
   base: LaidOutGraph,
   group: ExpandedGroupLayout,
 ): LaidOutGraph | null {
+  // Bundle owner indexes and rewritten tap routes are a whole-layout contract.
+  // A local quotient rewrite cannot safely remap them, so request a fresh
+  // engine layout instead of returning disconnected collector geometry.
+  if ((base.boundaryBundles?.length ?? 0) > 0) return null
   const anchor = base.nodes.find((node) => node.id === group.id)
   if (!anchor) return null
 
@@ -2116,11 +2671,21 @@ export function layoutExpandedGroupInPlace(
   }
 }
 
-let worker: Worker | null = null
+const workers: Partial<Record<LayoutEngine, Worker>> = {}
 let seq = 0
+interface LayoutRunResult {
+  geometry: LayoutGeometry
+  degraded: boolean
+}
+
 const pending = new Map<
   number,
-  { resolve: (g: LayoutGeometry) => void; reject: (e: Error) => void }
+  {
+    engine: LayoutEngine
+    allowsBoundaryBundleFallback: boolean
+    resolve: (result: LayoutRunResult) => void
+    reject: (e: Error) => void
+  }
 >()
 export const LAYOUT_DEADLINE_MS = 10_000
 
@@ -2136,52 +2701,136 @@ function layoutTimeoutError(): Error {
   return error
 }
 
-function terminateWorker(instance: Worker, reason: Error) {
-  if (worker !== instance) return
+function terminateWorker(
+  engine: LayoutEngine,
+  instance: Worker,
+  reason: Error,
+) {
+  if (workers[engine] !== instance) return
   instance.onmessage = null
   instance.onerror = null
   instance.terminate()
-  worker = null
-  for (const entry of pending.values()) entry.reject(reason)
-  pending.clear()
+  delete workers[engine]
+  for (const [id, entry] of pending) {
+    if (entry.engine !== engine) continue
+    entry.reject(reason)
+    pending.delete(id)
+  }
 }
 
-function getWorker(): Worker {
-  if (worker) return worker
-  const w = new Worker(new URL('../workers/elk.worker.ts', import.meta.url), {
-    type: 'module',
-  })
-  w.onmessage = (ev: MessageEvent<ElkResponse>) => {
+function getWorker(engine: LayoutEngine): Worker {
+  const existing = workers[engine]
+  if (existing) return existing
+  if (engine === 'schemweave' && !import.meta.env.DEV) {
+    throw new Error('SchemWeave comparison is available only in local development')
+  }
+  // Vite requires the complete Worker(new URL(...)) expression to remain
+  // statically analyzable so each module worker and its WASM dependency are
+  // compiled rather than copied as untransformed TypeScript.
+  const w = engine === 'schemweave'
+    ? new Worker(
+        new URL('../workers/schemweave.worker.ts', import.meta.url),
+        { type: 'module' },
+      )
+    : new Worker(
+        new URL('../workers/elk.worker.ts', import.meta.url),
+        { type: 'module' },
+      )
+  w.onmessage = (
+    ev: MessageEvent<ElkResponse | SchemWeaveResponse>,
+  ) => {
     const msg = ev.data
     const entry = pending.get(msg.id)
     if (!entry) return
     pending.delete(msg.id)
-    if (msg.ok) entry.resolve(msg.result)
+    if (msg.ok) {
+      try {
+        if (engine === 'schemweave') {
+          const schemResponse = msg as Extract<
+            SchemWeaveResponse,
+            { ok: true }
+          >
+          const rawFallback = (schemResponse as { fallback?: unknown }).fallback
+          if (
+            rawFallback !== undefined &&
+            rawFallback !== SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK
+          ) {
+            throw new Error('invalid SchemWeave fallback marker')
+          }
+          if (
+            rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK &&
+            !entry.allowsBoundaryBundleFallback
+          ) {
+            throw new Error(
+              'SchemWeave fallback marker requires boundary bundle constraints',
+            )
+          }
+          const geometry = interpretSchemWeaveResult(schemResponse.result)
+          if (
+            rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK &&
+            (geometry.boundaryBundles?.length ?? 0) > 0
+          ) {
+            throw new Error(
+              'SchemWeave fallback geometry cannot contain boundary bundles',
+            )
+          }
+          entry.resolve({
+            geometry,
+            degraded:
+              rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+          })
+        } else {
+          entry.resolve({
+            geometry: (msg as Extract<ElkResponse, { ok: true }>).result,
+            degraded: false,
+          })
+        }
+      } catch (error) {
+        entry.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        )
+      }
+    }
     else entry.reject(new Error(msg.error))
   }
   w.onerror = (ev) => {
     // The worker is dead — drop the singleton so the next layout spawns a
     // fresh one instead of posting into a void forever.
-    terminateWorker(w, new Error(ev.message || 'elk worker error'))
+    terminateWorker(
+      engine,
+      w,
+      new Error(ev.message || `${engine} worker error`),
+    )
   }
-  worker = w
+  workers[engine] = w
   return w
 }
 
-/** Load and initialize the reusable ELK worker before the first schematic opens. */
-export function prewarmLayoutWorker(): void {
-  getWorker()
+/** Load and initialize the selected reusable worker before the first schematic opens. */
+export function prewarmLayoutWorker(engine: LayoutEngine = 'elk'): void {
+  getWorker(engine)
 }
 
 /** Lay out and adapt a Subgraph in the worker. */
 function runLayout(
   input: LayoutInput,
-  placement: NodePlacement,
+  engine: LayoutEngine,
+  placement?: NodePlacement,
   signal?: AbortSignal,
-): Promise<LayoutGeometry> {
-  const w = getWorker()
-  const id = ++seq
-  return new Promise<LayoutGeometry>((resolve, reject) => {
+): Promise<LayoutRunResult> {
+  const schemRequest = engine === 'schemweave'
+    ? toSchemWeaveLayoutRequest(input)
+    : undefined
+  const req: ElkRequest | SchemWeaveRequest = schemRequest
+    ? { id: ++seq, request: schemRequest }
+    : {
+        id: ++seq,
+        input,
+        placement: placement ?? 'NETWORK_SIMPLEX',
+      }
+  const id = req.id
+  const w = getWorker(engine)
+  return new Promise<LayoutRunResult>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
@@ -2189,15 +2838,18 @@ function runLayout(
     let timeout: ReturnType<typeof setTimeout> | undefined
     const onAbort = () => {
       if (!pending.has(id)) return
-      // ELK cannot cancel an in-flight layout. Terminating prevents a stale,
+      // Layout engines cannot cancel an in-flight layout. Terminating prevents a stale,
       // superseded job from monopolising the singleton ahead of its replacement.
-      terminateWorker(w, abortError())
+      terminateWorker(engine, w, abortError())
     }
     const cleanup = () => {
       signal?.removeEventListener('abort', onAbort)
       if (timeout) clearTimeout(timeout)
     }
     pending.set(id, {
+      engine,
+      allowsBoundaryBundleFallback:
+        (schemRequest?.constraints.boundary_bundles?.length ?? 0) > 0,
       resolve: (value) => {
         cleanup()
         resolve(value)
@@ -2209,10 +2861,9 @@ function runLayout(
     })
     signal?.addEventListener('abort', onAbort, { once: true })
     timeout = setTimeout(
-      () => terminateWorker(w, layoutTimeoutError()),
+      () => terminateWorker(engine, w, layoutTimeoutError()),
       LAYOUT_DEADLINE_MS,
     )
-    const req: ElkRequest = { id, input, placement }
     w.postMessage(req)
   })
 }
@@ -2236,24 +2887,49 @@ export function placementForLayout(sub: Subgraph): NodePlacement {
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
-  expandedGroups: ExpandedGroupLayout[] = [],
+  engineOrExpandedGroups: LayoutEngine | ExpandedGroupLayout[] = 'elk',
+  expandedGroupsArgument: ExpandedGroupLayout[] = [],
 ): Promise<LaidOutGraph> {
   assertRenderableSubgraph(sub)
   if (signal?.aborted) throw abortError()
+  const engine = Array.isArray(engineOrExpandedGroups)
+    ? 'elk'
+    : engineOrExpandedGroups
+  const expandedGroups = Array.isArray(engineOrExpandedGroups)
+    ? engineOrExpandedGroups
+    : expandedGroupsArgument
   const input = prepareLayoutInput(sub, expandedGroups)
+  if (engine === 'schemweave') {
+    const cacheKey = layoutGeometryKey(input, engine)
+    const cached = cachedLayoutGeometry(cacheKey)
+    if (cached) return hydrateLayoutResult(sub, cached)
+    const result = await runLayout(input, engine, undefined, signal)
+    if (!result.degraded) cacheLayoutGeometry(cacheKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
+  }
   const placement = placementForLayout(sub)
-  const cacheKey = layoutGeometryKey(input, placement)
+  const cacheKey = layoutGeometryKey(input, engine, placement)
   const cached = cachedLayoutGeometry(cacheKey)
   if (cached) return hydrateLayoutResult(sub, cached)
   if (placement === 'BRANDES_KOEPF') {
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    cacheLayoutGeometry(cacheKey, geometry)
-    return hydrateLayoutResult(sub, geometry)
+    const result = await runLayout(
+      input,
+      engine,
+      'BRANDES_KOEPF',
+      signal,
+    )
+    cacheLayoutGeometry(cacheKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
   }
   try {
-    const geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
-    cacheLayoutGeometry(cacheKey, geometry)
-    return hydrateLayoutResult(sub, geometry)
+    const result = await runLayout(
+      input,
+      engine,
+      'NETWORK_SIMPLEX',
+      signal,
+    )
+    cacheLayoutGeometry(cacheKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
   } catch (error) {
     // Never retry an aborted (superseded) request.
     if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
@@ -2263,11 +2939,16 @@ export async function layoutSubgraph(
     // worker infrastructure. Keep robust fallback geometry under its actual
     // placement so the next equivalent request still retries the preferred
     // tight placement, while a repeat topology failure can reuse the fallback.
-    const fallbackKey = layoutGeometryKey(input, 'BRANDES_KOEPF')
+    const fallbackKey = layoutGeometryKey(input, engine, 'BRANDES_KOEPF')
     const cachedFallback = cachedLayoutGeometry(fallbackKey)
     if (cachedFallback) return hydrateLayoutResult(sub, cachedFallback)
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    cacheLayoutGeometry(fallbackKey, geometry)
-    return hydrateLayoutResult(sub, geometry)
+    const result = await runLayout(
+      input,
+      engine,
+      'BRANDES_KOEPF',
+      signal,
+    )
+    cacheLayoutGeometry(fallbackKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
   }
 }

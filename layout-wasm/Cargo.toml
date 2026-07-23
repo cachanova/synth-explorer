@@ -1,0 +1,15 @@
+[package]
+name = "synth-explorer-layout-wasm"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+js-sys = "=0.3.99"
+schemweave = { git = "https://github.com/cachanova/schemweave.git", rev = "8541c6818621d32956e345b3e07e18f78fd760a1" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "=0.2.122"

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
+import { SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK } from '../workers/schemweaveRuntime'
 import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
 import {
   clearLayoutGeometryCache,
+  comparisonLayoutEngine,
   controlRoleForPin,
   DENSE_LAYOUT_NODE_THRESHOLD,
   DENSE_LONGEST_PATH_EDGE_DENSITY,
@@ -33,6 +35,7 @@ import {
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   shouldRefitProjection,
   toElkGraph,
+  toSchemWeaveLayoutRequest,
   type LayoutInput,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -67,6 +70,47 @@ function segmentCrossesNodeInterior(
 }
 
 describe('in-place group expansion layout', () => {
+  it('requests a fresh layout when boundary-bundle ownership must be remapped', () => {
+    const grouped = node(100, '$_BUF_', {
+      members: [1],
+      member_count: 1,
+    })
+    const base = {
+      nodes: [{
+        id: 100,
+        x: 40,
+        y: 40,
+        width: 76,
+        height: 52,
+        node: grouped,
+      }],
+      edges: [],
+      boundaryBundles: [{
+        id: 0,
+        endpoint: { node: 100, port: 0 },
+        role: 'input' as const,
+        width: 1,
+        collector: {
+          start: { x: 126, y: 66 },
+          end: { x: 126, y: 66 },
+        },
+        spine: {
+          start: { x: 116, y: 66 },
+          end: { x: 126, y: 66 },
+        },
+        ownerIndexes: [0],
+      }],
+      width: 126,
+      height: 92,
+    }
+
+    expect(layoutExpandedGroupInPlace(
+      { nodes: [node(1, '$_BUF_')], edges: [], truncated: false },
+      base,
+      { id: 100, members: [1] },
+    )).toBeNull()
+  })
+
   it('keeps unrelated geometry fixed and opens members around the old group anchor', () => {
     const grouped = node(100, 'FDRE', {
       name: 'count[4:0]',
@@ -1392,6 +1436,278 @@ describe('schematic layout sizing', () => {
     ])
   })
 
+  it('maps a 32-bit priority output slab to deterministic bundle slots', () => {
+    const outputMembers = Array.from({ length: 32 }, (_, bit) => ({
+      member: 1_000 + bit,
+      bit,
+    }))
+    const sub: Subgraph = {
+      nodes: [
+        ...Array.from({ length: 32 }, (_, bit) =>
+          node(bit, '$_BUF_')),
+        node(100, 'port', {
+          kind: 'port',
+          name: 'one_hot[31:0]',
+          port_direction: 'output',
+          width: 32,
+          member_count: 32,
+          members: outputMembers.map((member) => member.member),
+          boundary_members: outputMembers,
+        }),
+      ],
+      edges: Array.from({ length: 32 }, (_, bit) => ({
+        from: bit,
+        to: 100,
+        from_port: 'Y',
+        to_port: 'one_hot',
+        net_name: `one_hot[${bit}]`,
+        bits: [2_000 + bit],
+        target_boundary_members: [{
+          member: 1_000 + bit,
+          net_bits: [2_000 + bit],
+        }],
+      })),
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.constraints.boundary_bundles).toEqual([{
+      id: 0,
+      endpoint: { node: 100, port: 0 },
+      width: 32,
+      members: Array.from({ length: 32 }, (_, bit) => ({
+        edge: bit,
+        slots: [bit],
+      })),
+    }])
+  })
+
+  it('assigns one electrical net to same-net input fanout cohorts', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request',
+          port_direction: 'input',
+          width: 1,
+          member_count: 1,
+          members: [10],
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [2, 3].map((to) => ({
+        from: 1,
+        to,
+        from_port: 'request',
+        to_port: 'A',
+        net_name: 'request',
+        // Quotient edge payloads can differ even when exact boundary metadata
+        // identifies one electrical net fanout cohort.
+        bits: [100 + to],
+        source_boundary_members: [{ member: 10, net_bits: [55] }],
+      })),
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges.map((edge) => edge.net)).toEqual([0, 0])
+    expect(request.constraints.boundary_bundles).toEqual([{
+      id: 0,
+      endpoint: { node: 1, port: 0 },
+      width: 1,
+      members: [
+        { edge: 0, slots: [0] },
+        { edge: 1, slots: [0] },
+      ],
+    }])
+  })
+
+  it('supports sparse multi-slot direct aliases on both boundaries', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a[7:0]',
+          port_direction: 'input',
+          width: 2,
+          member_count: 8,
+          members: [10, 17],
+          boundary_members: [
+            { member: 10, bit: 0 },
+            { member: 17, bit: 7 },
+          ],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[7:0]',
+          port_direction: 'output',
+          width: 2,
+          member_count: 8,
+          members: [20, 27],
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 27, bit: 7 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'a',
+        bits: [70, 77],
+        source_boundary_members: [
+          { member: 10, net_bits: [70] },
+          { member: 17, net_bits: [77] },
+        ],
+        target_boundary_members: [
+          { member: 20, net_bits: [70] },
+          { member: 27, net_bits: [77] },
+        ],
+      }],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.constraints.boundary_bundles).toEqual([
+      {
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        width: 8,
+        members: [{ edge: 0, slots: [0, 7] }],
+      },
+      {
+        id: 1,
+        endpoint: { node: 2, port: 0 },
+        width: 8,
+        members: [{ edge: 0, slots: [0, 7] }],
+      },
+    ])
+  })
+
+  it('does not constrain grouped inout or topology-internal boundary metadata', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_BUF_'),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'bidir[1:0]',
+          port_direction: 'inout',
+          member_count: 2,
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        }),
+        node(3, 'port', {
+          kind: 'port',
+          name: 'declared_input',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 30, bit: 0 }],
+        }),
+        node(4, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'Y',
+          to_port: 'bidir',
+          net_name: 'bidir_in',
+          bits: [100],
+          target_boundary_members: [{ member: 20, net_bits: [100] }],
+        },
+        {
+          from: 2,
+          to: 3,
+          from_port: 'bidir',
+          to_port: 'declared_input',
+          net_name: 'internal_link',
+          bits: [101],
+          source_boundary_members: [{ member: 21, net_bits: [101] }],
+          target_boundary_members: [{ member: 30, net_bits: [101] }],
+        },
+        {
+          from: 3,
+          to: 4,
+          from_port: 'declared_input',
+          to_port: 'A',
+          net_name: 'unexpected_drive',
+          bits: [102],
+          source_boundary_members: [{ member: 30, net_bits: [102] }],
+        },
+      ],
+      truncated: false,
+    }
+
+    const input = prepareLayoutInput(sub)
+    expect(input.nodes.map(({ id, boundary }) => ({ id, boundary }))).toEqual([
+      { id: 1, boundary: 'internal' },
+      { id: 2, boundary: 'internal' },
+      { id: 3, boundary: 'internal' },
+      { id: 4, boundary: 'internal' },
+    ])
+    expect(toSchemWeaveLayoutRequest(input).constraints).toEqual({
+      inputs: [],
+      outputs: [],
+    })
+  })
+
+  it('fails closed when boundary bundle metadata contradicts a true boundary role', () => {
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+          boundaryWidth: 1,
+          boundaryMembers: [{ member: 10, bit: 0 }],
+        },
+        {
+          id: 2,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        },
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        fromPort: 'Y',
+        toPort: 'A',
+        control: false,
+        sourceBoundaryMembers: [{ member: 10, net_bits: [100] }],
+      }],
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(input)).toThrow(
+      'boundary bundle input metadata references output node 1',
+    )
+  })
+
+  it('keeps empty metadata compatible and SchemWeave local-only', () => {
+    const request = toSchemWeaveLayoutRequest({
+      nodes: [],
+      edges: [],
+    })
+    expect(request).toEqual({
+      graph: { nodes: [], edges: [] },
+      constraints: { inputs: [], outputs: [] },
+    })
+    expect(comparisonLayoutEngine('?layout=schemweave', true)).toBe('schemweave')
+    expect(comparisonLayoutEngine('?layout=schemweave', false)).toBe('elk')
+    expect(comparisonLayoutEngine('', true)).toBe('elk')
+  })
+
   it('lets ELK pack highly disconnected views instead of building one tall layer', () => {
     const input = prepareLayoutInput({
       nodes: Array.from(
@@ -1981,13 +2297,16 @@ describe('schematic layout sizing', () => {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: ErrorEvent) => void) | null = null
       terminate = vi.fn()
+      url: string
       requests: Array<{
         id: number
         input: ReturnType<typeof prepareLayoutInput>
-        placement: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+        placement?: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+        request?: ReturnType<typeof toSchemWeaveLayoutRequest>
       }> = []
 
-      constructor() {
+      constructor(url: URL) {
+        this.url = String(url)
         FakeWorker.instances.push(this)
       }
 
@@ -2025,6 +2344,349 @@ describe('schematic layout sizing', () => {
     expect(FakeWorker.instances).toHaveLength(1)
     expect(FakeWorker.instances[0].requests).toEqual([])
     FakeWorker.instances[0].onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('keeps the local SchemWeave worker and geometry cache isolated from ELK', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+
+    const elkLayout = layoutSubgraph(sub)
+    const elk = FakeWorker.instances[0]
+    expect(elk.url).toContain('elk.worker.ts')
+    elk.onmessage?.({
+      data: { id: elk.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await elkLayout
+
+    const schemWeaveLayout = layoutSubgraph(sub, undefined, 'schemweave')
+    const schemweave = FakeWorker.instances[1]
+    expect(schemweave.url).toContain('schemweave.worker.ts')
+    expect(schemweave.requests[0]).toEqual({
+      id: expect.any(Number),
+      request: toSchemWeaveLayoutRequest(prepareLayoutInput(sub)),
+    })
+    schemweave.onmessage?.({
+      data: { id: schemweave.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await schemWeaveLayout
+
+    expect(FakeWorker.instances).toHaveLength(2)
+    elk.onerror?.({ message: 'cleanup' } as ErrorEvent)
+    schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('does not cache degraded bundle-free geometry but caches the next strict success', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const bundled = (): Subgraph => ({
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          port_direction: 'output',
+          member_count: 1,
+          boundary_members: [{ member: 20, bit: 0 }],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'a',
+        bits: [100],
+        source_boundary_members: [{ member: 10, net_bits: [100] }],
+        target_boundary_members: [{ member: 20, net_bits: [100] }],
+      }],
+      truncated: false,
+    })
+    const rawGeometry = {
+      nodes: [
+        { id: 1, x: 0, y: 0, width: 74, height: 34 },
+        { id: 2, x: 140, y: 0, width: 74, height: 34 },
+      ],
+      edges: [{
+        id: 0,
+        points: [{ x: 74, y: 17 }, { x: 140, y: 17 }],
+      }],
+      width: 214,
+      height: 34,
+    }
+    const strictGeometry = {
+      ...rawGeometry,
+      boundary_bundles: [{
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        role: 'input' as const,
+        width: 1,
+        collector: {
+          start: { x: 84, y: 17 },
+          end: { x: 84, y: 17 },
+        },
+        spine: {
+          start: { x: 74, y: 17 },
+          end: { x: 84, y: 17 },
+        },
+        members: [{
+          edge: 0,
+          slots: [0],
+          tap: { x: 84, y: 17 },
+        }],
+      }],
+    }
+
+    const degraded = layoutSubgraph(bundled(), undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+    expect(
+      worker.requests[0].request?.constraints.boundary_bundles,
+    ).toHaveLength(2)
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: rawGeometry,
+        fallback: SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+      },
+    } as MessageEvent)
+    await expect(degraded).resolves.toMatchObject({ boundaryBundles: [] })
+
+    const strict = layoutSubgraph(
+      structuredClone(bundled()),
+      undefined,
+      'schemweave',
+    )
+    expect(worker.requests).toHaveLength(2)
+    expect(
+      worker.requests[1].request?.constraints.boundary_bundles,
+    ).toHaveLength(2)
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[1].id,
+        ok: true,
+        result: strictGeometry,
+      },
+    } as MessageEvent)
+    await expect(strict).resolves.toMatchObject({
+      boundaryBundles: [{ id: 0 }],
+    })
+
+    await expect(layoutSubgraph(
+      structuredClone(bundled()),
+      undefined,
+      'schemweave',
+    )).resolves.toMatchObject({
+      boundaryBundles: [{ id: 0 }],
+    })
+    expect(worker.requests).toHaveLength(2)
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('rejects a fallback marker on a request without boundary bundles', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: geometry,
+        fallback: SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+      },
+    } as MessageEvent)
+
+    await expect(pending).rejects.toThrow(
+      'SchemWeave fallback marker requires boundary bundle constraints',
+    )
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('rejects null, unknown, or bundle-bearing fallback responses', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const bundled = (): Subgraph => ({
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, '$_BUF_'),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'A',
+        net_name: 'a',
+        bits: [100],
+        source_boundary_members: [{ member: 10, net_bits: [100] }],
+      }],
+      truncated: false,
+    })
+    const workerGeometry = {
+      nodes: [
+        { id: 1, x: 0, y: 0, width: 74, height: 34 },
+        { id: 2, x: 140, y: 0, width: 62, height: 46 },
+      ],
+      edges: [{
+        id: 0,
+        points: [{ x: 74, y: 17 }, { x: 140, y: 23 }],
+      }],
+      width: 202,
+      height: 46,
+    }
+    const malformed = layoutSubgraph(bundled(), undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: workerGeometry,
+        fallback: 'invented-fallback',
+      },
+    } as MessageEvent)
+    await expect(malformed).rejects.toThrow(
+      'invalid SchemWeave fallback marker',
+    )
+
+    const nullMarked = layoutSubgraph(
+      structuredClone(bundled()),
+      undefined,
+      'schemweave',
+    )
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[1].id,
+        ok: true,
+        result: workerGeometry,
+        fallback: null,
+      },
+    } as MessageEvent)
+    await expect(nullMarked).rejects.toThrow(
+      'invalid SchemWeave fallback marker',
+    )
+
+    const bundleBearing = layoutSubgraph(
+      structuredClone(bundled()),
+      undefined,
+      'schemweave',
+    )
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[2].id,
+        ok: true,
+        result: {
+          ...workerGeometry,
+          boundary_bundles: [{
+            id: 0,
+            endpoint: { node: 1, port: 0 },
+            role: 'input',
+            width: 1,
+            collector: {
+              start: { x: 84, y: 17 },
+              end: { x: 84, y: 17 },
+            },
+            spine: {
+              start: { x: 74, y: 17 },
+              end: { x: 84, y: 17 },
+            },
+            members: [{
+              edge: 0,
+              slots: [0],
+              tap: { x: 84, y: 17 },
+            }],
+          }],
+        },
+        fallback: SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+      },
+    } as MessageEvent)
+    await expect(bundleBearing).rejects.toThrow(
+      'SchemWeave fallback geometry cannot contain boundary bundles',
+    )
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('rejects an interpretation failure from an ok SchemWeave response immediately', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
+    const schemweave = FakeWorker.instances[0]
+
+    schemweave.onmessage?.({
+      data: {
+        id: schemweave.requests[0].id,
+        ok: true,
+        result: {
+          ...geometry,
+          boundary_bundles: [{
+            id: 0,
+            endpoint: { node: 1, port: 0 },
+            role: 'input',
+            width: 1,
+            collector: {
+              start: { x: 0, y: 0 },
+              end: { x: 0, y: 0 },
+            },
+            spine: {
+              start: { x: 0, y: 0 },
+              end: { x: 0, y: 0 },
+            },
+            // This reproduces the interpreter throw that used to detach the
+            // pending request before its promise could be rejected.
+            members: null,
+          }],
+        },
+      },
+    } as MessageEvent)
+
+    await expect(pending).rejects.toThrow(
+      'boundary bundle 0 members must be an array',
+    )
+    schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('rejects SchemWeave bundle geometry with an unknown edge owner', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
+    const schemweave = FakeWorker.instances[0]
+
+    schemweave.onmessage?.({
+      data: {
+        id: schemweave.requests[0].id,
+        ok: true,
+        result: {
+          ...geometry,
+          boundary_bundles: [{
+            id: 0,
+            endpoint: { node: 1, port: 0 },
+            role: 'input',
+            width: 1,
+            collector: {
+              start: { x: 0, y: 0 },
+              end: { x: 0, y: 0 },
+            },
+            spine: {
+              start: { x: 0, y: 0 },
+              end: { x: 0, y: 0 },
+            },
+            members: [{
+              edge: 99,
+              slots: [0],
+              tap: { x: 0, y: 0 },
+            }],
+          }],
+        },
+      },
+    } as MessageEvent)
+
+    await expect(pending).rejects.toThrow(
+      'boundary bundle 0 references unknown edge 99',
+    )
+    schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('recreates a worker that crashes during otherwise-idle prewarm', async () => {
@@ -2073,6 +2735,48 @@ describe('schematic layout sizing', () => {
     expect(result.nodes[0].node).toBe(sub.nodes[0])
     expect(FakeWorker.instances).toHaveLength(2)
     second.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('does not let a stale SchemWeave response take over the latest request', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const controller = new AbortController()
+    const stale = layoutSubgraph(
+      workerSubgraph(),
+      controller.signal,
+      'schemweave',
+    )
+    const first = FakeWorker.instances[0]
+    const staleHandler = first.onmessage
+    const staleId = first.requests[0].id
+
+    controller.abort()
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+
+    const latest = layoutSubgraph(workerSubgraph(2), undefined, 'schemweave')
+    const replacement = FakeWorker.instances[1]
+    staleHandler?.({
+      data: {
+        id: staleId,
+        ok: true,
+        result: geometry,
+      },
+    } as MessageEvent)
+    replacement.onmessage?.({
+      data: {
+        id: replacement.requests[0].id,
+        ok: true,
+        result: {
+          ...geometry,
+          nodes: [{ ...geometry.nodes[0], id: 2 }],
+        },
+      },
+    } as MessageEvent)
+
+    await expect(latest).resolves.toMatchObject({
+      nodes: [{ id: 2 }],
+      width: 76,
+    })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('reuses completed geometry for an equivalent fresh subgraph', async () => {

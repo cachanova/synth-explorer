@@ -47,6 +47,12 @@ jobs:
       - name: Verify generated analysis WASM is current
         run: git diff --exit-code -- web/src/wasm/analysis
 
+      - name: Rebuild comparison layout WASM
+        run: ./layout-wasm/build.sh
+
+      - name: Verify generated comparison layout WASM is current
+        run: git diff --exit-code -- web/src/wasm/layout
+
   static-web:
     name: Static browser application
     runs-on: ubuntu-24.04
