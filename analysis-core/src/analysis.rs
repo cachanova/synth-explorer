@@ -184,6 +184,27 @@ pub struct Subgraph {
 pub struct GroupExpansion {
     pub graph: Subgraph,
     pub members: Vec<NodeId>,
+    /// Exact compact quotient trunks replaced by expanded member edges.
+    /// Consumers use exact projected-key equality; they must not guess from
+    /// net labels, coincident endpoints, or array order.
+    pub boundary_trunks: Vec<GroupExpansionBoundaryTrunk>,
+}
+
+/// Exact identity used when analysis merges raw edges into one projected edge.
+/// This deliberately excludes raw-edge occurrence order and payload fields
+/// such as net labels and bits.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct ProjectedEdgeKey {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub from_port: String,
+    pub to_port: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GroupExpansionBoundaryTrunk {
+    pub compact_edge: ProjectedEdgeKey,
+    pub expanded_edges: Vec<ProjectedEdgeKey>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1953,11 +1974,22 @@ impl Analysis {
                 max_control_edge_visits: Some(MAX_FULL_NETLIST_EDGE_VISITS),
             },
         );
-        let graph = match grouping {
-            Some(projection) => quotient_subgraph(graph, raw, projection),
-            None => raw,
+        let (graph, boundary_trunks) = match grouping {
+            Some(expanded_projection) => {
+                let expanded_graph = quotient_subgraph(graph, raw, expanded_projection);
+                let compact_group_id = graph.nodes.len() as u32 + group_id;
+                let member_set = members.iter().copied().collect();
+                let boundary_trunks =
+                    group_expansion_boundary_trunks(&expanded_graph, compact_group_id, &member_set);
+                (expanded_graph, boundary_trunks)
+            }
+            None => (raw, Vec::new()),
         };
-        Some(GroupExpansion { graph, members })
+        Some(GroupExpansion {
+            graph,
+            members,
+            boundary_trunks,
+        })
     }
 
     pub fn fanout(&self, graph: &Graph, limit: usize) -> FanoutResponse {
@@ -2841,6 +2873,58 @@ fn quotient_subgraph(
         nodes,
         edges,
         truncated: subgraph.truncated || src_truncated,
+    }
+}
+
+fn group_expansion_boundary_trunks(
+    expanded: &Subgraph,
+    compact_group_id: NodeId,
+    members: &HashSet<NodeId>,
+) -> Vec<GroupExpansionBoundaryTrunk> {
+    let mut by_compact_edge: HashMap<ProjectedEdgeKey, HashSet<ProjectedEdgeKey>> = HashMap::new();
+    for edge in &expanded.edges {
+        let from_member = members.contains(&edge.from);
+        let to_member = members.contains(&edge.to);
+        if from_member == to_member {
+            continue;
+        }
+        let compact_edge = ProjectedEdgeKey {
+            from: if from_member {
+                compact_group_id
+            } else {
+                edge.from
+            },
+            to: if to_member { compact_group_id } else { edge.to },
+            from_port: edge.from_port.clone(),
+            to_port: edge.to_port.clone(),
+        };
+        by_compact_edge
+            .entry(compact_edge)
+            .or_default()
+            .insert(projected_edge_key(edge));
+    }
+
+    let mut trunks = by_compact_edge
+        .into_iter()
+        .map(|(compact_edge, expanded_edges)| {
+            let mut expanded_edges = expanded_edges.into_iter().collect::<Vec<_>>();
+            expanded_edges.sort();
+            GroupExpansionBoundaryTrunk {
+                compact_edge,
+                expanded_edges,
+            }
+        })
+        .collect::<Vec<_>>();
+    trunks.sort_by(|left, right| left.compact_edge.cmp(&right.compact_edge));
+    trunks
+}
+
+fn projected_edge_key(edge: &GraphEdge) -> ProjectedEdgeKey {
+    ProjectedEdgeKey {
+        from: edge.from,
+        to: edge.to,
+        from_port: edge.from_port.clone(),
+        to_port: edge.to_port.clone(),
     }
 }
 
@@ -6451,6 +6535,250 @@ mod tests {
             vec![(0, 5, vec![10]), (1, 5, vec![11])]
         );
         assert!(!expanded.graph.truncated);
+    }
+
+    #[test]
+    fn group_expansion_maps_compact_boundary_trunks_to_projected_edges_by_exact_key() {
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); 4];
+        let mut incoming = vec![Vec::new(); 4];
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 0, 2, 10);
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 0, 2, 10);
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 1, 2, 11);
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 3, 0, 12);
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 3, 1, 13);
+        let graph = graph_from_parts(
+            "expand_group_boundary_trunks",
+            (0..4)
+                .map(|id| combinational_node(id, "$and", None))
+                .collect(),
+            edges,
+            outgoing,
+            incoming,
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Memory,
+                members: vec![0, 1],
+                label: "memory [2×1]".to_owned(),
+                cell_type: "$mem".to_owned(),
+            }],
+            group_of: HashMap::from([(0, 0), (1, 0)]),
+        };
+        let projection = GroupingProjection::from_flags_with_expanded(&grouping, true, true, &[0]);
+
+        let expanded = analysis
+            .expand_group(
+                &graph,
+                &grouping,
+                0,
+                GroupExpansionOptions {
+                    max_nodes: MAX_SUBGRAPH_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                projection,
+            )
+            .expect("known group");
+
+        assert_eq!(
+            expanded.boundary_trunks,
+            vec![
+                GroupExpansionBoundaryTrunk {
+                    compact_edge: ProjectedEdgeKey {
+                        from: 3,
+                        to: 4,
+                        from_port: "Y".to_owned(),
+                        to_port: "A".to_owned(),
+                    },
+                    expanded_edges: vec![
+                        ProjectedEdgeKey {
+                            from: 3,
+                            to: 0,
+                            from_port: "Y".to_owned(),
+                            to_port: "A".to_owned(),
+                        },
+                        ProjectedEdgeKey {
+                            from: 3,
+                            to: 1,
+                            from_port: "Y".to_owned(),
+                            to_port: "A".to_owned(),
+                        },
+                    ],
+                },
+                GroupExpansionBoundaryTrunk {
+                    compact_edge: ProjectedEdgeKey {
+                        from: 4,
+                        to: 2,
+                        from_port: "Y".to_owned(),
+                        to_port: "A".to_owned(),
+                    },
+                    expanded_edges: vec![
+                        ProjectedEdgeKey {
+                            from: 0,
+                            to: 2,
+                            from_port: "Y".to_owned(),
+                            to_port: "A".to_owned(),
+                        },
+                        ProjectedEdgeKey {
+                            from: 1,
+                            to: 2,
+                            from_port: "Y".to_owned(),
+                            to_port: "A".to_owned(),
+                        },
+                    ],
+                },
+            ],
+        );
+        let compact = analysis.full_netlist(
+            &graph,
+            full_options(4, false, true, false, &[]),
+            Some(GroupingProjection::all(&grouping)),
+        );
+        let mut compact_boundary_edges = compact
+            .edges
+            .iter()
+            .filter(|edge| edge.from == 4 || edge.to == 4)
+            .map(projected_edge_key)
+            .collect::<Vec<_>>();
+        compact_boundary_edges.sort();
+        assert_eq!(
+            compact_boundary_edges,
+            expanded
+                .boundary_trunks
+                .iter()
+                .map(|trunk| trunk.compact_edge.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        let permutation = [4usize, 1, 3, 2, 0];
+        let permuted_edges = permutation
+            .iter()
+            .map(|&index| graph.edges[index].clone())
+            .collect::<Vec<_>>();
+        let mut permuted_outgoing = vec![Vec::new(); 4];
+        let mut permuted_incoming = vec![Vec::new(); 4];
+        for (index, edge) in permuted_edges.iter().enumerate() {
+            permuted_outgoing[edge.from as usize].push(index);
+            permuted_incoming[edge.to as usize].push(index);
+        }
+        let permuted_graph = graph_from_parts(
+            "expand_group_boundary_trunks_permuted",
+            graph.nodes.clone(),
+            permuted_edges,
+            permuted_outgoing,
+            permuted_incoming,
+        );
+        let permuted_analysis = Analysis::new(&permuted_graph, Vec::new());
+        let permuted = permuted_analysis
+            .expand_group(
+                &permuted_graph,
+                &grouping,
+                0,
+                GroupExpansionOptions {
+                    max_nodes: MAX_SUBGRAPH_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                projection,
+            )
+            .expect("known group");
+
+        assert_eq!(permuted.boundary_trunks, expanded.boundary_trunks);
+    }
+
+    #[test]
+    fn group_expansion_trunk_keys_survive_compact_group_sampling() {
+        let member_count = 300u32;
+        let outside = member_count;
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); member_count as usize + 1];
+        let mut incoming = vec![Vec::new(); member_count as usize + 1];
+        for member in 0..member_count {
+            add_test_edge(
+                &mut edges,
+                &mut outgoing,
+                &mut incoming,
+                member,
+                outside,
+                member,
+            );
+        }
+        let graph = graph_from_parts(
+            "sampled_compact_group_boundary",
+            (0..=member_count)
+                .map(|id| combinational_node(id, "$and", None))
+                .collect(),
+            edges,
+            outgoing,
+            incoming,
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let members = (0..member_count).collect::<Vec<_>>();
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Memory,
+                members: members.clone(),
+                label: "memory [300×1]".to_owned(),
+                cell_type: "$mem".to_owned(),
+            }],
+            group_of: members.iter().map(|member| (*member, 0)).collect(),
+        };
+        let compact = analysis.full_netlist(
+            &graph,
+            full_options(400, false, true, false, &[]),
+            Some(GroupingProjection::all(&grouping)),
+        );
+        let compact_group = compact
+            .nodes
+            .iter()
+            .find(|node| node.node.id == member_count + 1)
+            .expect("compact group is present");
+        assert_eq!(compact_group.width, Some(MAX_FULL_GROUP_MEMBERS as u32));
+        assert_eq!(compact_group.member_count, Some(member_count));
+
+        let expanded = analysis
+            .expand_group(
+                &graph,
+                &grouping,
+                0,
+                GroupExpansionOptions {
+                    max_nodes: MAX_GROUP_EXPANSION_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                GroupingProjection::from_flags_with_expanded(&grouping, true, true, &[0]),
+            )
+            .expect("known group");
+        let expected_compact_key = compact
+            .edges
+            .iter()
+            .find(|edge| edge.from == member_count + 1 && edge.to == outside)
+            .map(projected_edge_key)
+            .expect("sampled compact projection retains the boundary trunk");
+        let focused = analysis.full_netlist(
+            &graph,
+            full_options(2, false, true, false, &[outside]),
+            Some(GroupingProjection::all(&grouping)),
+        );
+        let focused_compact_key = focused
+            .edges
+            .iter()
+            .find(|edge| edge.from == member_count + 1 && edge.to == outside)
+            .map(projected_edge_key)
+            .expect("focused compact projection retains the boundary trunk");
+
+        assert_eq!(expanded.boundary_trunks.len(), 1);
+        assert_eq!(
+            expanded.boundary_trunks[0].compact_edge,
+            expected_compact_key,
+        );
+        assert_eq!(focused_compact_key, expected_compact_key);
+        assert_eq!(
+            expanded.boundary_trunks[0].expanded_edges.len(),
+            member_count as usize,
+        );
     }
 
     #[test]

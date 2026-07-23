@@ -84,6 +84,20 @@ export interface GroupExpansion {
   graph: Subgraph
   /** Raw physical node ids belonging to the expanded canonical group. */
   members: number[]
+  /** Exact compact quotient trunks replaced by expanded member edges. */
+  boundary_trunks: GroupExpansionBoundaryTrunk[]
+}
+
+export interface GroupExpansionBoundaryTrunk {
+  compact_edge: ProjectedEdgeKey
+  expanded_edges: ProjectedEdgeKey[]
+}
+
+export interface ProjectedEdgeKey {
+  from: number
+  to: number
+  from_port: string
+  to_port: string
 }
 
 export type SourceSelectionStatus =

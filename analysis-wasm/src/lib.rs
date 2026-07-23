@@ -932,6 +932,88 @@ mod tests {
     }
 
     #[test]
+    fn group_expansion_json_owns_stable_boundary_trunk_provenance() {
+        let session = session("gates", "series7");
+        let base = session.design.graph.nodes.len() as u32;
+        let group_id = session
+            .design
+            .grouping
+            .groups
+            .iter()
+            .enumerate()
+            .find(|(_, group)| {
+                let members: BTreeSet<_> = group.members.iter().copied().collect();
+                session
+                    .design
+                    .graph
+                    .edges
+                    .iter()
+                    .any(|edge| members.contains(&edge.from) ^ members.contains(&edge.to))
+            })
+            .map(|(group_id, _)| group_id as u32)
+            .expect("fixture has a group with boundary edges");
+        let response = session
+            .expand_group_json(
+                &serde_json::json!({
+                    "node": base + group_id,
+                    "expanded_nodes": [base + group_id],
+                    "group_vectors": true,
+                    "group_memories": true
+                })
+                .to_string(),
+            )
+            .expect("group expansion succeeds");
+        let json: serde_json::Value =
+            serde_json::from_str(&response).expect("group expansion JSON parses");
+        let trunks = json["boundary_trunks"]
+            .as_array()
+            .expect("boundary trunk provenance is an array");
+
+        assert!(!trunks.is_empty());
+        assert!(trunks.iter().all(|trunk| {
+            trunk["compact_edge"].is_object()
+                && trunk["expanded_edges"]
+                    .as_array()
+                    .is_some_and(|edges| !edges.is_empty())
+        }));
+        assert!(trunks.iter().all(|trunk| {
+            let key = &trunk["compact_edge"];
+            key.get("from").is_some()
+                && key.get("to").is_some()
+                && key.get("from_port").is_some()
+                && key.get("to_port").is_some()
+                && key.get("to_port_bit").is_none()
+                && key.get("bit").is_none()
+                && key.get("canonical_edges").is_none()
+        }));
+    }
+
+    #[test]
+    fn ordinary_graph_json_omits_group_expansion_provenance() {
+        let session = session("gates", "series7");
+        for query in [
+            r#"{"max_nodes":400}"#,
+            r#"{"max_nodes":400,"group_vectors":true,"group_memories":true}"#,
+        ] {
+            let response = session
+                .netlist_json(query)
+                .expect("ordinary netlist query succeeds");
+            let json: serde_json::Value =
+                serde_json::from_str(&response).expect("netlist JSON parses");
+
+            assert!(json.get("boundary_trunks").is_none());
+            assert!(
+                json["edges"]
+                    .as_array()
+                    .expect("edges is an array")
+                    .iter()
+                    .all(|edge| edge.get("canonical_edges").is_none()
+                        && edge.get("projected_edge_key").is_none())
+            );
+        }
+    }
+
+    #[test]
     fn group_expansion_rejects_a_second_open_group() {
         assert_eq!(validate_single_group_expansion(&[10], 10, 2, 0), Ok(()));
         assert_eq!(
