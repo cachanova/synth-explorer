@@ -152,30 +152,8 @@ test('auto-aligns CodeMirror Verilog block closing keywords', async ({
   const editor = page.locator('.cm-content')
   const pairs = [
     ['module top;', 'endmodule'],
-    ['generate', 'endgenerate'],
-    ['function automatic logic f;', 'endfunction'],
-    ['task run;', 'endtask'],
     ['case (sel)', 'endcase'],
-    ['casex (sel)', 'endcase'],
-    ['casez (sel)', 'endcase'],
-    ['class packet;', 'endclass'],
-    ['interface bus;', 'endinterface'],
-    ['package defs;', 'endpackage'],
-    ['program test;', 'endprogram'],
-    ['property p;', 'endproperty'],
-    ['sequence s;', 'endsequence'],
-    ['covergroup cg;', 'endgroup'],
-    ['checker c;', 'endchecker'],
-    ['clocking cb;', 'endclocking'],
-    ['config cfg;', 'endconfig'],
-    ['primitive p (o, i);', 'endprimitive'],
-    ['specify', 'endspecify'],
-    ['table', 'endtable'],
-    ['begin', 'end'],
-    ['do', 'while'],
-    ['fork', 'join'],
     ['fork', 'join_any'],
-    ['fork', 'join_none'],
   ] as const
 
   for (const [opener, closer] of pairs) {

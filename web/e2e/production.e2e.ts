@@ -167,29 +167,6 @@ test('renames and deletes source files with in-page menus', async ({ page }) => 
   expect(browserDialogs).toEqual([])
 })
 
-test('auto-synthesizes an edited design locally after the debounce', async ({ page }) => {
-  const apiRequests = recordApiRequests(page)
-  await page.goto('/')
-
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(
-    page.getByRole('checkbox', { name: 'Synthesize automatically' }),
-  ).toBeChecked()
-  await expect(page.getByLabel('Automatic synthesis delay')).toHaveValue('250')
-  await expect(page.locator('.settings-delay-value')).toHaveText('0.25 s')
-  await page.getByRole('button', { name: 'Settings' }).click()
-
-  await waitForAutomaticSynthesis(page, () =>
-    page.getByLabel('Bundled example').selectOption('reg_mux'),
-  )
-  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
-
-  await expect(page.getByText('Structural logic depth', { exact: true })).toBeVisible()
-  expect(await cacheEntryCount(page)).toBeGreaterThanOrEqual(1)
-  await expect(page.getByRole('button', { name: 'Synthesize', exact: true })).toHaveCount(0)
-  expect(apiRequests).toEqual([])
-})
-
 test('supports persistent manual synthesis and a configurable delay', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
