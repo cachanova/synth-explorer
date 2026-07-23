@@ -1268,6 +1268,7 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('aria-label="Expand group memory [16×16]"')
     expect(markup).toContain('transform="translate(110,20)"')
     expect(markup).toContain('class="g-group-toggle-hit" r="10"')
+    expect(markup).toContain('class="g-group-toggle-mark" d="M-4 0H4M0 -4V4"')
     expect(markup).not.toContain('<circle r="6"></circle>')
   })
 
@@ -1388,7 +1389,60 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('data-group-action="collapse"')
     expect(markup).toContain('aria-label="Collapse group memory [16×16]"')
     expect(markup).toContain('class="g-group-toggle-hit" r="10"')
+    expect(markup).toContain('class="g-group-toggle-mark" d="M-4 0H4"')
     expect(markup).not.toContain('<circle r="6"></circle>')
+  })
+
+  it('uses one split boundary path when unrelated logic sits between members', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 20,
+              y: 30,
+              width: 90,
+              height: 58,
+              node: { id: 1, kind: 'cell', name: 'lane1', cell_type: 'FDRE' },
+            },
+            {
+              id: 2,
+              x: 260,
+              y: 30,
+              width: 90,
+              height: 58,
+              node: { id: 2, kind: 'cell', name: 'lane2', cell_type: 'FDRE' },
+            },
+            {
+              id: 9,
+              x: 150,
+              y: 30,
+              width: 76,
+              height: 52,
+              node: { id: 9, kind: 'cell', name: 'unrelated', cell_type: '$_AND_' },
+            },
+          ],
+          edges: [],
+          width: 380,
+          height: 110,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive
+        onSelect={() => undefined}
+        expandedGroups={[{ id: 100, label: 'lanes[1:0]', members: [1, 2] }]}
+        onCollapseGroup={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('data-split-boundary="1"')
+    expect(markup.match(/class="g-expanded-group-boundary"/g)).toHaveLength(1)
+    expect(markup).toContain('transform="translate(110,30)"')
   })
 })
 

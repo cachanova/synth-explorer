@@ -40,6 +40,41 @@ async function setInferredFifoDepth(page: Page, depth: 16 | 64 | 128 | 512) {
   await editor.pressSequentially(String(depth))
 }
 
+async function expandedBoundaryRects(page: Page, groupId: string) {
+  return page.locator(
+    `[data-expanded-group-id="${groupId}"] .g-expanded-group-boundary`,
+  ).evaluateAll((boundaries) => boundaries.flatMap((boundary) => {
+    if (boundary.tagName.toLowerCase() !== 'path') {
+      const rect = boundary.getBoundingClientRect()
+      return [{
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+      }]
+    }
+    const path = boundary as SVGPathElement
+    const matrix = path.getScreenCTM()
+    if (!matrix) return []
+    const number = String.raw`(-?\d+(?:\.\d+)?(?:e[+-]?\d+)?)`
+    const rectangle = new RegExp(
+      String.raw`M\s+${number}\s+${number}\s+H\s+${number}\s+V\s+${number}`,
+      'gi',
+    )
+    return [...(path.getAttribute('d') ?? '').matchAll(rectangle)].map((match) => {
+      const topLeft = new DOMPoint(Number(match[1]), Number(match[2])).matrixTransform(matrix)
+      const bottomRight = new DOMPoint(Number(match[3]), Number(match[4]))
+        .matrixTransform(matrix)
+      return {
+        left: Math.min(topLeft.x, bottomRight.x),
+        top: Math.min(topLeft.y, bottomRight.y),
+        right: Math.max(topLeft.x, bottomRight.x),
+        bottom: Math.max(topLeft.y, bottomRight.y),
+      }
+    })
+  }))
+}
+
 async function zoomSchematicToScale(
   page: Page,
   targetScale: number,
@@ -860,9 +895,8 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   const registerGroupId = await groupedReadRegister.getAttribute('data-graph-node-id')
   expect(registerGroupId).not.toBeNull()
   const viewport = page.locator('.g-viewport')
-  const stationaryViewportTransform = await viewport.getAttribute('transform')
   const groupedRegisterTransform = await groupedReadRegister.getAttribute('transform')
-  const stationaryMemoryTransform = await groupedMemory.getAttribute('transform')
+  const groupedMemoryTransform = await groupedMemory.getAttribute('transform')
   await page.locator(
     `[data-group-action="expand"][data-group-id="${registerGroupId}"]`,
   ).click()
@@ -870,35 +904,34 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
     `[data-expanded-group-member="${registerGroupId}"]`,
   )
   await expect(registerMembers).toHaveCount(7)
-  await expect(groupedMemory).toHaveAttribute(
-    'transform',
-    stationaryMemoryTransform ?? '',
-  )
-  await expect(viewport).toHaveAttribute(
-    'transform',
-    stationaryViewportTransform ?? '',
+  await expect.poll(() => groupedMemory.getAttribute('transform')).not.toBe(
+    groupedMemoryTransform,
   )
   const registerBoundary = page.locator(
     `[data-expanded-group-id="${registerGroupId}"] .g-expanded-group-boundary`,
   )
-  await expect(registerBoundary).toHaveCount(1)
-  await expect.poll(() => page.evaluate(({ registerGroupId }) => {
-    const boundary = document.querySelector<SVGGraphicsElement>(
-      `[data-expanded-group-id="${registerGroupId}"] .g-expanded-group-boundary`,
+  await expect(registerBoundary.first()).toBeVisible()
+  await expect.poll(async () => {
+    const boundaries = await expandedBoundaryRects(page, registerGroupId!)
+    if (boundaries.length === 0) return null
+    return page.locator('.g-node-body').evaluateAll((nodes, args) =>
+      args.boundaries.flatMap((box) =>
+        nodes
+          .filter((node) =>
+            (node as SVGGraphicsElement).dataset.expandedGroupMember !== args.groupId
+          )
+          .filter((node) => {
+            const rect = node.getBoundingClientRect()
+            return rect.left < box.right &&
+              rect.right > box.left &&
+              rect.top < box.bottom &&
+              rect.bottom > box.top
+          })
+          .map((node) => (node as SVGGraphicsElement).dataset.nodeTooltip)
+      ),
+      { boundaries, groupId: registerGroupId },
     )
-    if (!boundary) return null
-    const box = boundary.getBoundingClientRect()
-    return [...document.querySelectorAll<SVGGraphicsElement>('.g-node-body')]
-      .filter((node) => node.dataset.expandedGroupMember !== registerGroupId)
-      .filter((node) => {
-        const rect = node.getBoundingClientRect()
-        return rect.left < box.right &&
-          rect.right > box.left &&
-          rect.top < box.bottom &&
-          rect.bottom > box.top
-      })
-      .map((node) => node.dataset.nodeTooltip)
-  }, { registerGroupId })).toEqual([])
+  }).toEqual([])
   await page.locator(
     `[data-group-action="collapse"][data-group-id="${registerGroupId}"]`,
   ).click()
@@ -906,10 +939,6 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   await expect(groupedReadRegister).toHaveAttribute(
     'transform',
     groupedRegisterTransform ?? '',
-  )
-  await expect(viewport).toHaveAttribute(
-    'transform',
-    stationaryViewportTransform ?? '',
   )
 
   await zoomSchematicToScale(page, 0.5, groupedMemory)
@@ -997,7 +1026,60 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   expect(apiRequests).toEqual([])
 })
 
-test('expanded register vectors exclude unrelated logic from their local frame', async ({ page }) => {
+test('keeps group expand and collapse glyphs legible on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  const analysisPane = page.locator('.pane-right')
+  await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+  await setInferredFifoDepth(page, 16)
+  await page.getByLabel('Platform').selectOption('xilinx')
+  await expect(analysisPane).toHaveAttribute('data-analysis-state', 'current', {
+    timeout: 120_000,
+  })
+  await page.getByRole('button', { name: 'Analysis', exact: true }).click()
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const groupedMemory = page.locator(
+    '.g-node-body.g-symbol-memory[data-member-count]',
+  )
+  await expect(groupedMemory).toHaveCount(1)
+  const groupId = await groupedMemory.getAttribute('data-graph-node-id')
+  expect(groupId).not.toBeNull()
+
+  const expand = page.locator(
+    `[data-group-action="expand"][data-group-id="${groupId}"]`,
+  )
+  await expect(expand).toBeVisible()
+  await expect.poll(() => expand.evaluate((control) => {
+    const mark = control.querySelector<SVGPathElement>('.g-group-toggle-mark')
+    if (!mark) return null
+    const controlStyle = getComputedStyle(control)
+    const markStyle = getComputedStyle(mark)
+    return {
+      opacity: Number(controlStyle.opacity),
+      stroke: markStyle.stroke,
+      strokeWidth: Number.parseFloat(markStyle.strokeWidth),
+      length: mark.getTotalLength(),
+      width: Math.round(control.getBoundingClientRect().width),
+      height: Math.round(control.getBoundingClientRect().height),
+    }
+  })).toMatchObject({
+    opacity: 0.94,
+    strokeWidth: 1.75,
+    length: 16,
+    width: 20,
+    height: 20,
+  })
+
+  await expand.click()
+  const collapse = page.locator(
+    `[data-group-action="collapse"][data-group-id="${groupId}"]`,
+  )
+  await expect(collapse).toBeVisible()
+  await expect(collapse.locator('.g-group-toggle-mark')).toHaveCount(1)
+})
+
+test('rerenders expanded register vectors without routing through member bodies', async ({ page }) => {
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('fifo_pipe')
@@ -1013,8 +1095,6 @@ test('expanded register vectors exclude unrelated logic from their local frame',
   const groupId = await groupedValid.getAttribute('data-graph-node-id')
   expect(groupId).not.toBeNull()
   const groupedTransform = await groupedValid.getAttribute('transform')
-  const viewport = page.locator('.g-viewport')
-  const viewportTransform = await viewport.getAttribute('transform')
 
   await page.locator(
     `[data-group-action="expand"][data-group-id="${groupId}"]`,
@@ -1022,27 +1102,31 @@ test('expanded register vectors exclude unrelated logic from their local frame',
   await expect(page.locator(
     `[data-expanded-group-member="${groupId}"]`,
   )).toHaveCount(3)
-  const boundary = page.locator(
+  const boundaries = page.locator(
     `[data-expanded-group-id="${groupId}"] .g-expanded-group-boundary`,
   )
-  await expect(boundary).toHaveCount(1)
-  await expect.poll(() => page.evaluate(({ groupId }) => {
-    const frame = document.querySelector<SVGGraphicsElement>(
-      `[data-expanded-group-id="${groupId}"] .g-expanded-group-boundary`,
+  await expect(boundaries.first()).toBeVisible()
+  await expect.poll(async () => {
+    const frames = await expandedBoundaryRects(page, groupId!)
+    if (frames.length === 0) return null
+    return page.locator('.g-node-body').evaluateAll((nodes, args) =>
+      args.frames.flatMap((box) =>
+        nodes
+          .filter((node) =>
+            (node as SVGGraphicsElement).dataset.expandedGroupMember !== args.groupId
+          )
+          .filter((node) => {
+            const rect = node.getBoundingClientRect()
+            return rect.left < box.right &&
+              rect.right > box.left &&
+              rect.top < box.bottom &&
+              rect.bottom > box.top
+          })
+          .map((node) => (node as SVGGraphicsElement).dataset.nodeTooltip)
+      ),
+      { frames, groupId },
     )
-    if (!frame) return null
-    const box = frame.getBoundingClientRect()
-    return [...document.querySelectorAll<SVGGraphicsElement>('.g-node-body')]
-      .filter((node) => node.dataset.expandedGroupMember !== groupId)
-      .filter((node) => {
-        const rect = node.getBoundingClientRect()
-        return rect.left < box.right &&
-          rect.right > box.left &&
-          rect.top < box.bottom &&
-          rect.bottom > box.top
-      })
-      .map((node) => node.dataset.nodeTooltip)
-  }, { groupId })).toEqual([])
+  }).toEqual([])
   await expect.poll(() => page.evaluate(({ groupId }) => {
     const members = [...document.querySelectorAll<SVGGElement>(
       `[data-expanded-group-member="${groupId}"]`,
@@ -1107,13 +1191,10 @@ test('expanded register vectors exclude unrelated logic from their local frame',
     }
     return crossings
   }, { groupId })).toEqual([])
-  await expect(viewport).toHaveAttribute('transform', viewportTransform ?? '')
-
   await page.locator(
     `[data-group-action="collapse"][data-group-id="${groupId}"]`,
   ).click()
   await expect(groupedValid).toHaveAttribute('transform', groupedTransform ?? '')
-  await expect(viewport).toHaveAttribute('transform', viewportTransform ?? '')
 })
 
 test('stacks parallel SRL lanes through Yosys per-lane logic', async ({ page }) => {
@@ -1236,7 +1317,6 @@ for (const regression of [
         '.g-node-body[data-node-tooltip="push_ready"]',
       )
       await expect(stationaryPort).toHaveCount(1)
-      const stationaryTransform = await stationaryPort.getAttribute('transform')
       await page.getByRole('button', {
         name: `Expand group memory [${regression.depth}×16]`,
       }).click()
@@ -1249,10 +1329,6 @@ for (const regression of [
       await expect(page.locator(
         `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
       )).toHaveCount(regression.count)
-      await expect(stationaryPort).toHaveAttribute(
-        'transform',
-        stationaryTransform ?? '',
-      )
       const boundary = page.locator('.g-expanded-group-boundary')
       await expect(boundary).toHaveCount(1)
       await expect.poll(async () => {
