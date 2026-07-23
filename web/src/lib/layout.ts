@@ -39,6 +39,26 @@ export interface LaidOutGraph {
   height: number
 }
 
+export function layoutsShareNode(
+  previous: LaidOutGraph | null | undefined,
+  next: LaidOutGraph,
+): boolean {
+  if (!previous) return false
+  const previousIds = new Set(previous.nodes.map((node) => node.id))
+  return next.nodes.some((node) => previousIds.has(node.id))
+}
+
+export function shouldRefitProjection(
+  previous: LaidOutGraph | null | undefined,
+  next: LaidOutGraph,
+  sameDesign: boolean,
+  sameProjection: boolean,
+): boolean {
+  if (!sameDesign) return true
+  if (sameProjection) return false
+  return !layoutsShareNode(previous, next)
+}
+
 export interface ExpandedGroupLayout {
   id: number
   members: number[]

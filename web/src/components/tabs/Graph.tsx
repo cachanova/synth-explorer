@@ -26,6 +26,7 @@ import {
   layoutExpandedGroupInPlace,
   layoutSubgraph,
   prewarmLayoutWorker,
+  shouldRefitProjection,
   type LaidOutGraph,
 } from '../../lib/layout'
 import {
@@ -630,9 +631,17 @@ export function Graph({ active }: { active: boolean }) {
     if (ownerDesignId == null) return
     const toLayout = combinedSubgraph
     const previousDisplay = displayedGraphRef.current
+    const sameDesign = previousDisplay?.designId === ownerDesignId
     const sameProjection =
-      previousDisplay?.designId === ownerDesignId &&
+      sameDesign &&
       previousDisplay.projectionKey === projectionKey
+    const shouldRefit = (nextGraph: LaidOutGraph) =>
+      shouldRefitProjection(
+        previousDisplay?.graph,
+        nextGraph,
+        sameDesign,
+        sameProjection,
+      )
     const cachedLayout = layoutCache.current.get(toLayout)
     if (cachedLayout) {
       const nextDisplay = {
@@ -644,15 +653,27 @@ export function Graph({ active }: { active: boolean }) {
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
       laidOutSubgraph.current = toLayout
-      if (!sameProjection) setFitNonce((n) => n + 1)
+      if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
       return
     }
     const expandedGroup = visibleExpandedGroups[0]
     const groupedBaseLayout = groupedBaseSubgraph
       ? layoutCache.current.get(groupedBaseSubgraph)
       : null
-    const inPlaceLayout = expandedGroup && groupedBaseLayout
-      ? layoutExpandedGroupInPlace(toLayout, groupedBaseLayout, expandedGroup)
+    // The graph currently on screen is the strongest source of truth for the
+    // quotient node's geometry. The WeakMap cache can miss when an equivalent
+    // grouped projection was rebuilt, but that must not turn a local expansion
+    // into a fresh whole-graph layout: ELK may then place unrelated logic
+    // between the members and inside the dashed group frame.
+    const displayedBaseLayout =
+      expandedGroup &&
+      sameProjection &&
+      previousDisplay?.graph.nodes.some((node) => node.id === expandedGroup.id)
+        ? previousDisplay.graph
+        : null
+    const localBaseLayout = displayedBaseLayout ?? groupedBaseLayout
+    const inPlaceLayout = expandedGroup && localBaseLayout
+      ? layoutExpandedGroupInPlace(toLayout, localBaseLayout, expandedGroup)
       : null
     if (inPlaceLayout) {
       const nextDisplay = {
@@ -666,7 +687,7 @@ export function Graph({ active }: { active: boolean }) {
       setDisplayedGraph(nextDisplay)
       laidOutSubgraph.current = toLayout
       setLayingOut(false)
-      if (!sameProjection) setFitNonce((n) => n + 1)
+      if (shouldRefit(inPlaceLayout)) setFitNonce((n) => n + 1)
       return
     }
     let cancelled = false
@@ -689,7 +710,7 @@ export function Graph({ active }: { active: boolean }) {
         setDisplayedGraph(nextDisplay)
         laidOutSubgraph.current = toLayout
         setLayingOut(false)
-        if (!sameProjection) setFitNonce((n) => n + 1)
+        if (shouldRefit(g)) setFitNonce((n) => n + 1)
       })
       .catch((e) => {
         if (cancelled || controller.signal.aborted) return

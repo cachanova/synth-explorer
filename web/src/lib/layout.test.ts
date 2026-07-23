@@ -30,6 +30,7 @@ import {
   registerControlYFraction,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
+  shouldRefitProjection,
   toElkGraph,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -1649,6 +1650,35 @@ describe('viewport transforms', () => {
     expect(
       preserveViewportAnchor({ x: 10, y: 15, k: 2 }, previous, next, [1]),
     ).toEqual({ x: -190, y: -65, k: 2 })
+  })
+
+  it('refits only when a projection has no retained node to anchor', () => {
+    const graphNode = node(1, '$_AND_')
+    const previous = {
+      nodes: [{ id: 1, x: 20, y: 30, width: 80, height: 50, node: graphNode }],
+      edges: [],
+      width: 100,
+      height: 80,
+    }
+    const shared = {
+      ...previous,
+      nodes: [{ ...previous.nodes[0], x: 120 }],
+    }
+    const disjoint = {
+      ...previous,
+      nodes: [
+        {
+          ...previous.nodes[0],
+          id: 2,
+          node: node(2, '$_OR_'),
+        },
+      ],
+    }
+
+    expect(shouldRefitProjection(previous, shared, true, true)).toBe(false)
+    expect(shouldRefitProjection(previous, shared, true, false)).toBe(false)
+    expect(shouldRefitProjection(previous, disjoint, true, false)).toBe(true)
+    expect(shouldRefitProjection(previous, shared, false, false)).toBe(true)
   })
 
   it('zooms around a fixed screen-space anchor and clamps scale', () => {

@@ -2303,12 +2303,6 @@ th.sortable:hover {
   opacity: 0.52;
   transition: opacity 120ms ease;
 }
-.g-group-toggle circle {
-  fill: color-mix(in srgb, var(--bg-2) 82%, transparent);
-  stroke: var(--text-faint);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
 .g-group-toggle .g-group-toggle-hit {
   fill: transparent;
   stroke: none;
@@ -2325,11 +2319,6 @@ th.sortable:hover {
 .g-group-toggle:hover,
 .g-group-toggle:focus-visible {
   opacity: 1;
-}
-.g-group-toggle:hover circle:not(.g-group-toggle-hit),
-.g-group-toggle:focus-visible circle:not(.g-group-toggle-hit) {
-  fill: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
-  stroke: var(--accent);
 }
 .g-group-toggle:hover path,
 .g-group-toggle:focus-visible path {

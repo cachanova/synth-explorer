@@ -167,6 +167,46 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('>×12<')
   })
 
+  it('renders a grouped top-level port as one range-labeled shape without stacking', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 21,
+            x: 0,
+            y: 0,
+            width: 180,
+            height: 42,
+            node: {
+              id: 21,
+              kind: 'port',
+              name: 'data_in[15:0]',
+              width: 16,
+              member_count: 16,
+              members: Array.from({ length: 16 }, (_, index) => index + 1),
+            },
+          }],
+          edges: [],
+          width: 180,
+          height: 42,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={21}
+        interactive={false}
+        onSelect={() => undefined}
+        active
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('g-symbol-port-')
+    expect(markup).toContain('>data_in[15:0]<')
+    expect(markup).not.toContain('class="g-symbol-stack"')
+    expect(markup).not.toContain('>×16<')
+  })
+
   it('keeps grouped memory shape and primitive count in compact detail and the overview shell', () => {
     const markup = renderToStaticMarkup(
       <GraphView
@@ -1133,7 +1173,7 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('data-group-action="expand"')
     expect(markup).toContain('aria-label="Expand group memory [16×16]"')
     expect(markup).toContain('class="g-group-toggle-hit" r="10"')
-    expect(markup).toContain('<circle r="6"></circle>')
+    expect(markup).not.toContain('<circle r="6"></circle>')
   })
 
   it('shows the plus for a singleton physical group', () => {
@@ -1175,6 +1215,51 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('data-group-action="expand"')
   })
 
+  it('does not show group controls for top-level port vectors', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 100,
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 58,
+            node: {
+              id: 100,
+              kind: 'port',
+              name: 'count[7:0]',
+              members: [1, 2, 3, 4, 5, 6, 7, 8],
+              member_count: 8,
+              width: 8,
+            },
+          }],
+          edges: [],
+          width: 120,
+          height: 98,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive
+        onSelect={() => undefined}
+        onExpandGroup={() => undefined}
+        expandedGroups={[{
+          id: 101,
+          label: 'other[1:0]',
+          members: [100],
+        }]}
+        onCollapseGroup={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).not.toContain('data-group-action="expand"')
+    expect(markup).not.toContain('data-group-action="collapse"')
+  })
+
   it('keeps a dashed labeled boundary and minus around expanded members', () => {
     const markup = renderToStaticMarkup(
       <GraphView
@@ -1208,7 +1293,7 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('data-group-action="collapse"')
     expect(markup).toContain('aria-label="Collapse group memory [16×16]"')
     expect(markup).toContain('class="g-group-toggle-hit" r="10"')
-    expect(markup).toContain('<circle r="6"></circle>')
+    expect(markup).not.toContain('<circle r="6"></circle>')
   })
 })
 

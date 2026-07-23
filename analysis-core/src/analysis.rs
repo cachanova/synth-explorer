@@ -523,6 +523,7 @@ pub struct Analysis {
     endpoint_targets_truncated: bool,
     source_provenance: SourceProvenanceIndex,
     has_control_output: Vec<bool>,
+    pure_hidden_control_ports: HashSet<NodeId>,
     stats: Stats,
     warnings: Vec<String>,
     /// The delay model used for the estimated timing figures (from the target).
@@ -608,6 +609,7 @@ impl Analysis {
             .iter()
             .map(|edges| edges.iter().any(|edge| graph.edges[*edge].control))
             .collect();
+        let pure_hidden_control_ports = pure_hidden_control_ports(graph);
         Self {
             node_depth,
             node_delay,
@@ -622,6 +624,7 @@ impl Analysis {
             endpoint_targets_truncated,
             source_provenance,
             has_control_output,
+            pure_hidden_control_ports,
             stats,
             warnings,
             delay_model: *model,
@@ -1552,14 +1555,19 @@ impl Analysis {
             }
         }
 
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
         let subgraph = self.subgraph_from_sets(
             graph,
             &seen,
             &edge_set,
             SubgraphProjection {
                 roots: &included_roots,
+                protected_nodes: &included_roots,
                 boundary_nodes: &boundary_nodes,
                 truncated,
+                hidden_control_ports,
                 show_infrastructure: options.show_infrastructure,
                 max_control_edge_visits: work_limits
                     .max_examined_edges
@@ -1589,6 +1597,9 @@ impl Analysis {
         // all nodes. Selection context takes the bounded adjacency path above.
         let mut seen = HashSet::new();
         let mut truncated = false;
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
         let mut selected_groups: Vec<(GroupId, &crate::grouping::Group)> = Vec::new();
         let mut selected_group_ids = HashSet::new();
 
@@ -1620,6 +1631,9 @@ impl Analysis {
         // before connected singleton/group units have a chance to appear.
         for node in &graph.nodes {
             if options.hide_const && node.kind == NodeKind::Const {
+                continue;
+            }
+            if hidden_control_ports.is_some_and(|ports| ports.contains(&node.id)) {
                 continue;
             }
             let unit = unit_id(grouping, base, node.id);
@@ -1730,8 +1744,10 @@ impl Analysis {
             &edge_set,
             SubgraphProjection {
                 roots: &empty,
+                protected_nodes: &empty,
                 boundary_nodes: &empty,
                 truncated,
+                hidden_control_ports,
                 show_infrastructure: options.show_infrastructure,
                 max_control_edge_visits: Some(
                     MAX_FULL_NETLIST_EDGE_VISITS.saturating_sub(examined_edges),
@@ -1763,6 +1779,7 @@ impl Analysis {
             cap,
             MAX_SUBGRAPH_NODES / 2,
         );
+        let protected_nodes: HashSet<NodeId> = priority_roots.iter().copied().collect();
         let mut seen_units = HashSet::new();
         let mut seen = HashSet::new();
         let mut queued = HashSet::new();
@@ -1877,6 +1894,9 @@ impl Analysis {
             }
         }
 
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
         let empty = HashSet::new();
         let subgraph = self.subgraph_from_sets(
             graph,
@@ -1884,8 +1904,10 @@ impl Analysis {
             &edge_set,
             SubgraphProjection {
                 roots: &empty,
+                protected_nodes: &protected_nodes,
                 boundary_nodes: &empty,
                 truncated,
+                hidden_control_ports,
                 show_infrastructure: options.show_infrastructure,
                 max_control_edge_visits: Some(
                     MAX_FULL_NETLIST_EDGE_VISITS.saturating_sub(examined_edges),
@@ -1956,14 +1978,19 @@ impl Analysis {
         }
 
         let empty = HashSet::new();
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
         let raw = self.subgraph_from_sets(
             graph,
             &seen,
             &edge_set,
             SubgraphProjection {
                 roots: &empty,
+                protected_nodes: &empty,
                 boundary_nodes: &empty,
                 truncated,
+                hidden_control_ports,
                 show_infrastructure: false,
                 max_control_edge_visits: Some(MAX_FULL_NETLIST_EDGE_VISITS),
             },
@@ -2162,8 +2189,18 @@ impl Analysis {
         edge_set: &HashSet<usize>,
         projection: SubgraphProjection<'_>,
     ) -> Subgraph {
-        let mut node_ids: Vec<NodeId> = seen.iter().copied().collect();
+        let mut node_ids: Vec<NodeId> = seen
+            .iter()
+            .copied()
+            .filter(|id| {
+                projection.protected_nodes.contains(id)
+                    || !projection
+                        .hidden_control_ports
+                        .is_some_and(|ports| ports.contains(id))
+            })
+            .collect();
         node_ids.sort_unstable();
+        let visible_node_ids: HashSet<NodeId> = node_ids.iter().copied().collect();
         let mut control_edge_visits = 0usize;
         let mut controls_truncated = false;
         let nodes = node_ids
@@ -2198,7 +2235,9 @@ impl Analysis {
         let mut edges: Vec<&Edge> = edge_set
             .iter()
             .filter_map(|idx| graph.edges.get(*idx))
-            .filter(|edge| seen.contains(&edge.from) && seen.contains(&edge.to))
+            .filter(|edge| {
+                visible_node_ids.contains(&edge.from) && visible_node_ids.contains(&edge.to)
+            })
             .collect();
         edges.sort_by(|a, b| compare_raw_edges(a, b));
         let (edges, edges_truncated) =
@@ -2219,8 +2258,10 @@ impl Analysis {
 
 struct SubgraphProjection<'a> {
     roots: &'a HashSet<NodeId>,
+    protected_nodes: &'a HashSet<NodeId>,
     boundary_nodes: &'a HashSet<NodeId>,
     truncated: bool,
+    hidden_control_ports: Option<&'a HashSet<NodeId>>,
     show_infrastructure: bool,
     max_control_edge_visits: Option<usize>,
 }
@@ -3702,6 +3743,97 @@ fn is_labeled_control_edge(graph: &Graph, edge: &Edge) -> bool {
         }
         ControlRole::Other => false,
     }
+}
+
+const CONTROL_VIS_UNKNOWN: u8 = 0;
+const CONTROL_VIS_VISITING: u8 = 1;
+const CONTROL_VIS_HIDDEN: u8 = 2;
+const CONTROL_VIS_VISIBLE: u8 = 3;
+
+#[derive(Clone, Copy)]
+struct ControlVisibilityFrame {
+    id: NodeId,
+    next_edge: usize,
+    reaches_hidden_control: bool,
+}
+
+/// Precompute top-level inputs whose complete routing disappears with
+/// `hide_control`. Infrastructure cells are transparent so vendor input
+/// buffers do not leave disconnected `clk`/`rst` ports on the schematic.
+///
+/// The iterative memoized walk visits each shared infrastructure path once.
+/// Cycles are conservatively visible: ambiguous cyclic routing must not hide a
+/// user-facing port, and the traversal remains stack-safe for deep buffers.
+fn pure_hidden_control_ports(graph: &Graph) -> HashSet<NodeId> {
+    let mut memo = vec![CONTROL_VIS_UNKNOWN; graph.nodes.len()];
+    let mut hidden_ports = HashSet::new();
+
+    for port in &graph.nodes {
+        if port.kind != NodeKind::PortBit || port.port_dir != Some(PortDirection::Input) {
+            continue;
+        }
+        if memo[port.id as usize] == CONTROL_VIS_UNKNOWN {
+            memo[port.id as usize] = CONTROL_VIS_VISITING;
+            let mut stack = vec![ControlVisibilityFrame {
+                id: port.id,
+                next_edge: 0,
+                reaches_hidden_control: false,
+            }];
+            while let Some(frame) = stack.last_mut() {
+                let outgoing = &graph.outgoing[frame.id as usize];
+                let Some(&edge_index) = outgoing.get(frame.next_edge) else {
+                    let result = frame.reaches_hidden_control;
+                    memo[frame.id as usize] = if result {
+                        CONTROL_VIS_HIDDEN
+                    } else {
+                        CONTROL_VIS_VISIBLE
+                    };
+                    stack.pop();
+                    continue;
+                };
+                let edge = &graph.edges[edge_index];
+                if is_labeled_control_edge(graph, edge) {
+                    frame.reaches_hidden_control = true;
+                    frame.next_edge += 1;
+                    continue;
+                }
+                let next = &graph.nodes[edge.to as usize];
+                if next.kind != NodeKind::Cell
+                    || !next
+                        .cell_type
+                        .as_deref()
+                        .is_some_and(is_infrastructure_cell)
+                {
+                    memo[frame.id as usize] = CONTROL_VIS_VISIBLE;
+                    stack.pop();
+                    continue;
+                }
+                match memo[edge.to as usize] {
+                    CONTROL_VIS_UNKNOWN => {
+                        memo[edge.to as usize] = CONTROL_VIS_VISITING;
+                        stack.push(ControlVisibilityFrame {
+                            id: edge.to,
+                            next_edge: 0,
+                            reaches_hidden_control: false,
+                        });
+                    }
+                    CONTROL_VIS_HIDDEN => {
+                        frame.reaches_hidden_control = true;
+                        frame.next_edge += 1;
+                    }
+                    CONTROL_VIS_VISITING | CONTROL_VIS_VISIBLE => {
+                        memo[frame.id as usize] = CONTROL_VIS_VISIBLE;
+                        stack.pop();
+                    }
+                    _ => unreachable!("control visibility memo uses known states"),
+                }
+            }
+        }
+        if memo[port.id as usize] == CONTROL_VIS_HIDDEN {
+            hidden_ports.insert(port.id);
+        }
+    }
+    hidden_ports
 }
 
 fn node_controls(

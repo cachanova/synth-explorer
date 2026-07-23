@@ -867,12 +867,13 @@ function GroupExpansionControls({
     const top = Math.min(...members.map((node) => node.y)) - 20
     const right = Math.max(...members.map((node) => node.x + node.width)) + 12
     const bottom = Math.max(...members.map((node) => node.y + node.height)) + 12
-    return [{ group, left, top, right, bottom }]
+    const hasComponent = members.some((member) => member.node.kind !== 'port')
+    return [{ group, left, top, right, bottom, hasComponent }]
   })
 
   return (
     <g className="g-group-controls">
-      {frames.map(({ group, left, top, right, bottom }) => (
+      {frames.map(({ group, left, top, right, bottom, hasComponent }) => (
         <g
           key={`expanded-${group.id}`}
           data-expanded-group-id={group.id}
@@ -891,7 +892,7 @@ function GroupExpansionControls({
           <text className="g-expanded-group-label" x={left + 8} y={top + 12}>
             {truncate(group.label, 28)}
           </text>
-          {onCollapse && (
+          {onCollapse && hasComponent && (
             <g
               className="g-group-toggle"
               data-group-action="collapse"
@@ -899,7 +900,7 @@ function GroupExpansionControls({
               role="button"
               tabIndex={0}
               aria-label={`Collapse group ${group.label}`}
-              transform={`translate(${right - 6},${top + 6})`}
+              transform={`translate(${right - 10},${top + 10})`}
               onPointerDown={(event) => {
                 event.stopPropagation()
               }}
@@ -913,13 +914,13 @@ function GroupExpansionControls({
               onKeyDown={(event) => activateGroupControl(event, () => onCollapse(group.id))}
             >
               <circle className="g-group-toggle-hit" r={10} />
-              <circle r={6} />
               <path d="M-2.5 0H2.5" />
             </g>
           )}
         </g>
       ))}
       {onExpand && graph.nodes.map((laidOutNode) => {
+        if (laidOutNode.node.kind === 'port') return null
         if (laidOutNode.node.member_count == null && laidOutNode.node.members == null) return null
         return (
           <g
@@ -950,7 +951,6 @@ function GroupExpansionControls({
             onKeyDown={(event) => activateGroupControl(event, () => onExpand(laidOutNode.node))}
           >
             <circle className="g-group-toggle-hit" r={10} />
-            <circle r={6} />
             <path d="M-2.5 0H2.5M0 -2.5V2.5" />
           </g>
         )
@@ -1054,7 +1054,10 @@ function SchematicNodeStack({
   forceFull: boolean
 }) {
   const node = laidOutNode.node
-  if ((node.width ?? 0) < 2) return null
+  // A vector port already exposes its packed range (for example [7:0]).
+  // Layered silhouettes add no information and make the boundary look like a
+  // group of physical components, so reserve the stack cue for components.
+  if (node.kind === 'port' || (node.width ?? 0) < 2) return null
   const kind = symbolKind(node, portDirection)
   const visual = nodeVisual(node, kind, rootId, highlighted)
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
