@@ -23,7 +23,6 @@ import {
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
-  layoutExpandedGroupInPlace,
   layoutSubgraph,
   prewarmLayoutWorker,
   shouldRefitProjection,
@@ -65,6 +64,7 @@ interface ExpansionState {
 interface ExpandedGroupSpec {
   id: number
   label: string
+  referenceHeight: number
 }
 
 interface DisplayedGraph {
@@ -578,8 +578,7 @@ export function Graph({ active }: { active: boolean }) {
     [activeExpandedIds, groupExpansions, projectedNodeIds],
   )
 
-  // Keep the neighborhood-expanded base stable while a quotient group opens
-  // or closes. Its object identity is the cache key for local group layout.
+  // Merge ordinary one-hop context before applying the one open quotient group.
   const groupedBase = useMemo(() => {
     if (!projectedSubgraph) return null
     const expanded = mergeSubgraphs(
@@ -607,18 +606,26 @@ export function Graph({ active }: { active: boolean }) {
     )
     return {
       graph: applied.graph,
-      groupedBaseGraph: groupedBase.graph,
       expandedGroups: applied.groups,
       expansionDroppedNodes: groupedBase.expansionDroppedNodes,
       expansionDroppedEdges: groupedBase.expansionDroppedEdges,
     }
   }, [activeGroupExpansions, groupedBase])
   const combinedSubgraph = combined?.graph ?? null
-  const groupedBaseSubgraph = combined?.groupedBaseGraph ?? null
   const visibleExpandedGroups = useMemo(
     () => combined?.expandedGroups ?? [],
     [combined],
   )
+  const expandedGroupsForLayout = useMemo(() => {
+    const referenceHeightById = new Map(
+      expandedGroupSpecs.map((group) => [group.id, group.referenceHeight]),
+    )
+    return visibleExpandedGroups.map((group) => ({
+      id: group.id,
+      members: group.members,
+      referenceHeight: referenceHeightById.get(group.id),
+    }))
+  }, [expandedGroupSpecs, visibleExpandedGroups])
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
@@ -656,47 +663,13 @@ export function Graph({ active }: { active: boolean }) {
       if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
       return
     }
-    const expandedGroup = visibleExpandedGroups[0]
-    const groupedBaseLayout = groupedBaseSubgraph
-      ? layoutCache.current.get(groupedBaseSubgraph)
-      : null
-    // The graph currently on screen is the strongest source of truth for the
-    // quotient node's geometry. The WeakMap cache can miss when an equivalent
-    // grouped projection was rebuilt, but that must not turn a local expansion
-    // into a fresh whole-graph layout: ELK may then place unrelated logic
-    // between the members and inside the dashed group frame.
-    const displayedBaseLayout =
-      expandedGroup &&
-      sameProjection &&
-      previousDisplay?.graph.nodes.some((node) => node.id === expandedGroup.id)
-        ? previousDisplay.graph
-        : null
-    const localBaseLayout = displayedBaseLayout ?? groupedBaseLayout
-    const inPlaceLayout = expandedGroup && localBaseLayout
-      ? layoutExpandedGroupInPlace(toLayout, localBaseLayout, expandedGroup)
-      : null
-    if (inPlaceLayout) {
-      const nextDisplay = {
-        designId: ownerDesignId,
-        projectionKey,
-        subgraph: toLayout,
-        graph: inPlaceLayout,
-      }
-      layoutCache.current.set(toLayout, inPlaceLayout)
-      displayedGraphRef.current = nextDisplay
-      setDisplayedGraph(nextDisplay)
-      laidOutSubgraph.current = toLayout
-      setLayingOut(false)
-      if (shouldRefit(inPlaceLayout)) setFitNonce((n) => n + 1)
-      return
-    }
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    // Fall back to a fresh ELK layout when there is no compatible grouped-base
-    // layout to compose locally (for example, a newly focused projection).
-    // GraphView preserves a retained node's viewport position across that fallback.
-    layoutSubgraph(toLayout, controller.signal)
+    // Opening or closing a group replaces the quotient node with an ELK
+    // compound. ELK re-renders the complete projection so the members remain
+    // together and surrounding nets route around their dashed boundary.
+    layoutSubgraph(toLayout, controller.signal, expandedGroupsForLayout)
       .then((g) => {
         if (cancelled) return
         const nextDisplay = {
@@ -728,10 +701,9 @@ export function Graph({ active }: { active: boolean }) {
     combinedSubgraph,
     focusActive,
     fullSubgraph?.designId,
-    groupedBaseSubgraph,
     projectionKey,
     relevantSubgraph?.designId,
-    visibleExpandedGroups,
+    expandedGroupsForLayout,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(
@@ -805,12 +777,15 @@ export function Graph({ active }: { active: boolean }) {
   const onExpandGroup = useCallback((node: GraphNode) => {
     if (node.member_count == null && node.members == null) return
     if (groupExpansionController.current) return
+    const referenceHeight = displayedGraphRef.current?.graph.height
+    if (referenceHeight == null) return
     setSelected(null)
     setError(null)
     setGroupExpansions([])
     setExpandedGroupSpecs([{
       id: node.id,
       label: node.name || node.cell_type || 'group',
+      referenceHeight,
     }])
   }, [])
 

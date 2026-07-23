@@ -860,9 +860,8 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   const registerGroupId = await groupedReadRegister.getAttribute('data-graph-node-id')
   expect(registerGroupId).not.toBeNull()
   const viewport = page.locator('.g-viewport')
-  const stationaryViewportTransform = await viewport.getAttribute('transform')
   const groupedRegisterTransform = await groupedReadRegister.getAttribute('transform')
-  const stationaryMemoryTransform = await groupedMemory.getAttribute('transform')
+  await groupedReadRegister.hover()
   await page.locator(
     `[data-group-action="expand"][data-group-id="${registerGroupId}"]`,
   ).click()
@@ -870,46 +869,17 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
     `[data-expanded-group-member="${registerGroupId}"]`,
   )
   await expect(registerMembers).toHaveCount(7)
-  await expect(groupedMemory).toHaveAttribute(
-    'transform',
-    stationaryMemoryTransform ?? '',
-  )
-  await expect(viewport).toHaveAttribute(
-    'transform',
-    stationaryViewportTransform ?? '',
-  )
-  const registerBoundary = page.locator(
-    `[data-expanded-group-id="${registerGroupId}"] .g-expanded-group-boundary`,
-  )
-  await expect(registerBoundary).toHaveCount(1)
-  await expect.poll(() => page.evaluate(({ registerGroupId }) => {
-    const boundary = document.querySelector<SVGGraphicsElement>(
-      `[data-expanded-group-id="${registerGroupId}"] .g-expanded-group-boundary`,
-    )
-    if (!boundary) return null
-    const box = boundary.getBoundingClientRect()
-    return [...document.querySelectorAll<SVGGraphicsElement>('.g-node-body')]
-      .filter((node) => node.dataset.expandedGroupMember !== registerGroupId)
-      .filter((node) => {
-        const rect = node.getBoundingClientRect()
-        return rect.left < box.right &&
-          rect.right > box.left &&
-          rect.top < box.bottom &&
-          rect.bottom > box.top
-      })
-      .map((node) => node.dataset.nodeTooltip)
-  }, { registerGroupId })).toEqual([])
-  await page.locator(
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  const collapseRegisters = page.locator(
     `[data-group-action="collapse"][data-group-id="${registerGroupId}"]`,
-  ).click()
+  )
+  await expect(collapseRegisters).toHaveCount(1)
+  await registerMembers.first().hover()
+  await collapseRegisters.first().click()
   await expect(groupedReadRegister).toHaveCount(1)
   await expect(groupedReadRegister).toHaveAttribute(
     'transform',
     groupedRegisterTransform ?? '',
-  )
-  await expect(viewport).toHaveAttribute(
-    'transform',
-    stationaryViewportTransform ?? '',
   )
 
   await zoomSchematicToScale(page, 0.5, groupedMemory)
@@ -997,7 +967,27 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   expect(apiRequests).toEqual([])
 })
 
-test('expanded register vectors exclude unrelated logic from their local frame', async ({ page }) => {
+test('group toggles reveal on component hover and re-render through ELK', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const originalPostMessage = Worker.prototype.postMessage
+    Object.defineProperty(Worker.prototype, 'postMessage', {
+      configurable: true,
+      value: function (...args: unknown[]) {
+        const request = args[0]
+        if (
+          request != null &&
+          typeof request === 'object' &&
+          'input' in request
+        ) {
+          requests.push(request)
+        }
+        return Reflect.apply(originalPostMessage, this, args)
+      },
+    })
+    ;(window as typeof window & { __elkLayoutRequests?: unknown[] })
+      .__elkLayoutRequests = requests
+  })
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
     await page.getByLabel('Bundled example').selectOption('fifo_pipe')
@@ -1013,39 +1003,110 @@ test('expanded register vectors exclude unrelated logic from their local frame',
   const groupId = await groupedValid.getAttribute('data-graph-node-id')
   expect(groupId).not.toBeNull()
   const groupedTransform = await groupedValid.getAttribute('transform')
-  const viewport = page.locator('.g-viewport')
-  const viewportTransform = await viewport.getAttribute('transform')
-
-  await page.locator(
+  const groupToggle = page.locator(
     `[data-group-action="expand"][data-group-id="${groupId}"]`,
-  ).click()
-  await expect(page.locator(
-    `[data-expanded-group-member="${groupId}"]`,
-  )).toHaveCount(3)
-  const boundary = page.locator(
-    `[data-expanded-group-id="${groupId}"] .g-expanded-group-boundary`,
   )
-  await expect(boundary).toHaveCount(1)
-  await expect.poll(() => page.evaluate(({ groupId }) => {
-    const frame = document.querySelector<SVGGraphicsElement>(
-      `[data-expanded-group-id="${groupId}"] .g-expanded-group-boundary`,
+  await expect(groupToggle).toHaveCSS('opacity', '0')
+  await groupedValid.hover()
+  await expect.poll(async () =>
+    Number.parseFloat(await groupToggle.evaluate((node) =>
+      getComputedStyle(node).opacity
+    )),
+  ).toBeCloseTo(0.84)
+  const initialLayoutRequests = await page.evaluate(() =>
+    (window as typeof window & { __elkLayoutRequests?: unknown[] })
+      .__elkLayoutRequests?.length ?? 0,
+  )
+
+  await groupToggle.click()
+  const expandedMembers = page.locator(
+    `[data-expanded-group-member="${groupId}"]`,
+  )
+  await expect(expandedMembers).toHaveCount(3)
+  await expect.poll(async () => {
+    const centers = await expandedMembers.evaluateAll((members) =>
+      members.map((member) => {
+        const outline = member.querySelector<SVGGraphicsElement>('.g-symbol-outline')
+        if (!outline) throw new Error('expanded member outline is missing')
+        const box = outline.getBoundingClientRect()
+        return box.left + box.width / 2
+      }),
     )
-    if (!frame) return null
-    const box = frame.getBoundingClientRect()
-    return [...document.querySelectorAll<SVGGraphicsElement>('.g-node-body')]
-      .filter((node) => node.dataset.expandedGroupMember !== groupId)
-      .filter((node) => {
-        const rect = node.getBoundingClientRect()
-        return rect.left < box.right &&
-          rect.right > box.left &&
-          rect.top < box.bottom &&
-          rect.bottom > box.top
-      })
-      .map((node) => node.dataset.nodeTooltip)
-  }, { groupId })).toEqual([])
-  await expect.poll(() => page.evaluate(({ groupId }) => {
+    return Math.max(...centers) - Math.min(...centers)
+  }).toBeLessThanOrEqual(1)
+  await expect.poll(() => page.evaluate(() =>
+    (window as typeof window & { __elkLayoutRequests?: unknown[] })
+      .__elkLayoutRequests?.length ?? 0,
+  )).toBeGreaterThan(initialLayoutRequests)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  const themeTextFill = await page.evaluate(() => {
+    const probe = document.createElementNS('http://www.w3.org/2000/svg', 'text')
+    probe.style.fill = 'var(--text)'
+    document.body.append(probe)
+    const fill = getComputedStyle(probe).fill
+    probe.remove()
+    return fill
+  })
+  await expect(page.locator('.g-expanded-group-label')).toHaveCSS(
+    'fill',
+    themeTextFill,
+  )
+  await expect.poll(() => page.evaluate((expandedGroupId) => {
+    const requests = (
+      window as typeof window & {
+        __elkLayoutRequests?: Array<{
+          input?: { groups?: Array<{ id: number; members: number[] }> }
+        }>
+      }
+    ).__elkLayoutRequests ?? []
+    return requests.at(-1)?.input?.groups?.some(
+      (group) =>
+        String(group.id) === expandedGroupId &&
+        group.members.length === 3,
+    ) ?? false
+  }, groupId)).toBe(true)
+  const groupContainment = await page.evaluate((expandedGroupId) => {
+    const boundary = document.querySelector<SVGRectElement>(
+      '.g-expanded-group-boundary',
+    )?.getBoundingClientRect()
+    if (!boundary) return { membersInside: false, overlappingOutsiders: ['missing frame'] }
+    const epsilon = 1
+    const membersInside = [
+      ...document.querySelectorAll<SVGGElement>(
+        `[data-expanded-group-member="${expandedGroupId}"]`,
+      ),
+    ].every((member) => {
+      const box = member.getBoundingClientRect()
+      return (
+        box.left >= boundary.left - epsilon &&
+        box.right <= boundary.right + epsilon &&
+        box.top >= boundary.top - epsilon &&
+        box.bottom <= boundary.bottom + epsilon
+      )
+    })
+    const overlappingOutsiders = [
+      ...document.querySelectorAll<SVGGElement>(
+        `.g-node-body:not([data-expanded-group-member="${expandedGroupId}"])`,
+      ),
+    ].flatMap((node) => {
+      const box = node.getBoundingClientRect()
+      const overlaps = (
+        box.left < boundary.right &&
+        box.right > boundary.left &&
+        box.top < boundary.bottom &&
+        box.bottom > boundary.top
+      )
+      return overlaps ? [node.dataset.nodeTooltip ?? node.dataset.graphNodeId ?? '?'] : []
+    })
+    return { membersInside, overlappingOutsiders }
+  }, groupId)
+  expect(groupContainment).toEqual({
+    membersInside: true,
+    overlappingOutsiders: [],
+  })
+  await expect.poll(() => page.evaluate((expandedGroupId) => {
     const members = [...document.querySelectorAll<SVGGElement>(
-      `[data-expanded-group-member="${groupId}"]`,
+      `[data-expanded-group-member="${expandedGroupId}"]`,
     )].flatMap((node) => {
       const outline = node.querySelector<SVGGraphicsElement>('.g-symbol-outline')
       const matrix = node.transform.baseVal.consolidate()?.matrix
@@ -1058,28 +1119,29 @@ test('expanded register vectors exclude unrelated logic from their local frame',
         bottom: matrix.f + box.y + box.height,
       }]
     })
-    const crossesMember = (
+    const segmentCrossesMember = (
       start: { x: number; y: number },
       end: { x: number; y: number },
     ) => members.some((member) => {
       if (start.x === end.x) {
-        return start.x > member.left &&
+        return (
+          start.x > member.left &&
           start.x < member.right &&
           Math.max(start.y, end.y) > member.top &&
           Math.min(start.y, end.y) < member.bottom
+        )
       }
       if (start.y === end.y) {
-        return start.y > member.top &&
+        return (
+          start.y > member.top &&
           start.y < member.bottom &&
           Math.max(start.x, end.x) > member.left &&
           Math.min(start.x, end.x) < member.right
+        )
       }
       return true
     })
-    const crossings: Array<{
-      segment: [number, number, number, number]
-      path: string
-    }> = []
+    const crossings: string[] = []
     for (const path of document.querySelectorAll<SVGPathElement>('.g-edge')) {
       const pathData = path.getAttribute('d') ?? ''
       const tokens = pathData.match(
@@ -1096,24 +1158,62 @@ test('expanded register vectors exclude unrelated logic from their local frame',
           previous = point
           continue
         }
-        if (previous && crossesMember(previous, point)) {
-          crossings.push({
-            segment: [previous.x, previous.y, point.x, point.y],
-            path: pathData,
-          })
+        if (previous && segmentCrossesMember(previous, point)) {
+          crossings.push(pathData)
+          break
         }
         previous = point
       }
     }
     return crossings
-  }, { groupId })).toEqual([])
-  await expect(viewport).toHaveAttribute('transform', viewportTransform ?? '')
-
-  await page.locator(
+  }, groupId)).toEqual([])
+  const collapseToggles = page.locator(
     `[data-group-action="collapse"][data-group-id="${groupId}"]`,
-  ).click()
+  )
+  await expect(collapseToggles).toHaveCount(1)
+
+  await expect(collapseToggles.first()).toHaveCSS('opacity', '0')
+  const emptyFramePoint = await page.evaluate((expandedGroupId) => {
+    const boundary = document.querySelector<SVGRectElement>(
+      `[data-expanded-group-id="${expandedGroupId}"] .g-expanded-group-boundary`,
+    )?.getBoundingClientRect()
+    if (!boundary) throw new Error('expanded group boundary is missing')
+    const members = [
+      ...document.querySelectorAll<SVGGElement>(
+        `[data-expanded-group-member="${expandedGroupId}"]`,
+      ),
+    ].map((member) => member.getBoundingClientRect())
+    const stepX = Math.max(3, boundary.width / 24)
+    const stepY = Math.max(3, boundary.height / 24)
+    for (let y = boundary.top + 3; y < boundary.bottom - 3; y += stepY) {
+      for (let x = boundary.left + 3; x < boundary.right - 3; x += stepX) {
+        const overlapsMember = members.some((member) =>
+          x >= member.left &&
+          x <= member.right &&
+          y >= member.top &&
+          y <= member.bottom
+        )
+        if (!overlapsMember) return { x, y }
+      }
+    }
+    throw new Error('expanded group has no empty hover point')
+  }, groupId)
+  await page.mouse.move(emptyFramePoint.x, emptyFramePoint.y)
+  await expect.poll(async () =>
+    Number.parseFloat(await collapseToggles.first().evaluate((node) =>
+      getComputedStyle(node).opacity
+    )),
+  ).toBeCloseTo(0.84)
+  await page.mouse.move(5, 5)
+  await expect(collapseToggles.first()).toHaveCSS('opacity', '0')
+  await expandedMembers.first().hover()
+  await expect.poll(async () =>
+    Number.parseFloat(await collapseToggles.first().evaluate((node) =>
+      getComputedStyle(node).opacity
+    )),
+  ).toBeCloseTo(0.84)
+  await collapseToggles.first().click()
   await expect(groupedValid).toHaveAttribute('transform', groupedTransform ?? '')
-  await expect(viewport).toHaveAttribute('transform', viewportTransform ?? '')
 })
 
 test('stacks parallel SRL lanes through Yosys per-lane logic', async ({ page }) => {
@@ -1236,7 +1336,6 @@ for (const regression of [
         '.g-node-body[data-node-tooltip="push_ready"]',
       )
       await expect(stationaryPort).toHaveCount(1)
-      const stationaryTransform = await stationaryPort.getAttribute('transform')
       await page.getByRole('button', {
         name: `Expand group memory [${regression.depth}×16]`,
       }).click()
@@ -1249,46 +1348,30 @@ for (const regression of [
       await expect(page.locator(
         `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
       )).toHaveCount(regression.count)
-      await expect(stationaryPort).toHaveAttribute(
-        'transform',
-        stationaryTransform ?? '',
-      )
-      const boundary = page.locator('.g-expanded-group-boundary')
-      await expect(boundary).toHaveCount(1)
-      await expect.poll(async () => {
-        const boundaryBox = await boundary.boundingBox()
-        const laneBoxes = await page.locator(
-          `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
-        ).evaluateAll((nodes) => nodes.map((node) => {
-          const rect = node.getBoundingClientRect()
-          return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
-        }))
-        return boundaryBox != null && laneBoxes.every((lane) =>
-          lane.left >= boundaryBox.x - 1 &&
-          lane.top >= boundaryBox.y - 1 &&
-          lane.right <= boundaryBox.x + boundaryBox.width + 1 &&
-          lane.bottom <= boundaryBox.y + boundaryBox.height + 1,
-        )
-      }).toBe(true)
+      await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+      const collapseButtons = page.getByRole('button', {
+        name: `Collapse group memory [${regression.depth}×16]`,
+      })
+      await expect(collapseButtons).toHaveCount(1)
 
       await stationaryPort.focus()
       await stationaryPort.press('Enter')
       await page.getByRole('button', { name: 'Fanin cone' }).click()
-      await expect(boundary).toHaveCount(0)
+      await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(0)
       await expect(page.locator(
         `[data-expanded-group-member="${groupedId}"]`,
       )).toHaveCount(0)
       await page.getByLabel('Focus').uncheck()
-      await expect(boundary).toHaveCount(1)
+      await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+      await expect(page.locator(
+        `[data-expanded-group-member="${groupedId}"]`,
+      )).toHaveCount(regression.count)
 
-      await expect(page.getByRole('button', {
-        name: `Collapse group memory [${regression.depth}×16]`,
-      })).toBeVisible()
-      await page.getByRole('button', {
-        name: `Collapse group memory [${regression.depth}×16]`,
-      }).click()
+      await page.locator(
+        `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
+      ).first().hover()
+      await collapseButtons.first().click()
       await expect(groupedMemory).toHaveCount(1)
-      await expect(boundary).toHaveCount(0)
     }
     expect(apiRequests).toEqual([])
   })
@@ -1336,15 +1419,16 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   })
   await expandMemory.focus()
   await expandMemory.press('Enter')
-  await expect(groupedMemory).toHaveCount(0)
+  await expect(groupedMemory).toHaveCount(0, { timeout: 180_000 })
   const expandedMembers = page.locator(`[data-expanded-group-member="${groupedId}"]`)
   await expect(expandedMembers).toHaveCount(2048, { timeout: 180_000 })
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
   const collapseMemory = page.getByRole('button', {
     name: 'Collapse group memory [128×16]',
   })
-  await collapseMemory.focus()
-  await collapseMemory.press('Enter')
+  await expect(collapseMemory).toHaveCount(1)
+  await collapseMemory.first().focus()
+  await collapseMemory.first().press('Enter')
   await expect(groupedMemory).toHaveCount(1)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(0)
 

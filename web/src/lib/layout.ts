@@ -49,6 +49,15 @@ export interface LaidOutEdge {
 export interface LaidOutGraph {
   nodes: LaidOutNode[]
   edges: LaidOutEdge[]
+  groups?: LaidOutGroup[]
+  width: number
+  height: number
+}
+
+export interface LaidOutGroup {
+  id: number
+  x: number
+  y: number
   width: number
   height: number
 }
@@ -76,6 +85,8 @@ export function shouldRefitProjection(
 export interface ExpandedGroupLayout {
   id: number
   members: number[]
+  /** Height of the collapsed schematic that the user expanded from. */
+  referenceHeight?: number
 }
 
 export interface LayoutInputNode {
@@ -101,9 +112,62 @@ export interface LayoutInputEdge {
 export interface LayoutInput {
   nodes: LayoutInputNode[]
   edges: LayoutInputEdge[]
+  groups?: ExpandedGroupLayout[]
 }
 
 export const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
+export const EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER = 2
+const EXPANDED_GROUP_NODE_SPACING = 18
+const EXPANDED_GROUP_VERTICAL_PADDING = 46
+
+function expandedGroupSingleColumnHeight(
+  members: Array<{ height?: number }>,
+): number {
+  return (
+    EXPANDED_GROUP_VERTICAL_PADDING +
+    members.reduce((height, member) => height + (member.height ?? 0), 0) +
+    Math.max(0, members.length - 1) * EXPANDED_GROUP_NODE_SPACING
+  )
+}
+
+function shouldStackExpandedGroup(
+  group: ExpandedGroupLayout,
+  members: Array<{ height?: number }>,
+): boolean {
+  if (group.referenceHeight == null) return members.length <= 16
+  return (
+    expandedGroupSingleColumnHeight(members) <=
+    group.referenceHeight * EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER
+  )
+}
+
+function expandedGroupColumnCount(
+  group: ExpandedGroupLayout,
+  members: Array<{ height?: number }>,
+): number {
+  if (shouldStackExpandedGroup(group, members)) return 1
+  const verticalLimit = group.referenceHeight == null
+    ? null
+    : group.referenceHeight * EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER
+  const maxMemberHeight = Math.max(
+    1,
+    ...members.map((member) => member.height ?? 0),
+  )
+  const maxGridRows = verticalLimit == null
+    ? Math.max(1, Math.ceil(Math.sqrt(members.length / 0.65)))
+    : Math.max(
+        1,
+        Math.floor(
+          (
+            verticalLimit -
+            EXPANDED_GROUP_VERTICAL_PADDING +
+            EXPANDED_GROUP_NODE_SPACING
+          ) /
+            (maxMemberHeight + EXPANDED_GROUP_NODE_SPACING),
+        ),
+      )
+  return Math.max(1, Math.ceil(members.length / maxGridRows))
+}
 
 function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
   const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
@@ -144,6 +208,7 @@ function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
 export interface LayoutGeometry {
   nodes: Array<Omit<LaidOutNode, 'node'>>
   edges: Array<{ inputIndex: number; points: Point[] }>
+  groups?: LaidOutGroup[]
   width: number
   height: number
 }
@@ -178,6 +243,7 @@ function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
     key.length * 2 +
     geometry.nodes.length * 128 +
     geometry.edges.length * 96 +
+    (geometry.groups?.length ?? 0) * 80 +
     pointCount * 48 +
     256
   )
@@ -612,7 +678,10 @@ function normalizeEdgeBoundaryMembers(
     }))
 }
 
-export function prepareLayoutInput(sub: Subgraph): LayoutInput {
+export function prepareLayoutInput(
+  sub: Subgraph,
+  expandedGroups: ExpandedGroupLayout[] = [],
+): LayoutInput {
   const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
   // Hidden control edges retain their driver ids on the controlled node. Count
   // those sources when classifying primary inputs so hiding control wiring does
@@ -634,6 +703,23 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
       ),
     ),
   )
+  const visibleNodeIds = new Set(sub.nodes.map((node) => node.id))
+  const claimedMembers = new Set<number>()
+  const groups = expandedGroups.flatMap((group) => {
+    const members = group.members.filter(
+      (member) => visibleNodeIds.has(member) && !claimedMembers.has(member),
+    )
+    for (const member of members) claimedMembers.add(member)
+    return members.length > 0
+      ? [{
+          id: group.id,
+          members,
+          ...(group.referenceHeight != null
+            ? { referenceHeight: group.referenceHeight }
+            : {}),
+        }]
+      : []
+  })
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -673,6 +759,7 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         ...(targetBoundaryMembers != null ? { targetBoundaryMembers } : {}),
       }
     }),
+    ...(groups.length > 0 ? { groups } : {}),
   }
 }
 
@@ -702,7 +789,7 @@ export function toElkGraph(
   }
 
   const regIds = new Set<number>()
-  const children: ElkNode[] = input.nodes.map((n) => {
+  const nodeChildren: ElkNode[] = input.nodes.map((n) => {
     const ins = inPins.get(n.id) ?? []
     const outs = outPins.get(n.id) ?? []
     const { width, height } = dimensionsForPins(n, ins.length, outs.length)
@@ -787,6 +874,137 @@ export function toElkGraph(
     }
   })
 
+  const groupedMemberIds = new Set(
+    input.groups?.flatMap((group) => group.members) ?? [],
+  )
+  const childById = new Map(
+    nodeChildren.map((child) => [Number(child.id), child]),
+  )
+  const groupIdByMember = new Map<number, number>()
+  const groupChildren: ElkNode[] = (input.groups ?? []).flatMap((group) => {
+    const members = group.members.flatMap((member) => {
+      const child = childById.get(member)
+      return child ? [child] : []
+    })
+    if (members.length === 0) return []
+
+    // Prefer one aligned vertical stack. If that stack would exceed twice the
+    // height of the schematic the user expanded from, form the fewest clean
+    // grid columns needed to stay within that vertical budget. Cross-boundary
+    // nets terminate at compound proxy ports during ELK placement, then regain
+    // their exact member-pin endpoints through collision-free frame corridors.
+    const singleColumnHeight = expandedGroupSingleColumnHeight(members)
+    // Callers outside the interactive expansion path may not have a reference
+    // layout. Preserve the bounded legacy fallback for those inputs.
+    const stackVertically = shouldStackExpandedGroup(group, members)
+    for (const member of group.members) {
+      groupIdByMember.set(member, group.id)
+    }
+    const columnCount = expandedGroupColumnCount(group, members)
+    const arrangedMembers = stackVertically
+      ? members.map((member, index) => {
+          return {
+            ...member,
+            layoutOptions: {
+              ...member.layoutOptions,
+              // External nets terminate at proxy ports on the compound, so
+              // FIRST is legal here and puts every member in one x-aligned
+              // layer. The in-layer relation keeps the member ordering stable.
+              'elk.layered.layering.layerConstraint': 'FIRST',
+              ...(members[index + 1]
+                ? {
+                    'elk.layered.crossingMinimization.inLayerPredOf':
+                      members[index + 1].id,
+                  }
+                : {}),
+            },
+          }
+        })
+      : members
+    const layoutEdges: ElkExtendedEdge[] = []
+    for (let index = 0; index + 1 < members.length; index += 1) {
+      if (stackVertically || (index + 1) % columnCount === 0) continue
+      layoutEdges.push({
+        id: `group-layout:${group.id}:${index}`,
+        sources: [members[index].id],
+        targets: [members[index + 1].id],
+      })
+    }
+    const groupWidth = Math.max(
+      ...members.map((member) => member.width ?? 0),
+    ) + 32
+    return [{
+      id: `group:${group.id}`,
+      children: arrangedMembers,
+      edges: layoutEdges,
+      ports: stackVertically
+        ? [
+            {
+              id: `group:${group.id}#in`,
+              x: 0,
+              y: singleColumnHeight / 2,
+              width: 0,
+              height: 0,
+              layoutOptions: { 'elk.port.side': 'WEST' },
+            },
+            {
+              id: `group:${group.id}#out`,
+              x: groupWidth,
+              y: singleColumnHeight / 2,
+              width: 0,
+              height: 0,
+              layoutOptions: { 'elk.port.side': 'EAST' },
+            },
+          ]
+        : [
+            {
+              id: `group:${group.id}#in`,
+              width: 0,
+              height: 0,
+              layoutOptions: { 'elk.port.side': 'WEST' },
+            },
+            {
+              id: `group:${group.id}#out`,
+              width: 0,
+              height: 0,
+              layoutOptions: { 'elk.port.side': 'EAST' },
+            },
+          ],
+      ...(stackVertically
+        ? {
+            width: groupWidth,
+            height: singleColumnHeight,
+          }
+        : {}),
+      layoutOptions: {
+        'elk.algorithm': 'layered',
+        'elk.direction': 'RIGHT',
+        'elk.edgeRouting': 'ORTHOGONAL',
+        ...(stackVertically
+          ? {
+              'elk.portConstraints': 'FIXED_POS',
+              'elk.nodeSize.constraints': '[MINIMUM_SIZE]',
+              'elk.nodeSize.minimum': `(${groupWidth},${singleColumnHeight})`,
+            }
+          : { 'elk.portConstraints': 'FIXED_SIDE' }),
+        'elk.padding': '[top=30,left=16,bottom=16,right=16]',
+        'elk.spacing.nodeNode': '18',
+        'elk.layered.spacing.nodeNodeBetweenLayers': '18',
+        'elk.layered.nodePlacement.strategy':
+          members.length >= DENSE_LAYOUT_NODE_THRESHOLD
+            ? 'BRANDES_KOEPF'
+            : nodePlacement,
+        ...(members.length >= DENSE_LAYOUT_NODE_THRESHOLD
+          ? { 'elk.layered.thoroughness': '1' }
+          : {}),
+      },
+    }]
+  })
+  const children: ElkNode[] = [
+    ...nodeChildren.filter((child) => !groupedMemberIds.has(Number(child.id))),
+    ...groupChildren,
+  ]
+
   const pinId = (
     map: Map<number, Map<string, number>>,
     id: number,
@@ -794,21 +1012,33 @@ export function toElkGraph(
     prefix: 'i' | 'o',
   ): string => (map.get(id)?.has(pin) ? `${id}#${prefix}:${pin}` : String(id))
 
-  const edges: ElkExtendedEdge[] = input.edges.map((e, i) => ({
-    id: `e${i}`,
-    sources: [
-      regIds.has(e.from)
-        ? `${e.from}#out`
-        : pinId(pins.outgoingIndex, e.from, e.fromPort, 'o'),
-    ],
-    targets: [
-      regIds.has(e.to)
-        ? e.control
-          ? `${e.to}#control:${e.toPort}`
-          : `${e.to}#in`
-        : pinId(pins.incomingIndex, e.to, e.toPort, 'i'),
-    ],
-  }))
+  const edges: ElkExtendedEdge[] = input.edges.flatMap((e, i) => {
+    const fromGroupId = groupIdByMember.get(e.from)
+    const toGroupId = groupIdByMember.get(e.to)
+    // Internal member nets are routed inside the compound after layout; an
+    // ELK edge between the compound's own proxy ports becomes a large exterior
+    // self-loop and contributes no useful placement information.
+    if (fromGroupId != null && fromGroupId === toGroupId) return []
+    return [{
+          id: `e${i}`,
+          sources: [
+            fromGroupId != null
+              ? `group:${fromGroupId}#out`
+              : regIds.has(e.from)
+              ? `${e.from}#out`
+              : pinId(pins.outgoingIndex, e.from, e.fromPort, 'o'),
+          ],
+          targets: [
+            toGroupId != null
+              ? `group:${toGroupId}#in`
+              : regIds.has(e.to)
+              ? e.control
+                ? `${e.to}#control:${e.toPort}`
+                : `${e.to}#in`
+              : pinId(pins.incomingIndex, e.to, e.toPort, 'i'),
+          ],
+        }]
+  })
   const edgeDensity = input.edges.length / Math.max(1, input.nodes.length)
   const useDenseFastPath =
     nodePlacement === 'BRANDES_KOEPF' &&
@@ -826,6 +1056,14 @@ export function toElkGraph(
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
+      // Expanded quotient groups are real compound nodes. ELK lays out their
+      // physical members together and routes surrounding nets around the
+      // compound boundary instead of through an after-the-fact SVG rectangle.
+      // Leave this unset for ordinary flat graphs: INCLUDE_CHILDREN disables
+      // ELK's compact packing of large disconnected views.
+      ...(groupChildren.length > 0
+        ? { 'elk.hierarchyHandling': 'INCLUDE_CHILDREN' }
+        : {}),
       // Keep ordinary views in one coordinate system so FIRST_SEPARATE/LEFT and
       // LAST_SEPARATE/RIGHT are global boundaries. Let ELK pack highly
       // disconnected views independently instead of stacking hundreds of
@@ -876,24 +1114,75 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   const byId = new Map(input.nodes.map((node) => [node.id, node]))
   const pins = collectPinCatalog(input.edges)
 
-  const nodes: LayoutGeometry['nodes'] = (root.children ?? []).map((c) => {
-    const id = Number(c.id)
-    const node = byId.get(id)!
-    const fallback = dimensionsForPins(
-      node,
-      pins.incoming.get(id)?.length ?? 0,
-      pins.outgoing.get(id)?.length ?? 0,
-    )
-    return {
-      id,
-      x: c.x ?? 0,
-      y: c.y ?? 0,
-      width: c.width ?? fallback.width,
-      height: c.height ?? fallback.height,
+  const nodes: LayoutGeometry['nodes'] = []
+  const groups: LaidOutGroup[] = []
+  const visitChildren = (
+    parent: ElkNode,
+    parentX: number,
+    parentY: number,
+  ) => {
+    for (const child of parent.children ?? []) {
+      const x = parentX + (child.x ?? 0)
+      const y = parentY + (child.y ?? 0)
+      const groupMatch = /^group:(-?\d+)$/.exec(child.id)
+      if (groupMatch) {
+        groups.push({
+          id: Number(groupMatch[1]),
+          x,
+          y,
+          width: child.width ?? 0,
+          height: child.height ?? 0,
+        })
+        visitChildren(child, x, y)
+        continue
+      }
+      const id = Number(child.id)
+      const node = byId.get(id)
+      if (!node) continue
+      const fallback = dimensionsForPins(
+        node,
+        pins.incoming.get(id)?.length ?? 0,
+        pins.outgoing.get(id)?.length ?? 0,
+      )
+      nodes.push({
+        id,
+        x,
+        y,
+        width: child.width ?? fallback.width,
+        height: child.height ?? fallback.height,
+      })
+      visitChildren(child, x, y)
     }
-  })
+  }
+  visitChildren(root, 0, 0)
 
   const laidOutById = new Map(nodes.map((node) => [node.id, node]))
+  // ELK can pack disconnected members in an arbitrary in-layer order even
+  // when their model-order hints are identical. Reassign the already allocated
+  // vertical slots to the canonical member order before deriving pin routes.
+  // This changes neither the compound bounds nor surrounding node placement.
+  for (const group of input.groups ?? []) {
+    const members = group.members.flatMap((member) => {
+      const node = laidOutById.get(member)
+      return node ? [node] : []
+    })
+    if (
+      members.length === 0 ||
+      !shouldStackExpandedGroup(group, members)
+    ) continue
+    let memberY = Math.min(...members.map((member) => member.y))
+    members.forEach((member) => {
+      member.y = memberY
+      memberY += member.height + EXPANDED_GROUP_NODE_SPACING
+    })
+  }
+
+  const groupById = new Map(groups.map((group) => [group.id, group]))
+  const groupIdByMember = new Map(
+    (input.groups ?? []).flatMap((group) =>
+      group.members.map((member) => [member, group.id] as const),
+    ),
+  )
   const rootEdges = (root.edges ?? []) as ElkExtendedEdge[]
   const routedByInputIndex = new Map<number, ElkExtendedEdge>()
   for (const edge of rootEdges) {
@@ -928,32 +1217,212 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       y: laidOut.y + Math.min(laidOut.height, REG_BODY_HEIGHT) * registerYFraction,
     }
   }
+  const compoundRouteById = new Map<number, {
+    frame: LaidOutGroup
+    topRailY: number
+    bottomRailY: number
+    accessByMember: Map<number, { leftRailX: number; rightRailX: number }>
+  }>()
+  for (const group of input.groups ?? []) {
+    const frame = groupById.get(group.id)
+    if (!frame) continue
+    const members = group.members.flatMap((member) => {
+      const laidOut = laidOutById.get(member)
+      return laidOut ? [laidOut] : []
+    })
+    if (members.length === 0) continue
+    const columnCount = expandedGroupColumnCount(group, members)
+    const columns = Array.from({ length: columnCount }, () => ({
+      left: Number.POSITIVE_INFINITY,
+      right: Number.NEGATIVE_INFINITY,
+    }))
+    members.forEach((member, index) => {
+      const column = columns[index % columnCount]
+      column.left = Math.min(column.left, member.x)
+      column.right = Math.max(column.right, member.x + member.width)
+    })
+    const frameLeftRail = frame.x + 8
+    const frameRightRail = frame.x + frame.width - 8
+    const accessByMember = new Map(
+      members.map((member, index) => {
+        const column = columns[index % columnCount]
+        return [
+          member.id,
+          {
+            leftRailX: Math.max(frameLeftRail, column.left - 8),
+            rightRailX: Math.min(frameRightRail, column.right + 8),
+          },
+        ] as const
+      }),
+    )
+    compoundRouteById.set(group.id, {
+      frame,
+      topRailY: frame.y + 25,
+      bottomRailY: frame.y + frame.height - 8,
+      accessByMember,
+    })
+  }
+  const perimeterRailY = (
+    startY: number,
+    endY: number,
+    route: NonNullable<ReturnType<typeof compoundRouteById.get>>,
+  ) =>
+    Math.abs(startY - route.topRailY) + Math.abs(endY - route.topRailY) <=
+        Math.abs(startY - route.bottomRailY) +
+          Math.abs(endY - route.bottomRailY)
+      ? route.topRailY
+      : route.bottomRailY
+  const memberToBoundary = (
+    memberId: number,
+    start: Point,
+    boundary: Point,
+    route: NonNullable<ReturnType<typeof compoundRouteById.get>>,
+  ): Point[] => {
+    const access = route.accessByMember.get(memberId)
+    if (!access) return [start, boundary]
+    const railY = perimeterRailY(start.y, boundary.y, route)
+    return compactRoute([
+      start,
+      { x: access.rightRailX, y: start.y },
+      { x: access.rightRailX, y: railY },
+      { x: boundary.x, y: railY },
+      boundary,
+    ])
+  }
+  const boundaryToMember = (
+    boundary: Point,
+    memberId: number,
+    end: Point,
+    route: NonNullable<ReturnType<typeof compoundRouteById.get>>,
+  ): Point[] => {
+    const access = route.accessByMember.get(memberId)
+    if (!access) return [boundary, end]
+    const railY = perimeterRailY(boundary.y, end.y, route)
+    return compactRoute([
+      boundary,
+      { x: boundary.x, y: railY },
+      { x: access.leftRailX, y: railY },
+      { x: access.leftRailX, y: end.y },
+      end,
+    ])
+  }
   const edges: LayoutGeometry['edges'] = input.edges.map((edge, inputIndex) => {
     const routed = routedByInputIndex.get(inputIndex)
     const points: Point[] = []
     const section = routed?.sections?.[0]
+    const fromGroupId = groupIdByMember.get(edge.from)
+    const toGroupId = groupIdByMember.get(edge.to)
+    const fromRoute =
+      fromGroupId == null ? null : compoundRouteById.get(fromGroupId)
+    const toRoute =
+      toGroupId == null ? null : compoundRouteById.get(toGroupId)
     if (section) {
-      points.push(section.startPoint)
-      if (section.bendPoints) points.push(...section.bendPoints)
-      points.push(section.endPoint)
+      const routedPoints = [
+        section.startPoint,
+        ...(section.bendPoints ?? []),
+        section.endPoint,
+      ]
+      if (fromRoute) {
+        const start = fallbackPoint(edge.from, true, edge)
+        points.push(...memberToBoundary(
+          edge.from,
+          start,
+          section.startPoint,
+          fromRoute,
+        ).slice(0, -1))
+      }
+      points.push(...routedPoints)
+      if (toRoute) {
+        const end = fallbackPoint(edge.to, false, edge)
+        points.push(...boundaryToMember(
+          section.endPoint,
+          edge.to,
+          end,
+          toRoute,
+        ).slice(1))
+      }
     } else {
       // Preserve the structural edge even if ELK omits a routed section. This
       // is especially important for grouped register D inputs: without the
       // fallback the driver cone and register render as disconnected islands.
-      points.push(
-        fallbackPoint(edge.from, true, edge),
-        fallbackPoint(edge.to, false, edge),
-      )
+      const start = fallbackPoint(edge.from, true, edge)
+      const end = fallbackPoint(edge.to, false, edge)
+      if (!fromRoute && toRoute) {
+        const boundary = {
+          x: toRoute.frame.x,
+          y: toRoute.frame.y + toRoute.frame.height / 2,
+        }
+        const entryX = boundary.x - 8
+        points.push(
+          start,
+          { x: entryX, y: start.y },
+          { x: entryX, y: boundary.y },
+          ...boundaryToMember(boundary, edge.to, end, toRoute),
+        )
+      } else if (fromRoute && !toRoute) {
+        const boundary = {
+          x: fromRoute.frame.x + fromRoute.frame.width,
+          y: fromRoute.frame.y + fromRoute.frame.height / 2,
+        }
+        const exitX = boundary.x + 8
+        points.push(
+          ...memberToBoundary(edge.from, start, boundary, fromRoute),
+          { x: exitX, y: boundary.y },
+          { x: exitX, y: end.y },
+          end,
+        )
+      } else if (
+        fromRoute &&
+        toRoute &&
+        fromGroupId === toGroupId
+      ) {
+        const sourceAccess = fromRoute.accessByMember.get(edge.from)
+        const targetAccess = toRoute.accessByMember.get(edge.to)
+        const railY = perimeterRailY(start.y, end.y, fromRoute)
+        points.push(
+          start,
+          ...(sourceAccess
+            ? [
+                { x: sourceAccess.rightRailX, y: start.y },
+                { x: sourceAccess.rightRailX, y: railY },
+              ]
+            : []),
+          ...(targetAccess
+            ? [
+                { x: targetAccess.leftRailX, y: railY },
+                { x: targetAccess.leftRailX, y: end.y },
+              ]
+            : []),
+          end,
+        )
+      } else if (fromRoute && toRoute) {
+        const fromBoundary = {
+          x: fromRoute.frame.x + fromRoute.frame.width,
+          y: fromRoute.frame.y + fromRoute.frame.height / 2,
+        }
+        const toBoundary = {
+          x: toRoute.frame.x,
+          y: toRoute.frame.y + toRoute.frame.height / 2,
+        }
+        points.push(
+          ...memberToBoundary(edge.from, start, fromBoundary, fromRoute),
+          ...localEdgePoints(fromBoundary, toBoundary).slice(1),
+          ...boundaryToMember(toBoundary, edge.to, end, toRoute).slice(1),
+        )
+      } else {
+        points.push(start, end)
+      }
     }
     return {
       inputIndex,
-      points,
+      points: compactRoute(points),
     }
   })
 
   return {
     nodes,
     edges,
+    ...(groups.length > 0 ? { groups } : {}),
     width: root.width ?? 0,
     height: root.height ?? 0,
   }
@@ -972,6 +1441,7 @@ export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): La
       if (!edge) throw new Error(`layout returned unknown edge ${inputIndex}`)
       return { from: edge.from, to: edge.to, points, edge }
     }),
+    ...(geometry.groups ? { groups: geometry.groups } : {}),
     width: geometry.width,
     height: geometry.height,
   }
@@ -1766,10 +2236,11 @@ export function placementForLayout(sub: Subgraph): NodePlacement {
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
+  expandedGroups: ExpandedGroupLayout[] = [],
 ): Promise<LaidOutGraph> {
   assertRenderableSubgraph(sub)
   if (signal?.aborted) throw abortError()
-  const input = prepareLayoutInput(sub)
+  const input = prepareLayoutInput(sub, expandedGroups)
   const placement = placementForLayout(sub)
   const cacheKey = layoutGeometryKey(input, placement)
   const cached = cachedLayoutGeometry(cacheKey)

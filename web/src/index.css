@@ -2284,24 +2284,36 @@ th.sortable:hover {
   cursor: inherit;
 }
 .g-expanded-group-boundary {
-  fill: color-mix(in srgb, var(--accent) 3%, transparent);
-  stroke: color-mix(in srgb, var(--accent) 72%, var(--border));
-  stroke-width: 1.25;
-  stroke-dasharray: 5 4;
+  fill: color-mix(in srgb, var(--accent) 4%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 62%, transparent);
+  stroke-dasharray: 10 10;
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
 .g-expanded-group-label {
-  fill: var(--text-faint);
+  fill: var(--text);
   font-family: var(--mono);
   font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.9;
   pointer-events: none;
 }
 .g-group-toggle {
   cursor: pointer;
   outline: none;
-  opacity: 0.52;
+  opacity: 0;
   transition: opacity 120ms ease;
+}
+.g-group-toggle.component-active {
+  opacity: 0.84;
+}
+.g-group-toggle.component-active path {
+  stroke: var(--accent);
+  filter:
+    drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 90%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 40%, transparent));
 }
 .g-group-toggle .g-group-toggle-hit {
   fill: transparent;
@@ -2310,9 +2322,9 @@ th.sortable:hover {
 }
 .g-group-toggle path {
   fill: none;
-  stroke: var(--text-muted);
+  stroke: var(--text-dim);
   stroke-linecap: round;
-  stroke-width: 1.1;
+  stroke-width: 1.2;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
@@ -2323,6 +2335,9 @@ th.sortable:hover {
 .g-group-toggle:hover path,
 .g-group-toggle:focus-visible path {
   stroke: var(--accent);
+  filter:
+    drop-shadow(0 0 3px color-mix(in srgb, var(--accent) 90%, transparent))
+    drop-shadow(0 0 9px color-mix(in srgb, var(--accent) 40%, transparent));
 }
 .g-node-details {
   pointer-events: none;
