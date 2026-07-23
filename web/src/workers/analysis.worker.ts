@@ -18,6 +18,7 @@ export type AnalysisMethod =
   | 'paths'
   | 'cone'
   | 'netlist'
+  | 'expandGroup'
   | 'fanout'
   | 'sourceMap'
   | 'sourceBits'
@@ -80,6 +81,8 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
       return parse(active.cone_json(JSON.stringify(payload ?? {})))
     case 'netlist':
       return parse(active.netlist_json(JSON.stringify(payload ?? {})))
+    case 'expandGroup':
+      return parse(active.expand_group_json(JSON.stringify(payload ?? {})))
     case 'fanout':
       return parse(active.fanout_json(typeof payload === 'number' ? payload : undefined))
     case 'sourceMap':

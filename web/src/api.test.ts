@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const engine = vi.hoisted(() => ({
   localCone: vi.fn(),
+  localExpandGroup: vi.fn(),
   localEndpoints: vi.fn(),
   localFanout: vi.fn(),
   localNetlist: vi.fn().mockResolvedValue({ nodes: [], edges: [], truncated: false }),

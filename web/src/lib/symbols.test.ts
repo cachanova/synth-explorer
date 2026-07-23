@@ -4,6 +4,7 @@ import {
   arithGlyph,
   boxBadge,
   bubbleAt,
+  controlCaption,
   controlLabel,
   controlDriverIds,
   controlsFor,
@@ -32,6 +33,7 @@ describe('symbolKind', () => {
     ['$_XOR_', 'xor'],
     ['$_XNOR_', 'xnor'],
     ['$_NOT_', 'not'],
+    ['$logic_not', 'not'],
     ['$_BUF_', 'buf'],
     ['$mux', 'mux'],
     ['$_MUX16_', 'mux'],
@@ -59,6 +61,8 @@ describe('symbolKind', () => {
     expect(symbolKind(cell('TRELLIS_COMB'))).toBe('lut')
     expect(symbolKind(cell('SB_GB'))).toBe('buf')
     expect(symbolKind(cell('$add'))).toBe('arith')
+    expect(symbolKind(cell('$reduce_bool'))).toBe('arith')
+    expect(arithGlyph('$reduce_bool')).toBe('≥1')
     expect(symbolKind(cell('$mem_v2'))).toBe('memory')
     expect(symbolKind(cell('RAM32M'))).toBe('memory')
     expect(symbolKind(cell('RAMB36E2'))).toBe('memory')
@@ -193,6 +197,7 @@ describe('operator and control labels', () => {
     expect(controlsFor(n)).toEqual(n.controls)
     expect(controlLabel(n.controls[0])).toBe('CLK sys_clk')
     expect(controlLabel(n.controls[1])).toBe('RST rst_n')
+    expect(controlCaption(n.controls[1])).toBe('⚠ RST rst_n')
   })
 
   it('labels compact grouped controls and preserves every represented driver', () => {

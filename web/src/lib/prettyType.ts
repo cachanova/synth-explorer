@@ -17,6 +17,24 @@ const GATE_DISPLAY: Record<string, string> = {
   ORNOT: 'OR-NOT',
 }
 
+function parameterizedModuleName(cellType: string): string | null {
+  if (!cellType.startsWith('$paramod')) return null
+  const encoded = cellType.slice('$paramod'.length)
+  if (encoded.startsWith('$')) {
+    const separator = encoded.indexOf('\\')
+    return separator >= 0 && separator + 1 < encoded.length
+      ? encoded.slice(separator + 1)
+      : null
+  }
+  if (!encoded.startsWith('\\')) return null
+  const parameterSeparator = encoded.indexOf('\\', 1)
+  const moduleName = encoded.slice(
+    1,
+    parameterSeparator < 0 ? encoded.length : parameterSeparator,
+  )
+  return moduleName || null
+}
+
 /**
  * Decode a yosys hard-cell FF/latch type ("$_SDFF_PP0_" style) given its
  * family ("SDFF") and flag chars ("PP0"). Returns null for non-FF families.
@@ -104,6 +122,8 @@ export function displayCellType(
   params?: Record<string, string>,
 ): string {
   if (!cellType) return '?'
+  const parameterizedModule = parameterizedModuleName(cellType)
+  if (parameterizedModule) return parameterizedModule
   // Vendor primitives (LUT4, FDRE, SB_LUT4, CARRY4, OBUF, TRELLIS_FF, ...)
   // pass through unchanged.
   if (!cellType.startsWith('$')) return cellType

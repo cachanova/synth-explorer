@@ -62,6 +62,12 @@ export interface Subgraph {
   truncated: boolean // hit max_nodes/max_depth; UI must say so
 }
 
+export interface GroupExpansion {
+  graph: Subgraph
+  /** Raw physical node ids belonging to the expanded canonical group. */
+  members: number[]
+}
+
 export type SourceSelectionStatus =
   | 'mapped'
   | 'mapping_incomplete'

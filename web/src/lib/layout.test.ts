@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
-import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
+import {
+  MAX_GRAPH_EDGES,
+  MAX_GROUP_EXPANSION_RENDER_NODES,
+} from './graphLimits'
 import {
   clearLayoutGeometryCache,
   controlRoleForPin,
@@ -581,10 +584,10 @@ describe('schematic layout sizing', () => {
     expect(graph.children?.[0]).not.toHaveProperty('y')
   })
 
-  it('enforces the 2000-node renderer cap before starting ELK', async () => {
-    expect(MAX_GRAPH_RENDER_NODES).toBe(2000)
+  it('enforces the bounded group-expansion renderer cap before starting ELK', async () => {
+    expect(MAX_GROUP_EXPANSION_RENDER_NODES).toBe(4096)
     const oversized: Subgraph = {
-      nodes: Array.from({ length: MAX_GRAPH_RENDER_NODES + 1 }, (_, index) =>
+      nodes: Array.from({ length: MAX_GROUP_EXPANSION_RENDER_NODES + 1 }, (_, index) =>
         node(index, '$_AND_'),
       ),
       edges: [],
@@ -1101,6 +1104,21 @@ describe('viewport transforms', () => {
       x: 20,
       y: 60,
       k: 0.7,
+    })
+  })
+
+  it('fits graph content inside overlay-safe viewport insets', () => {
+    expect(
+      fitViewportToContent(1000, 600, 800, 400, 40, 1.5, {
+        top: 40,
+        right: 280,
+        bottom: 30,
+        left: 0,
+      }),
+    ).toEqual({
+      x: 20,
+      y: 135,
+      k: 0.85,
     })
   })
 

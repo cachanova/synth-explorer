@@ -1143,7 +1143,7 @@ impl SourceProvenanceIndex {
         if fallback_start < 1
             || fallback_end < fallback_start
             || caret_column < fallback_start
-            || caret_column > fallback_end
+            || caret_column > fallback_end.saturating_add(1)
         {
             return selection;
         }
@@ -1155,7 +1155,7 @@ impl SourceProvenanceIndex {
             .candidates(selection.start_line, selection.end_line)
             .iter()
             .filter(|span| {
-                span.recovered()
+                span.facts().is_some()
                     && span.coordinates.start_line == selection.start_line
                     && span.coordinates.end_line == selection.end_line
                     && span.coordinates.start_column.is_some()

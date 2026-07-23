@@ -4,9 +4,12 @@
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
 import type { ControlRole, GraphEdge, GraphNode, Subgraph } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
-import { MAX_GRAPH_EDGES, MAX_GRAPH_RENDER_NODES } from './graphLimits'
+import {
+  MAX_GRAPH_EDGES,
+  MAX_GROUP_EXPANSION_RENDER_NODES,
+} from './graphLimits'
 import { groupBadgeText, nodeLabel, nodeSublabel } from './prettyType'
-import { controlLabel, controlsFor, symbolKind } from './symbols'
+import { controlCaption, controlsFor, symbolKind } from './symbols'
 
 export interface Point {
   x: number
@@ -143,6 +146,13 @@ export interface ViewportTransform {
   k: number
 }
 
+export interface ViewportInsets {
+  top?: number
+  right?: number
+  bottom?: number
+  left?: number
+}
+
 const MIN_VIEWPORT_SCALE = 0.08
 const MAX_VIEWPORT_SCALE = 4
 
@@ -219,12 +229,21 @@ export function fitViewportToContent(
   contentHeight: number,
   padding = 40,
   maxScale = 1.5,
+  insets: ViewportInsets = {},
 ): ViewportTransform | null {
+  const inset = (value: number | undefined) =>
+    Number.isFinite(value) && (value ?? 0) > 0 ? (value ?? 0) : 0
+  const top = inset(insets.top)
+  const right = inset(insets.right)
+  const bottom = inset(insets.bottom)
+  const left = inset(insets.left)
+  const availableWidth = viewportWidth - left - right
+  const availableHeight = viewportHeight - top - bottom
   if (
     !Number.isFinite(viewportWidth) ||
     !Number.isFinite(viewportHeight) ||
-    viewportWidth <= padding ||
-    viewportHeight <= padding
+    availableWidth <= padding ||
+    availableHeight <= padding
   ) {
     return null
   }
@@ -234,15 +253,15 @@ export function fitViewportToContent(
   const height =
     Number.isFinite(contentHeight) && contentHeight > 0 ? contentHeight : 1
   const scale = Math.min(
-    (viewportWidth - padding) / width,
-    (viewportHeight - padding) / height,
+    (availableWidth - padding) / width,
+    (availableHeight - padding) / height,
     maxScale,
   )
   if (!(scale > 0) || !Number.isFinite(scale)) return null
 
   return {
-    x: (viewportWidth - width * scale) / 2,
-    y: (viewportHeight - height * scale) / 2,
+    x: left + (availableWidth - width * scale) / 2,
+    y: top + (availableHeight - height * scale) / 2,
     k: scale,
   }
 }
@@ -303,7 +322,7 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
   let height = base.height
   if (controls.length > 0) {
     const controlWidth = controls.reduce(
-      (max, control) => Math.max(max, controlLabel(control).length * 6.2 + PAD_X),
+      (max, control) => Math.max(max, controlCaption(control).length * 6.2 + PAD_X),
       0,
     )
     width = Math.max(width, Math.round(controlWidth))
@@ -642,7 +661,7 @@ export function toElkGraph(
 }
 
 function assertRenderableSubgraph(sub: Subgraph): void {
-  if (sub.nodes.length > MAX_GRAPH_RENDER_NODES) {
+  if (sub.nodes.length > MAX_GROUP_EXPANSION_RENDER_NODES) {
     throw new Error(
       `cone too large (${sub.nodes.length} nodes) — reduce depth or pick a narrower signal`,
     )

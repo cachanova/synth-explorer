@@ -51,6 +51,11 @@ export function controlLabel(control: ControlRef): string {
   return `${prefix}${polarity} ${shortNetName(control.net_name)}`
 }
 
+/** The exact caption rendered in the compact control row. */
+export function controlCaption(control: ControlRef): string {
+  return `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
+}
+
 /** Every real driver represented by a compact grouped-control row. */
 export function controlDriverIds(control: ControlRef): number[] {
   return control.driver_ids && control.driver_ids.length > 0
@@ -141,6 +146,7 @@ const ARITH_GLYPHS: Record<string, string> = {
   SHIFTX: '≫',
   REDUCE_AND: '&',
   REDUCE_OR: '≥1',
+  REDUCE_BOOL: '≥1',
   REDUCE_XOR: '=1',
 }
 
@@ -218,6 +224,7 @@ export function symbolKind(
       return 'xnor'
     case 'NOT':
     case 'INV':
+    case 'LOGIC_NOT':
       return 'not'
     case 'BUF':
     case 'SB_GB':

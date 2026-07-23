@@ -2243,6 +2243,17 @@ th.sortable:hover {
   fill: var(--text);
   pointer-events: none;
 }
+.g-overview-label {
+  display: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  fill: var(--text);
+  pointer-events: none;
+}
+.g-viewport[data-detail-level='overview'] .g-overview-label {
+  display: inline;
+}
 .g-node-name {
   font-family: var(--mono);
   font-size: 9.5px;
@@ -2265,6 +2276,43 @@ th.sortable:hover {
 }
 .g-node-body.noninteractive {
   cursor: inherit;
+}
+.g-expanded-group-boundary {
+  fill: color-mix(in srgb, var(--accent) 3%, transparent);
+  stroke: color-mix(in srgb, var(--accent) 72%, var(--border));
+  stroke-width: 1.25;
+  stroke-dasharray: 5 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.g-expanded-group-label {
+  fill: var(--text-faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  pointer-events: none;
+}
+.g-group-toggle {
+  cursor: pointer;
+  outline: none;
+}
+.g-group-toggle circle {
+  fill: var(--bg-2);
+  stroke: var(--accent);
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+}
+.g-group-toggle path {
+  fill: none;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.g-group-toggle:hover circle,
+.g-group-toggle:focus-visible circle {
+  fill: color-mix(in srgb, var(--accent) 18%, var(--bg-2));
+  filter: drop-shadow(0 0 2px var(--accent));
 }
 .g-node-details {
   pointer-events: none;

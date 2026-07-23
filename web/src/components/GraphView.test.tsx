@@ -69,7 +69,7 @@ describe('GraphView LUT labels', () => {
 
     expect(markup).toContain('g-symbol-carry')
     expect(markup).toContain('stroke="var(--green)"')
-    expect(markup).toContain('color-mix(in srgb, var(--green) 10%, transparent)')
+    expect(markup).toContain('color-mix(in srgb, var(--green) 10%, var(--bg-2))')
     expect(markup).toContain('>CARRY<')
   })
 
@@ -690,7 +690,7 @@ describe('GraphView LUT labels', () => {
     )
 
     expect(markup).not.toContain(`>${longName}</text>`)
-    expect(markup).toContain('with_stages.shift_da…')
+    expect(markup).toContain('with_stages.shift…')
   })
 
   it('exposes one roving node tab stop regardless of graph size', () => {
@@ -797,6 +797,8 @@ describe('GraphView LUT labels', () => {
     expect(overviewMarkup.match(/class="g-node-body/g)).toHaveLength(3)
     expect(overviewMarkup.match(/data-node-tooltip="FDRE — node-/g)).toHaveLength(3)
     expect(overviewMarkup).not.toContain('<title>')
+    expect(overviewMarkup.match(/class="g-overview-label"/g)).toHaveLength(3)
+    expect(overviewMarkup).toContain('>FDRE</text>')
     expect(overviewMarkup).not.toContain('class="g-node-label g-reg-name"')
     expect(overviewMarkup).not.toContain('class="g-symbol-detail"')
     expect(overviewMarkup).not.toContain('class="g-symbol-stack"')
@@ -808,6 +810,121 @@ describe('GraphView LUT labels', () => {
     expect(selectedMarkup.match(/class="g-symbol-detail"/g)).toHaveLength(1)
     expect(selectedMarkup.match(/class="g-reg-pins"/g)).toHaveLength(1)
     expect(selectedMarkup.match(/class="g-control-labels"/g)).toHaveLength(1)
+  })
+})
+
+describe('GraphView group expansion controls', () => {
+  it('shows a small plus on a collapsed group', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 100,
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 58,
+            node: {
+              id: 100,
+              kind: 'cell',
+              name: 'memory [16×16]',
+              cell_type: 'RAM32M',
+              members: [1, 2, 3, 4],
+              member_count: 4,
+              width: 4,
+            },
+          }],
+          edges: [],
+          width: 120,
+          height: 98,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive
+        onSelect={() => undefined}
+        onExpandGroup={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('data-group-action="expand"')
+    expect(markup).toContain('aria-label="Expand group memory [16×16]"')
+  })
+
+  it('shows the plus for a singleton physical group', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 100,
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 58,
+            node: {
+              id: 100,
+              kind: 'cell',
+              name: 'memory [16×16]',
+              cell_type: 'SB_RAM40_4K',
+              members: [1],
+              member_count: 1,
+              width: 1,
+            },
+          }],
+          edges: [],
+          width: 120,
+          height: 98,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive
+        onSelect={() => undefined}
+        onExpandGroup={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('data-group-action="expand"')
+  })
+
+  it('keeps a dashed labeled boundary and minus around expanded members', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [1, 2].map((id, index) => ({
+            id,
+            x: 20 + index * 120,
+            y: 30,
+            width: 90,
+            height: 58,
+            node: { id, kind: 'cell' as const, name: `lane${id}`, cell_type: 'RAM32M' },
+          })),
+          edges: [],
+          width: 240,
+          height: 110,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive
+        onSelect={() => undefined}
+        expandedGroups={[{ id: 100, label: 'memory [16×16]', members: [1, 2] }]}
+        onCollapseGroup={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('class="g-expanded-group-boundary"')
+    expect(markup).toContain('data-group-action="collapse"')
+    expect(markup).toContain('aria-label="Collapse group memory [16×16]"')
   })
 })
 

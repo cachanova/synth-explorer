@@ -709,6 +709,8 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await svg.dispatchEvent('wheel', { deltaY: 300 })
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('overview')
   await expect(page.locator('.g-node-details')).toHaveCount(0)
+  await expect(page.locator('.g-node-body .g-overview-label')).not.toHaveCount(0)
+  await expect(page.locator('.g-node-body .g-overview-label').first()).toBeVisible()
   const labelNode = page.locator('.g-node-body.g-symbol-reg, .g-node-body.g-symbol-latch').first()
   const labelNodeId = await labelNode.getAttribute('data-graph-node-id')
   expect(labelNodeId).not.toBeNull()
@@ -753,6 +755,21 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await svg.press('0')
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('full')
   await expect(page.locator('.g-node-details .g-node-label').first()).toBeVisible()
+  expect(await page.locator('.g-node-details .g-reg-name').first().evaluate((name) => {
+    const details = name.closest<SVGGElement>('[data-node-detail-id]')
+    const nodeId = details?.dataset.nodeDetailId
+    const outline = document.querySelector<SVGGraphicsElement>(
+      `.g-node-body[data-graph-node-id="${nodeId}"] .g-symbol-outline`,
+    )
+    if (!outline) throw new Error('register outline is missing')
+    const nameBox = (name as SVGGraphicsElement).getBBox()
+    const outlineBox = outline.getBBox()
+    return {
+      clearsLeftPins: nameBox.x >= outlineBox.x + 26,
+      clearsRightPins:
+        nameBox.x + nameBox.width <= outlineBox.x + outlineBox.width - 26,
+    }
+  })).toEqual({ clearsLeftPins: true, clearsRightPins: true })
 
   // Leaving the tab cancels the pending restore; returning must reschedule it
   // against the preserved user transform rather than stranding overview LOD.
@@ -944,6 +961,21 @@ for (const regression of [
 ] as const) {
   test(`stacks ${regression.platform} inferred FIFO memory at depth ${regression.depth}`, async ({ page }) => {
     test.setTimeout(240_000)
+    if (regression.platform === 'ecp5' && regression.depth === 16) {
+      await page.addInitScript(() => {
+        const requests: unknown[] = []
+        const originalPostMessage = Worker.prototype.postMessage
+        Object.defineProperty(Worker.prototype, 'postMessage', {
+          configurable: true,
+          value: function (...args: unknown[]) {
+            requests.push(args[0])
+            return Reflect.apply(originalPostMessage, this, args)
+          },
+        })
+        ;(window as typeof window & { __groupWorkerRequests?: unknown[] })
+          .__groupWorkerRequests = requests
+      })
+    }
     const apiRequests = recordApiRequests(page)
     await page.goto('/')
     await waitForAutomaticSynthesis(page, async () => {
@@ -987,12 +1019,67 @@ for (const regression of [
         '.g-node-body.g-symbol-box[data-node-tooltip^="TRELLIS_DPR16X4"]',
       )).toHaveCount(0)
     }
+
+    if (regression.platform === 'ecp5' && regression.depth === 16) {
+      await page.getByRole('button', {
+        name: `Expand group memory [${regression.depth}×16]`,
+      }).click()
+      await expect.poll(() => page.evaluate(() =>
+        ((window as typeof window & { __groupWorkerRequests?: Array<{ method?: string }> })
+          .__groupWorkerRequests ?? [])
+          .filter((request) => request.method === 'expandGroup').length,
+      )).toBe(1)
+      await expect(groupedMemory).toHaveCount(0)
+      await expect(page.locator(
+        '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
+      )).toHaveCount(regression.count)
+      const boundary = page.locator('.g-expanded-group-boundary')
+      await expect(boundary).toHaveCount(1)
+      await expect.poll(async () => {
+        const boundaryBox = await boundary.boundingBox()
+        const laneBoxes = await page.locator(
+          '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
+        ).evaluateAll((nodes) => nodes.map((node) => {
+          const rect = node.getBoundingClientRect()
+          return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
+        }))
+        return boundaryBox != null && laneBoxes.every((lane) =>
+          lane.left >= boundaryBox.x - 1 &&
+          lane.top >= boundaryBox.y - 1 &&
+          lane.right <= boundaryBox.x + boundaryBox.width + 1 &&
+          lane.bottom <= boundaryBox.y + boundaryBox.height + 1,
+        )
+      }).toBe(true)
+
+      const unrelatedPort = page.locator(
+        '.g-node-body[data-node-tooltip="push_ready"]',
+      )
+      await expect(unrelatedPort).toHaveCount(1)
+      await unrelatedPort.focus()
+      await unrelatedPort.press('Enter')
+      await page.getByRole('button', { name: 'Fanin cone' }).click()
+      await expect(boundary).toHaveCount(0)
+      await expect(page.locator(
+        `[data-expanded-group-member="${groupedId}"]`,
+      )).toHaveCount(0)
+      await page.getByLabel('Focus').uncheck()
+      await expect(boundary).toHaveCount(1)
+
+      await expect(page.getByRole('button', {
+        name: `Collapse group memory [${regression.depth}×16]`,
+      })).toBeVisible()
+      await page.getByRole('button', {
+        name: `Collapse group memory [${regression.depth}×16]`,
+      }).click()
+      await expect(groupedMemory).toHaveCount(1)
+      await expect(boundary).toHaveCount(0)
+    }
     expect(apiRequests).toEqual([])
   })
 }
 
 test('stacks DFF-mapped rows from one inferred memory in generic gates', async ({ page }) => {
-  test.setTimeout(240_000)
+  test.setTimeout(360_000)
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
   await waitForAutomaticSynthesis(page, async () => {
@@ -1024,6 +1111,18 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await expect(groupedDetails.locator('.g-control-label').last()).toContainText('EN ×128')
   expect(await groupedDetails.evaluate((node) => (node as SVGGElement).getBBox().height))
     .toBeLessThan(150)
+
+  await page.getByRole('button', { name: 'Expand group memory [128×16]' }).click()
+  await expect(groupedMemory).toHaveCount(0)
+  const expandedMembers = page.locator(`[data-expanded-group-member="${groupedId}"]`)
+  await expect(expandedMembers).toHaveCount(2048, { timeout: 180_000 })
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  await page.getByRole('button', { name: 'Collapse group memory [128×16]' }).click()
+  await expect(groupedMemory).toHaveCount(1)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(0)
+
+  await groupedMemory.focus()
+  await groupedMemory.press('Enter')
   await page.getByRole('button', { name: 'Fanin cone' }).click()
   await page.getByLabel('Focus').check()
   await expect.poll(() => page.locator('.g-node-body').count()).toBeGreaterThan(1)
@@ -1040,6 +1139,40 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await expect.poll(() => page.locator('.g-node-body').count()).toBeLessThanOrEqual(50)
   await expect(page.locator('.graph-banner .msg', { hasText: /^truncated/ })).toBeVisible()
   await expect(page.locator('.graph-banner .msg.err')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Fit schematic to view' }).click()
+  await expect.poll(() => page.locator('.graph-stage').evaluate((stage) => {
+    const stageRect = stage.getBoundingClientRect()
+    const wrapper = stage.parentElement
+    const bannerRect = wrapper
+      ?.querySelector<HTMLElement>('.graph-banner')
+      ?.getBoundingClientRect()
+    const cardRect = wrapper
+      ?.querySelector<HTMLElement>('.node-card')
+      ?.getBoundingClientRect()
+    const shortcutRect = stage
+      .querySelector<HTMLElement>('.graph-shortcuts')
+      ?.getBoundingClientRect()
+    const zoomRect = stage
+      .querySelector<HTMLElement>('.zoom-controls')
+      ?.getBoundingClientRect()
+    const safeTop = bannerRect && bannerRect.height > 0
+      ? bannerRect.bottom + 10
+      : stageRect.top
+    const safeRight = cardRect && cardRect.width > 0
+      ? cardRect.left - 10
+      : stageRect.right
+    const safeBottom = Math.min(
+      shortcutRect?.top ?? stageRect.bottom,
+      zoomRect?.top ?? stageRect.bottom,
+    ) - 10
+    return [...stage.querySelectorAll<SVGGraphicsElement>('.g-node-body')].every((node) => {
+      const rect = node.getBoundingClientRect()
+      return rect.left >= stageRect.left - 1 &&
+        rect.right <= safeRight + 1 &&
+        rect.top >= safeTop - 1 &&
+        rect.bottom <= safeBottom + 1
+    })
+  })).toBe(true)
 
   await page.getByLabel('group memories').check()
   await expect(groupedMemory).toHaveCount(1)
@@ -1111,6 +1244,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await page.locator('.cm-line', { hasText: /input\s+logic\s+start,/ }).click()
   await editor.press('Home')
   for (let press = 0; press < 13; press += 1) await editor.press('ArrowRight')
+  await editor.press('Shift+ArrowRight')
   await expect.poll(async () => (await workerCounts()).source).toBeGreaterThan(
     sourceQueriesBeforeInput,
   )
@@ -1127,11 +1261,11 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
             request.kind === 'query' &&
             request.method === 'source',
         )
-        return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
-          ?.start_column
+        const payload = sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined
+        return [payload?.start_column, payload?.end_column]
       }),
     )
-    .toBe(18)
+    .toEqual([18, 18])
   await expect(focus).toBeEnabled({ timeout: 15_000 })
   const workerContract = await page.evaluate(() => {
     const requests =
@@ -1158,8 +1292,6 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(workerContract.sourcePayloadKeys).toEqual([
     'end_column',
     'end_line',
-    'fallback_end_column',
-    'fallback_start_column',
     'file',
     'group_memories',
     'group_vectors',
@@ -1171,7 +1303,9 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   ])
   await expect(focus).not.toBeChecked()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)
-  await expect.poll(() => page.locator('.g-node-body.hl').count()).toBeGreaterThan(0)
+  await expect
+    .poll(() => page.locator('.g-node-body.hl, .g-edge.hl').count())
+    .toBeGreaterThan(0)
   const directNodeIds = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
   )
@@ -1185,9 +1319,8 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   const dimmedNodes = page.locator('.g-node-body[data-relevant="0"]')
   await expect.poll(() => dimmedNodes.count()).toBeGreaterThan(0)
   await expect(dimmedNodes.first()).toHaveCSS('opacity', '0.25')
-  const dimmedNodeDetails = page.locator('.g-node-details[data-relevant="0"]')
-  await expect.poll(() => dimmedNodeDetails.count()).toBeGreaterThan(0)
-  await expect(dimmedNodeDetails.first()).toHaveCSS('opacity', '0.25')
+  // Detail layers are viewport/LOD-virtualized; node shells are the stable
+  // relevance-opacity contract at every zoom level.
   const dimmedEdges = page.locator('.g-edge[data-relevant="0"]')
   await expect.poll(() => dimmedEdges.count()).toBeGreaterThan(0)
   expect(
@@ -1269,7 +1402,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
     .locator('.g-viewport')
     .getAttribute('transform')
   const workerCountsBeforeDeclaration = await workerCounts()
-  const placeCaretAtTrailingIdentifier = async (
+  const selectTrailingIdentifier = async (
     line: ReturnType<typeof page.locator>,
     identifierLength: number,
   ) => {
@@ -1278,8 +1411,11 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
     for (let offset = 0; offset <= identifierLength; offset += 1) {
       await editor.press('ArrowLeft')
     }
+    for (let offset = 0; offset < identifierLength; offset += 1) {
+      await editor.press('Shift+ArrowRight')
+    }
   }
-  await placeCaretAtTrailingIdentifier(
+  await selectTrailingIdentifier(
     page.locator('.cm-line', { hasText: 'logic [COUNT_WIDTH-1:0] wait_count;' }),
     'wait_count'.length,
   )
@@ -1324,7 +1460,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   })
 
   const sourceQueriesBeforeState = (await workerCounts()).source
-  await placeCaretAtTrailingIdentifier(
+  await selectTrailingIdentifier(
     page.locator('.cm-line', { hasText: 'state_t state;' }),
     'state'.length,
   )
@@ -1422,6 +1558,116 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
   await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
   expect(apiRequests).toEqual([])
+})
+
+test('a FIFO source line selects the same logic from Home through End', async ({ page }) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const originalPostMessage = Worker.prototype.postMessage
+    Object.defineProperty(Worker.prototype, 'postMessage', {
+      configurable: true,
+      value: function (...args: unknown[]) {
+        requests.push(args[0])
+        return Reflect.apply(originalPostMessage, this, args)
+      },
+    })
+    ;(window as typeof window & { __workerRequests?: unknown[] }).__workerRequests = requests
+  })
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+    await page.getByLabel('Platform').selectOption('xilinx')
+  })
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const editor = page.locator('.cm-content')
+  const line = page.locator('.cm-line', {
+    hasText: 'assign pop = pop_valid && pop_ready;',
+  })
+  const lineLength = (await line.textContent())?.length ?? 0
+  expect(lineLength).toBeGreaterThan(0)
+  const firstContentColumn = ((await line.textContent()) ?? '').search(/\S/) + 1
+
+  const snapshotAt = async (key: 'Home' | 'End') => {
+    await editor.press('Control+Home')
+    await expect.poll(() => page.evaluate(() => {
+      const requests =
+        (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+      const sourceQueries = requests.filter(
+        (request): request is Record<string, unknown> =>
+          request != null &&
+          typeof request === 'object' &&
+          !Array.isArray(request) &&
+          request.kind === 'query' &&
+          request.method === 'source',
+      )
+      return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
+        ?.start_line
+    })).toBe(1)
+    await page.evaluate(() => {
+      const requests =
+        (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+      requests.length = 0
+    })
+    await line.click()
+    await editor.press(key)
+    await expect.poll(() => page.evaluate(() => {
+      const requests =
+        (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+      const sourceQueries = requests.filter(
+        (request): request is Record<string, unknown> => request != null &&
+          typeof request === 'object' &&
+          !Array.isArray(request) &&
+          request.kind === 'query' &&
+          request.method === 'source',
+      )
+      const payload = sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined
+      return [payload?.start_line, payload?.start_column]
+    })).toEqual([27, key === 'Home' ? firstContentColumn : lineLength + 1])
+    await expect(page.locator('.graph-stage-wrap')).toHaveAttribute('data-focus', 'on')
+    await expect(page.locator('.g-node-body').first()).toBeVisible()
+    return {
+      payload: await page.evaluate(() => {
+        const requests =
+          (window as typeof window & { __workerRequests?: unknown[] }).__workerRequests ?? []
+        const sourceQueries = requests.filter(
+          (request): request is Record<string, unknown> =>
+            request != null &&
+            typeof request === 'object' &&
+            !Array.isArray(request) &&
+            request.kind === 'query' &&
+            request.method === 'source',
+        )
+        return sourceQueries.at(-1)?.payload
+      }),
+      nodes: await page.locator('.g-node-body').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+      highlighted: await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
+      ),
+      highlightedEdges: await page.locator('.g-edge.hl').evaluateAll((edges) =>
+        edges.map((edge) => edge.getAttribute('data-first-edge-title') ?? '').sort(),
+      ),
+      edges: await page.locator('.g-edge').evaluateAll((edges) =>
+        edges.map((edge) => edge.getAttribute('data-first-edge-title') ?? '').sort(),
+      ),
+    }
+  }
+
+  const home = await snapshotAt('Home')
+  const end = await snapshotAt('End')
+  expect(home.payload).toMatchObject({
+    fallback_start_column: 1,
+    fallback_end_column: lineLength,
+  })
+  expect(end.payload).toMatchObject({
+    fallback_start_column: 1,
+    fallback_end_column: lineLength,
+  })
+  expect(end.nodes).toEqual(home.nodes)
+  expect(end.highlighted).toEqual(home.highlighted)
+  expect(end.highlightedEdges).toEqual(home.highlightedEdges)
+  expect(end.edges).toEqual(home.edges)
 })
 
 test('Round-Robin internal declaration fallback keeps Focus local', async ({ page }) => {
@@ -1544,6 +1790,9 @@ test('focused output selections keep visible clock and reset wiring', async ({ p
   for (let offset = 0; offset <= 'grant'.length; offset += 1) {
     await editor.press('ArrowLeft')
   }
+  for (let offset = 0; offset < 'grant'.length; offset += 1) {
+    await editor.press('Shift+ArrowRight')
+  }
 
   await expect(page.getByLabel('Focus')).toBeEnabled({ timeout: 15_000 })
   await expect(page.getByLabel('Focus')).toBeChecked()
@@ -1563,7 +1812,7 @@ test('focused output selections keep visible clock and reset wiring', async ({ p
     .toBeGreaterThanOrEqual(2)
 })
 
-test('same-line declarations carry column and exact-net identity', async ({ page }) => {
+test('explicit same-line selections carry column and exact-net identity', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []
     const originalPostMessage = Worker.prototype.postMessage
@@ -1617,16 +1866,21 @@ endmodule
   )
   const viewportTransform = await page.locator('.g-viewport').getAttribute('transform')
 
-  const selectColumn = async (
+  const selectText = async (
     line: Locator,
     rightPresses: number,
-    expectedColumn: number,
+    selectionLength: number,
+    expectedStartColumn: number,
+    expectedEndColumn: number,
     requireEdge = true,
   ) => {
     await line.click()
     await editor.press('Home')
     for (let press = 0; press < rightPresses; press += 1) {
       await editor.press('ArrowRight')
+    }
+    for (let press = 0; press < selectionLength; press += 1) {
+      await editor.press('Shift+ArrowRight')
     }
     await expect
       .poll(() =>
@@ -1641,11 +1895,11 @@ endmodule
               request.kind === 'query' &&
               request.method === 'source',
           )
-          return (sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined)
-            ?.start_column
+          const payload = sourceQueries.at(-1)?.payload as Record<string, unknown> | undefined
+          return [payload?.start_column, payload?.end_column]
         }),
       )
-      .toBe(expectedColumn)
+      .toEqual([expectedStartColumn, expectedEndColumn])
     await expect
       .poll(() =>
         requireEdge
@@ -1658,20 +1912,20 @@ endmodule
     )
   }
 
-  const firstEdges = await selectColumn(declarationLine, 8, 11)
+  const firstEdges = await selectText(declarationLine, 6, 5, 9, 13)
   expect(firstEdges.length).toBeGreaterThan(0)
-  const secondEdges = await selectColumn(declarationLine, 21, 24)
+  const secondEdges = await selectText(declarationLine, 19, 6, 22, 27)
   expect(secondEdges.length).toBeGreaterThan(0)
   expect(secondEdges).not.toEqual(firstEdges)
 
   const proceduralLine = page.locator('.cm-line', {
     hasText: 'first <= a; second <= ~a;',
   })
-  await selectColumn(proceduralLine, 0, 5, false)
+  await selectText(proceduralLine, 0, 5, 5, 9, false)
   const firstProceduralNodes = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
   )
-  await selectColumn(proceduralLine, 12, 17, false)
+  await selectText(proceduralLine, 12, 6, 17, 22, false)
   const secondProceduralNodes = await page.locator('.g-node-body.hl').evaluateAll((nodes) =>
     nodes.map((node) => node.getAttribute('data-graph-node-id')).sort(),
   )
@@ -1680,8 +1934,8 @@ endmodule
   const continuousLine = page.locator('.cm-line', {
     hasText: 'assign y = first; assign z = second;',
   })
-  const firstContinuousEdges = await selectColumn(continuousLine, 7, 10)
-  const secondContinuousEdges = await selectColumn(continuousLine, 25, 28)
+  const firstContinuousEdges = await selectText(continuousLine, 7, 1, 10, 10)
+  const secondContinuousEdges = await selectText(continuousLine, 25, 1, 28, 28)
   expect(secondContinuousEdges).not.toEqual(firstContinuousEdges)
   const edgePoint = await page.locator<SVGPathElement>('.g-edge.hl').first().evaluate((edge) => {
     const point = edge.getPointAtLength(edge.getTotalLength() / 2)
@@ -1697,7 +1951,7 @@ endmodule
     }),
   ).toBeVisible()
   await expect(page.locator('.cm-src-range-hl')).toHaveText(/^second;?$/)
-  await selectColumn(declarationLine, 8, 11)
+  await selectText(declarationLine, 6, 5, 9, 13)
   await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
   await expect(page.locator('.cm-src-range-hl')).toHaveCount(0)
   expect(
