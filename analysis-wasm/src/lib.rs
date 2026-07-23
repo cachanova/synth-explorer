@@ -2,13 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
     ConeDir, ConeOptions, FullNetlistOptions, GroupExpansionOptions, MAX_GROUP_EXPANSION_NODES,
-    MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort, SourceSelectionOptions, SourceSelectionRange,
-    TimingEstimate,
+    MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort, SourceSelectionOptions, TimingEstimate,
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::grouping::{GroupPartition, GroupingProjection};
 use synth_explorer_analysis::netlist::{YosysNetlist, select_top};
+use synth_explorer_analysis::source::SourceSelectionRange;
 use wasm_bindgen::prelude::*;
 
 const MAX_PROJECTION_ROOTS: usize = MAX_SUBGRAPH_NODES / 2;

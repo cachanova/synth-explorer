@@ -8,6 +8,11 @@
 
 pub(crate) mod index;
 pub(crate) mod recover;
+pub mod types;
 
 pub(crate) use index::SourceProvenanceIndex;
 pub(crate) use recover::recover_source_provenance;
+pub use types::{
+    SourceBitRangesResponse, SourceMapResponse, SourceProbeDirection, SourceProbeHint,
+    SourceProbeHintKind, SourceRangeMapping, SourceSelectionRange,
+};

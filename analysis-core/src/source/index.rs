@@ -3,13 +3,16 @@
 use crate::analysis::{
     SOURCE_BIT_RANGE_RESPONSE_CAP, SOURCE_LINE_RESPONSE_CAP, SOURCE_LINE_RESPONSE_NODE_BUDGET,
     SOURCE_PROBE_TARGET_VISIT_CAP, SOURCE_RANGE_INDEX_CAP, SOURCE_RANGE_RESPONSE_CAP,
-    SOURCE_ROOT_COLLECTION_CAP, SOURCE_SPAN_INDEX_CAP, SourceBitRangesResponse, SourceMapResponse,
-    SourceProbeDirection, SourceProbeHintKind, SourceRangeMapping, SourceSelectionRange,
-    insert_src_lines, parse_src_span, source_columns_are_authoritative, source_coordinates_overlap,
+    SOURCE_ROOT_COLLECTION_CAP, SOURCE_SPAN_INDEX_CAP, insert_src_lines, parse_src_span,
+    source_columns_are_authoritative, source_coordinates_overlap,
 };
 use crate::graph::{Graph, NodeId};
 use crate::netlist::YosysNetlist;
 use crate::source::recover::SourceProvenance;
+use crate::source::types::{
+    SourceBitRangesResponse, SourceMapResponse, SourceProbeDirection, SourceProbeHintKind,
+    SourceRangeMapping, SourceSelectionRange,
+};
 use deepsize::DeepSizeOf;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
@@ -823,7 +826,7 @@ impl SourceProvenanceIndex {
     }
 
     #[cfg(test)]
-    pub(crate) fn set_test_hints(&mut self, hints: Vec<crate::analysis::SourceProbeHint>) {
+    pub(crate) fn set_test_hints(&mut self, hints: Vec<crate::source::types::SourceProbeHint>) {
         let mut builder = self.test_builder();
         for hint in hints {
             builder.add_hint(

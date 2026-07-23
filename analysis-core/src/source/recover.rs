@@ -2,11 +2,13 @@
 
 use crate::analysis::{
     ParsedSourceSpan, SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_RANGE_INDEX_CAP,
-    SOURCE_ROOT_COLLECTION_CAP, SourceProbeDirection, SourceProbeHint, SourceProbeHintKind,
-    SourceRangeMapping, parse_src_span,
+    SOURCE_ROOT_COLLECTION_CAP, parse_src_span,
 };
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::{PortDirection, YosysNetlist};
+use crate::source::types::{
+    SourceProbeDirection, SourceProbeHint, SourceProbeHintKind, SourceRangeMapping,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 const SOURCE_DECLARATION_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP / 2;
@@ -1938,10 +1940,11 @@ fn sanitize_verilog(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::{SourceSelectionOptions, SourceSelectionRange, SourceSelectionStatus};
+    use crate::analysis::{SourceSelectionOptions, SourceSelectionStatus};
     use crate::delay_model::DelayProfile;
     use crate::design::AnalysisDesign;
     use crate::netlist::{parse_str, parse_value, select_top};
+    use crate::source::types::SourceSelectionRange;
     use serde_json::json;
 
     fn statement_start_column(source: &str, line: usize, token: &str) -> usize {
