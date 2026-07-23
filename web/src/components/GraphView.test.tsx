@@ -3,6 +3,45 @@ import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
 describe('GraphView LUT labels', () => {
+  it('renders canonical input direction when visible topology is incomplete', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 1,
+                kind: 'port',
+                name: 'clk',
+                port_direction: 'input',
+              },
+            },
+          ],
+          edges: [],
+          width: 74,
+          height: 34,
+        }}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toMatch(
+      /data-node-tooltip="clk" class="g-node-body g-symbol-port-in/,
+    )
+  })
+
   it('renders hidden control-only boundary drivers as primary inputs', () => {
     const markup = renderToStaticMarkup(
       <GraphView
