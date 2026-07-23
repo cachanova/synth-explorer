@@ -592,25 +592,39 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await expect(page.locator('.g-pin-overlay')).toHaveCount(1)
   await svg.focus()
   await expect(page.locator('.g-pin-overlay')).toHaveCount(0)
+  const selectedWires = page.locator('.g-selected-edge-layer .g-edge.hl')
   await transientPinNode.focus()
   await transientPinNode.press('Enter')
   await expect(transientPinNode).toHaveClass(/selected/)
+  await expect.poll(() => selectedWires.count()).toBeGreaterThan(0)
   await transientPinNode.press('Escape')
   await expect(transientPinNode).not.toHaveClass(/selected/)
+  await expect(selectedWires).toHaveCount(0)
   await transientPinNode.press(' ')
   await expect(transientPinNode).toHaveClass(/selected/)
+  await expect.poll(() => selectedWires.count()).toBeGreaterThan(0)
   await transientPinNode.press('Escape')
   await expect(transientPinNode).not.toHaveClass(/selected/)
-  await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  await expect(selectedWires).toHaveCount(0)
+  const selectionLayoutRequests = await page.evaluate(
+    () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+  )
+  const nodeTransformsBeforeSelection = await page.locator('.g-node-body').evaluateAll(
+    (nodes) => nodes.map((node) => node.getAttribute('transform')),
+  )
   await transientPinNode.click()
   await expect(transientPinNode).toHaveClass(/selected/)
-  await expect
-    .poll(() =>
-      page.locator('.g-edge.hl').evaluateAll((paths) =>
-        paths.reduce((count, path) => count + Number(path.getAttribute('data-edge-count')), 0),
-      ),
-    )
-    .toBeGreaterThan(0)
+  await expect.poll(() => selectedWires.count()).toBeGreaterThan(0)
+  expect(
+    await page.evaluate(
+      () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests?.length ?? 0,
+    ),
+  ).toBe(selectionLayoutRequests)
+  expect(
+    await page.locator('.g-node-body').evaluateAll(
+      (nodes) => nodes.map((node) => node.getAttribute('transform')),
+    ),
+  ).toEqual(nodeTransformsBeforeSelection)
   const tooltipEdge = page.locator('.g-edge').first()
   const expectedEdgeTitle = await tooltipEdge.getAttribute('data-first-edge-title')
   expect(expectedEdgeTitle).not.toBeNull()
@@ -645,7 +659,7 @@ test('renders and resizes the browser-produced graph without resetting user zoom
   await expect(page.getByRole('tooltip')).toHaveCount(0)
   await svg.dispatchEvent('click')
   await expect(transientPinNode).not.toHaveClass(/selected/)
-  await expect(page.locator('.g-edge.hl')).toHaveCount(0)
+  await expect(selectedWires).toHaveCount(0)
   await page.mouse.move(0, 0)
   await svg.focus()
   await expect(page.locator('.g-pin-overlay')).toHaveCount(0)
