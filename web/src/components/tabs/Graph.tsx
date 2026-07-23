@@ -23,7 +23,6 @@ import {
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
-  layoutExpandedGroupInPlace,
   layoutSubgraph,
   prewarmLayoutWorker,
   shouldRefitProjection,
@@ -37,7 +36,7 @@ import { controlDriverIds, controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
-import { GraphView } from '../GraphView'
+import { GraphView, type ExpandedGroupFrame } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
 interface FullSubgraph {
@@ -72,6 +71,7 @@ interface DisplayedGraph {
   projectionKey: string
   subgraph: Subgraph
   graph: LaidOutGraph
+  expandedGroups: ExpandedGroupFrame[]
 }
 
 interface FullGraphCacheEntry {
@@ -578,43 +578,31 @@ export function Graph({ active }: { active: boolean }) {
     [activeExpandedIds, groupExpansions, projectedNodeIds],
   )
 
-  // Keep the neighborhood-expanded base stable while a quotient group opens
-  // or closes. Its object identity is the cache key for local group layout.
-  const groupedBase = useMemo(() => {
+  // The selected projection is merged only with expansions that belong to it.
+  // Expanding or collapsing a quotient group creates a new graph object and
+  // deliberately sends the complete projection through layout again.
+  const combined = useMemo(() => {
     if (!projectedSubgraph) return null
     const expanded = mergeSubgraphs(
       projectedSubgraph,
       activeExpansion?.graph ?? null,
       MAX_GRAPH_RENDER_NODES,
     )
-    return {
-      graph: expanded.graph,
-      expansionDroppedNodes:
-        (activeExpansion?.droppedNodes ?? 0) + expanded.droppedNodes,
-      expansionDroppedEdges:
-        (activeExpansion?.droppedEdges ?? 0) + expanded.droppedEdges,
-    }
-  }, [activeExpansion, projectedSubgraph])
-
-  // The selected projection is merged only with group expansions that belong
-  // to it. Applying a group does not rebuild the stable grouped base above.
-  const combined = useMemo(() => {
-    if (!groupedBase) return null
     const applied = applyGroupExpansions(
-      groupedBase.graph,
+      expanded.graph,
       activeGroupExpansions,
       MAX_GROUP_EXPANSION_RENDER_NODES,
     )
     return {
       graph: applied.graph,
-      groupedBaseGraph: groupedBase.graph,
       expandedGroups: applied.groups,
-      expansionDroppedNodes: groupedBase.expansionDroppedNodes,
-      expansionDroppedEdges: groupedBase.expansionDroppedEdges,
+      expansionDroppedNodes:
+        (activeExpansion?.droppedNodes ?? 0) + expanded.droppedNodes,
+      expansionDroppedEdges:
+        (activeExpansion?.droppedEdges ?? 0) + expanded.droppedEdges,
     }
-  }, [activeGroupExpansions, groupedBase])
+  }, [activeExpansion, activeGroupExpansions, projectedSubgraph])
   const combinedSubgraph = combined?.graph ?? null
-  const groupedBaseSubgraph = combined?.groupedBaseGraph ?? null
   const visibleExpandedGroups = useMemo(
     () => combined?.expandedGroups ?? [],
     [combined],
@@ -630,6 +618,7 @@ export function Graph({ active }: { active: boolean }) {
       : fullSubgraph?.designId
     if (ownerDesignId == null) return
     const toLayout = combinedSubgraph
+    const expandedGroupsForLayout = visibleExpandedGroups
     const previousDisplay = displayedGraphRef.current
     const sameDesign = previousDisplay?.designId === ownerDesignId
     const sameProjection =
@@ -649,6 +638,7 @@ export function Graph({ active }: { active: boolean }) {
         projectionKey,
         subgraph: toLayout,
         graph: cachedLayout,
+        expandedGroups: expandedGroupsForLayout,
       }
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
@@ -656,46 +646,12 @@ export function Graph({ active }: { active: boolean }) {
       if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
       return
     }
-    const expandedGroup = visibleExpandedGroups[0]
-    const groupedBaseLayout = groupedBaseSubgraph
-      ? layoutCache.current.get(groupedBaseSubgraph)
-      : null
-    // The graph currently on screen is the strongest source of truth for the
-    // quotient node's geometry. The WeakMap cache can miss when an equivalent
-    // grouped projection was rebuilt, but that must not turn a local expansion
-    // into a fresh whole-graph layout: ELK may then place unrelated logic
-    // between the members and inside the dashed group frame.
-    const displayedBaseLayout =
-      expandedGroup &&
-      sameProjection &&
-      previousDisplay?.graph.nodes.some((node) => node.id === expandedGroup.id)
-        ? previousDisplay.graph
-        : null
-    const localBaseLayout = displayedBaseLayout ?? groupedBaseLayout
-    const inPlaceLayout = expandedGroup && localBaseLayout
-      ? layoutExpandedGroupInPlace(toLayout, localBaseLayout, expandedGroup)
-      : null
-    if (inPlaceLayout) {
-      const nextDisplay = {
-        designId: ownerDesignId,
-        projectionKey,
-        subgraph: toLayout,
-        graph: inPlaceLayout,
-      }
-      layoutCache.current.set(toLayout, inPlaceLayout)
-      displayedGraphRef.current = nextDisplay
-      setDisplayedGraph(nextDisplay)
-      laidOutSubgraph.current = toLayout
-      setLayingOut(false)
-      if (shouldRefit(inPlaceLayout)) setFitNonce((n) => n + 1)
-      return
-    }
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    // Fall back to a fresh ELK layout when there is no compatible grouped-base
-    // layout to compose locally (for example, a newly focused projection).
-    // GraphView preserves a retained node's viewport position across that fallback.
+    // Every expanded projection gets a fresh ELK layout. GraphView separately
+    // preserves a retained node's viewport position so the rerender does not
+    // feel like an unrelated navigation jump.
     layoutSubgraph(toLayout, controller.signal)
       .then((g) => {
         if (cancelled) return
@@ -704,6 +660,7 @@ export function Graph({ active }: { active: boolean }) {
           projectionKey,
           subgraph: toLayout,
           graph: g,
+          expandedGroups: expandedGroupsForLayout,
         }
         layoutCache.current.set(toLayout, g)
         displayedGraphRef.current = nextDisplay
@@ -728,7 +685,6 @@ export function Graph({ active }: { active: boolean }) {
     combinedSubgraph,
     focusActive,
     fullSubgraph?.designId,
-    groupedBaseSubgraph,
     projectionKey,
     relevantSubgraph?.designId,
     visibleExpandedGroups,
@@ -748,7 +704,10 @@ export function Graph({ active }: { active: boolean }) {
   const displayedProjectionCurrent =
     projectionKey != null && displayedGraph?.projectionKey === projectionKey
   const graphInteractive =
-    analysisState === 'current' && displayedDesignCurrent && displayedProjectionCurrent
+    analysisState === 'current' &&
+    displayedDesignCurrent &&
+    displayedProjectionCurrent &&
+    displayedGraph?.subgraph === combinedSubgraph
   const relevantIds = useMemo(
     () =>
       new Set<number>(
@@ -977,7 +936,7 @@ export function Graph({ active }: { active: boolean }) {
             onEdgeSelect={onEdgeSelect}
             onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
-            expandedGroups={visibleExpandedGroups}
+            expandedGroups={visibleDisplayedGraph?.expandedGroups ?? []}
             onExpandGroup={graphInteractive ? onExpandGroup : undefined}
             onCollapseGroup={graphInteractive ? onCollapseGroup : undefined}
             active={active}

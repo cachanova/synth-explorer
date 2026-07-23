@@ -16,6 +16,7 @@ import {
   fitViewportToContent,
   isRegisterControlPin,
   panViewport,
+  preserveGroupTransitionAnchor,
   preserveViewportAnchor,
   REG_BODY_HEIGHT,
   REG_CLOCK_Y_FRAC,
@@ -847,6 +848,7 @@ function GroupExpansionControls({
   expandedGroups,
   relevantIds,
   interactive,
+  controlsRef,
   onExpand,
   onCollapse,
 }: {
@@ -854,6 +856,7 @@ function GroupExpansionControls({
   expandedGroups: ExpandedGroupFrame[]
   relevantIds: Set<number>
   interactive: boolean
+  controlsRef: (element: SVGGElement | null) => void
   onExpand?: (node: GraphNode) => void
   onCollapse?: (groupId: number) => void
 }) {
@@ -869,12 +872,46 @@ function GroupExpansionControls({
     const right = Math.max(...members.map((node) => node.x + node.width)) + 12
     const bottom = Math.max(...members.map((node) => node.y + node.height)) + 12
     const hasComponent = members.some((member) => member.node.kind !== 'port')
-    return [{ group, left, top, right, bottom, hasComponent }]
+    const memberIds = new Set(members.map((member) => member.id))
+    const enclosingFrameContainsUnrelatedNode = graph.nodes.some((node) =>
+      !memberIds.has(node.id) &&
+      node.x < right &&
+      node.x + node.width > left &&
+      node.y < bottom &&
+      node.y + node.height > top
+    )
+    const orderedMembers = [...members].sort((a, b) => a.y - b.y || a.x - b.x)
+    const boundaries = enclosingFrameContainsUnrelatedNode
+      ? orderedMembers.map((member, index) => ({
+          left: member.x - 8,
+          top: member.y - (index === 0 ? 20 : 8),
+          right: member.x + member.width + 8,
+          bottom: member.y + member.height + 8,
+        }))
+      : [{ left, top, right, bottom }]
+    const topMember = orderedMembers[0]
+    return [{
+      group,
+      boundaries,
+      labelX: boundaries[0].left + 8,
+      labelY: boundaries[0].top + 12,
+      toggleX: topMember.x + topMember.width,
+      toggleY: topMember.y,
+      hasComponent,
+    }]
   })
 
   return (
-    <g className="g-group-controls">
-      {frames.map(({ group, left, top, right, bottom, hasComponent }) => (
+    <g ref={controlsRef} className="g-group-controls">
+      {frames.map(({
+        group,
+        boundaries,
+        labelX,
+        labelY,
+        toggleX,
+        toggleY,
+        hasComponent,
+      }) => (
         <g
           key={`expanded-${group.id}`}
           data-expanded-group-id={group.id}
@@ -882,15 +919,26 @@ function GroupExpansionControls({
             relevantIds.size === 0 || group.members.some((id) => relevantIds.has(id)) ? 1 : 0
           }
         >
-          <rect
-            className="g-expanded-group-boundary"
-            x={left}
-            y={top}
-            width={right - left}
-            height={bottom - top}
-            rx={8}
-          />
-          <text className="g-expanded-group-label" x={left + 8} y={top + 12}>
+          {boundaries.length === 1 ? (
+            <rect
+              className="g-expanded-group-boundary"
+              x={boundaries[0].left}
+              y={boundaries[0].top}
+              width={boundaries[0].right - boundaries[0].left}
+              height={boundaries[0].bottom - boundaries[0].top}
+              rx={8}
+            />
+          ) : (
+            <path
+              className="g-expanded-group-boundary"
+              data-split-boundary="1"
+              d={boundaries.map((boundary) =>
+                `M ${boundary.left} ${boundary.top} `
+                  + `H ${boundary.right} V ${boundary.bottom} H ${boundary.left} Z`
+              ).join(' ')}
+            />
+          )}
+          <text className="g-expanded-group-label" x={labelX} y={labelY}>
             {truncate(group.label, 28)}
           </text>
           {onCollapse && hasComponent && (
@@ -901,7 +949,7 @@ function GroupExpansionControls({
               role="button"
               tabIndex={0}
               aria-label={`Collapse group ${group.label}`}
-              transform={`translate(${right - 10},${top + 10})`}
+              transform={`translate(${toggleX},${toggleY})`}
               onPointerDown={(event) => {
                 event.stopPropagation()
               }}
@@ -914,8 +962,11 @@ function GroupExpansionControls({
               }}
               onKeyDown={(event) => activateGroupControl(event, () => onCollapse(group.id))}
             >
-              <circle className="g-group-toggle-hit" r={10} />
-              <path d="M-2.5 0H2.5" />
+              <g className="g-group-toggle-glyph">
+                <circle className="g-group-toggle-hit" r={10} />
+                <path className="g-group-toggle-halo" d="M-4 0H4" />
+                <path className="g-group-toggle-mark" d="M-4 0H4" />
+              </g>
             </g>
           )}
         </g>
@@ -951,8 +1002,11 @@ function GroupExpansionControls({
             }}
             onKeyDown={(event) => activateGroupControl(event, () => onExpand(laidOutNode.node))}
           >
-            <circle className="g-group-toggle-hit" r={10} />
-            <path d="M-2.5 0H2.5M0 -2.5V2.5" />
+            <g className="g-group-toggle-glyph">
+              <circle className="g-group-toggle-hit" r={10} />
+              <path className="g-group-toggle-halo" d="M-4 0H4M0 -4V4" />
+              <path className="g-group-toggle-mark" d="M-4 0H4M0 -4V4" />
+            </g>
           </g>
         )
       })}
@@ -2103,6 +2157,7 @@ export const GraphView = memo(function GraphView({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
+  const groupControlsRef = useRef<SVGGElement | null>(null)
   const hideEdgeTooltipRef = useRef<(() => void) | null>(null)
   const hideNodeTooltipRef = useRef<(() => void) | null>(null)
   const graphRef = useRef(graph)
@@ -2110,8 +2165,16 @@ export const GraphView = memo(function GraphView({
   const layoutHistory = useRef<{
     graph: LaidOutGraph | null
     fitNonce: number | null
-  }>({ graph: null, fitNonce: null })
+    expandedGroups: ExpandedGroupFrame[]
+  }>({ graph: null, fitNonce: null, expandedGroups: EMPTY_EXPANDED_GROUPS })
   const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
+  const setGroupControlsRef = useCallback((element: SVGGElement | null) => {
+    groupControlsRef.current = element
+    element?.style.setProperty(
+      '--graph-inverse-scale',
+      String(1 / transformRef.current.k),
+    )
+  }, [])
   const panState = useRef<PanState | null>(null)
   const pinchState = useRef<PinchState | null>(null)
   const suppressClick = useRef(false)
@@ -2276,8 +2339,15 @@ export const GraphView = memo(function GraphView({
   const applyTransform = useCallback((next: ViewportTransform) => {
     hideEdgeTooltipRef.current?.()
     hideNodeTooltipRef.current?.()
+    const scaleChanged = transformRef.current.k !== next.k
     transformRef.current = next
     viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
+    if (scaleChanged) {
+      groupControlsRef.current?.style.setProperty(
+        '--graph-inverse-scale',
+        String(1 / next.k),
+      )
+    }
 
     const current = detailLevel.current
     if (current == null) {
@@ -2542,16 +2612,22 @@ export const GraphView = memo(function GraphView({
       fit()
     } else if (previous.graph !== graph) {
       applyTransform(
-        preserveViewportAnchor(
+        preserveGroupTransitionAnchor(
           transformRef.current,
           previous.graph,
           graph,
-          [selectedId, rootId],
-        ),
+          previous.expandedGroups,
+          expandedGroups,
+        ) ?? preserveViewportAnchor(
+            transformRef.current,
+            previous.graph,
+            graph,
+            [selectedId, rootId],
+          ),
       )
     }
-    layoutHistory.current = { graph, fitNonce }
-  }, [applyTransform, fit, fitNonce, graph, rootId, selectedId])
+    layoutHistory.current = { graph, fitNonce, expandedGroups }
+  }, [applyTransform, expandedGroups, fit, fitNonce, graph, rootId, selectedId])
 
   useEffect(() => {
     if (!active) return
@@ -2959,6 +3035,7 @@ export const GraphView = memo(function GraphView({
             expandedGroups={expandedGroups}
             relevantIds={relevantIds}
             interactive={interactive}
+            controlsRef={setGroupControlsRef}
             onExpand={onExpandGroup}
             onCollapse={onCollapseGroup}
           />
