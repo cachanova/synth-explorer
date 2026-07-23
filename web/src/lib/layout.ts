@@ -976,8 +976,10 @@ export function layoutExpandedGroupInPlace(
   const incomingTrunks = base.edges.filter((edge) => edge.to === group.id)
   const outgoingTrunkByTarget = new Map<number, (typeof base.edges)[number]>()
   const outgoingTrunkByTargetPort = new Map<string, (typeof base.edges)[number]>()
+  const outgoingTrunkByPorts = new Map<string, (typeof base.edges)[number]>()
   const incomingTrunkBySource = new Map<number, (typeof base.edges)[number]>()
   const incomingTrunkBySourcePort = new Map<string, (typeof base.edges)[number]>()
+  const incomingTrunkByPorts = new Map<string, (typeof base.edges)[number]>()
   for (const trunk of outgoingTrunks) {
     if (!outgoingTrunkByTarget.has(trunk.to)) {
       outgoingTrunkByTarget.set(trunk.to, trunk)
@@ -985,6 +987,10 @@ export function layoutExpandedGroupInPlace(
     const key = `${trunk.to}|${trunk.edge.to_port}`
     if (!outgoingTrunkByTargetPort.has(key)) {
       outgoingTrunkByTargetPort.set(key, trunk)
+    }
+    const portKey = `${trunk.edge.from_port}|${key}`
+    if (!outgoingTrunkByPorts.has(portKey)) {
+      outgoingTrunkByPorts.set(portKey, trunk)
     }
   }
   for (const trunk of incomingTrunks) {
@@ -994,6 +1000,10 @@ export function layoutExpandedGroupInPlace(
     const key = `${trunk.from}|${trunk.edge.from_port}`
     if (!incomingTrunkBySourcePort.has(key)) {
       incomingTrunkBySourcePort.set(key, trunk)
+    }
+    const portKey = `${key}|${trunk.edge.to_port}`
+    if (!incomingTrunkByPorts.has(portKey)) {
+      incomingTrunkByPorts.set(portKey, trunk)
     }
   }
 
@@ -1048,6 +1058,7 @@ export function layoutExpandedGroupInPlace(
     const memberTo = memberIds.has(edge.to)
     if (memberFrom && !memberTo) {
       const trunk =
+        outgoingTrunkByPorts.get(`${edge.from_port}|${edge.to}|${edge.to_port}`) ??
         outgoingTrunkByTargetPort.get(`${edge.to}|${edge.to_port}`) ??
         outgoingTrunkByTarget.get(edge.to)
       if (trunk) {
@@ -1066,6 +1077,7 @@ export function layoutExpandedGroupInPlace(
     }
     if (!memberFrom && memberTo) {
       const trunk =
+        incomingTrunkByPorts.get(`${edge.from}|${edge.from_port}|${edge.to_port}`) ??
         incomingTrunkBySourcePort.get(`${edge.from}|${edge.from_port}`) ??
         incomingTrunkBySource.get(edge.from)
       if (trunk) {

@@ -274,11 +274,9 @@ describe('in-place group expansion layout', () => {
       member_count: 1,
     })
     const sourceA = node(9, '$_BUF_')
-    const sourceB = node(10, '$_BUF_')
     const base = {
       nodes: [
         { id: 9, x: 20, y: 70, width: 76, height: 52, node: sourceA },
-        { id: 10, x: 20, y: 170, width: 76, height: 52, node: sourceB },
         { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
       ],
       edges: [
@@ -296,11 +294,11 @@ describe('in-place group expansion layout', () => {
           },
         },
         {
-          from: 10,
+          from: 9,
           to: 100,
-          points: [{ x: 96, y: 196 }, { x: 200, y: 196 }, { x: 200, y: 152 }, { x: 260, y: 152 }],
+          points: [{ x: 96, y: 96 }, { x: 200, y: 96 }, { x: 200, y: 152 }, { x: 260, y: 152 }],
           edge: {
-            from: 10,
+            from: 9,
             to: 100,
             from_port: 'Y',
             to_port: 'A1',
@@ -313,7 +311,7 @@ describe('in-place group expansion layout', () => {
       height: 260,
     }
     const sub: Subgraph = {
-      nodes: [node(1, 'RAM64M'), sourceA, sourceB],
+      nodes: [node(1, 'RAM64M'), sourceA],
       edges: [
         {
           from: 9,
@@ -324,7 +322,7 @@ describe('in-place group expansion layout', () => {
           bits: [1],
         },
         {
-          from: 10,
+          from: 9,
           to: 1,
           from_port: 'Y',
           to_port: 'A1',
@@ -340,13 +338,17 @@ describe('in-place group expansion layout', () => {
       members: [1],
     })!
     const member = opened.nodes.find((entry) => entry.id === 1)!
-    const endpoints = opened.edges.map((edge) => edge.points.at(-1)!)
+    const address0 = opened.edges.find((edge) => edge.edge.to_port === 'A0')!
+    const address1 = opened.edges.find((edge) => edge.edge.to_port === 'A1')!
+    const endpoints = [address0.points.at(-1)!, address1.points.at(-1)!]
 
     expect(endpoints.map((point) => point.x)).toEqual([member.x, member.x])
     expect(endpoints[0].y).toBeLessThan(endpoints[1].y)
     expect(endpoints.every((point) =>
       point.y > member.y && point.y < member.y + member.height
     )).toBe(true)
+    expect(address0.points).toContainEqual(base.edges[0].points.at(-1))
+    expect(address1.points).toContainEqual(base.edges[1].points.at(-1))
   })
 
   it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
