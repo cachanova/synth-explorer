@@ -36,6 +36,7 @@ describe('applyGroupExpansions', () => {
       label: 'q[1:0]',
       members: [1, 2],
       graph: expansion,
+      boundary_trunks: [],
     }], 3)
 
     expect(result.graph.nodes.map((entry) => entry.id)).toEqual([1, 2, 9])
@@ -52,6 +53,7 @@ describe('applyGroupExpansions', () => {
       label: 'q[1:0]',
       members: [1, 2],
       graph: graph([node(1), node(2), node(9)]),
+      boundary_trunks: [],
     }], 3)
 
     expect(result).toEqual({ graph: focused, groups: [] })

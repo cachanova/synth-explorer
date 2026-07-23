@@ -919,6 +919,64 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.separateConnectedComponents']).toBe('false')
   })
 
+  it('preserves and canonically normalizes grouped boundary bundle metadata', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a[7:0]',
+          port_direction: 'input',
+          boundary_members: [
+            { member: 12, bit: 7 },
+            { member: 10, bit: 0 },
+            { member: 12, bit: 7 },
+          ],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[7:0]',
+          port_direction: 'output',
+          boundary_members: [
+            { member: 22, bit: 7 },
+            { member: 20, bit: 0 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'A',
+        net_name: 'a',
+        bits: [100, 107],
+        source_boundary_members: [
+          { member: 12, net_bits: [107, 106] },
+          { member: 10, net_bits: [101, 100] },
+          { member: 12, net_bits: [106] },
+        ],
+        target_boundary_members: [
+          { member: 22, net_bits: [107, 106] },
+          { member: 20, net_bits: [101, 100] },
+        ],
+      }],
+      truncated: true,
+    }
+
+    const input = prepareLayoutInput(sub)
+    expect(input.nodes[0].boundaryMembers).toEqual([
+      { member: 10, bit: 0 },
+      { member: 12, bit: 7 },
+    ])
+    expect(input.edges[0].sourceBoundaryMembers).toEqual([
+      { member: 10, net_bits: [100, 101] },
+      { member: 12, net_bits: [106, 107] },
+    ])
+    expect(input.edges[0].targetBoundaryMembers).toEqual([
+      { member: 20, net_bits: [100, 101] },
+      { member: 22, net_bits: [106, 107] },
+    ])
+  })
+
   it('lets ELK pack highly disconnected views instead of building one tall layer', () => {
     const input = prepareLayoutInput({
       nodes: Array.from(
@@ -1649,6 +1707,103 @@ describe('schematic layout sizing', () => {
       data: { id: instance.requests[1].id, ok: true, result: edgeGeometry },
     } as MessageEvent)
     await changedLayout
+    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('normalizes boundary metadata for cache identity and invalidates changed mappings', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const bundled = (): Subgraph => ({
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          port_direction: 'input',
+          boundary_members: [
+            { member: 11, bit: 1 },
+            { member: 10, bit: 0 },
+          ],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          port_direction: 'output',
+          boundary_members: [
+            { member: 21, bit: 1 },
+            { member: 20, bit: 0 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'A',
+        net_name: 'a',
+        bits: [100, 101],
+        source_boundary_members: [
+          { member: 11, net_bits: [101] },
+          { member: 10, net_bits: [100] },
+        ],
+        target_boundary_members: [
+          { member: 21, net_bits: [101] },
+          { member: 20, net_bits: [100] },
+        ],
+      }],
+      truncated: false,
+    })
+    const bundledGeometry = {
+      nodes: [
+        { id: 1, x: 0, y: 0, width: 62, height: 46 },
+        { id: 2, x: 128, y: 0, width: 62, height: 46 },
+      ],
+      edges: [{ inputIndex: 0, points: [{ x: 62, y: 23 }, { x: 128, y: 23 }] }],
+      width: 190,
+      height: 46,
+    }
+
+    const first = layoutSubgraph(bundled())
+    const instance = FakeWorker.instances[0]
+    instance.onmessage?.({
+      data: { id: instance.requests[0].id, ok: true, result: bundledGeometry },
+    } as MessageEvent)
+    await first
+    expect(instance.requests[0].input.nodes[0].boundaryMembers).toEqual([
+      { member: 10, bit: 0 },
+      { member: 11, bit: 1 },
+    ])
+
+    const equivalent = bundled()
+    equivalent.nodes[0].boundary_members = [
+      { member: 10, bit: 0 },
+      { member: 11, bit: 1 },
+      { member: 10, bit: 0 },
+    ]
+    equivalent.edges[0].source_boundary_members = [
+      { member: 10, net_bits: [100, 100] },
+      { member: 11, net_bits: [101] },
+    ]
+    equivalent.edges[0].target_boundary_members = [
+      { member: 20, net_bits: [100, 100] },
+      { member: 21, net_bits: [101] },
+    ]
+    await layoutSubgraph(equivalent)
+    expect(instance.requests).toHaveLength(1)
+
+    const changedNode = bundled()
+    changedNode.nodes[0].boundary_members![1].bit = 2
+    const changedNodeLayout = layoutSubgraph(changedNode)
+    expect(instance.requests).toHaveLength(2)
+    instance.onmessage?.({
+      data: { id: instance.requests[1].id, ok: true, result: bundledGeometry },
+    } as MessageEvent)
+    await changedNodeLayout
+
+    const changedEdge = bundled()
+    changedEdge.edges[0].target_boundary_members![1].net_bits = [102]
+    const changedEdgeLayout = layoutSubgraph(changedEdge)
+    expect(instance.requests).toHaveLength(3)
+    instance.onmessage?.({
+      data: { id: instance.requests[2].id, ok: true, result: bundledGeometry },
+    } as MessageEvent)
+    await changedEdgeLayout
     instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 

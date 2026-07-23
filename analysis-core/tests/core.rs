@@ -85,6 +85,34 @@ fn grouped_register_banks() -> (Graph, Analysis, GroupPartition) {
     (graph, analysis, partition)
 }
 
+fn grouped_boundary_aliases(width: u32) -> (Graph, Analysis, GroupPartition) {
+    let data_bits = (2..2 + width).collect::<Vec<_>>();
+    let scalar_bit = 2 + width;
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "a": { "direction": "input", "bits": data_bits },
+                "s": { "direction": "input", "bits": [scalar_bit] },
+                "t": { "direction": "output", "bits": [scalar_bit] },
+                "y": { "direction": "output", "bits": data_bits },
+                "z": { "direction": "output", "bits": data_bits }
+            },
+            "netnames": {
+                "a": { "bits": data_bits },
+                "s": { "bits": [scalar_bit] },
+                "y": { "bits": data_bits }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["boundary_aliases.sv".to_owned()]);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, Vec::new());
+    (graph, analysis, partition)
+}
+
 fn cone_options(max_nodes: usize) -> ConeOptions<'static> {
     ConeOptions {
         dir: ConeDir::Fanin,
@@ -143,6 +171,10 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
         assert_eq!(members.len(), 8);
         assert!(members.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(node.node.cell_type.as_deref(), Some("$_DFF_P_"));
+        assert!(
+            node.boundary_members.is_empty(),
+            "internal register vectors are not top-level boundary bundles"
+        );
     }
     let labels: Vec<&str> = banks.iter().map(|node| node.node.name.as_str()).collect();
     assert_eq!(labels, vec!["q[7:0]", "y[7:0]"]);
@@ -194,6 +226,90 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
             .count(),
         1
     );
+}
+
+#[test]
+fn grouped_boundary_metadata_preserves_order_fanout_and_direct_aliases() {
+    let width = 32;
+    let (graph, analysis, partition) = grouped_boundary_aliases(width);
+    let grouped = analysis.full_netlist(
+        &graph,
+        full_options(2000, false, true, false),
+        Some(GroupingProjection::all(&partition)),
+    );
+
+    let boundary = |name: &str| {
+        grouped
+            .nodes
+            .iter()
+            .find(|node| node.node.name == name)
+            .unwrap_or_else(|| panic!("missing grouped boundary {name}"))
+    };
+    let input = boundary("a[31:0]");
+    let output = boundary("y[31:0]");
+    let second_output = boundary("z[31:0]");
+    for node in [input, output, second_output] {
+        assert_eq!(node.boundary_members.len(), width as usize);
+        assert_eq!(
+            node.boundary_members
+                .iter()
+                .map(|entry| entry.bit)
+                .collect::<Vec<_>>(),
+            (0..width).collect::<Vec<_>>()
+        );
+        assert!(
+            node.boundary_members
+                .windows(2)
+                .all(|pair| { (pair[0].bit, pair[0].member) < (pair[1].bit, pair[1].member) })
+        );
+    }
+
+    let fanout_edges = grouped
+        .edges
+        .iter()
+        .filter(|edge| edge.from == input.node.id)
+        .collect::<Vec<_>>();
+    assert_eq!(fanout_edges.len(), 2);
+    for edge in fanout_edges {
+        assert_eq!(edge.source_boundary_members.len(), width as usize);
+        assert_eq!(edge.target_boundary_members.len(), width as usize);
+        for (slot, member) in edge.source_boundary_members.iter().enumerate() {
+            assert_eq!(member.member, input.boundary_members[slot].member);
+            assert_eq!(member.net_bits, vec![2 + slot as u32]);
+        }
+        let target = if edge.to == output.node.id {
+            output
+        } else {
+            assert_eq!(edge.to, second_output.node.id);
+            second_output
+        };
+        for (slot, member) in edge.target_boundary_members.iter().enumerate() {
+            assert_eq!(member.member, target.boundary_members[slot].member);
+            assert_eq!(member.net_bits, vec![2 + slot as u32]);
+        }
+    }
+
+    let scalar_nodes = grouped
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.node.name.as_str(), "s" | "t"))
+        .collect::<Vec<_>>();
+    assert_eq!(scalar_nodes.len(), 2);
+    assert!(
+        scalar_nodes
+            .iter()
+            .all(|node| node.boundary_members.is_empty())
+    );
+    let scalar_edge = grouped
+        .edges
+        .iter()
+        .find(|edge| {
+            scalar_nodes.iter().any(|node| node.node.id == edge.from)
+                && scalar_nodes.iter().any(|node| node.node.id == edge.to)
+        })
+        .expect("direct scalar alias edge");
+    assert!(scalar_edge.source_boundary_members.is_empty());
+    assert!(scalar_edge.target_boundary_members.is_empty());
 }
 
 #[test]
