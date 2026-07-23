@@ -6,12 +6,11 @@ use std::fs;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use synth_explorer_analysis::analysis::{
-    SourceSelectionOptions, SourceSelectionRange, SourceSelectionResult,
-};
+use synth_explorer_analysis::analysis::{SourceSelectionOptions, SourceSelectionResult};
 use synth_explorer_analysis::delay_model::DelayProfile;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::netlist::YosysNetlist;
+use synth_explorer_analysis::source::SourceSelectionRange;
 
 const DEFAULT_FIXTURES: &[&str] = &[
     "round_robin_arbiter:verilog",

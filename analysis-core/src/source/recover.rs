@@ -1,12 +1,12 @@
 //! Source-range recovery from provenance-preserving synthesis artifacts.
 
-use crate::analysis::{
-    ParsedSourceSpan, SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_RANGE_INDEX_CAP,
-    SOURCE_ROOT_COLLECTION_CAP, SourceProbeDirection, SourceProbeHint, SourceProbeHintKind,
-    SourceRangeMapping, parse_src_span,
-};
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::{PortDirection, YosysNetlist};
+use crate::source::coordinates::{ParsedSourceSpan, parse_src_span};
+use crate::source::{
+    SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_RANGE_INDEX_CAP, SOURCE_ROOT_COLLECTION_CAP,
+    SourceProbeDirection, SourceProbeHint, SourceProbeHintKind, SourceRangeMapping,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
 const SOURCE_DECLARATION_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP / 2;
@@ -1938,10 +1938,11 @@ fn sanitize_verilog(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::{SourceSelectionOptions, SourceSelectionRange, SourceSelectionStatus};
+    use crate::analysis::{SourceSelectionOptions, SourceSelectionStatus};
     use crate::delay_model::DelayProfile;
     use crate::design::AnalysisDesign;
     use crate::netlist::{parse_str, parse_value, select_top};
+    use crate::source::types::SourceSelectionRange;
     use serde_json::json;
 
     fn statement_start_column(source: &str, line: usize, token: &str) -> usize {
@@ -2892,11 +2893,13 @@ endmodule
 
     #[test]
     fn example_case_scans_cover_every_arm_and_the_full_always_block() {
-        let adder = scan_assignments(include_str!("../../web/src/data/examples/adder_chain.sv"));
+        let adder = scan_assignments(include_str!(
+            "../../../web/src/data/examples/adder_chain.sv"
+        ));
         assert!(adder.continuous.iter().any(|assignment| {
             assignment.start_line == 16 && assignment.lhs_identifiers == ["partial_sum"]
         }));
-        let fifo = scan_assignments(include_str!("../../web/src/data/examples/fifo_pipe.sv"));
+        let fifo = scan_assignments(include_str!("../../../web/src/data/examples/fifo_pipe.sv"));
         for line in [24, 27] {
             assert!(fifo.continuous.iter().any(|assignment| {
                 assignment.start_line == line && assignment.lhs_identifiers == ["ready"]
@@ -2904,7 +2907,7 @@ endmodule
         }
 
         let handshake = scan_assignments(include_str!(
-            "../../web/src/data/examples/handshake_controller.sv"
+            "../../../web/src/data/examples/handshake_controller.sv"
         ));
         assert!(handshake.blocks.contains(&ProceduralBlock {
             start_line: 31,
@@ -2941,7 +2944,7 @@ endmodule
         }
 
         let priority = scan_assignments(include_str!(
-            "../../web/src/data/examples/priority_encoder_case.sv"
+            "../../../web/src/data/examples/priority_encoder_case.sv"
         ));
         assert_eq!(
             priority.blocks,
@@ -2978,7 +2981,8 @@ endmodule
 
     #[test]
     fn preflatten_module_graph_recovers_only_reachable_instance_scopes() {
-        let netlist = parse_str(include_str!("../tests/fixtures/preflatten_scopes.json")).unwrap();
+        let netlist =
+            parse_str(include_str!("../../tests/fixtures/preflatten_scopes.json")).unwrap();
 
         let scopes = module_scopes(&netlist, "scoped_children");
 

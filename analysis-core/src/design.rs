@@ -1,12 +1,11 @@
 //! Construction and ownership of one browser- or server-resident analysis session.
 
-use crate::analysis::{Analysis, SourceRangeMapping, Stats};
+use crate::analysis::{Analysis, Stats};
 use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
-use crate::source_index::SourceProvenanceIndex;
-use crate::source_provenance::recover_source_provenance;
+use crate::source::{SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance};
 use deepsize::DeepSizeOf;
 use std::collections::HashMap;
 use thiserror::Error;

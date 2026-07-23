@@ -4,5 +4,4 @@ pub mod design;
 pub mod graph;
 pub mod grouping;
 pub mod netlist;
-mod source_index;
-mod source_provenance;
+pub mod source;
