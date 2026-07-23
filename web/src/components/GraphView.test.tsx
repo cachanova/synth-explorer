@@ -1442,6 +1442,9 @@ describe('GraphView group expansion controls', () => {
 
     expect(markup).toContain('data-split-boundary="1"')
     expect(markup.match(/class="g-expanded-group-boundary"/g)).toHaveLength(1)
+    expect(markup).toContain(
+      'd="M 12 10 H 118 V 96 H 12 Z M 252 22 H 358 V 96 H 252 Z"',
+    )
     expect(markup).toContain('transform="translate(110,30)"')
   })
 })

@@ -75,6 +75,31 @@ async function expandedBoundaryRects(page: Page, groupId: string) {
   }))
 }
 
+async function expectGroupControlAppearance(control: Locator, markLength: number) {
+  await expect(control).toBeVisible()
+  await expect.poll(() => control.evaluate((element) => {
+    const mark = element.querySelector<SVGPathElement>('.g-group-toggle-mark')
+    if (!mark) return null
+    const controlStyle = getComputedStyle(element)
+    const markStyle = getComputedStyle(mark)
+    return {
+      opacity: Number(controlStyle.opacity),
+      hasStroke: markStyle.stroke !== 'none' && markStyle.stroke !== 'transparent',
+      strokeWidth: Number.parseFloat(markStyle.strokeWidth),
+      length: mark.getTotalLength(),
+      width: Math.round(element.getBoundingClientRect().width),
+      height: Math.round(element.getBoundingClientRect().height),
+    }
+  })).toMatchObject({
+    opacity: 0.94,
+    hasStroke: true,
+    strokeWidth: 1.75,
+    length: markLength,
+    width: 20,
+    height: 20,
+  })
+}
+
 async function zoomSchematicToScale(
   page: Page,
   targetScale: number,
@@ -1049,34 +1074,17 @@ test('keeps group expand and collapse glyphs legible on mobile', async ({ page }
   const expand = page.locator(
     `[data-group-action="expand"][data-group-id="${groupId}"]`,
   )
-  await expect(expand).toBeVisible()
-  await expect.poll(() => expand.evaluate((control) => {
-    const mark = control.querySelector<SVGPathElement>('.g-group-toggle-mark')
-    if (!mark) return null
-    const controlStyle = getComputedStyle(control)
-    const markStyle = getComputedStyle(mark)
-    return {
-      opacity: Number(controlStyle.opacity),
-      stroke: markStyle.stroke,
-      strokeWidth: Number.parseFloat(markStyle.strokeWidth),
-      length: mark.getTotalLength(),
-      width: Math.round(control.getBoundingClientRect().width),
-      height: Math.round(control.getBoundingClientRect().height),
-    }
-  })).toMatchObject({
-    opacity: 0.94,
-    strokeWidth: 1.75,
-    length: 16,
-    width: 20,
-    height: 20,
-  })
+  await expectGroupControlAppearance(expand, 16)
+  await zoomSchematicToScale(page, 0.5, groupedMemory)
+  await expectGroupControlAppearance(expand, 16)
 
   await expand.click()
   const collapse = page.locator(
     `[data-group-action="collapse"][data-group-id="${groupId}"]`,
   )
-  await expect(collapse).toBeVisible()
-  await expect(collapse.locator('.g-group-toggle-mark')).toHaveCount(1)
+  await expectGroupControlAppearance(collapse, 8)
+  await zoomSchematicToScale(page, 0.25)
+  await expectGroupControlAppearance(collapse, 8)
 })
 
 test('rerenders expanded register vectors without routing through member bodies', async ({ page }) => {
