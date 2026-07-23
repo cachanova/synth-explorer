@@ -23,6 +23,7 @@ import {
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
+  layoutExpandedGroupInPlace,
   layoutSubgraph,
   prewarmLayoutWorker,
   type LaidOutGraph,
@@ -593,6 +594,7 @@ export function Graph({ active }: { active: boolean }) {
     )
     return {
       graph: applied.graph,
+      groupedBaseGraph: expanded.graph,
       expandedGroups: applied.groups,
       expansionDroppedNodes:
         (activeExpansion?.droppedNodes ?? 0) + expanded.droppedNodes,
@@ -601,7 +603,11 @@ export function Graph({ active }: { active: boolean }) {
     }
   }, [activeExpansion, activeGroupExpansions, projectedSubgraph])
   const combinedSubgraph = combined?.graph ?? null
-  const visibleExpandedGroups = combined?.expandedGroups ?? []
+  const groupedBaseSubgraph = combined?.groupedBaseGraph ?? null
+  const visibleExpandedGroups = useMemo(
+    () => combined?.expandedGroups ?? [],
+    [combined],
+  )
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
@@ -628,6 +634,28 @@ export function Graph({ active }: { active: boolean }) {
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
       laidOutSubgraph.current = toLayout
+      if (!sameProjection) setFitNonce((n) => n + 1)
+      return
+    }
+    const expandedGroup = visibleExpandedGroups[0]
+    const groupedBaseLayout = groupedBaseSubgraph
+      ? layoutCache.current.get(groupedBaseSubgraph)
+      : null
+    const inPlaceLayout = expandedGroup && groupedBaseLayout
+      ? layoutExpandedGroupInPlace(toLayout, groupedBaseLayout, expandedGroup)
+      : null
+    if (inPlaceLayout) {
+      const nextDisplay = {
+        designId: ownerDesignId,
+        projectionKey,
+        subgraph: toLayout,
+        graph: inPlaceLayout,
+      }
+      layoutCache.current.set(toLayout, inPlaceLayout)
+      displayedGraphRef.current = nextDisplay
+      setDisplayedGraph(nextDisplay)
+      laidOutSubgraph.current = toLayout
+      setLayingOut(false)
       if (!sameProjection) setFitNonce((n) => n + 1)
       return
     }
@@ -670,8 +698,10 @@ export function Graph({ active }: { active: boolean }) {
     combinedSubgraph,
     focusActive,
     fullSubgraph?.designId,
+    groupedBaseSubgraph,
     projectionKey,
     relevantSubgraph?.designId,
+    visibleExpandedGroups,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(

@@ -898,7 +898,7 @@ function GroupExpansionControls({
               role="button"
               tabIndex={0}
               aria-label={`Collapse group ${group.label}`}
-              transform={`translate(${right - 8},${top + 8})`}
+              transform={`translate(${right - 6},${top + 6})`}
               onPointerDown={(event) => {
                 event.stopPropagation()
               }}
@@ -911,8 +911,9 @@ function GroupExpansionControls({
               }}
               onKeyDown={(event) => activateGroupControl(event, () => onCollapse(group.id))}
             >
-              <circle r={8} />
-              <path d="M-3.5 0H3.5" />
+              <circle className="g-group-toggle-hit" r={10} />
+              <circle r={6} />
+              <path d="M-2.5 0H2.5" />
             </g>
           )}
         </g>
@@ -931,7 +932,7 @@ function GroupExpansionControls({
             role="button"
             tabIndex={0}
             aria-label={`Expand group ${laidOutNode.node.name}`}
-            transform={`translate(${laidOutNode.x + laidOutNode.width - 8},${laidOutNode.y - 8})`}
+            transform={`translate(${laidOutNode.x + laidOutNode.width - 4},${laidOutNode.y + 4})`}
             onPointerDown={(event) => {
               // Do not let viewport panning claim this small SVG control.
               event.stopPropagation()
@@ -947,8 +948,9 @@ function GroupExpansionControls({
             }}
             onKeyDown={(event) => activateGroupControl(event, () => onExpand(laidOutNode.node))}
           >
-            <circle r={8} />
-            <path d="M-3.5 0H3.5M0 -3.5V3.5" />
+            <circle className="g-group-toggle-hit" r={10} />
+            <circle r={6} />
+            <path d="M-2.5 0H2.5M0 -2.5V2.5" />
           </g>
         )
       })}

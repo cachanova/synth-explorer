@@ -14,6 +14,7 @@ import {
   interpretResult,
   LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
   LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
+  layoutExpandedGroupInPlace,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
   NETWORK_SIMPLEX_NODE_LIMIT,
@@ -36,6 +37,168 @@ const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): Gra
   name: `u${id}`,
   cell_type: cellType,
   ...extra,
+})
+
+describe('in-place group expansion layout', () => {
+  it('keeps unrelated geometry fixed and opens members around the old group anchor', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[4:0]',
+      members: [1, 2, 3, 4, 5],
+      member_count: 5,
+    })
+    const externalIn = node(9, '$_BUF_')
+    const externalOut = node(10, '$_BUF_')
+    const unrelated = node(11, '$_AND_')
+    const members = [1, 2, 3, 4, 5].map((id) => node(id, 'FDRE'))
+    const base = {
+      nodes: [
+        { id: 9, x: 20, y: 120, width: 76, height: 52, node: externalIn },
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 10, x: 520, y: 120, width: 76, height: 52, node: externalOut },
+        { id: 11, x: 520, y: 360, width: 76, height: 52, node: unrelated },
+      ],
+      edges: [
+        {
+          from: 9,
+          to: 100,
+          points: [{ x: 96, y: 146 }, { x: 260, y: 139 }],
+          edge: {
+            from: 9,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'D',
+            net_name: 'in',
+            bits: [1],
+          },
+        },
+        {
+          from: 100,
+          to: 10,
+          points: [{ x: 370, y: 139 }, { x: 520, y: 146 }],
+          edge: {
+            from: 100,
+            to: 10,
+            from_port: 'Q',
+            to_port: 'A',
+            net_name: 'out',
+            bits: [2],
+          },
+        },
+        {
+          from: 9,
+          to: 11,
+          points: [{ x: 96, y: 146 }, { x: 520, y: 386 }],
+          edge: {
+            from: 9,
+            to: 11,
+            from_port: 'Y',
+            to_port: 'A',
+            net_name: 'unrelated',
+            bits: [3],
+          },
+        },
+      ],
+      width: 620,
+      height: 450,
+    }
+    const sub: Subgraph = {
+      nodes: [...members, externalIn, externalOut, unrelated],
+      edges: [
+        {
+          from: 9,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'D',
+          net_name: 'in',
+          bits: [1],
+        },
+        {
+          from: 2,
+          to: 10,
+          from_port: 'Q',
+          to_port: 'A',
+          net_name: 'out',
+          bits: [2],
+        },
+        {
+          from: 9,
+          to: 11,
+          from_port: 'Y',
+          to_port: 'A',
+          net_name: 'unrelated',
+          bits: [3],
+        },
+      ],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2, 3, 4, 5],
+    })
+
+    expect(opened).not.toBeNull()
+    expect(opened!.nodes).not.toContainEqual(expect.objectContaining({ id: 100 }))
+    for (const id of [9, 10, 11]) {
+      expect(opened!.nodes.find((entry) => entry.id === id)).toMatchObject(
+        base.nodes.find((entry) => entry.id === id)!,
+      )
+    }
+    const memberGeometry = opened!.nodes.filter((entry) => entry.id <= 5)
+    expect(new Set(memberGeometry.map((entry) => entry.x)).size).toBeGreaterThan(1)
+    expect(new Set(memberGeometry.map((entry) => entry.y)).size).toBeGreaterThan(1)
+    const memberCenterX =
+      (Math.min(...memberGeometry.map((entry) => entry.x)) +
+        Math.max(...memberGeometry.map((entry) => entry.x + entry.width))) / 2
+    expect(memberCenterX).toBeCloseTo(315)
+    expect(opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')?.points)
+      .toEqual(base.edges[2].points)
+    expect(opened!.edges.find((edge) => edge.edge.net_name === 'in')?.points)
+      .toContainEqual(base.edges[0].points.at(-1))
+    expect(opened!.edges.find((edge) => edge.edge.net_name === 'out')?.points)
+      .toContainEqual(base.edges[1].points[0])
+  })
+
+  it('uses the nearest collision-free local slot instead of enclosing another node', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[1:0]',
+      members: [1, 2],
+      member_count: 2,
+    })
+    const blocker = node(9, 'LUT6')
+    const base = {
+      nodes: [
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 390, y: 100, width: 90, height: 78, node: blocker },
+      ],
+      edges: [],
+      width: 520,
+      height: 240,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'FDRE'), node(2, 'FDRE'), blocker],
+      edges: [],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2],
+    })!
+    const members = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
+    const membersRight = Math.max(...members.map((entry) => entry.x + entry.width))
+    const membersLeft = Math.min(...members.map((entry) => entry.x))
+    const membersBottom = Math.max(...members.map((entry) => entry.y + entry.height))
+    const membersTop = Math.min(...members.map((entry) => entry.y))
+    const overlapsBlocker =
+      membersLeft < 390 + 90 &&
+      membersRight > 390 &&
+      membersTop < 100 + 78 &&
+      membersBottom > 100
+
+    expect(overlapsBlocker).toBe(false)
+    expect(opened.nodes.find((entry) => entry.id === 9)).toMatchObject(base.nodes[1])
+  })
 })
 
 describe('schematic layout sizing', () => {

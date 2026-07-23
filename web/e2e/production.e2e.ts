@@ -842,11 +842,60 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
     '.g-node-body.g-symbol-reg[data-member-count="7"][data-node-tooltip*="rdreg[0].q"]',
   )
   await expect(groupedReadRegister).toHaveCount(1)
+  const groupedCount = page.locator(
+    '.g-node-body.g-symbol-port-out[data-member-count="8"][data-node-tooltip="count[7:0]"]',
+  )
+  await expect(groupedCount).toHaveCount(1)
   const memberCount = Number(await groupedMemory.getAttribute('data-member-count'))
   expect(memberCount).toBeGreaterThan(1)
   const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
   expect(groupedId).not.toBeNull()
   await expect(groupedMemory).toHaveAttribute('role', 'button')
+
+  const countGroupId = await groupedCount.getAttribute('data-graph-node-id')
+  expect(countGroupId).not.toBeNull()
+  const groupedCountTransform = await groupedCount.getAttribute('transform')
+  const stationaryMemoryTransform = await groupedMemory.getAttribute('transform')
+  await page.locator(
+    `[data-group-action="expand"][data-group-id="${countGroupId}"]`,
+  ).click()
+  const countMembers = page.locator(
+    `[data-expanded-group-member="${countGroupId}"]`,
+  )
+  await expect(countMembers).toHaveCount(8)
+  await expect(groupedMemory).toHaveAttribute(
+    'transform',
+    stationaryMemoryTransform ?? '',
+  )
+  const countBoundary = page.locator(
+    `[data-expanded-group-id="${countGroupId}"] .g-expanded-group-boundary`,
+  )
+  await expect(countBoundary).toHaveCount(1)
+  await expect.poll(() => page.evaluate(({ countGroupId }) => {
+    const boundary = document.querySelector<SVGGraphicsElement>(
+      `[data-expanded-group-id="${countGroupId}"] .g-expanded-group-boundary`,
+    )
+    if (!boundary) return null
+    const box = boundary.getBoundingClientRect()
+    return [...document.querySelectorAll<SVGGraphicsElement>('.g-node-body')]
+      .filter((node) => node.dataset.expandedGroupMember !== countGroupId)
+      .filter((node) => {
+        const rect = node.getBoundingClientRect()
+        return rect.left < box.right &&
+          rect.right > box.left &&
+          rect.top < box.bottom &&
+          rect.bottom > box.top
+      })
+      .map((node) => node.dataset.nodeTooltip)
+  }, { countGroupId })).toEqual([])
+  await page.locator(
+    `[data-group-action="collapse"][data-group-id="${countGroupId}"]`,
+  ).click()
+  await expect(groupedCount).toHaveCount(1)
+  await expect(groupedCount).toHaveAttribute(
+    'transform',
+    groupedCountTransform ?? '',
+  )
 
   const viewport = page.locator('.g-viewport')
   await zoomSchematicToScale(page, 0.5, groupedMemory)
@@ -1044,6 +1093,11 @@ for (const regression of [
     }
 
     if (regression.platform === 'ecp5' && regression.depth === 16) {
+      const stationaryPort = page.locator(
+        '.g-node-body[data-node-tooltip="push_ready"]',
+      )
+      await expect(stationaryPort).toHaveCount(1)
+      const stationaryTransform = await stationaryPort.getAttribute('transform')
       await page.getByRole('button', {
         name: `Expand group memory [${regression.depth}×16]`,
       }).click()
@@ -1056,6 +1110,10 @@ for (const regression of [
       await expect(page.locator(
         '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
       )).toHaveCount(regression.count)
+      await expect(stationaryPort).toHaveAttribute(
+        'transform',
+        stationaryTransform ?? '',
+      )
       const boundary = page.locator('.g-expanded-group-boundary')
       await expect(boundary).toHaveCount(1)
       await expect.poll(async () => {
@@ -1074,12 +1132,8 @@ for (const regression of [
         )
       }).toBe(true)
 
-      const unrelatedPort = page.locator(
-        '.g-node-body[data-node-tooltip="push_ready"]',
-      )
-      await expect(unrelatedPort).toHaveCount(1)
-      await unrelatedPort.focus()
-      await unrelatedPort.press('Enter')
+      await stationaryPort.focus()
+      await stationaryPort.press('Enter')
       await page.getByRole('button', { name: 'Fanin cone' }).click()
       await expect(boundary).toHaveCount(0)
       await expect(page.locator(
