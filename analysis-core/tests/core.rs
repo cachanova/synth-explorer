@@ -478,9 +478,10 @@ fn memory_matching_keeps_identical_child_arrays_in_separate_groups() {
 fn grouped_budgets_count_units_not_member_bits() {
     let (graph, analysis, partition) = grouped_register_banks();
     let base = graph.nodes.len() as u32;
-    // 33 raw nodes (17 port bits + 16 DFF cells) collapse to 5 units: the q and
-    // y register banks, the d and y bus ports, and the lone scalar clk port bit.
-    let units = 5;
+    // 33 raw nodes (17 port bits + 16 DFF cells) collapse to 4 visible units:
+    // the q and y register banks plus the d and y bus ports. The lone scalar
+    // clk port disappears with its exclusively hidden control routing.
+    let units = 4;
 
     let full = analysis.full_netlist(
         &graph,
@@ -748,6 +749,13 @@ fn full_netlist_applies_control_and_constant_visibility_before_capping() {
             .any(|edge| edge.control == Some(true)),
         "showing controls should retain the register clock edge"
     );
+    assert!(
+        controls_visible
+            .nodes
+            .iter()
+            .any(|node| node.node.name == "clk"),
+        "showing controls should retain the top-level clock port"
+    );
     let controls_hidden =
         analysis.full_netlist(&graph, full_options(100, false, true, false), None);
     assert!(
@@ -756,6 +764,53 @@ fn full_netlist_applies_control_and_constant_visibility_before_capping() {
             .iter()
             .all(|edge| edge.control != Some(true)),
         "hiding controls should remove labeled control wiring"
+    );
+    assert!(
+        controls_hidden
+            .nodes
+            .iter()
+            .all(|node| node.node.name != "clk"),
+        "a port used exclusively by hidden control routing should disappear"
+    );
+    for data_port in ["sel", "a[0]", "b[0]", "q[0]"] {
+        assert!(
+            controls_hidden
+                .nodes
+                .iter()
+                .any(|node| node.node.name == data_port),
+            "hiding controls must retain data port {data_port}"
+        );
+    }
+    let clk = graph
+        .nodes
+        .iter()
+        .find(|node| node.name == "clk")
+        .expect("clock port");
+    let explicit_control_cone = analysis
+        .cone(&graph, clk.id, cone_options(100), None)
+        .expect("explicit clock cone");
+    assert!(
+        explicit_control_cone
+            .nodes
+            .iter()
+            .any(|node| node.node.id == clk.id),
+        "an explicitly opened control cone must retain its root port"
+    );
+    let priority_roots = [clk.id];
+    let explicit_control_context = analysis.full_netlist(
+        &graph,
+        FullNetlistOptions {
+            priority_roots: &priority_roots,
+            ..full_options(100, false, true, false)
+        },
+        None,
+    );
+    assert!(
+        explicit_control_context
+            .nodes
+            .iter()
+            .any(|node| node.node.id == clk.id),
+        "an explicitly requested netlist context must retain its root port"
     );
 
     let netlist = parse_value(serde_json::json!({
@@ -803,6 +858,141 @@ fn full_netlist_applies_control_and_constant_visibility_before_capping() {
             .iter()
             .all(|node| node.node.kind != ApiNodeKind::Const),
         "hidden constants must not consume the visible-node budget"
+    );
+}
+
+#[test]
+fn hidden_buffered_control_ports_leave_no_dangling_projection_edges() {
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "clk": { "direction": "input", "bits": [2] },
+                "d": { "direction": "input", "bits": [3] },
+                "q": { "direction": "output", "bits": [5] }
+            },
+            "cells": {
+                "clock_buffer": {
+                    "type": "IBUF",
+                    "port_directions": { "I": "input", "O": "output" },
+                    "connections": { "I": [2], "O": [4] }
+                },
+                "state": {
+                    "type": "FDRE",
+                    "port_directions": {
+                        "C": "input", "CE": "input", "D": "input",
+                        "Q": "output", "R": "input"
+                    },
+                    "connections": {
+                        "C": [4], "CE": ["1"], "D": [3], "Q": [5], "R": ["0"]
+                    }
+                }
+            },
+            "netnames": {
+                "clk": { "bits": [2] },
+                "d": { "bits": [3] },
+                "buffered_clk": { "bits": [4] },
+                "q": { "bits": [5] }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["buffered_control.sv".to_owned()]);
+    let clock_buffer = graph
+        .nodes
+        .iter()
+        .find(|node| node.name == "clock_buffer")
+        .expect("clock buffer");
+    let priority_roots = [clock_buffer.id];
+    let context = analysis.full_netlist(
+        &graph,
+        FullNetlistOptions {
+            priority_roots: &priority_roots,
+            ..full_options(100, true, true, false)
+        },
+        None,
+    );
+
+    assert!(
+        context
+            .nodes
+            .iter()
+            .any(|node| node.node.id == clock_buffer.id)
+    );
+    assert!(
+        context.nodes.iter().all(|node| node.node.name != "clk"),
+        "a buffered port used only by hidden control routing should disappear"
+    );
+    let visible_ids: HashSet<_> = context.nodes.iter().map(|node| node.node.id).collect();
+    assert!(
+        context
+            .edges
+            .iter()
+            .all(|edge| visible_ids.contains(&edge.from) && visible_ids.contains(&edge.to)),
+        "every emitted edge endpoint must remain in the projected node set"
+    );
+}
+
+#[test]
+fn hide_control_keeps_a_port_that_also_drives_visible_data() {
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "shared": { "direction": "input", "bits": [2] },
+                "d": { "direction": "input", "bits": [3] },
+                "y": { "direction": "output", "bits": [5] }
+            },
+            "cells": {
+                "state": {
+                    "type": "FDRE",
+                    "port_directions": {
+                        "C": "input", "CE": "input", "D": "input",
+                        "Q": "output", "R": "input"
+                    },
+                    "connections": {
+                        "C": [2], "CE": ["1"], "D": [3], "Q": [4], "R": ["0"]
+                    }
+                },
+                "data_use": {
+                    "type": "$_AND_",
+                    "port_directions": { "A": "input", "B": "input", "Y": "output" },
+                    "connections": { "A": [2], "B": [4], "Y": [5] }
+                }
+            },
+            "netnames": {
+                "shared": { "bits": [2] },
+                "d": { "bits": [3] },
+                "state_q": { "bits": [4] },
+                "y": { "bits": [5] }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["mixed_control.sv".to_owned()]);
+
+    let hidden = analysis.full_netlist(&graph, full_options(100, false, true, false), None);
+    let shared = hidden
+        .nodes
+        .iter()
+        .find(|node| node.node.name == "shared")
+        .expect("a mixed-use control/data port must remain visible");
+    assert!(
+        hidden
+            .edges
+            .iter()
+            .all(|edge| edge.from != shared.node.id || edge.to_port != "C"),
+        "the hidden clock branch must still be removed"
+    );
+    assert!(
+        hidden.edges.iter().any(|edge| {
+            edge.from == shared.node.id && edge.to_port == "A" && edge.net_name == "shared"
+        }),
+        "the visible data branch must keep the shared port connected"
     );
 }
 
@@ -882,6 +1072,21 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
             .iter()
             .all(|edge| edge.to_port != "WCLK")
     );
+    assert!(
+        hidden_controls
+            .nodes
+            .iter()
+            .all(|node| node.node.name != "clk")
+    );
+    for data_port in ["addr[0]", "wdata[0]", "we"] {
+        assert!(
+            hidden_controls
+                .nodes
+                .iter()
+                .any(|node| node.node.name == data_port),
+            "hiding memory controls must retain data port {data_port}"
+        );
+    }
 
     let paths = analysis.paths(&graph, 100, None).paths;
     let path_ports: HashSet<_> = paths
