@@ -36,7 +36,7 @@ import { controlDriverIds, controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
-import { GraphView } from '../GraphView'
+import { GraphView, type ExpandedGroupFrame } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
 interface FullSubgraph {
@@ -71,6 +71,7 @@ interface DisplayedGraph {
   projectionKey: string
   subgraph: Subgraph
   graph: LaidOutGraph
+  expandedGroups: ExpandedGroupFrame[]
 }
 
 interface FullGraphCacheEntry {
@@ -617,6 +618,7 @@ export function Graph({ active }: { active: boolean }) {
       : fullSubgraph?.designId
     if (ownerDesignId == null) return
     const toLayout = combinedSubgraph
+    const expandedGroupsForLayout = visibleExpandedGroups
     const previousDisplay = displayedGraphRef.current
     const sameDesign = previousDisplay?.designId === ownerDesignId
     const sameProjection =
@@ -636,6 +638,7 @@ export function Graph({ active }: { active: boolean }) {
         projectionKey,
         subgraph: toLayout,
         graph: cachedLayout,
+        expandedGroups: expandedGroupsForLayout,
       }
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
@@ -657,6 +660,7 @@ export function Graph({ active }: { active: boolean }) {
           projectionKey,
           subgraph: toLayout,
           graph: g,
+          expandedGroups: expandedGroupsForLayout,
         }
         layoutCache.current.set(toLayout, g)
         displayedGraphRef.current = nextDisplay
@@ -683,6 +687,7 @@ export function Graph({ active }: { active: boolean }) {
     fullSubgraph?.designId,
     projectionKey,
     relevantSubgraph?.designId,
+    visibleExpandedGroups,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(
@@ -699,7 +704,10 @@ export function Graph({ active }: { active: boolean }) {
   const displayedProjectionCurrent =
     projectionKey != null && displayedGraph?.projectionKey === projectionKey
   const graphInteractive =
-    analysisState === 'current' && displayedDesignCurrent && displayedProjectionCurrent
+    analysisState === 'current' &&
+    displayedDesignCurrent &&
+    displayedProjectionCurrent &&
+    displayedGraph?.subgraph === combinedSubgraph
   const relevantIds = useMemo(
     () =>
       new Set<number>(
@@ -928,7 +936,7 @@ export function Graph({ active }: { active: boolean }) {
             onEdgeSelect={onEdgeSelect}
             onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
-            expandedGroups={visibleExpandedGroups}
+            expandedGroups={visibleDisplayedGraph?.expandedGroups ?? []}
             onExpandGroup={graphInteractive ? onExpandGroup : undefined}
             onCollapseGroup={graphInteractive ? onCollapseGroup : undefined}
             active={active}

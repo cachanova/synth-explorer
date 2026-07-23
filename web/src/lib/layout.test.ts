@@ -22,6 +22,7 @@ import {
   panViewport,
   placementForLayout,
   prewarmLayoutWorker,
+  preserveGroupTransitionAnchor,
   preserveViewportAnchor,
   prepareLayoutInput,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
@@ -30,6 +31,8 @@ import {
   toElkGraph,
   type LayoutInput,
   viewportTransformAttribute,
+  WIDE_HUB_DEGREE_THRESHOLD,
+  WIDE_HUB_NODE_THRESHOLD,
   zoomViewportAt,
 } from './layout'
 
@@ -758,6 +761,29 @@ describe('schematic layout sizing', () => {
       truncated: false,
     }
     expect(placementForLayout(denseEdges)).toBe('BRANDES_KOEPF')
+
+    const wideHub: Subgraph = {
+      nodes: Array.from({ length: WIDE_HUB_NODE_THRESHOLD }, (_, index) =>
+        node(index, '$_BUF_'),
+      ),
+      edges: Array.from({ length: WIDE_HUB_DEGREE_THRESHOLD }, (_, index) => ({
+        from: 0,
+        to: index + 1,
+        from_port: `Y${index}`,
+        to_port: 'A',
+        net_name: `n${index}`,
+        bits: [index],
+      })),
+      truncated: false,
+    }
+    expect(placementForLayout(wideHub)).toBe('SIMPLE')
+    const wideOptions = toElkGraph(
+      prepareLayoutInput(wideHub),
+      placementForLayout(wideHub),
+    ).layoutOptions
+    expect(wideOptions?.['elk.layered.nodePlacement.strategy']).toBe('SIMPLE')
+    expect(wideOptions?.['elk.layered.thoroughness']).toBe('1')
+    expect(wideOptions?.['elk.layered.layering.strategy']).toBe('LONGEST_PATH')
   })
 
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
@@ -820,7 +846,7 @@ describe('schematic layout sizing', () => {
       requests: Array<{
         id: number
         input: ReturnType<typeof prepareLayoutInput>
-        placement: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+        placement: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF' | 'SIMPLE'
       }> = []
 
       constructor() {
@@ -1344,6 +1370,60 @@ describe('viewport transforms', () => {
     expect(
       preserveViewportAnchor({ x: 10, y: 15, k: 2 }, previous, next, [1]),
     ).toEqual({ x: -190, y: -65, k: 2 })
+  })
+
+  it('anchors the first expanded member where the quotient group was visible', () => {
+    const groupedNode = node(100, 'RAM32M')
+    const memberNode = node(1, 'RAM32M')
+    const previous = {
+      nodes: [{ id: 100, x: 300, y: 200, width: 100, height: 60, node: groupedNode }],
+      edges: [],
+      width: 500,
+      height: 400,
+    }
+    const next = {
+      nodes: [{ id: 1, x: 900, y: 700, width: 80, height: 50, node: memberNode }],
+      edges: [],
+      width: 1100,
+      height: 900,
+    }
+
+    expect(
+      preserveGroupTransitionAnchor(
+        { x: 20, y: 30, k: 1.5 },
+        previous,
+        next,
+        [],
+        [{ id: 100, members: [1] }],
+      ),
+    ).toEqual({ x: -865, y: -712.5, k: 1.5 })
+  })
+
+  it('anchors a collapsing quotient where its first member was visible', () => {
+    const groupedNode = node(100, 'RAM32M')
+    const memberNode = node(1, 'RAM32M')
+    const previous = {
+      nodes: [{ id: 1, x: 900, y: 700, width: 80, height: 50, node: memberNode }],
+      edges: [],
+      width: 1100,
+      height: 900,
+    }
+    const next = {
+      nodes: [{ id: 100, x: 300, y: 200, width: 100, height: 60, node: groupedNode }],
+      edges: [],
+      width: 500,
+      height: 400,
+    }
+
+    expect(
+      preserveGroupTransitionAnchor(
+        { x: -865, y: -712.5, k: 1.5 },
+        previous,
+        next,
+        [{ id: 100, members: [1] }],
+        [],
+      ),
+    ).toEqual({ x: 20, y: 30, k: 1.5 })
   })
 
   it('refits only when a projection has no retained node to anchor', () => {

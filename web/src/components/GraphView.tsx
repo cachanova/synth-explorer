@@ -16,6 +16,7 @@ import {
   fitViewportToContent,
   isRegisterControlPin,
   panViewport,
+  preserveGroupTransitionAnchor,
   preserveViewportAnchor,
   REG_BODY_HEIGHT,
   REG_CLOCK_Y_FRAC,
@@ -847,6 +848,7 @@ function GroupExpansionControls({
   expandedGroups,
   relevantIds,
   interactive,
+  controlsRef,
   onExpand,
   onCollapse,
 }: {
@@ -854,6 +856,7 @@ function GroupExpansionControls({
   expandedGroups: ExpandedGroupFrame[]
   relevantIds: Set<number>
   interactive: boolean
+  controlsRef: (element: SVGGElement | null) => void
   onExpand?: (node: GraphNode) => void
   onCollapse?: (groupId: number) => void
 }) {
@@ -899,7 +902,7 @@ function GroupExpansionControls({
   })
 
   return (
-    <g className="g-group-controls">
+    <g ref={controlsRef} className="g-group-controls">
       {frames.map(({
         group,
         boundaries,
@@ -2154,6 +2157,7 @@ export const GraphView = memo(function GraphView({
   const stageRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
   const viewportRef = useRef<SVGGElement | null>(null)
+  const groupControlsRef = useRef<SVGGElement | null>(null)
   const hideEdgeTooltipRef = useRef<(() => void) | null>(null)
   const hideNodeTooltipRef = useRef<(() => void) | null>(null)
   const graphRef = useRef(graph)
@@ -2161,8 +2165,16 @@ export const GraphView = memo(function GraphView({
   const layoutHistory = useRef<{
     graph: LaidOutGraph | null
     fitNonce: number | null
-  }>({ graph: null, fitNonce: null })
+    expandedGroups: ExpandedGroupFrame[]
+  }>({ graph: null, fitNonce: null, expandedGroups: EMPTY_EXPANDED_GROUPS })
   const transformRef = useRef<ViewportTransform>({ x: 0, y: 0, k: 1 })
+  const setGroupControlsRef = useCallback((element: SVGGElement | null) => {
+    groupControlsRef.current = element
+    element?.style.setProperty(
+      '--graph-inverse-scale',
+      String(1 / transformRef.current.k),
+    )
+  }, [])
   const panState = useRef<PanState | null>(null)
   const pinchState = useRef<PinchState | null>(null)
   const suppressClick = useRef(false)
@@ -2327,9 +2339,15 @@ export const GraphView = memo(function GraphView({
   const applyTransform = useCallback((next: ViewportTransform) => {
     hideEdgeTooltipRef.current?.()
     hideNodeTooltipRef.current?.()
+    const scaleChanged = transformRef.current.k !== next.k
     transformRef.current = next
     viewportRef.current?.setAttribute('transform', viewportTransformAttribute(next))
-    viewportRef.current?.style.setProperty('--graph-inverse-scale', String(1 / next.k))
+    if (scaleChanged) {
+      groupControlsRef.current?.style.setProperty(
+        '--graph-inverse-scale',
+        String(1 / next.k),
+      )
+    }
 
     const current = detailLevel.current
     if (current == null) {
@@ -2594,16 +2612,22 @@ export const GraphView = memo(function GraphView({
       fit()
     } else if (previous.graph !== graph) {
       applyTransform(
-        preserveViewportAnchor(
+        preserveGroupTransitionAnchor(
           transformRef.current,
           previous.graph,
           graph,
-          [selectedId, rootId],
-        ),
+          previous.expandedGroups,
+          expandedGroups,
+        ) ?? preserveViewportAnchor(
+            transformRef.current,
+            previous.graph,
+            graph,
+            [selectedId, rootId],
+          ),
       )
     }
-    layoutHistory.current = { graph, fitNonce }
-  }, [applyTransform, fit, fitNonce, graph, rootId, selectedId])
+    layoutHistory.current = { graph, fitNonce, expandedGroups }
+  }, [applyTransform, expandedGroups, fit, fitNonce, graph, rootId, selectedId])
 
   useEffect(() => {
     if (!active) return
@@ -3011,6 +3035,7 @@ export const GraphView = memo(function GraphView({
             expandedGroups={expandedGroups}
             relevantIds={relevantIds}
             interactive={interactive}
+            controlsRef={setGroupControlsRef}
             onExpand={onExpandGroup}
             onCollapse={onCollapseGroup}
           />

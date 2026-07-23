@@ -283,6 +283,50 @@ export function preserveViewportAnchor(
   return transform
 }
 
+interface GroupTransitionAnchor {
+  id: number
+  members: number[]
+}
+
+/**
+ * Keep the activated group at the same screen position while its quotient node
+ * is replaced by members, or while those members collapse back to the group.
+ */
+export function preserveGroupTransitionAnchor(
+  transform: ViewportTransform,
+  previous: LaidOutGraph,
+  next: LaidOutGraph,
+  previousGroups: GroupTransitionAnchor[],
+  nextGroups: GroupTransitionAnchor[],
+): ViewportTransform | null {
+  const previousGroupIds = new Set(previousGroups.map((group) => group.id))
+  const nextGroupIds = new Set(nextGroups.map((group) => group.id))
+  const opened = nextGroups.find((group) => !previousGroupIds.has(group.id))
+  const closed = previousGroups.find((group) => !nextGroupIds.has(group.id))
+  const previousById = new Map(previous.nodes.map((node) => [node.id, node]))
+  const nextById = new Map(next.nodes.map((node) => [node.id, node]))
+
+  const before = opened
+    ? previousById.get(opened.id)
+    : closed
+      ? closed.members.map((id) => previousById.get(id)).find((node) => node != null)
+      : null
+  const after = opened
+    ? opened.members.map((id) => nextById.get(id)).find((node) => node != null)
+    : closed
+      ? nextById.get(closed.id)
+      : null
+  if (!before || !after) return null
+
+  return {
+    ...transform,
+    x: transform.x +
+      (before.x + before.width / 2 - after.x - after.width / 2) * transform.k,
+    y: transform.y +
+      (before.y + before.height / 2 - after.y - after.height / 2) * transform.k,
+  }
+}
+
 /**
  * Center laid-out graph content in a viewport without relying on SVG viewBox
  * scaling. A hidden or not-yet-laid-out flex pane can transiently report a
@@ -406,13 +450,16 @@ export function nodeDimensions(node: GraphNode): { width: number; height: number
 /** Build the ELK graph description from compact layout input. */
 // NETWORK_SIMPLEX gives the tightest alignment but recurses in elkjs and blows
 // the stack on very deep DAGs (e.g. a wide adder tree). BRANDES_KOEPF is the
-// robust fallback: slightly looser, never overflows. layoutSubgraph retries
-// with it when the premium strategy fails.
-export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+// robust fallback: slightly looser, never overflows. Very wide hub graphs use
+// SIMPLE, which preserves full-graph ELK routing without the quadratic sweep
+// cost BRANDES_KOEPF pays around thousands of parallel edges.
+export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF' | 'SIMPLE'
 export const REDUCED_THOROUGHNESS_NODE_THRESHOLD = 700
 export const DENSE_LAYOUT_NODE_THRESHOLD = 500
 export const REDUCED_THOROUGHNESS_EDGE_DENSITY = 2.5
 export const DENSE_LONGEST_PATH_EDGE_DENSITY = 4
+export const WIDE_HUB_NODE_THRESHOLD = 700
+export const WIDE_HUB_DEGREE_THRESHOLD = 256
 
 // A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
 // triangle lower-west, and the data output (Q) at the east. These fractions of
@@ -736,6 +783,7 @@ export function toElkGraph(
     ],
   }))
   const edgeDensity = input.edges.length / Math.max(1, input.nodes.length)
+  const useWideHubFastPath = nodePlacement === 'SIMPLE'
   const useDenseFastPath =
     nodePlacement === 'BRANDES_KOEPF' &&
     input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
@@ -762,19 +810,19 @@ export function toElkGraph(
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
       'elk.layered.mergeEdges': 'true',
       'elk.layered.nodePlacement.strategy': nodePlacement,
-      ...(nodePlacement === 'BRANDES_KOEPF'
+      ...(nodePlacement !== 'NETWORK_SIMPLEX'
         ? {
             // Dense circuit graphs spend disproportionately more time in
             // repeated layered sweeps. Use the lower-cost path only where
             // topology makes it robust; sparse/grouped graphs retain the
             // higher-quality passes selected by graph size.
             'elk.layered.thoroughness':
-              useDenseFastPath
+              useWideHubFastPath || useDenseFastPath
                 ? '1'
                 : input.nodes.length >= REDUCED_THOROUGHNESS_NODE_THRESHOLD
                 ? '3'
                 : '4',
-            ...(useDenseLayering
+            ...(useWideHubFastPath || useDenseLayering
               ? { 'elk.layered.layering.strategy': 'LONGEST_PATH' }
               : {}),
           }
@@ -1014,6 +1062,19 @@ export const NETWORK_SIMPLEX_EDGE_LIMIT = 240
 
 /** The safe upfront node placement for a subgraph's size. */
 export function placementForLayout(sub: Subgraph): NodePlacement {
+  if (sub.nodes.length >= WIDE_HUB_NODE_THRESHOLD) {
+    const fanin = new Map<number, number>()
+    const fanout = new Map<number, number>()
+    let maxDegree = 0
+    for (const edge of sub.edges) {
+      const fromDegree = (fanout.get(edge.from) ?? 0) + 1
+      const toDegree = (fanin.get(edge.to) ?? 0) + 1
+      fanout.set(edge.from, fromDegree)
+      fanin.set(edge.to, toDegree)
+      maxDegree = Math.max(maxDegree, fromDegree, toDegree)
+    }
+    if (maxDegree >= WIDE_HUB_DEGREE_THRESHOLD) return 'SIMPLE'
+  }
   return sub.nodes.length > NETWORK_SIMPLEX_NODE_LIMIT ||
     sub.edges.length > NETWORK_SIMPLEX_EDGE_LIMIT
     ? 'BRANDES_KOEPF'
@@ -1031,8 +1092,8 @@ export async function layoutSubgraph(
   const cacheKey = layoutGeometryKey(input, placement)
   const cached = cachedLayoutGeometry(cacheKey)
   if (cached) return hydrateLayoutResult(sub, cached)
-  if (placement === 'BRANDES_KOEPF') {
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
+  if (placement !== 'NETWORK_SIMPLEX') {
+    const geometry = await runLayout(input, placement, signal)
     cacheLayoutGeometry(cacheKey, geometry)
     return hydrateLayoutResult(sub, geometry)
   }

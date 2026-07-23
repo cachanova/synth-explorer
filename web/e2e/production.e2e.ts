@@ -1075,10 +1075,17 @@ test('keeps group expand and collapse glyphs legible on mobile', async ({ page }
     `[data-group-action="expand"][data-group-id="${groupId}"]`,
   )
   await expectGroupControlAppearance(expand, 16)
-  await zoomSchematicToScale(page, 0.5, groupedMemory)
+  await zoomSchematicToScale(page, 1.5, groupedMemory)
+  await expect(groupedMemory).toBeInViewport()
   await expectGroupControlAppearance(expand, 16)
 
-  await expand.click()
+  await expand.focus()
+  await expand.press('Enter')
+  const expandedMembers = page.locator(
+    `[data-expanded-group-member="${groupId}"]`,
+  )
+  await expect(expandedMembers).toHaveCount(3)
+  await expect(expandedMembers.first()).toBeInViewport()
   const collapse = page.locator(
     `[data-group-action="collapse"][data-group-id="${groupId}"]`,
   )
