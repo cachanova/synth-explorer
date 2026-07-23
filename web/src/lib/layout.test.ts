@@ -844,6 +844,421 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
   })
 
+  it('models an expanded quotient group as one compound ELK child', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'RAM32M'),
+        node(2, 'RAM32M'),
+        node(3, '$_AND_'),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'D',
+        net_name: 'member-link',
+        bits: [1],
+      }],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2],
+      referenceHeight: 1_000,
+    }])
+    const graph = toElkGraph(input)
+    const compound = graph.children?.find((child) => child.id === 'group:100')
+
+    expect(graph.layoutOptions?.['elk.hierarchyHandling']).toBe('INCLUDE_CHILDREN')
+    expect(graph.children?.map((child) => child.id).sort()).toEqual([
+      '3',
+      'group:100',
+    ])
+    expect(compound?.children?.map((child) => child.id)).toEqual(['1', '2'])
+    expect(compound?.edges).toEqual([])
+    expect(compound?.children?.map((child) =>
+      child.layoutOptions?.['elk.layered.layering.layerConstraint']
+    )).toEqual(['FIRST', 'FIRST'])
+    expect(compound?.ports?.map((port) => port.id)).toEqual([
+      'group:100#in',
+      'group:100#out',
+    ])
+    expect(graph.edges).toEqual([])
+    expect(compound?.layoutOptions?.['elk.direction']).toBe('RIGHT')
+  })
+
+  it('switches an expanded group to a clean grid beyond twice the reference height', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'RAM32M'),
+        node(2, 'RAM32M'),
+        node(3, 'RAM32M'),
+        node(4, 'RAM32M'),
+      ],
+      edges: [],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2, 3, 4],
+      referenceHeight: 100,
+    }])
+    const compound = toElkGraph(input).children?.find(
+      (child) => child.id === 'group:100',
+    )
+
+    expect(compound?.children?.every((child) =>
+      child.layoutOptions?.['elk.layered.layering.layerConstraint'] == null
+    )).toBe(true)
+    expect(compound?.edges?.map((edge) => ({
+      sources: edge.sources,
+      targets: edge.targets,
+    }))).toEqual([
+      { sources: ['1'], targets: ['2'] },
+      { sources: ['3'], targets: ['4'] },
+    ])
+  })
+
+  it('uses a vertical column at the exact 2x limit and a grid just beyond it', () => {
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM32M'), node(2, 'RAM32M'), node(3, 'RAM32M')],
+      edges: [],
+      truncated: false,
+    }
+    const probe = toElkGraph(prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2, 3],
+      referenceHeight: 1_000,
+    }])).children?.find((child) => child.id === 'group:100')
+    const exactReferenceHeight = (probe?.height ?? 0) / 2
+    const atLimit = toElkGraph(prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2, 3],
+      referenceHeight: exactReferenceHeight,
+    }])).children?.find((child) => child.id === 'group:100')
+    const overLimit = toElkGraph(prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2, 3],
+      referenceHeight: exactReferenceHeight - 0.001,
+    }])).children?.find((child) => child.id === 'group:100')
+
+    expect(atLimit?.children?.every((child) =>
+      child.layoutOptions?.['elk.layered.layering.layerConstraint'] === 'FIRST'
+    )).toBe(true)
+    expect(overLimit?.children?.every((child) =>
+      child.layoutOptions?.['elk.layered.layering.layerConstraint'] == null
+    )).toBe(true)
+  })
+
+  it('flattens compound member coordinates and retains its frame geometry', () => {
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM32M'), node(2, 'RAM32M')],
+      edges: [],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{ id: 100, members: [1, 2] }])
+    const geometry = interpretResult(input, {
+      id: 'root',
+      width: 260,
+      height: 160,
+      children: [{
+        id: 'group:100',
+        x: 70,
+        y: 40,
+        width: 170,
+        height: 100,
+        children: [
+          { id: '1', x: 16, y: 30, width: 60, height: 40 },
+          { id: '2', x: 94, y: 30, width: 60, height: 40 },
+        ],
+      }],
+    })
+
+    expect(geometry.nodes.map(({ id, x, y }) => ({ id, x, y }))).toEqual([
+      { id: 1, x: 86, y: 70 },
+      { id: 2, x: 164, y: 128 },
+    ])
+    expect(geometry.groups).toEqual([
+      { id: 100, x: 70, y: 40, width: 170, height: 100 },
+    ])
+  })
+
+  it('orders vertical members canonically and reconnects proxy routes to member pins', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(10, 'port', {
+          kind: 'port',
+          name: 'source',
+          port_direction: 'input',
+        }),
+        node(1, 'FDRE'),
+        node(2, 'FDRE'),
+        node(11, 'port', {
+          kind: 'port',
+          name: 'sink',
+          port_direction: 'output',
+        }),
+        node(12, 'port', {
+          kind: 'port',
+          name: 'clk',
+          port_direction: 'input',
+        }),
+      ],
+      edges: [
+        {
+          from: 10,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'D',
+          net_name: 'incoming',
+          bits: [1],
+        },
+        {
+          from: 1,
+          to: 2,
+          from_port: 'Q',
+          to_port: 'D',
+          net_name: 'internal',
+          bits: [2],
+        },
+        {
+          from: 2,
+          to: 11,
+          from_port: 'Q',
+          to_port: 'A',
+          net_name: 'outgoing',
+          bits: [3],
+        },
+        {
+          from: 12,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'C',
+          net_name: 'clk',
+          bits: [4],
+          control: true,
+        },
+      ],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2],
+      referenceHeight: 1_000,
+    }])
+    const geometry = interpretResult(input, {
+      id: 'root',
+      width: 440,
+      height: 380,
+      children: [
+        { id: '10', x: 10, y: 140, width: 62, height: 46 },
+        {
+          id: 'group:100',
+          x: 100,
+          y: 40,
+          width: 150,
+          height: 300,
+          children: [
+            { id: '1', x: 16, y: 180, width: 110, height: 84 },
+            { id: '2', x: 16, y: 30, width: 110, height: 84 },
+          ],
+        },
+        { id: '11', x: 350, y: 140, width: 62, height: 46 },
+        { id: '12', x: 10, y: 240, width: 62, height: 46 },
+      ],
+      edges: [
+        {
+          id: 'e0',
+          sources: ['10'],
+          targets: ['group:100#in'],
+          sections: [{
+            id: 'e0s0',
+            startPoint: { x: 72, y: 163 },
+            endPoint: { x: 100, y: 190 },
+          }],
+        },
+        {
+          id: 'e2',
+          sources: ['group:100#out'],
+          targets: ['11'],
+          sections: [{
+            id: 'e2s0',
+            startPoint: { x: 250, y: 190 },
+            endPoint: { x: 350, y: 163 },
+          }],
+        },
+        {
+          id: 'e3',
+          sources: ['12'],
+          targets: ['group:100#in'],
+          sections: [{
+            id: 'e3s0',
+            startPoint: { x: 72, y: 263 },
+            endPoint: { x: 100, y: 190 },
+          }],
+        },
+      ],
+    })
+    const byId = new Map(geometry.nodes.map((laidOut) => [laidOut.id, laidOut]))
+    const first = byId.get(1)!
+    const second = byId.get(2)!
+
+    expect(first.y).toBeLessThan(second.y)
+    expect(geometry.edges[0].points.at(-1)?.x).toBe(first.x)
+    expect(geometry.edges[2].points[0].x).toBe(second.x + second.width)
+    expect(geometry.edges[3].points.at(-1)?.x).toBe(first.x)
+    expect(geometry.edges[3].points.at(-1)?.y)
+      .not.toBe(geometry.edges[0].points.at(-1)?.y)
+    expect(Math.max(...geometry.edges[1].points.map((point) => point.x)))
+      .toBeLessThanOrEqual(242)
+  })
+
+  it('repacks heterogeneous vertical members without overlap after ordering', () => {
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM32M'), node(2, 'FDRE')],
+      edges: [],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2],
+      referenceHeight: 1_000,
+    }])
+    const geometry = interpretResult(input, {
+      id: 'root',
+      width: 220,
+      height: 260,
+      children: [{
+        id: 'group:100',
+        x: 40,
+        y: 20,
+        width: 150,
+        height: 220,
+        children: [
+          { id: '1', x: 16, y: 90, width: 110, height: 100 },
+          { id: '2', x: 16, y: 30, width: 110, height: 20 },
+        ],
+      }],
+    })
+    const byId = new Map(geometry.nodes.map((laidOut) => [laidOut.id, laidOut]))
+    const first = byId.get(1)!
+    const second = byId.get(2)!
+
+    expect(second.y).toBeGreaterThanOrEqual(
+      first.y + first.height + 18,
+    )
+  })
+
+  it('routes grid proxy legs through column corridors instead of sibling nodes', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(10, 'port', {
+          kind: 'port',
+          name: 'source',
+          port_direction: 'input',
+        }),
+        node(1, 'RAM32M'),
+        node(2, 'RAM32M'),
+        node(3, 'RAM32M'),
+        node(4, 'RAM32M'),
+      ],
+      edges: [{
+        from: 10,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'D',
+        net_name: 'incoming',
+        bits: [1],
+      }],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2, 3, 4],
+      referenceHeight: 100,
+    }])
+    const geometry = interpretResult(input, {
+      id: 'root',
+      width: 480,
+      height: 300,
+      children: [
+        { id: '10', x: 10, y: 130, width: 62, height: 46 },
+        {
+          id: 'group:100',
+          x: 100,
+          y: 40,
+          width: 320,
+          height: 220,
+          children: [
+            { id: '1', x: 20, y: 30, width: 110, height: 70 },
+            { id: '2', x: 178, y: 30, width: 110, height: 70 },
+            { id: '3', x: 20, y: 118, width: 110, height: 70 },
+            { id: '4', x: 178, y: 118, width: 110, height: 70 },
+          ],
+        },
+      ],
+      edges: [{
+        id: 'e0',
+        sources: ['10'],
+        targets: ['group:100#in'],
+        sections: [{
+          id: 'e0s0',
+          startPoint: { x: 72, y: 153 },
+          endPoint: { x: 100, y: 150 },
+        }],
+      }],
+    })
+    const sibling = geometry.nodes.find((laidOut) => laidOut.id === 1)!
+    const route = geometry.edges[0].points
+    const crossesSibling = route.slice(1).some((point, index) => {
+      const previous = route[index]
+      return (
+        Math.max(previous.x, point.x) > sibling.x &&
+        Math.min(previous.x, point.x) < sibling.x + sibling.width &&
+        Math.max(previous.y, point.y) > sibling.y &&
+        Math.min(previous.y, point.y) < sibling.y + sibling.height
+      )
+    })
+
+    expect(crossesSibling).toBe(false)
+    expect(route.at(-1)?.x).toBe(
+      geometry.nodes.find((laidOut) => laidOut.id === 2)?.x,
+    )
+  })
+
+  it('routes dense compound fanout through proxy ports without dropping edges', () => {
+    const members = Array.from(
+      { length: DENSE_LAYOUT_NODE_THRESHOLD + 20 },
+      (_, index) => node(index + 1, 'FDRE'),
+    )
+    const source = node(1000, 'port', { kind: 'port' })
+    const sub: Subgraph = {
+      nodes: [source, ...members],
+      edges: members.map((member, index) => ({
+        from: source.id,
+        to: member.id,
+        from_port: 'data',
+        to_port: 'D',
+        net_name: 'data',
+        bits: [index],
+      })),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 2000,
+      members: members.map((member) => member.id),
+    }])
+    const graph = toElkGraph(input, 'BRANDES_KOEPF')
+    const compound = graph.children?.find((child) => child.id === 'group:2000')
+
+    expect(graph.edges).toHaveLength(members.length)
+    expect(new Set(graph.edges?.flatMap((edge) => edge.targets))).toEqual(
+      new Set(['group:2000#in']),
+    )
+    expect(input.edges).toHaveLength(members.length)
+    expect(compound?.layoutOptions?.['elk.direction']).toBe('RIGHT')
+  })
+
   it('pins unambiguous primary inputs and outputs to opposite layout boundaries', () => {
     const sub: Subgraph = {
       nodes: [

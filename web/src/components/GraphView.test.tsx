@@ -1265,9 +1265,10 @@ describe('GraphView group expansion controls', () => {
     )
 
     expect(markup).toContain('data-group-action="expand"')
+    expect(markup).toContain('data-control-node-id="100"')
     expect(markup).toContain('aria-label="Expand group memory [16×16]"')
-    expect(markup).toContain('transform="translate(110,20)"')
-    expect(markup).toContain('class="g-group-toggle-hit" r="10"')
+    expect(markup).toContain('transform="translate(107,23)"')
+    expect(markup).toContain('class="g-group-toggle-hit" r="19"')
     expect(markup).not.toContain('<circle r="6"></circle>')
   })
 
@@ -1355,7 +1356,7 @@ describe('GraphView group expansion controls', () => {
     expect(markup).not.toContain('data-group-action="collapse"')
   })
 
-  it('keeps a dashed labeled boundary and minus around expanded members', () => {
+  it('keeps re-rendered group members inside one collapsible boundary', () => {
     const markup = renderToStaticMarkup(
       <GraphView
         graph={{
@@ -1385,9 +1386,12 @@ describe('GraphView group expansion controls', () => {
     )
 
     expect(markup).toContain('class="g-expanded-group-boundary"')
-    expect(markup).toContain('data-group-action="collapse"')
+    expect(markup).toContain('class="g-expanded-group-label"')
+    expect(markup.match(/data-group-action="collapse"/g)).toHaveLength(1)
+    expect(markup).toContain('data-control-node-id="1"')
     expect(markup).toContain('aria-label="Collapse group memory [16×16]"')
-    expect(markup).toContain('class="g-group-toggle-hit" r="10"')
+    expect(markup).toContain('transform="translate(229,17)"')
+    expect(markup).toContain('class="g-group-toggle-hit" r="19"')
     expect(markup).not.toContain('<circle r="6"></circle>')
   })
 })
