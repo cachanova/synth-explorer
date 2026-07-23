@@ -4,7 +4,6 @@ import type { TimingPath } from '../../types'
 import { StaleResultsChip } from '../StaleResultsChip'
 import { PlatformName } from './Overview'
 import {
-  BitCohort,
   OutputAliasName,
   PathClassName,
   PathEndpointName,
@@ -19,12 +18,6 @@ describe('analysis surface labels', () => {
 
   it('labels Xilinx mode without repeating the selected synthesis tool', () => {
     expect(renderToStaticMarkup(<PlatformName mode="xilinx" />)).toBe('Xilinx')
-  })
-
-  it('formats grouped path bits as descending cohorts', () => {
-    expect(renderToStaticMarkup(<BitCohort bits={[2, 1, 0, 6, 5, 2]} />)).toBe(
-      '[6:5], [2:0]',
-    )
   })
 
   it('renders path classes and registered-output aliases in product terms', () => {

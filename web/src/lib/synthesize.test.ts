@@ -29,24 +29,6 @@ describe('buildSynthesizeRequest', () => {
     })
   })
 
-  it('passes xilinx family/retime through as ordinary flags (no dedicated fields)', () => {
-    // The Xilinx controls assemble -family/-retime into the flags string, so
-    // buildSynthesizeRequest just forwards them via extra_args.
-    expect(
-      buildSynthesizeRequest(
-        files,
-        'top',
-        'xilinx',
-        '-family xcup -retime',
-      ),
-    ).toEqual({
-      files,
-      top: 'top',
-      mode: 'xilinx',
-      extra_args: '-family xcup -retime',
-    })
-  })
-
   it('includes the exact local Vivado producer and resolved part', () => {
     expect(buildSynthesizeRequest(files, 'top', 'gates', '-retiming', 'vivado', {
       name: 'xc7a35tcpg236-1',

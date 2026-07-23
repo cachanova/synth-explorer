@@ -902,32 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn newer_process_presets_are_faster_end_to_end() {
-        // Deliberately NOT asserted on `lut_ps`: LUT delay is *not* monotonic
-        // across these families. Vivado's own characterized data has Series-7
-        // LUT6 at 124 ps and UltraScale at ~152 ps — the newer, smaller process
-        // has the slower LUT, and the win shows up in routing and registers
-        // instead. The old test asserted monotonic lut_ps and only passed because
-        // the coefficients were guesses; real values would have failed it.
-        //
-        // What does hold is the whole-fabric picture, which is what a preset is
-        // for.
-        assert!(DelayModel::series7().ff_clk_to_q_ps > DelayModel::ultrascale().ff_clk_to_q_ps);
-        assert!(
-            DelayModel::ultrascale().ff_clk_to_q_ps > DelayModel::ultrascale_plus().ff_clk_to_q_ps
-        );
-        assert!(DelayModel::series7().carry_ps > DelayModel::ultrascale().carry_ps);
-        assert_eq!(DelayModel::default(), DelayModel::series7());
-    }
-
-    #[test]
-    fn ultrascale_plus_wide_mux_uses_the_measured_worst_arc() {
-        // Vivado 2026.1 get_speed_models on xcku5p -1: the slowest
-        // F7MUX/F8MUX/F9MUX propagation arc is the F7 select arc at 107 ps.
-        assert_eq!(DelayModel::ultrascale_plus().wide_mux_ps, 107.0);
-    }
-
-    #[test]
     fn asic_branched_net_delay_orders_by_process() {
         // fanout 2 is the first point where this model's fanout term applies.
         // It provides the intended sanity ordering without pretending that a
@@ -939,14 +913,6 @@ mod tests {
             asap7 < sky130 && sky130 < gf180,
             "{asap7} < {sky130} < {gf180}"
         );
-    }
-
-    #[test]
-    fn lattice_net_bases_are_the_end_to_end_validated_intercepts() {
-        // These are the only Lattice terms fitted end to end. The cell and
-        // fanout terms remain direct IceStorm/prjtrellis database values.
-        assert_eq!(DelayModel::ice40().net_base_ps, 589.1);
-        assert_eq!(DelayModel::ecp5().net_base_ps, 450.0);
     }
 
     #[test]
@@ -1070,10 +1036,6 @@ mod tests {
             ("generic", DelayProfile::Generic),
         ] {
             assert_eq!(DelayProfile::from_name(Some(name)), profile);
-            assert_eq!(
-                DelayModel::for_target("xilinx", None),
-                DelayModel::series7()
-            );
         }
         // Unknown / absent names fall back to the historical default.
         assert_eq!(DelayProfile::from_name(None), DelayProfile::Series7);

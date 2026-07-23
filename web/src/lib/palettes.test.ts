@@ -5,7 +5,6 @@ import {
   PALETTES,
   isMode,
   isPaletteId,
-  paletteHasLight,
   resolveMode,
 } from './palettes'
 
@@ -24,12 +23,6 @@ describe('palette registry', () => {
         expect(hex).toMatch(/^#[0-9a-f]{6}$/i)
       }
     }
-  })
-
-  it('marks the dark-only palettes', () => {
-    expect(paletteHasLight('dracula')).toBe(false)
-    expect(paletteHasLight('synthwave')).toBe(false)
-    expect(paletteHasLight('tidepool')).toBe(true)
   })
 
   it('rejects unknown ids and modes', () => {

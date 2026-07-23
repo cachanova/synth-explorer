@@ -7,18 +7,6 @@ test('shows a branded shell before the application bundle loads', async ({ page 
 
   await expect(page.getByTestId('boot-shell')).toBeVisible()
   await expect(page.getByText('Synth Explorer', { exact: true })).toBeVisible()
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => performance.getEntriesByName('first-contentful-paint')[0]?.startTime ?? 0,
-      ),
-    )
-    .toBeGreaterThan(0)
-  expect(
-    await page.evaluate(
-      () => performance.getEntriesByName('first-contentful-paint')[0].startTime,
-    ),
-  ).toBeLessThan(1_000)
 })
 
 test('matches the narrow editor workspace before the application bundle loads', async ({

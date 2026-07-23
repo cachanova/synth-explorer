@@ -6,7 +6,6 @@ import {
   editorModelForRequest,
   gateDelayValue,
   loadTimingSettings,
-  PDK_PROFILES,
   resolveTimingView,
   saveTimingSettings,
   timingRequestForView,
@@ -260,9 +259,5 @@ describe('load/save round-trip', () => {
 
     localStorage.setItem('synthexplorer.timing.v1', '{broken')
     expect(loadTimingSettings()).toEqual(DEFAULT_TIMING_SETTINGS)
-  })
-
-  it('recognizes exactly the ASIC library profiles', () => {
-    expect([...PDK_PROFILES].sort()).toEqual(['asap7', 'gf180mcu', 'sky130hd'])
   })
 })

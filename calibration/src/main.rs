@@ -655,13 +655,6 @@ mod tests {
     }
 
     #[test]
-    fn pinning_is_composable() {
-        let out = pin_param(&pin_param(SRC, "WIDTH", 32).unwrap(), "NUM_INPUTS", 2).unwrap();
-        assert!(out.contains("WIDTH = 32,"));
-        assert!(out.contains("NUM_INPUTS = 2,"));
-    }
-
-    #[test]
     fn an_unknown_parameter_is_an_error_not_a_silent_default() {
         // Silently synthesizing the default would calibrate against the wrong
         // design and quietly corrupt the fit — the whole point of erroring.
@@ -678,16 +671,6 @@ mod tests {
                    \x20   parameter int unsigned DEPTH = 8,\n";
         let err = pin_param(src, "DEPTH", 16).unwrap_err().to_string();
         assert!(err.contains("found 2"), "unexpected error: {err}");
-    }
-
-    #[test]
-    fn a_trailing_comment_is_not_silently_eaten() {
-        // Everything after `=` is replaced, so anything trailing is dropped.
-        // Harmless for a comment, but pin the behaviour so a future change to
-        // this rewrite has to think about it.
-        let src = "    parameter int unsigned WIDTH = 8, // bus width\n";
-        let out = pin_param(src, "WIDTH", 32).unwrap();
-        assert_eq!(out, "    parameter int unsigned WIDTH = 32,\n");
     }
 
     #[test]

@@ -5102,6 +5102,12 @@ mod tests {
             .map(|id| graph.node_ref_name(*id))
             .collect();
         assert!(names.iter().any(|name| name.contains("$not")));
+        assert!(
+            analysis
+                .comb_loops
+                .iter()
+                .all(|id| graph.nodes[*id as usize].kind == NodeKind::Cell)
+        );
     }
 
     #[test]
