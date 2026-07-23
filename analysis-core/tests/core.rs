@@ -665,6 +665,78 @@ fn fanout_counts_direct_sinks() {
 }
 
 #[test]
+fn logic_generated_register_enables_remain_dataflow_edges() {
+    let mut cells = serde_json::Map::new();
+    cells.insert(
+        "enable_logic".to_owned(),
+        serde_json::json!({
+            "type": "$_NOT_",
+            "port_directions": { "A": "input", "Y": "output" },
+            "connections": { "A": [3], "Y": [20] }
+        }),
+    );
+    for bit in 0u32..8 {
+        cells.insert(
+            format!("q_{bit}"),
+            serde_json::json!({
+                "type": "$_DFFE_PP_",
+                "port_directions": {
+                    "C": "input", "D": "input", "E": "input", "Q": "output"
+                },
+                "connections": {
+                    "C": [2], "D": [4 + bit], "E": [20], "Q": [12 + bit]
+                }
+            }),
+        );
+    }
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "clk": { "direction": "input", "bits": [2] },
+                "raw_en": { "direction": "input", "bits": [3] },
+                "d": { "direction": "input", "bits": (4u32..12).collect::<Vec<_>>() },
+                "q": { "direction": "output", "bits": (12u32..20).collect::<Vec<_>>() }
+            },
+            "cells": cells,
+            "netnames": {
+                "clk": { "bits": [2] },
+                "raw_en": { "bits": [3] },
+                "d": { "bits": (4u32..12).collect::<Vec<_>>() },
+                "q": { "bits": (12u32..20).collect::<Vec<_>>() },
+                "generated_en": { "bits": [20] }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["generated_enable.sv".to_owned()]);
+
+    let visible = analysis.full_netlist(&graph, full_options(100, false, false, false), None);
+    let generated_enable = visible
+        .edges
+        .iter()
+        .find(|edge| edge.net_name == "generated_en" && edge.to_port == "E")
+        .expect("generated enable edge should remain visible");
+    assert_ne!(
+        generated_enable.control,
+        Some(true),
+        "logic-generated enables are ordinary dataflow, not labeled controls"
+    );
+
+    let controls_hidden =
+        analysis.full_netlist(&graph, full_options(100, false, true, false), None);
+    assert!(
+        controls_hidden
+            .edges
+            .iter()
+            .any(|edge| edge.net_name == "generated_en" && edge.to_port == "E"),
+        "hide control must not remove logic-generated enable dataflow"
+    );
+}
+
+#[test]
 fn full_netlist_applies_control_and_constant_visibility_before_capping() {
     let (graph, analysis) = fixture("reg_mux_rtl.json");
     let controls_visible =

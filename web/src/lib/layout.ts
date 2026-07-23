@@ -413,6 +413,11 @@ export function controlRoleForPin(pin: string): ControlRole {
   }
 }
 
+/** True when a register input names a physical clock/reset/set/enable pin. */
+export function isRegisterControlPin(pin: string): boolean {
+  return controlRoleForPin(pin) !== 'other'
+}
+
 function isRegKind(node: GraphNode): boolean {
   const kind = symbolKind(node)
   return kind === 'reg' || kind === 'latch'
@@ -485,6 +490,7 @@ function pinBodyHeight(node: LayoutInputNode, height: number): number {
 }
 
 export function prepareLayoutInput(sub: Subgraph): LayoutInput {
+  const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -496,13 +502,21 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         register: isRegKind(node),
       }
     }),
-    edges: sub.edges.map((edge) => ({
-      from: edge.from,
-      to: edge.to,
-      fromPort: edge.from_port,
-      toPort: edge.to_port,
-      control: edge.control === true,
-    })),
+    edges: sub.edges.map((edge) => {
+      const target = nodeById.get(edge.to)
+      return {
+        from: edge.from,
+        to: edge.to,
+        fromPort: edge.from_port,
+        toPort: edge.to_port,
+        // API `control` describes global-control semantics and styling. Keep
+        // ordinary logic-generated enables solid while still routing them to
+        // the physical EN pin instead of the register's D pin.
+        control:
+          edge.control === true ||
+          Boolean(target && isRegKind(target) && isRegisterControlPin(edge.to_port)),
+      }
+    }),
   }
 }
 

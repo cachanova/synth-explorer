@@ -860,6 +860,80 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('class="g-edge-arrows control"')
   })
 
+  it('draws a generated enable on its EN pin without control-edge styling', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 12,
+              width: 76,
+              height: 52,
+              node: {
+                id: 1,
+                kind: 'cell',
+                name: 'enable_logic',
+                cell_type: '$_NOT_',
+              },
+            },
+            {
+              id: 2,
+              x: 140,
+              y: 0,
+              width: 92,
+              height: 58,
+              node: {
+                id: 2,
+                kind: 'cell',
+                name: 'q',
+                cell_type: '$_DFFE_PP_',
+                seq: true,
+                register: true,
+              },
+            },
+          ],
+          edges: [
+            {
+              from: 1,
+              to: 2,
+              points: [
+                { x: 76, y: 38 },
+                { x: 140, y: 51 },
+              ],
+              edge: {
+                from: 1,
+                to: 2,
+                from_port: 'Y',
+                to_port: 'E',
+                net_name: 'generated_en',
+                bits: [20],
+              },
+            },
+          ],
+          width: 232,
+          height: 58,
+        }}
+        rootId={2}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain(
+      'class="g-reg-pin g-reg-ctrl-pin" x="9" y="54.04">EN</text>',
+    )
+    expect(markup).toContain('class="g-edge"')
+    expect(markup).not.toContain('class="g-edge control"')
+    expect(markup).not.toContain('class="g-edge-arrows control"')
+  })
+
   it('truncates long register names to the allocated node width', () => {
     const longName = 'with_stages.shift_data_reg_next[3]'
     const markup = renderToStaticMarkup(

@@ -14,6 +14,7 @@ import {
   canonicalPinNames,
   controlRoleForPin,
   fitViewportToContent,
+  isRegisterControlPin,
   panViewport,
   preserveViewportAnchor,
   REG_BODY_HEIGHT,
@@ -2140,7 +2141,13 @@ export const GraphView = memo(function GraphView({
       if (fromPins && edge.edge.from_port) fromPins.outgoing.add(edge.edge.from_port)
       if (toPins && edge.edge.to_port) {
         toPins.incoming.add(edge.edge.to_port)
-        if (edge.edge.control) {
+        const target = nodeById.get(edge.to)?.node
+        const targetKind = target ? symbolKind(target) : null
+        if (
+          edge.edge.control ||
+          ((targetKind === 'reg' || targetKind === 'latch') &&
+            isRegisterControlPin(edge.edge.to_port))
+        ) {
           toPins.controlInputs.set(
             edge.edge.to_port,
             controlRoleForPin(edge.edge.to_port),
