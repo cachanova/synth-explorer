@@ -2199,6 +2199,12 @@ th.sortable:hover {
 .g-edge-arrows.hl {
   fill: var(--accent);
 }
+.g-selected-edge-layer {
+  pointer-events: none;
+}
+.g-selected-edge-layer .g-edge.bus {
+  stroke-width: 2.4;
+}
 .graph-stage-wrap[data-focus='off'] [data-relevant='0'] {
   opacity: 0.25;
 }

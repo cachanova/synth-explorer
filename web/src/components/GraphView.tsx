@@ -1287,8 +1287,33 @@ interface SchematicEdgesProps {
   prepared: PreparedSchematicEdges
 }
 
+interface SelectedSchematicEdgeBatch {
+  key: string
+  d: string
+  count: number
+  indexes: number[]
+  relevant: boolean
+  control: boolean
+  isBus: boolean
+}
+
+interface SelectedSchematicArrowBatch {
+  key: string
+  d: string
+  count: number
+  relevant: boolean
+  control: boolean
+}
+
+interface PreparedSelectedSchematicEdges {
+  batches: SelectedSchematicEdgeBatch[]
+  arrows: SelectedSchematicArrowBatch[]
+}
+
 interface PreparedSchematicEdge {
   index: number
+  from: number
+  to: number
   points: Point[]
   title: string
   bits: number
@@ -1325,7 +1350,10 @@ interface PreparedSchematicEdges {
   edges: PreparedSchematicEdge[]
   batches: SchematicEdgeBatch[]
   arrows: SchematicArrowBatch[]
+  incidentByNode: Map<number, PreparedSchematicEdge[]>
 }
+
+const EMPTY_PREPARED_SCHEMATIC_EDGES: PreparedSchematicEdge[] = []
 
 function edgeBatchKey(
   relevant: boolean,
@@ -1424,6 +1452,7 @@ function prepareSchematicEdges({
   const prepared: PreparedSchematicEdge[] = []
   const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
   const arrowBuilders = new Map<string, SchematicArrowBatch & { paths: string[] }>()
+  const incidentByNode = new Map<number, PreparedSchematicEdge[]>()
 
   edges.forEach((laidOutEdge, index) => {
     const relevant =
@@ -1472,6 +1501,8 @@ function prepareSchematicEdges({
     const title = `${shortNetName(laidOutEdge.edge.net_name)} (${bits} bit${isBus ? 's' : ''}): ${laidOutEdge.edge.from_port}→${laidOutEdge.edge.to_port}`
     const edge: PreparedSchematicEdge = {
       index,
+      from: laidOutEdge.from,
+      to: laidOutEdge.to,
       points,
       title,
       bits,
@@ -1484,6 +1515,13 @@ function prepareSchematicEdges({
       mid,
     }
     prepared.push(edge)
+    for (const nodeId of laidOutEdge.from === laidOutEdge.to
+      ? [laidOutEdge.from]
+      : [laidOutEdge.from, laidOutEdge.to]) {
+      const incident = incidentByNode.get(nodeId)
+      if (incident) incident.push(edge)
+      else incidentByNode.set(nodeId, [edge])
+    }
 
     let batch = batchBuilders.get(batchKey)
     if (!batch) {
@@ -1531,7 +1569,7 @@ function prepareSchematicEdges({
   const arrows = [...arrowBuilders.values()]
     .map(({ paths, ...batch }) => ({ ...batch, d: paths.join(' ') }))
     .sort((a, b) => edgePaintOrder(a) - edgePaintOrder(b))
-  return { edges: prepared, batches, arrows }
+  return { edges: prepared, batches, arrows, incidentByNode }
 }
 
 // Selection changes affect node state far more often than edge state. Keep the
@@ -1581,6 +1619,98 @@ const SchematicEdges = memo(function SchematicEdges({ prepared }: SchematicEdges
           {edge.bits}
         </text>
       ) : null)}
+    </g>
+  )
+})
+
+function prepareSelectedSchematicEdges(
+  edges: PreparedSchematicEdge[],
+): PreparedSelectedSchematicEdges {
+  const batchBuilders = new Map<
+    string,
+    Omit<SelectedSchematicEdgeBatch, 'd'> & { paths: string[] }
+  >()
+  const arrowBuilders = new Map<
+    string,
+    Omit<SelectedSchematicArrowBatch, 'd'> & { paths: string[] }
+  >()
+
+  for (const edge of edges) {
+    const line = pathD(edge.points)
+    if (line) {
+      const key = edgeBatchKey(edge.relevant, edge.control, edge.isBus, true)
+      const batch = batchBuilders.get(key) ?? {
+        key,
+        count: 0,
+        indexes: [],
+        relevant: edge.relevant,
+        control: edge.control,
+        isBus: edge.isBus,
+        paths: [],
+      }
+      batch.count += 1
+      batch.indexes.push(edge.index)
+      batch.paths.push(line)
+      batchBuilders.set(key, batch)
+    }
+
+    const arrow = edgeArrowD(edge.points, edge.isBus ? 2.4 : 2.2)
+    if (arrow) {
+      const key =
+        `${edge.relevant ? 1 : 0}${edge.control ? 1 : 0}${edge.isBus ? 1 : 0}`
+      const batch = arrowBuilders.get(key) ?? {
+        key,
+        count: 0,
+        relevant: edge.relevant,
+        control: edge.control,
+        paths: [],
+      }
+      batch.count += 1
+      batch.paths.push(arrow)
+      arrowBuilders.set(key, batch)
+    }
+  }
+
+  return {
+    batches: [...batchBuilders.values()].map(({ paths, ...batch }) => ({
+      ...batch,
+      d: paths.join(' '),
+    })),
+    arrows: [...arrowBuilders.values()].map(({ paths, ...batch }) => ({
+      ...batch,
+      d: paths.join(' '),
+    })),
+  }
+}
+
+const SelectedSchematicEdges = memo(function SelectedSchematicEdges({
+  edges,
+}: {
+  edges: PreparedSchematicEdge[]
+}) {
+  if (edges.length === 0) return null
+  const prepared = prepareSelectedSchematicEdges(edges)
+  return (
+    <g className="g-selected-edge-layer" aria-hidden="true">
+      {prepared.batches.map((batch) => (
+        <path
+          key={batch.key}
+          className={edgeClassName(batch.control, batch.isBus, true)}
+          d={batch.d}
+          data-selected-edge-count={batch.count}
+          data-selected-edge-indices={batch.indexes.join(',')}
+          data-relevant={batch.relevant ? 1 : 0}
+        />
+      ))}
+      {prepared.arrows.map((batch) => (
+        <path
+          key={batch.key}
+          className={`g-edge-arrows${batch.control ? ' control' : ''} hl`}
+          d={batch.d}
+          data-selected-arrow-count={batch.count}
+          data-relevant={batch.relevant ? 1 : 0}
+        />
+      ))}
     </g>
   )
 })
@@ -2056,6 +2186,21 @@ export const GraphView = memo(function GraphView({
       relevantIds,
     ],
   )
+  const selectedEdges = useMemo(() => {
+    if (selectedId == null) return EMPTY_PREPARED_SCHEMATIC_EDGES
+    const selectedNode = metadata.nodeById.get(selectedId)?.node
+    const endpointIds = [selectedId, ...(selectedNode?.members ?? [])]
+    const seen = new Set<number>()
+    const edges: PreparedSchematicEdge[] = []
+    for (const endpointId of endpointIds) {
+      for (const edge of preparedEdges.incidentByNode.get(endpointId) ?? []) {
+        if (seen.has(edge.index)) continue
+        seen.add(edge.index)
+        edges.push(edge)
+      }
+    }
+    return edges
+  }, [metadata.nodeById, preparedEdges.incidentByNode, selectedId])
 
   const clearDetailRestore = useCallback(() => {
     if (detailRestoreTimer.current == null) return
@@ -2741,6 +2886,7 @@ export const GraphView = memo(function GraphView({
           data-detail-level="overview"
         >
           <SchematicEdges prepared={preparedEdges} />
+          <SelectedSchematicEdges edges={selectedEdges} />
 
           <SchematicNodeDetailOverlays
             viewportRef={viewportRef}

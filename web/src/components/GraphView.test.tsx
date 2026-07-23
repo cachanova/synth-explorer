@@ -396,6 +396,212 @@ describe('GraphView LUT labels', () => {
     expect(highlighted[0]).toContain('data-edge-count="1"')
   })
 
+  it('highlights only the visible input and output wires connected to the selected node', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 1,
+          x: 0,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 1, kind: 'port' as const, name: 'input' },
+        },
+        {
+          id: 2,
+          x: 140,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 2, kind: 'cell' as const, name: 'selected', cell_type: '$_AND_' },
+        },
+        {
+          id: 3,
+          x: 280,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 3, kind: 'port' as const, name: 'output' },
+        },
+      ],
+      edges: [
+        laidOutEdge(1, 2, 'selected_input'),
+        laidOutEdge(2, 3, 'selected_output'),
+        laidOutEdge(1, 3, 'unrelated'),
+      ],
+      width: 356,
+      height: 52,
+    }
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={2}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(selectedEdgeIndexes(markup)).toEqual([0, 1])
+    expect(markup).toContain('data-selected-edge-count="2"')
+  })
+
+  it('highlights visible wires represented by a selected grouped node', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 76,
+              height: 52,
+              node: { id: 1, kind: 'port', name: 'input' },
+            },
+            {
+              id: 100,
+              x: 140,
+              y: 0,
+              width: 76,
+              height: 52,
+              node: {
+                id: 100,
+                kind: 'cell',
+                name: 'mux',
+                cell_type: '$_MUX_',
+                member_count: 2,
+                members: [2, 3],
+              },
+            },
+            {
+              id: 4,
+              x: 280,
+              y: 0,
+              width: 76,
+              height: 52,
+              node: { id: 4, kind: 'port', name: 'output' },
+            },
+          ],
+          edges: [
+            laidOutEdge(1, 2, 'group_input'),
+            laidOutEdge(3, 4, 'group_output'),
+            laidOutEdge(1, 4, 'unrelated'),
+          ],
+          width: 356,
+          height: 52,
+        }}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={100}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(selectedEdgeIndexes(markup)).toEqual([0, 1])
+  })
+
+  it('includes visible control wires without highlighting unrelated controls', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 1,
+          x: 0,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 1, kind: 'port' as const, name: 'data' },
+        },
+        {
+          id: 2,
+          x: 140,
+          y: 0,
+          width: 92,
+          height: 58,
+          node: {
+            id: 2,
+            kind: 'cell' as const,
+            name: 'selected_reg',
+            cell_type: '$_DFF_P_',
+            seq: true,
+            register: true,
+          },
+        },
+        {
+          id: 3,
+          x: 0,
+          y: 90,
+          width: 76,
+          height: 52,
+          node: { id: 3, kind: 'port' as const, name: 'clk' },
+        },
+        {
+          id: 4,
+          x: 280,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 4, kind: 'port' as const, name: 'output' },
+        },
+        {
+          id: 5,
+          x: 140,
+          y: 90,
+          width: 92,
+          height: 58,
+          node: {
+            id: 5,
+            kind: 'cell' as const,
+            name: 'other_reg',
+            cell_type: '$_DFF_P_',
+            seq: true,
+            register: true,
+          },
+        },
+      ],
+      edges: [
+        laidOutEdge(1, 2, 'data_input'),
+        {
+          ...laidOutEdge(3, 2, 'selected_clock'),
+          edge: { ...laidOutEdge(3, 2, 'selected_clock').edge, control: true },
+        },
+        laidOutEdge(2, 4, 'data_output'),
+        {
+          ...laidOutEdge(3, 5, 'unrelated_clock'),
+          edge: { ...laidOutEdge(3, 5, 'unrelated_clock').edge, control: true },
+        },
+      ],
+      width: 356,
+      height: 148,
+    }
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={2}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(selectedEdgeIndexes(markup)).toEqual([0, 1, 2])
+    expect(markup).toMatch(
+      /class="g-edge control hl"[^>]*data-selected-edge-indices="1"/,
+    )
+  })
+
   it('highlights boundary and interior nets without context-logic branch bleed', () => {
     const props = {
       graph: boundaryHighlightGraph(),
@@ -927,6 +1133,12 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('aria-label="Collapse group memory [16×16]"')
   })
 })
+
+function selectedEdgeIndexes(markup: string): number[] {
+  return [...markup.matchAll(/data-selected-edge-indices="([^"]+)"/g)]
+    .flatMap((match) => match[1].split(',').map(Number))
+    .sort((left, right) => left - right)
+}
 
 function laidOutEdge(from: number, to: number, netName: string) {
   return {
