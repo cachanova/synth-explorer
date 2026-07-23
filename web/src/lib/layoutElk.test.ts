@@ -131,6 +131,14 @@ describe('logic-oriented ELK layout policy', () => {
           register: false,
           boundary: 'output',
         },
+        {
+          id: 4,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+        },
         ...Array.from({ length: isolatedNodes }, (_, index) => ({
           id: index + 10,
           baseWidth: 62,
@@ -160,7 +168,7 @@ describe('logic-oriented ELK layout policy', () => {
 
     const result = await new ELK().layout(toElkGraph(input, 'BRANDES_KOEPF'))
 
-    expect(result.children).toHaveLength(isolatedNodes + 3)
+    expect(result.children).toHaveLength(isolatedNodes + 4)
     expect(result.height).toBeLessThan(5_000)
   })
 })

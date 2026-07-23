@@ -14,6 +14,7 @@ import {
   interpretResult,
   LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
   LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
+  MAX_GLOBAL_LAYOUT_COMPONENTS,
   layoutExpandedGroupInPlace,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
@@ -688,7 +689,10 @@ describe('schematic layout sizing', () => {
 
   it('lets ELK pack highly disconnected views instead of building one tall layer', () => {
     const input = prepareLayoutInput({
-      nodes: Array.from({ length: 40 }, (_, id) => node(id, '$_BUF_')),
+      nodes: Array.from(
+        { length: MAX_GLOBAL_LAYOUT_COMPONENTS + 8 },
+        (_, id) => node(id, '$_BUF_'),
+      ),
       edges: [],
       truncated: false,
     })
@@ -700,20 +704,62 @@ describe('schematic layout sizing', () => {
 
   it('preserves global alignment when disconnected components are boundary ports', () => {
     const input: LayoutInput = {
-      nodes: Array.from({ length: 40 }, (_, id) => ({
-        id,
-        baseWidth: 74,
-        baseHeight: 34,
-        controlHeight: 0,
-        register: false,
-        boundary: 'input',
-      })),
+      nodes: Array.from(
+        { length: MAX_GLOBAL_LAYOUT_COMPONENTS + 8 },
+        (_, id) => ({
+          id,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+        }),
+      ),
       edges: [],
     }
 
     expect(
       toElkGraph(input).layoutOptions?.['elk.separateConnectedComponents'],
     ).toBe('false')
+  })
+
+  it('packs excess internal orphans even when several components have boundaries', () => {
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+        },
+        {
+          id: 2,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+        },
+        ...Array.from(
+          { length: MAX_GLOBAL_LAYOUT_COMPONENTS + 1 },
+          (_, index) => ({
+            id: index + 10,
+            baseWidth: 62,
+            baseHeight: 46,
+            controlHeight: 0,
+            register: false,
+            boundary: 'internal' as const,
+          }),
+        ),
+      ],
+      edges: [],
+    }
+
+    expect(
+      toElkGraph(input).layoutOptions?.['elk.separateConnectedComponents'],
+    ).toBe('true')
   })
 
   it('reduces ELK thoroughness only on the robust very-large-graph path', () => {

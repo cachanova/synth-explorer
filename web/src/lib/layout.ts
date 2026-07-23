@@ -93,7 +93,7 @@ export interface LayoutInput {
   edges: LayoutInputEdge[]
 }
 
-const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
+export const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
 
 function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
   const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
@@ -124,9 +124,10 @@ function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
     }
     if (hasBoundary) boundaryComponentCount += 1
   }
+  const internalComponentCount = componentCount - boundaryComponentCount
   return (
     componentCount <= MAX_GLOBAL_LAYOUT_COMPONENTS ||
-    boundaryComponentCount > 1
+    internalComponentCount <= MAX_GLOBAL_LAYOUT_COMPONENTS
   )
 }
 
