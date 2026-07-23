@@ -396,6 +396,67 @@ describe('GraphView LUT labels', () => {
     expect(highlighted[0]).toContain('data-edge-count="1"')
   })
 
+  it('highlights only the visible input and output wires connected to the selected node', () => {
+    const graph = {
+      nodes: [
+        {
+          id: 1,
+          x: 0,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 1, kind: 'port' as const, name: 'input' },
+        },
+        {
+          id: 2,
+          x: 140,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 2, kind: 'cell' as const, name: 'selected', cell_type: '$_AND_' },
+        },
+        {
+          id: 3,
+          x: 280,
+          y: 0,
+          width: 76,
+          height: 52,
+          node: { id: 3, kind: 'port' as const, name: 'output' },
+        },
+      ],
+      edges: [
+        laidOutEdge(1, 2, 'selected_input'),
+        laidOutEdge(2, 3, 'selected_output'),
+        laidOutEdge(1, 3, 'unrelated'),
+      ],
+      width: 356,
+      height: 52,
+    }
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={2}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    const edgeTags = markup.match(
+      /<path class="g-edge(?: [^"]*)?"[^>]*data-edge-count="\d+"[^>]*>/g,
+    ) ?? []
+    expect(edgeTags.find((tag) => tag.includes('class="g-edge hl"'))).toContain(
+      'data-edge-count="2"',
+    )
+    expect(edgeTags.find((tag) => tag.includes('class="g-edge"'))).toContain(
+      'data-edge-count="1"',
+    )
+  })
+
   it('highlights boundary and interior nets without context-logic branch bleed', () => {
     const props = {
       graph: boundaryHighlightGraph(),

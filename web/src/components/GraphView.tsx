@@ -1413,6 +1413,7 @@ function prepareSchematicEdges({
   overlayIds,
   highlightedBits,
   extendOverlayToBoundaryNets,
+  selectedId,
 }: {
   edges: LaidOutEdge[]
   nodeById: Map<number, LaidOutNode>
@@ -1420,6 +1421,7 @@ function prepareSchematicEdges({
   overlayIds: Set<number>
   highlightedBits: Set<number>
   extendOverlayToBoundaryNets: boolean
+  selectedId: number | null
 }): PreparedSchematicEdges {
   const prepared: PreparedSchematicEdge[] = []
   const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
@@ -1445,7 +1447,11 @@ function prepareSchematicEdges({
     const exactBitHighlighted = laidOutEdge.edge.bits.some((bit) =>
       highlightedBits.has(bit),
     )
+    const connectedToSelection =
+      selectedId != null &&
+      (laidOutEdge.from === selectedId || laidOutEdge.to === selectedId)
     const highlighted =
+      connectedToSelection ||
       exactBitHighlighted ||
       (highlightedBits.size === 0 &&
         ((fromHighlighted && toHighlighted) ||
@@ -2046,6 +2052,7 @@ export const GraphView = memo(function GraphView({
       overlayIds,
       highlightedBits,
       extendOverlayToBoundaryNets,
+      selectedId,
     }),
     [
       extendOverlayToBoundaryNets,
@@ -2054,6 +2061,7 @@ export const GraphView = memo(function GraphView({
       metadata.nodeById,
       overlayIds,
       relevantIds,
+      selectedId,
     ],
   )
 
