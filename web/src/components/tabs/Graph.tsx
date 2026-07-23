@@ -662,10 +662,9 @@ export function Graph({ active }: { active: boolean }) {
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    // Every expanded projection gets a fresh optimal ELK layout. Reusing the
-    // previous coordinates makes a focused subset inherit the full schematic's
-    // spacing and leaves large, awkward gaps. GraphView separately preserves a
-    // retained node's viewport position so the relayout does not feel like a jump.
+    // Fall back to a fresh ELK layout when there is no compatible grouped-base
+    // layout to compose locally (for example, a newly focused projection).
+    // GraphView preserves a retained node's viewport position across that fallback.
     layoutSubgraph(toLayout, controller.signal)
       .then((g) => {
         if (cancelled) return

@@ -791,18 +791,9 @@ const LOCAL_GROUP_MARGIN_BOTTOM = 14
 const LOCAL_GROUP_COLLISION_GAP = 12
 
 function localEdgePoints(
-  from: LaidOutNode,
-  to: LaidOutNode,
+  start: Point,
+  end: Point,
 ): Point[] {
-  const forward = to.x >= from.x
-  const start = {
-    x: forward ? from.x + from.width : from.x,
-    y: from.y + from.height / 2,
-  }
-  const end = {
-    x: forward ? to.x : to.x + to.width,
-    y: to.y + to.height / 2,
-  }
   const middleX = (start.x + end.x) / 2
   return [
     start,
@@ -835,6 +826,7 @@ export function layoutExpandedGroupInPlace(
 
   const input = prepareLayoutInput(sub)
   const pins = collectPinCatalog(input.edges)
+  const inputNodeById = new Map(input.nodes.map((node) => [node.id, node]))
   const dimensions = new Map(input.nodes.map((node) => [
     node.id,
     dimensionsForPins(
@@ -882,9 +874,33 @@ export function layoutExpandedGroupInPlace(
     [0, -2],
   ] as const
   const blockers = base.nodes.filter((node) => node.id !== group.id)
-  const candidates = candidateOffsets.map(([column, row]) => {
-    const x = Math.max(LOCAL_GROUP_MARGIN_X, centeredX + column * stepX)
-    const y = Math.max(LOCAL_GROUP_MARGIN_TOP, centeredY + row * stepY)
+  const rightmostBlocker = Math.max(
+    LOCAL_GROUP_MARGIN_X,
+    ...blockers.map((node) => node.x + node.width),
+  )
+  const bottommostBlocker = Math.max(
+    LOCAL_GROUP_MARGIN_TOP,
+    ...blockers.map((node) => node.y + node.height),
+  )
+  const candidatePositions = [
+    ...candidateOffsets.map(([column, row]) => ({
+      x: centeredX + column * stepX,
+      y: centeredY + row * stepY,
+    })),
+    // These two positions are guaranteed to clear every existing node, so a
+    // dense graph never forces unrelated logic inside the expanded frame.
+    {
+      x: rightmostBlocker + LOCAL_GROUP_COLLISION_GAP + LOCAL_GROUP_MARGIN_X,
+      y: centeredY,
+    },
+    {
+      x: centeredX,
+      y: bottommostBlocker + LOCAL_GROUP_COLLISION_GAP + LOCAL_GROUP_MARGIN_TOP,
+    },
+  ]
+  const candidates = candidatePositions.map((position) => {
+    const x = Math.max(LOCAL_GROUP_MARGIN_X, position.x)
+    const y = Math.max(LOCAL_GROUP_MARGIN_TOP, position.y)
     const left = x - LOCAL_GROUP_MARGIN_X
     const top = y - LOCAL_GROUP_MARGIN_TOP
     const right = x + gridWidth + LOCAL_GROUP_MARGIN_X
@@ -932,6 +948,13 @@ export function layoutExpandedGroupInPlace(
   })
 
   const baseNodeById = new Map(base.nodes.map((node) => [node.id, node]))
+  if (sub.nodes.some((node) =>
+    !memberIds.has(node.id) && !baseNodeById.has(node.id)
+  )) {
+    // This local composer only replaces one existing quotient node. Fall back
+    // to ELK if a future caller introduces additional context nodes.
+    return null
+  }
   const nodes = sub.nodes.flatMap((node) => {
     const member = memberGeometry.get(node.id)
     if (member) return [member]
@@ -940,12 +963,74 @@ export function layoutExpandedGroupInPlace(
   })
   const laidOutById = new Map(nodes.map((node) => [node.id, node]))
   const baseEdgeKey = (edge: GraphEdge) =>
-    `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}`
+    `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}|${edge.net_name}|${edge.bits.join(',')}`
   const baseEdgesByKey = new Map(
     base.edges.map((edge) => [baseEdgeKey(edge.edge), edge]),
   )
   const outgoingTrunks = base.edges.filter((edge) => edge.from === group.id)
   const incomingTrunks = base.edges.filter((edge) => edge.to === group.id)
+  const outgoingTrunkByTarget = new Map<number, (typeof base.edges)[number]>()
+  const outgoingTrunkByTargetPort = new Map<string, (typeof base.edges)[number]>()
+  const incomingTrunkBySource = new Map<number, (typeof base.edges)[number]>()
+  const incomingTrunkBySourcePort = new Map<string, (typeof base.edges)[number]>()
+  for (const trunk of outgoingTrunks) {
+    if (!outgoingTrunkByTarget.has(trunk.to)) {
+      outgoingTrunkByTarget.set(trunk.to, trunk)
+    }
+    const key = `${trunk.to}|${trunk.edge.to_port}`
+    if (!outgoingTrunkByTargetPort.has(key)) {
+      outgoingTrunkByTargetPort.set(key, trunk)
+    }
+  }
+  for (const trunk of incomingTrunks) {
+    if (!incomingTrunkBySource.has(trunk.from)) {
+      incomingTrunkBySource.set(trunk.from, trunk)
+    }
+    const key = `${trunk.from}|${trunk.edge.from_port}`
+    if (!incomingTrunkBySourcePort.has(key)) {
+      incomingTrunkBySourcePort.set(key, trunk)
+    }
+  }
+
+  const pinPoint = (
+    laidOut: LaidOutNode,
+    edge: GraphEdge,
+    side: 'incoming' | 'outgoing',
+  ): Point => {
+    const layoutNode = inputNodeById.get(laidOut.id)
+    if (!layoutNode) {
+      return {
+        x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
+        y: laidOut.y + laidOut.height / 2,
+      }
+    }
+    if (layoutNode.register) {
+      const body = Math.min(laidOut.height, REG_BODY_HEIGHT)
+      const fraction = side === 'outgoing'
+        ? REG_DATA_OUT_Y_FRAC
+        : edge.control
+          ? registerControlYFraction(controlRoleForPin(edge.to_port))
+          : REG_DATA_IN_Y_FRAC
+      return {
+        x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
+        y: laidOut.y + body * fraction,
+      }
+    }
+    const catalog = side === 'outgoing'
+      ? pins.outgoing.get(laidOut.id) ?? []
+      : pins.incoming.get(laidOut.id) ?? []
+    const index = side === 'outgoing'
+      ? pins.outgoingIndex.get(laidOut.id)?.get(edge.from_port)
+      : pins.incomingIndex.get(laidOut.id)?.get(edge.to_port)
+    return {
+      x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
+      y: index == null
+        ? laidOut.y + laidOut.height / 2
+        : laidOut.y +
+          ((index + 1) * pinBodyHeight(layoutNode, laidOut.height)) /
+            (catalog.length + 1),
+    }
+  }
 
   const edges = sub.edges.flatMap((edge) => {
     const existing = baseEdgesByKey.get(baseEdgeKey(edge))
@@ -957,15 +1042,15 @@ export function layoutExpandedGroupInPlace(
     const memberFrom = memberIds.has(edge.from)
     const memberTo = memberIds.has(edge.to)
     if (memberFrom && !memberTo) {
-      const trunk = outgoingTrunks.find((candidate) =>
-        candidate.to === edge.to && candidate.edge.to_port === edge.to_port,
-      ) ?? outgoingTrunks.find((candidate) => candidate.to === edge.to)
+      const trunk =
+        outgoingTrunkByTargetPort.get(`${edge.to}|${edge.to_port}`) ??
+        outgoingTrunkByTarget.get(edge.to)
       if (trunk) {
         return [{
           from: edge.from,
           to: edge.to,
           points: [
-            { x: from.x + from.width, y: from.y + from.height / 2 },
+            pinPoint(from, edge, 'outgoing'),
             ...trunk.points,
           ],
           edge,
@@ -973,16 +1058,16 @@ export function layoutExpandedGroupInPlace(
       }
     }
     if (!memberFrom && memberTo) {
-      const trunk = incomingTrunks.find((candidate) =>
-        candidate.from === edge.from && candidate.edge.from_port === edge.from_port,
-      ) ?? incomingTrunks.find((candidate) => candidate.from === edge.from)
+      const trunk =
+        incomingTrunkBySourcePort.get(`${edge.from}|${edge.from_port}`) ??
+        incomingTrunkBySource.get(edge.from)
       if (trunk) {
         return [{
           from: edge.from,
           to: edge.to,
           points: [
             ...trunk.points,
-            { x: to.x, y: to.y + to.height / 2 },
+            pinPoint(to, edge, 'incoming'),
           ],
           edge,
         }]
@@ -991,7 +1076,10 @@ export function layoutExpandedGroupInPlace(
     return [{
       from: edge.from,
       to: edge.to,
-      points: localEdgePoints(from, to),
+      points: localEdgePoints(
+        pinPoint(from, edge, 'outgoing'),
+        pinPoint(to, edge, 'incoming'),
+      ),
       edge,
     }]
   })

@@ -1033,7 +1033,10 @@ for (const regression of [
 ] as const) {
   test(`stacks ${regression.platform} inferred FIFO memory at depth ${regression.depth}`, async ({ page }) => {
     test.setTimeout(240_000)
-    if (regression.platform === 'ecp5' && regression.depth === 16) {
+    if (
+      regression.depth === 16 &&
+      (regression.platform === 'ice40' || regression.platform === 'ecp5')
+    ) {
       await page.addInitScript(() => {
         const requests: unknown[] = []
         const originalPostMessage = Worker.prototype.postMessage
@@ -1092,7 +1095,10 @@ for (const regression of [
       )).toHaveCount(0)
     }
 
-    if (regression.platform === 'ecp5' && regression.depth === 16) {
+    if (
+      regression.depth === 16 &&
+      (regression.platform === 'ice40' || regression.platform === 'ecp5')
+    ) {
       const stationaryPort = page.locator(
         '.g-node-body[data-node-tooltip="push_ready"]',
       )
@@ -1108,7 +1114,7 @@ for (const regression of [
       )).toBe(1)
       await expect(groupedMemory).toHaveCount(0)
       await expect(page.locator(
-        '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
+        `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
       )).toHaveCount(regression.count)
       await expect(stationaryPort).toHaveAttribute(
         'transform',
@@ -1119,7 +1125,7 @@ for (const regression of [
       await expect.poll(async () => {
         const boundaryBox = await boundary.boundingBox()
         const laneBoxes = await page.locator(
-          '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
+          `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
         ).evaluateAll((nodes) => nodes.map((node) => {
           const rect = node.getBoundingClientRect()
           return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }

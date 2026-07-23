@@ -932,7 +932,7 @@ function GroupExpansionControls({
             role="button"
             tabIndex={0}
             aria-label={`Expand group ${laidOutNode.node.name}`}
-            transform={`translate(${laidOutNode.x + laidOutNode.width - 4},${laidOutNode.y + 4})`}
+            transform={`translate(${laidOutNode.x + laidOutNode.width - 6},${laidOutNode.y - 6})`}
             onPointerDown={(event) => {
               // Do not let viewport panning claim this small SVG control.
               event.stopPropagation()

@@ -24,6 +24,9 @@ import {
   prewarmLayoutWorker,
   preserveViewportAnchor,
   prepareLayoutInput,
+  REG_BODY_HEIGHT,
+  REG_DATA_IN_Y_FRAC,
+  REG_DATA_OUT_Y_FRAC,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   toElkGraph,
@@ -153,10 +156,20 @@ describe('in-place group expansion layout', () => {
     expect(memberCenterX).toBeCloseTo(315)
     expect(opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')?.points)
       .toEqual(base.edges[2].points)
-    expect(opened!.edges.find((edge) => edge.edge.net_name === 'in')?.points)
-      .toContainEqual(base.edges[0].points.at(-1))
-    expect(opened!.edges.find((edge) => edge.edge.net_name === 'out')?.points)
-      .toContainEqual(base.edges[1].points[0])
+    const incoming = opened!.edges.find((edge) => edge.edge.net_name === 'in')!
+    const outgoing = opened!.edges.find((edge) => edge.edge.net_name === 'out')!
+    expect(incoming.points).toContainEqual(base.edges[0].points.at(-1))
+    expect(outgoing.points).toContainEqual(base.edges[1].points[0])
+    const member1 = memberGeometry.find((entry) => entry.id === 1)!
+    const member2 = memberGeometry.find((entry) => entry.id === 2)!
+    expect(incoming.points.at(-1)).toEqual({
+      x: member1.x,
+      y: member1.y + Math.min(member1.height, REG_BODY_HEIGHT) * REG_DATA_IN_Y_FRAC,
+    })
+    expect(outgoing.points[0]).toEqual({
+      x: member2.x + member2.width,
+      y: member2.y + Math.min(member2.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
+    })
   })
 
   it('uses the nearest collision-free local slot instead of enclosing another node', () => {
@@ -198,6 +211,62 @@ describe('in-place group expansion layout', () => {
 
     expect(overlapsBlocker).toBe(false)
     expect(opened.nodes.find((entry) => entry.id === 9)).toMatchObject(base.nodes[1])
+  })
+
+  it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[1:0]',
+      members: [1, 2],
+      member_count: 2,
+    })
+    const blocker = node(9, 'LUT6')
+    const base = {
+      nodes: [
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 0, y: 0, width: 5_000, height: 5_000, node: blocker },
+      ],
+      edges: [],
+      width: 5_100,
+      height: 5_100,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'FDRE'), node(2, 'FDRE'), blocker],
+      edges: [],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2],
+    })!
+    const members = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
+    const left = Math.min(...members.map((entry) => entry.x))
+    const top = Math.min(...members.map((entry) => entry.y))
+
+    expect(left >= 5_000 || top >= 5_000).toBe(true)
+  })
+
+  it('declines local composition when the projection introduces new context', () => {
+    const grouped = node(100, 'FDRE', {
+      members: [1],
+      member_count: 1,
+    })
+    const base = {
+      nodes: [{ id: 100, x: 20, y: 20, width: 100, height: 58, node: grouped }],
+      edges: [],
+      width: 160,
+      height: 100,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'FDRE'), node(9, 'LUT6')],
+      edges: [],
+      truncated: false,
+    }
+
+    expect(layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1],
+    })).toBeNull()
   })
 })
 
