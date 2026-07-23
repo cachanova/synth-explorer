@@ -9,7 +9,7 @@
 pub(crate) mod coordinates;
 pub(crate) mod index;
 pub(crate) mod recover;
-pub mod types;
+pub(crate) mod types;
 
 /// Must equal `crate::analysis::MAX_SUBGRAPH_NODES + 1`; a compile-time
 /// assertion in `analysis.rs` enforces the invariant.

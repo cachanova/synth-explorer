@@ -2893,7 +2893,9 @@ endmodule
 
     #[test]
     fn example_case_scans_cover_every_arm_and_the_full_always_block() {
-        let adder = scan_assignments(include_str!("../../../web/src/data/examples/adder_chain.sv"));
+        let adder = scan_assignments(include_str!(
+            "../../../web/src/data/examples/adder_chain.sv"
+        ));
         assert!(adder.continuous.iter().any(|assignment| {
             assignment.start_line == 16 && assignment.lhs_identifiers == ["partial_sum"]
         }));
@@ -2979,7 +2981,8 @@ endmodule
 
     #[test]
     fn preflatten_module_graph_recovers_only_reachable_instance_scopes() {
-        let netlist = parse_str(include_str!("../../tests/fixtures/preflatten_scopes.json")).unwrap();
+        let netlist =
+            parse_str(include_str!("../../tests/fixtures/preflatten_scopes.json")).unwrap();
 
         let scopes = module_scopes(&netlist, "scoped_children");
 
