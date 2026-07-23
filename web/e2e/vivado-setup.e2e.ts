@@ -9,7 +9,7 @@ test('shows complete local Vivado setup and direct connection instructions in th
 
   const dialog = page.getByRole('dialog', { name: 'Use Vivado on this computer' })
   await expect(dialog).toBeVisible()
-  await expect(dialog).toContainText('RTL goes directly to local Vivado instance. Everything stays local.')
+  await expect(dialog).toContainText('Your RTL goes directly to your local Vivado instance. Everything stays local.')
   await expect(dialog).toContainText('Install Vivado locally')
   await expect(dialog).toContainText('Start the local connector')
   await expect(dialog).toContainText('Connect this browser')
