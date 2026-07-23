@@ -1,6 +1,7 @@
 import type {
   EndpointsResponse,
   FanoutResponse,
+  GroupExpansion,
   NodesResponse,
   PathsResponse,
   SourceMapResponse,
@@ -11,7 +12,7 @@ import type {
   TimingRequest,
   TimingResponse,
 } from '../types'
-import type { ConeOptions, NetlistOptions } from '../api'
+import type { ConeOptions, GroupExpansionOptions, NetlistOptions } from '../api'
 import type { YosysWorkerResult } from '../workers/yosys.worker'
 import type { VhdlTranslation, VhdlWorkerResponse } from './vhdl'
 import { initializeAnalysis, queryAnalysis } from './analysisClient'
@@ -277,6 +278,14 @@ export function localNetlist(
     queryAnalysis('netlist', { ...options, around: options.around ?? [] }),
     signal,
   )
+}
+
+export function localExpandGroup(
+  _id: string,
+  options: GroupExpansionOptions,
+  signal?: AbortSignal,
+): Promise<GroupExpansion> {
+  return abortable(queryAnalysis('expandGroup', options), signal)
 }
 
 export function localSourceMap(_id: string): Promise<SourceMapResponse> {

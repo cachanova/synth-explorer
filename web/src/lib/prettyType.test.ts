@@ -133,6 +133,15 @@ describe('fanoutDriverLabel', () => {
 })
 
 describe('displayCellType', () => {
+  it('shows the parameterized module name instead of a raw Yosys paramod hash', () => {
+    expect(
+      displayCellType(String.raw`$paramod$7fe96cefc7726fa802aba685c17ff23cf8d9b460\async_fifo_wrapper`),
+    ).toBe('async_fifo_wrapper')
+    expect(
+      displayCellType(String.raw`$paramod\fifo_ip\DATA_WIDTH=s32'00000000000000000000000000010000`),
+    ).toBe('fifo_ip')
+  })
+
   it('renames gates for readability', () => {
     expect(displayCellType('$_AND_')).toBe('AND')
     expect(displayCellType('$_NAND_')).toBe('NAND')

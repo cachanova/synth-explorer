@@ -52,8 +52,7 @@ function semicolonStatementBounds(
   line: string,
   caretOffset: number,
 ): { startColumn: number; endColumn: number } | null {
-  let previous = -1
-  let next = -1
+  const delimiters: number[] = []
   let inBlockComment = false
   let inString = false
   let inEscapedIdentifier = false
@@ -97,10 +96,21 @@ function semicolonStatementBounds(
       inEscapedIdentifier = true
       continue
     }
-    if (char !== ';') continue
-    if (index < caretOffset) previous = index
-    else if (next < 0) next = index
+    if (char === ';') delimiters.push(index)
   }
+
+  let nextIndex = delimiters.findIndex((index) => index >= caretOffset)
+  let previousIndex = nextIndex < 0 ? delimiters.length - 1 : nextIndex - 1
+  if (
+    nextIndex < 0 &&
+    previousIndex >= 0 &&
+    line.slice(delimiters[previousIndex] + 1).trim() === ''
+  ) {
+    nextIndex = previousIndex
+    previousIndex -= 1
+  }
+  const previous = previousIndex < 0 ? -1 : delimiters[previousIndex]
+  const next = nextIndex < 0 ? -1 : delimiters[nextIndex]
   return {
     startColumn: previous < 0 ? 1 : previous + 2,
     endColumn: next < 0 ? Math.max(1, line.length) : next + 1,

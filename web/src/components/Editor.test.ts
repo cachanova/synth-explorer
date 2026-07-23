@@ -52,6 +52,17 @@ describe('editor source coordinates', () => {
     })
   })
 
+  it('uses the preceding statement at end-of-line after its terminator', () => {
+    expect(range(document.indexOf('\n'))).toEqual({
+      startLine: 1,
+      startColumn: 27,
+      endLine: 1,
+      endColumn: 27,
+      fallbackStartColumn: 13,
+      fallbackEndColumn: 26,
+    })
+  })
+
   it('omits fallback coordinates instead of scanning an oversized line', () => {
     const longDocument = `logic value;${' '.repeat(4096)}`
     const selected = selectedSourceRange(

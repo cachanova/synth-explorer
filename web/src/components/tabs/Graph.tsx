@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ApiRequestError,
+  expandGroup,
   getCone,
   getNetlist,
   getSourceRangesForBits,
 } from '../../api'
 import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
-import { MAX_GRAPH_RENDER_NODES } from '../../lib/graphLimits'
+import {
+  MAX_GRAPH_RENDER_NODES,
+  MAX_GROUP_EXPANSION_RENDER_NODES,
+} from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
+import {
+  applyGroupExpansions,
+  type ExpandedGroup,
+} from '../../lib/groupExpansion'
 import {
   createLatestRequestQueue,
   type LatestRequestQueue,
@@ -50,6 +58,11 @@ interface ExpansionState {
   graph: Subgraph
   droppedNodes: number
   droppedEdges: number
+}
+
+interface ExpandedGroupSpec {
+  id: number
+  label: string
 }
 
 interface DisplayedGraph {
@@ -117,9 +130,12 @@ export function Graph({ active }: { active: boolean }) {
   // active projection before layout. The owner keeps full-view expansions stable
   // while non-focus selections update only their highlights.
   const [expansionState, setExpansionState] = useState<ExpansionState | null>(null)
+  const [expandedGroupSpecs, setExpandedGroupSpecs] = useState<ExpandedGroupSpec[]>([])
+  const [groupExpansions, setGroupExpansions] = useState<ExpandedGroup[]>([])
   const [displayedGraph, setDisplayedGraph] = useState<DisplayedGraph | null>(null)
   const [fetchingFull, setFetchingFull] = useState(false)
   const [fetchingRelevant, setFetchingRelevant] = useState(false)
+  const [fetchingGroups, setFetchingGroups] = useState(false)
   const [layingOut, setLayingOut] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [sourceProbeNotice, setSourceProbeNotice] = useState<string | null>(null)
@@ -129,6 +145,7 @@ export function Graph({ active }: { active: boolean }) {
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
   const expansionControllers = useRef(new Set<AbortController>())
+  const groupExpansionController = useRef<AbortController | null>(null)
   const loadedFullGraphKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   const displayedGraphRef = useRef<DisplayedGraph | null>(null)
@@ -234,6 +251,15 @@ export function Graph({ active }: { active: boolean }) {
   // ids. Never carry a detail card across a policy change.
   useEffect(() => setSelected(null), [graphOptions.groupMemories, graphOptions.groupVectors])
 
+  // Per-group expansion is a presentation state owned by one synthesized
+  // design and grouping policy. A new design or global policy starts clean.
+  useEffect(() => {
+    groupExpansionController.current?.abort()
+    setExpandedGroupSpecs([])
+    setGroupExpansions([])
+    setFetchingGroups(false)
+  }, [design?.design_id, graphOptions.groupMemories, graphOptions.groupVectors])
+
   // The full projection changes only with the design or analysis options.
   useEffect(() => {
     const cached = fullGraphCache.current
@@ -249,6 +275,8 @@ export function Graph({ active }: { active: boolean }) {
       edgeSourceProbeRef.current?.cancel()
       for (const inFlight of expansionControllers.current) inFlight.abort()
       expansionControllers.current.clear()
+      groupExpansionController.current?.abort()
+      groupExpansionController.current = null
     },
     [],
   )
@@ -457,6 +485,70 @@ export function Graph({ active }: { active: boolean }) {
     requestDesignMismatch,
   ])
 
+  // Keep at most one local group open. A single bounded request avoids
+  // quadratic rebuilds while still letting every grouped instance expose an
+  // expansion control.
+  useEffect(() => {
+    groupExpansionController.current?.abort()
+    groupExpansionController.current = null
+    if (
+      !active ||
+      analysisState !== 'current' ||
+      !design ||
+      expandedGroupSpecs.length === 0
+    ) {
+      setGroupExpansions([])
+      setFetchingGroups(false)
+      return
+    }
+    const controller = new AbortController()
+    groupExpansionController.current = controller
+    const designId = design.design_id
+    const group = expandedGroupSpecs[0]
+    setGroupExpansions([])
+    setFetchingGroups(true)
+    expandGroup(designId, {
+        node: group.id,
+        expanded_nodes: [group.id],
+        max_nodes: MAX_GROUP_EXPANSION_RENDER_NODES,
+        hide_control: graphOptions.hideControl,
+        hide_const: graphOptions.hideConst,
+        group_vectors: graphOptions.groupVectors,
+        group_memories: graphOptions.groupMemories,
+      }, controller.signal)
+      .then((response) => ({ id: group.id, label: group.label, ...response }))
+      .then((expansion) => {
+        if (controller.signal.aborted || currentDesignIdRef.current !== designId) return
+        setGroupExpansions([expansion])
+      })
+      .catch((e) => {
+        if (controller.signal.aborted) return
+        setGroupExpansions([])
+        setExpandedGroupSpecs((current) =>
+          current[0]?.id === group.id ? [] : current,
+        )
+        setError(
+          `Could not expand group: ${e instanceof ApiRequestError ? e.message : String(e)}`,
+        )
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          groupExpansionController.current = null
+          setFetchingGroups(false)
+        }
+      })
+    return () => controller.abort()
+  }, [
+    active,
+    analysisState,
+    design,
+    expandedGroupSpecs,
+    graphOptions.groupMemories,
+    graphOptions.groupVectors,
+    graphOptions.hideConst,
+    graphOptions.hideControl,
+  ])
+
   const relevantRequestCurrent =
     currentRequestKey != null && relevantSubgraph?.requestKey === currentRequestKey
   const focusActive = Boolean(graphOptions.focus && coneReq)
@@ -469,6 +561,21 @@ export function Graph({ active }: { active: boolean }) {
   const activeExpansion =
     expansionState?.ownerKey === projectionKey ? expansionState : null
 
+  const activeExpandedIds = useMemo(
+    () => new Set(expandedGroupSpecs.map((group) => group.id)),
+    [expandedGroupSpecs],
+  )
+  const projectedNodeIds = useMemo(
+    () => new Set(projectedSubgraph?.nodes.map((node) => node.id) ?? []),
+    [projectedSubgraph],
+  )
+  const activeGroupExpansions = useMemo(
+    () => groupExpansions.filter((group) =>
+      activeExpandedIds.has(group.id) && projectedNodeIds.has(group.id),
+    ),
+    [activeExpandedIds, groupExpansions, projectedNodeIds],
+  )
+
   // The selected projection is merged only with expansions that belong to it.
   // In non-focus mode, selection changes leave both inputs identical and skip
   // layout entirely.
@@ -479,15 +586,22 @@ export function Graph({ active }: { active: boolean }) {
       activeExpansion?.graph ?? null,
       MAX_GRAPH_RENDER_NODES,
     )
+    const applied = applyGroupExpansions(
+      expanded.graph,
+      activeGroupExpansions,
+      MAX_GROUP_EXPANSION_RENDER_NODES,
+    )
     return {
-      graph: expanded.graph,
+      graph: applied.graph,
+      expandedGroups: applied.groups,
       expansionDroppedNodes:
         (activeExpansion?.droppedNodes ?? 0) + expanded.droppedNodes,
       expansionDroppedEdges:
         (activeExpansion?.droppedEdges ?? 0) + expanded.droppedEdges,
     }
-  }, [activeExpansion, projectedSubgraph])
+  }, [activeExpansion, activeGroupExpansions, projectedSubgraph])
   const combinedSubgraph = combined?.graph ?? null
+  const visibleExpandedGroups = combined?.expandedGroups ?? []
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
@@ -581,9 +695,15 @@ export function Graph({ active }: { active: boolean }) {
         [
           ...(relevantRequestCurrent ? (relevantSubgraph?.relevantIds ?? []) : []),
           ...(activeExpansion?.graph.nodes.map((node) => node.id) ?? []),
+          ...activeGroupExpansions.flatMap((group) => group.members),
         ],
       ),
-    [activeExpansion, relevantRequestCurrent, relevantSubgraph?.relevantIds],
+    [
+      activeExpansion,
+      activeGroupExpansions,
+      relevantRequestCurrent,
+      relevantSubgraph?.relevantIds,
+    ],
   )
   const overlayIds = useMemo(() => {
     const ids = new Set<number>(
@@ -594,8 +714,13 @@ export function Graph({ active }: { active: boolean }) {
     for (const node of sub?.nodes ?? []) {
       if (node.members?.some((member) => ids.has(member))) ids.add(node.id)
     }
+    for (const group of activeGroupExpansions) {
+      if (ids.has(group.id)) {
+        for (const member of group.members) ids.add(member)
+      }
+    }
     return ids
-  }, [relevantRequestCurrent, relevantSubgraph?.overlayIds, sub])
+  }, [activeGroupExpansions, relevantRequestCurrent, relevantSubgraph?.overlayIds, sub])
   const highlightedBits = useMemo(
     () =>
       new Set<number>(
@@ -617,6 +742,27 @@ export function Graph({ active }: { active: boolean }) {
   // neighbors. Grouped nodes expand around their member bits so the neighborhood
   // comes back grouped and its synthetic ids line up with the base graph.
   const designId = design?.design_id
+  const onExpandGroup = useCallback((node: GraphNode) => {
+    if (node.member_count == null && node.members == null) return
+    if (groupExpansionController.current) return
+    setSelected(null)
+    setError(null)
+    setGroupExpansions([])
+    setExpandedGroupSpecs([{
+      id: node.id,
+      label: node.name || node.cell_type || 'group',
+    }])
+  }, [])
+
+  const onCollapseGroup = useCallback((_groupId: number) => {
+    groupExpansionController.current?.abort()
+    groupExpansionController.current = null
+    setSelected(null)
+    setFetchingGroups(false)
+    setExpandedGroupSpecs([])
+    setGroupExpansions([])
+  }, [])
+
   const onExpand = useCallback(
     (node: GraphNode) => {
       if (!designId || !graphInteractive || !displayedGraph?.projectionKey) return
@@ -744,7 +890,7 @@ export function Graph({ active }: { active: boolean }) {
         ? 'on'
         : 'off'
       : undefined
-  const loading = fetchingFull || fetchingRelevant || layingOut
+  const loading = fetchingFull || fetchingRelevant || fetchingGroups || layingOut
   const showLoading = loading || analysisState === 'refreshing'
 
   if (!design) return <div className="empty-state">No design yet.</div>
@@ -771,6 +917,9 @@ export function Graph({ active }: { active: boolean }) {
             onEdgeSelect={onEdgeSelect}
             onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
+            expandedGroups={visibleExpandedGroups}
+            onExpandGroup={graphInteractive ? onExpandGroup : undefined}
+            onCollapseGroup={graphInteractive ? onCollapseGroup : undefined}
             active={active}
             fitNonce={fitNonce}
           />

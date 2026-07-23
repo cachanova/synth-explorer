@@ -34,7 +34,7 @@ import {
   arithGlyph,
   boxBadge,
   bubbleAt,
-  controlLabel,
+  controlCaption,
   controlsFor,
   inferPortDirections,
   inputArcPath,
@@ -76,8 +76,19 @@ interface Props {
   onControlSelect?: (control: ControlRef, node: GraphNode) => void
   /** Double-click a node to additively render its fanin/fanout connections. */
   onExpand?: (node: GraphNode) => void
+  /** Expand one synthetic group into its canonical physical members. */
+  onExpandGroup?: (node: GraphNode) => void
+  /** Collapse a locally expanded group back to its stable synthetic node. */
+  onCollapseGroup?: (groupId: number) => void
+  expandedGroups?: ExpandedGroupFrame[]
   active: boolean
   fitNonce: number
+}
+
+export interface ExpandedGroupFrame {
+  id: number
+  label: string
+  members: number[]
 }
 
 interface NodePins {
@@ -88,6 +99,7 @@ interface NodePins {
 
 const EMPTY_NODE_PINS: NodePins = { incoming: [], outgoing: [], controlInputs: [] }
 const EMPTY_HIGHLIGHTED_BITS = new Set<number>()
+const EMPTY_EXPANDED_GROUPS: ExpandedGroupFrame[] = []
 
 interface MutableNodePins {
   incoming: Set<string>
@@ -129,6 +141,8 @@ const DETAIL_LEVEL_RANK: Record<SchematicDetailLevel, number> = {
 const DETAIL_RESTORE_IDLE_MS = 160
 const DETAIL_VIEWPORT_OVERSCAN = 96
 const INITIAL_DETAIL_VIEWPORT = { width: 960, height: 640 }
+const OVERVIEW_IDENTITY_NODE_LIMIT = 250
+const FIT_OVERLAY_GAP = 12
 
 function initialDetailLevel(scale: number): SchematicDetailLevel {
   if (scale < 0.4) return 'overview'
@@ -220,30 +234,30 @@ function nodeVisual(
   let stroke = 'var(--border-strong)'
 
   if (kind === 'port-in' || kind === 'port-out') {
-    fill = 'color-mix(in srgb, var(--green) 14%, transparent)'
+    fill = 'color-mix(in srgb, var(--green) 14%, var(--bg-2))'
     stroke = 'var(--green)'
   } else if (kind === 'const') {
     fill = 'var(--bg-1)'
     stroke = 'var(--border)'
   } else if (kind === 'reg' || kind === 'latch') {
-    fill = 'color-mix(in srgb, var(--seq) 8%, transparent)'
+    fill = 'color-mix(in srgb, var(--seq) 8%, var(--bg-2))'
     stroke = 'var(--seq)'
   } else if (kind === 'memory') {
-    fill = 'color-mix(in srgb, var(--amber) 8%, transparent)'
+    fill = 'color-mix(in srgb, var(--amber) 8%, var(--bg-2))'
     stroke = 'var(--amber)'
   } else if (kind === 'carry') {
-    fill = 'color-mix(in srgb, var(--green) 10%, transparent)'
+    fill = 'color-mix(in srgb, var(--green) 10%, var(--bg-2))'
     stroke = 'var(--green)'
   } else if (kind === 'dsp') {
-    fill = 'color-mix(in srgb, var(--amber) 10%, transparent)'
+    fill = 'color-mix(in srgb, var(--amber) 10%, var(--bg-2))'
     stroke = 'var(--amber)'
   } else if (isSpecialPrimitive(node)) {
-    fill = 'color-mix(in srgb, var(--blue) 10%, transparent)'
+    fill = 'color-mix(in srgb, var(--blue) 10%, var(--bg-2))'
     stroke = 'var(--blue)'
   }
 
   if (isRoot) {
-    fill = 'color-mix(in srgb, var(--accent) 16%, transparent)'
+    fill = 'color-mix(in srgb, var(--accent) 16%, var(--bg-2))'
     stroke = 'var(--accent)'
   }
   if (highlighted) stroke = 'var(--accent)'
@@ -404,7 +418,8 @@ function NodeContents({
   detailLevel?: Exclude<SchematicDetailLevel, 'overview'>
 }) {
   const label = nodeLabel(node)
-  const maxChars = Math.max(4, Math.floor((width - 24) / 7.2))
+  const labelGutter = kind === 'reg' || kind === 'latch' ? 52 : 24
+  const maxChars = Math.max(4, Math.floor((width - labelGutter) / 7.2))
   const primaryHeight = kind === 'reg' ? Math.min(height, 58) : height
 
   const badgeText = groupBadgeText(node)
@@ -616,7 +631,7 @@ function ControlLabels({
     <g className="g-control-labels" aria-hidden="true">
       {controls.map((control, index) => {
         const y = startY + 1 + index * 13
-        const caption = `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
+        const caption = controlCaption(control)
         const details = [
           control.net_count != null && control.net_count > 1
             ? `${control.role}${control.pin ? ` pin ${control.pin}` : ''}: ${control.net_count} distinct control nets`
@@ -669,6 +684,8 @@ interface SchematicNodeProps {
   interactive: boolean
   tabIndex: 0 | -1
   onNodeElement: (nodeId: number, element: SVGGElement | null) => void
+  showOverviewIdentity: boolean
+  expandedGroupId?: number
 }
 
 type GraphNavigationKey =
@@ -698,6 +715,8 @@ const SchematicNode = memo(function SchematicNode({
   interactive,
   tabIndex,
   onNodeElement,
+  showOverviewIdentity,
+  expandedGroupId,
 }: SchematicNodeProps) {
   const node = laidOutNode.node
   const kind = symbolKind(node, portDirection)
@@ -719,6 +738,7 @@ const SchematicNode = memo(function SchematicNode({
       data-node-id={node.id}
       data-member-count={node.member_count ?? node.width}
       data-boundary={node.is_boundary ? 'true' : undefined}
+      data-expanded-group-member={expandedGroupId}
       role={interactive ? 'button' : undefined}
       tabIndex={interactive ? tabIndex : undefined}
       aria-label={
@@ -749,6 +769,20 @@ const SchematicNode = memo(function SchematicNode({
           />
         </g>
       )}
+      {showOverviewIdentity && !isGroupedMemory(node, kind) && (
+        <text
+          className="g-overview-label"
+          x={laidOutNode.width / 2}
+          y={Math.max(1, laidOutNode.height - controlsFor(node).length * 13) / 2 + 4}
+          textAnchor="middle"
+          aria-hidden="true"
+        >
+          {truncate(
+            nodeLabel(node),
+            Math.max(4, Math.floor((laidOutNode.width - 20) / 7.2)),
+          )}
+        </text>
+      )}
     </g>
   )
 })
@@ -763,6 +797,7 @@ interface SchematicNodeShellsProps {
   interactive: boolean
   rovingTabStopId: number | null
   onNodeElement: (nodeId: number, element: SVGGElement | null) => void
+  expandedGroupByMember: Map<number, number>
 }
 
 const SchematicNodeShells = memo(function SchematicNodeShells({
@@ -775,6 +810,7 @@ const SchematicNodeShells = memo(function SchematicNodeShells({
   interactive,
   rovingTabStopId,
   onNodeElement,
+  expandedGroupByMember,
 }: SchematicNodeShellsProps) {
   return graph.nodes.map((laidOutNode) => (
     <SchematicNode
@@ -788,9 +824,137 @@ const SchematicNodeShells = memo(function SchematicNodeShells({
       interactive={interactive}
       tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
       onNodeElement={onNodeElement}
+      showOverviewIdentity={graph.nodes.length <= OVERVIEW_IDENTITY_NODE_LIMIT}
+      expandedGroupId={expandedGroupByMember.get(laidOutNode.id)}
     />
   ))
 })
+
+function activateGroupControl(
+  event: React.KeyboardEvent<SVGGElement>,
+  action: () => void,
+) {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  event.preventDefault()
+  event.stopPropagation()
+  action()
+}
+
+function GroupExpansionControls({
+  graph,
+  expandedGroups,
+  relevantIds,
+  interactive,
+  onExpand,
+  onCollapse,
+}: {
+  graph: LaidOutGraph
+  expandedGroups: ExpandedGroupFrame[]
+  relevantIds: Set<number>
+  interactive: boolean
+  onExpand?: (node: GraphNode) => void
+  onCollapse?: (groupId: number) => void
+}) {
+  if (!interactive) return null
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
+  const frames = expandedGroups.flatMap((group) => {
+    const members = group.members
+      .map((id) => nodeById.get(id))
+      .filter((node): node is LaidOutNode => node != null)
+    if (members.length === 0) return []
+    const left = Math.min(...members.map((node) => node.x)) - 12
+    const top = Math.min(...members.map((node) => node.y)) - 20
+    const right = Math.max(...members.map((node) => node.x + node.width)) + 12
+    const bottom = Math.max(...members.map((node) => node.y + node.height)) + 12
+    return [{ group, left, top, right, bottom }]
+  })
+
+  return (
+    <g className="g-group-controls">
+      {frames.map(({ group, left, top, right, bottom }) => (
+        <g
+          key={`expanded-${group.id}`}
+          data-expanded-group-id={group.id}
+          data-relevant={
+            relevantIds.size === 0 || group.members.some((id) => relevantIds.has(id)) ? 1 : 0
+          }
+        >
+          <rect
+            className="g-expanded-group-boundary"
+            x={left}
+            y={top}
+            width={right - left}
+            height={bottom - top}
+            rx={8}
+          />
+          <text className="g-expanded-group-label" x={left + 8} y={top + 12}>
+            {truncate(group.label, 28)}
+          </text>
+          {onCollapse && (
+            <g
+              className="g-group-toggle"
+              data-group-action="collapse"
+              data-group-id={group.id}
+              role="button"
+              tabIndex={0}
+              aria-label={`Collapse group ${group.label}`}
+              transform={`translate(${right - 8},${top + 8})`}
+              onPointerDown={(event) => {
+                event.stopPropagation()
+              }}
+              onPointerUp={(event) => {
+                event.stopPropagation()
+                onCollapse(group.id)
+              }}
+              onClick={(event) => {
+                event.stopPropagation()
+              }}
+              onKeyDown={(event) => activateGroupControl(event, () => onCollapse(group.id))}
+            >
+              <circle r={8} />
+              <path d="M-3.5 0H3.5" />
+            </g>
+          )}
+        </g>
+      ))}
+      {onExpand && graph.nodes.map((laidOutNode) => {
+        if (laidOutNode.node.member_count == null && laidOutNode.node.members == null) return null
+        return (
+          <g
+            key={`collapsed-${laidOutNode.id}`}
+            className="g-group-toggle"
+            data-group-action="expand"
+            data-group-id={laidOutNode.id}
+            data-relevant={
+              relevantIds.size === 0 || relevantIds.has(laidOutNode.id) ? 1 : 0
+            }
+            role="button"
+            tabIndex={0}
+            aria-label={`Expand group ${laidOutNode.node.name}`}
+            transform={`translate(${laidOutNode.x + laidOutNode.width - 8},${laidOutNode.y - 8})`}
+            onPointerDown={(event) => {
+              // Do not let viewport panning claim this small SVG control.
+              event.stopPropagation()
+            }}
+            onPointerUp={(event) => {
+              // SVG clicks can be retargeted after the viewport's pointer
+              // gesture; commit on release after suppressing that gesture.
+              event.stopPropagation()
+              onExpand(laidOutNode.node)
+            }}
+            onClick={(event) => {
+              event.stopPropagation()
+            }}
+            onKeyDown={(event) => activateGroupControl(event, () => onExpand(laidOutNode.node))}
+          >
+            <circle r={8} />
+            <path d="M-3.5 0H3.5M0 -3.5V3.5" />
+          </g>
+        )
+      })}
+    </g>
+  )
+}
 
 function SchematicNodeDetails({
   laidOutNode,
@@ -1793,6 +1957,9 @@ export const GraphView = memo(function GraphView({
   onEdgeSelect,
   onControlSelect,
   onExpand,
+  onExpandGroup,
+  onCollapseGroup,
+  expandedGroups = EMPTY_EXPANDED_GROUPS,
   active,
   fitNonce,
 }: Props) {
@@ -1866,6 +2033,11 @@ export const GraphView = memo(function GraphView({
     }
     return { nodeById, pinsById, portDirection }
   }, [graph])
+  const expandedGroupByMember = useMemo(() => new Map(
+    expandedGroups.flatMap((group) =>
+      group.members.map((member) => [member, group.id] as const),
+    ),
+  ), [expandedGroups])
   const preparedEdges = useMemo(
     () => prepareSchematicEdges({
       edges: graph.edges,
@@ -2149,11 +2321,41 @@ export const GraphView = memo(function GraphView({
     const currentGraph = graphRef.current
     if (!stage || currentGraph.nodes.length === 0) return
     const rect = stage.getBoundingClientRect()
+    const wrapper = stage.parentElement
+    const bannerRect = wrapper
+      ?.querySelector<HTMLElement>('.graph-banner')
+      ?.getBoundingClientRect()
+    const cardRect = wrapper
+      ?.querySelector<HTMLElement>('.node-card')
+      ?.getBoundingClientRect()
+    const shortcutRect = stage
+      .querySelector<HTMLElement>('.graph-shortcuts')
+      ?.getBoundingClientRect()
+    const zoomRect = stage
+      .querySelector<HTMLElement>('.zoom-controls')
+      ?.getBoundingClientRect()
+    const bottomOverlayTop = Math.min(
+      shortcutRect?.top ?? Number.POSITIVE_INFINITY,
+      zoomRect?.top ?? Number.POSITIVE_INFINITY,
+    )
     const next = fitViewportToContent(
       rect.width,
       rect.height,
       currentGraph.width,
       currentGraph.height,
+      40,
+      1.5,
+      {
+        top: bannerRect && bannerRect.height > 0
+          ? Math.max(0, bannerRect.bottom - rect.top + FIT_OVERLAY_GAP)
+          : 0,
+        right: cardRect && cardRect.width > 0
+          ? Math.max(0, rect.right - cardRect.left + FIT_OVERLAY_GAP)
+          : 0,
+        bottom: Number.isFinite(bottomOverlayTop)
+          ? Math.max(0, rect.bottom - bottomOverlayTop + FIT_OVERLAY_GAP)
+          : 0,
+      },
     )
     if (next) applyTransform(next)
   }, [applyTransform])
@@ -2564,6 +2766,7 @@ export const GraphView = memo(function GraphView({
               interactive={interactive}
               rovingTabStopId={rovingTabStopId}
               onNodeElement={setNodeElement}
+              expandedGroupByMember={expandedGroupByMember}
             />
           </SchematicNodeDetailOverlays>
 
@@ -2573,6 +2776,15 @@ export const GraphView = memo(function GraphView({
             pinsById={metadata.pinsById}
             portDirection={metadata.portDirection}
             selectedId={selectedId}
+          />
+
+          <GroupExpansionControls
+            graph={graph}
+            expandedGroups={expandedGroups}
+            relevantIds={relevantIds}
+            interactive={interactive}
+            onExpand={onExpandGroup}
+            onCollapse={onCollapseGroup}
           />
         </g>
       </svg>

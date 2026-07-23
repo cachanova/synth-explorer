@@ -123,6 +123,13 @@ test('synthesizes inferred memory and black-box VHDL through the cold engine pat
     await expect(page.locator('.error-strip')).toHaveCount(0)
     await expect(top).toHaveText(expectedTop)
   }
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const blackbox = page.locator(
+    '.g-node-body[data-node-tooltip^="async_fifo_ip — fifo_ip"]',
+  )
+  await expect(blackbox).toHaveCount(1)
+  await expect(page.locator('.g-node-body[data-node-tooltip*="$paramod"]')).toHaveCount(0)
 })
 
 test('surfaces VHDL analysis diagnostics without invoking Yosys', async ({ page }) => {

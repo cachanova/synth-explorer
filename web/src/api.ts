@@ -8,6 +8,7 @@ import {
   LocalSynthesisError,
   type SynthesisFailureKind,
   localCone,
+  localExpandGroup,
   localEndpoints,
   localFanout,
   localNetlist,
@@ -28,6 +29,7 @@ import type {
   PathsResponse,
   SourceMapResponse,
   SourceBitRangesResponse,
+  GroupExpansion,
   Subgraph,
   SynthesizeRequest,
   SynthesizeResponse,
@@ -166,6 +168,31 @@ export function getNetlist(
     },
     signal,
   )
+}
+
+export interface GroupExpansionOptions {
+  node: number
+  expanded_nodes: number[]
+  max_nodes?: number
+  hide_control?: boolean
+  hide_const?: boolean
+  group_vectors?: boolean
+  group_memories?: boolean
+}
+
+export function expandGroup(
+  id: string,
+  opts: GroupExpansionOptions,
+  signal?: AbortSignal,
+): Promise<GroupExpansion> {
+  return localExpandGroup(id, {
+    ...opts,
+    max_nodes: opts.max_nodes ?? 4_096,
+    hide_control: opts.hide_control ?? true,
+    hide_const: opts.hide_const ?? true,
+    group_vectors: opts.group_vectors ?? false,
+    group_memories: opts.group_memories ?? false,
+  }, signal)
 }
 
 export function getSourceMap(id: string): Promise<SourceMapResponse> {

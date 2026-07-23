@@ -18,10 +18,14 @@ const PATH_NODE_CAP: usize = 512;
 const PATH_RECONSTRUCTION_NODE_BUDGET: usize = 65_536;
 pub const MAX_PATH_RESULTS: usize = 8_000;
 pub const MAX_SUBGRAPH_NODES: usize = 2_000;
+/// A deliberate group expansion can be wider than an ordinary cone. This
+/// accommodates the 2,048-instance inferred-memory regression plus context.
+pub const MAX_GROUP_EXPANSION_NODES: usize = 4_096;
 const MAX_FULL_GROUP_MEMBERS: usize = 256;
 pub const MAX_SUBGRAPH_EDGES: usize = 10_000;
 const MAX_SUBGRAPH_EDGE_BITS: usize = MAX_SUBGRAPH_EDGES;
 const MAX_FULL_NETLIST_EDGE_VISITS: usize = MAX_SUBGRAPH_EDGES * 4;
+const MAX_GROUP_EXPANSION_EDGE_VISITS: usize = MAX_SUBGRAPH_EDGES * 4;
 const MAX_BOUNDARY_ENDPOINTS: usize = 10_000;
 const MAX_BOUNDARY_ENDPOINT_BITS: usize = 100_000;
 const FULL_NETLIST_CONTEXT_NODE_BUDGET: usize = MAX_SUBGRAPH_NODES * 16;
@@ -138,6 +142,22 @@ pub struct Subgraph {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub truncated: bool,
+}
+
+/// One canonical group rendered as its physical instances plus their immediate
+/// connections. `members` names exactly the raw nodes enclosed by the UI's
+/// expanded-group boundary; neighboring nodes are context only.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupExpansion {
+    pub graph: Subgraph,
+    pub members: Vec<NodeId>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GroupExpansionOptions {
+    pub max_nodes: usize,
+    pub hide_control: bool,
+    pub hide_const: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1872,6 +1892,83 @@ impl Analysis {
             Some(partition) => quotient_subgraph(graph, subgraph, partition),
             None => subgraph,
         }
+    }
+
+    /// Expand one quotient node without disabling grouping elsewhere. Every
+    /// physical member is admitted before one-hop context, so an expansion is
+    /// complete whenever the canonical group fits under the renderer cap.
+    pub fn expand_group(
+        &self,
+        graph: &Graph,
+        partition: &GroupPartition,
+        group_id: GroupId,
+        options: GroupExpansionOptions,
+        grouping: Option<GroupingProjection<'_>>,
+    ) -> Option<GroupExpansion> {
+        let group = partition.groups.get(group_id as usize)?;
+        let cap = options.max_nodes.clamp(1, MAX_GROUP_EXPANSION_NODES);
+        let members: Vec<NodeId> = group.members.iter().take(cap).copied().collect();
+        let mut truncated = group.members.len() > members.len();
+
+        let mut seen: HashSet<NodeId> = members.iter().copied().collect();
+        let mut edge_set = HashSet::new();
+        let mut examined_edges = 0usize;
+
+        'members: for &member in &members {
+            let incident = graph.incoming[member as usize]
+                .iter()
+                .chain(&graph.outgoing[member as usize]);
+            for &edge_index in incident {
+                if examined_edges >= MAX_GROUP_EXPANSION_EDGE_VISITS {
+                    truncated = true;
+                    break 'members;
+                }
+                examined_edges += 1;
+                let edge = &graph.edges[edge_index];
+                if options.hide_control && is_labeled_control_edge(graph, edge) {
+                    continue;
+                }
+                let neighbor = if edge.from == member {
+                    edge.to
+                } else {
+                    edge.from
+                };
+                if options.hide_const && graph.nodes[neighbor as usize].kind == NodeKind::Const {
+                    continue;
+                }
+                if !seen.contains(&neighbor) {
+                    if seen.len() >= cap {
+                        truncated = true;
+                        continue;
+                    }
+                    seen.insert(neighbor);
+                }
+                if edge_set.len() < MAX_SUBGRAPH_EDGES {
+                    edge_set.insert(edge_index);
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+
+        let empty = HashSet::new();
+        let raw = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &empty,
+                boundary_nodes: &empty,
+                truncated,
+                show_infrastructure: false,
+                max_control_edge_visits: Some(MAX_FULL_NETLIST_EDGE_VISITS),
+            },
+        );
+        let graph = match grouping {
+            Some(projection) => quotient_subgraph(graph, raw, projection),
+            None => raw,
+        };
+        Some(GroupExpansion { graph, members })
     }
 
     pub fn fanout(&self, graph: &Graph, limit: usize) -> FanoutResponse {
@@ -6103,6 +6200,7 @@ mod tests {
                 partition: &grouping,
                 vectors: false,
                 memories: true,
+                expanded_groups: &[],
             }),
         );
         assert_eq!(memory_only.nodes.len(), 3);
@@ -6117,12 +6215,149 @@ mod tests {
                 partition: &grouping,
                 vectors: true,
                 memories: false,
+                expanded_groups: &[],
             }),
         );
         assert_eq!(vectors_only.nodes.len(), 3);
         assert!(vectors_only.nodes.iter().any(|node| node.node.id == 5));
         assert!(vectors_only.nodes.iter().any(|node| node.node.id == 0));
         assert!(vectors_only.nodes.iter().any(|node| node.node.id == 1));
+    }
+
+    #[test]
+    fn group_expansion_returns_every_raw_member_without_expanding_other_groups() {
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); 4];
+        let mut incoming = vec![Vec::new(); 4];
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 0, 2, 10);
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 1, 3, 11);
+        let graph = graph_from_parts(
+            "expand_group",
+            (0..4)
+                .map(|id| combinational_node(id, "$and", None))
+                .collect(),
+            edges,
+            outgoing,
+            incoming,
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let grouping = GroupPartition {
+            groups: vec![
+                Group {
+                    kind: GroupKind::Memory,
+                    members: vec![0, 1],
+                    label: "memory [2×1]".to_owned(),
+                    cell_type: "$mem".to_owned(),
+                },
+                Group {
+                    kind: GroupKind::Comb,
+                    members: vec![2, 3],
+                    label: "logic[1:0]".to_owned(),
+                    cell_type: "$and".to_owned(),
+                },
+            ],
+            group_of: HashMap::from([(0, 0), (1, 0), (2, 1), (3, 1)]),
+        };
+        let projection = GroupingProjection::from_flags_with_expanded(&grouping, true, true, &[0]);
+
+        let expanded = analysis
+            .expand_group(
+                &graph,
+                &grouping,
+                0,
+                GroupExpansionOptions {
+                    max_nodes: MAX_SUBGRAPH_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                projection,
+            )
+            .expect("known group");
+
+        assert_eq!(expanded.members, vec![0, 1]);
+        assert_eq!(
+            expanded
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 5]
+        );
+        assert!(
+            expanded
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.node.id < 2)
+                .all(|node| node.members.is_none())
+        );
+        assert_eq!(
+            expanded
+                .graph
+                .nodes
+                .iter()
+                .find(|node| node.node.id == 5)
+                .and_then(|node| node.members.as_ref())
+                .map(Vec::len),
+            Some(2)
+        );
+        assert_eq!(
+            expanded
+                .graph
+                .edges
+                .iter()
+                .map(|edge| (edge.from, edge.to, edge.bits.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, 5, vec![10]), (1, 5, vec![11])]
+        );
+        assert!(!expanded.graph.truncated);
+    }
+
+    #[test]
+    fn group_expansion_fully_opens_a_2048_instance_memory() {
+        let member_count = 2_048;
+        let graph = graph_from_parts(
+            "wide_expand_group",
+            (0..member_count)
+                .map(|id| combinational_node(id, "$dff", None))
+                .collect(),
+            Vec::new(),
+            vec![Vec::new(); member_count as usize],
+            vec![Vec::new(); member_count as usize],
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let members: Vec<NodeId> = (0..member_count).collect();
+        let grouping = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Memory,
+                members: members.clone(),
+                label: "memory [128×16]".to_owned(),
+                cell_type: "$mem".to_owned(),
+            }],
+            group_of: members.iter().map(|id| (*id, 0)).collect(),
+        };
+        let expanded_groups = [0];
+        let projection =
+            GroupingProjection::from_flags_with_expanded(&grouping, true, true, &expanded_groups);
+
+        let expanded = analysis
+            .expand_group(
+                &graph,
+                &grouping,
+                0,
+                GroupExpansionOptions {
+                    max_nodes: MAX_GROUP_EXPANSION_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                projection,
+            )
+            .expect("known group");
+
+        assert_eq!(expanded.members.len(), member_count as usize);
+        assert_eq!(expanded.graph.nodes.len(), member_count as usize);
+        assert!(!expanded.graph.truncated);
     }
 
     #[test]
@@ -7278,6 +7513,54 @@ mod tests {
         assert_eq!(select(14, (13, 26)), vec![1]);
         assert!(select(14, (13, 18)).is_empty());
         assert_eq!(select(22, (1, 26)), vec![1]);
+    }
+
+    #[test]
+    fn collapsed_caret_falls_back_to_a_native_yosys_span() {
+        let graph = graph_from_parts(
+            "native_fallback",
+            vec![combinational_node(0, "$and", Some("top.sv:5.7-5.25"))],
+            Vec::new(),
+            vec![Vec::new()],
+            vec![Vec::new()],
+        );
+        let analysis = Analysis::new(&graph, vec!["top.sv".to_owned()]);
+        let result = analysis
+            .source_selection_with_fallback(
+                &graph,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(1),
+                    end_column: Some(1),
+                },
+                Some((1, 26)),
+                selection_options(),
+            )
+            .unwrap();
+
+        assert_eq!(result.status, SourceSelectionStatus::Mapped);
+        assert_eq!(result.direct_ids, vec![0]);
+
+        let end_of_line = analysis
+            .source_selection_with_fallback(
+                &graph,
+                &GroupPartition::default(),
+                SourceSelectionRange {
+                    file: "top.sv",
+                    start_line: 5,
+                    end_line: 5,
+                    start_column: Some(26),
+                    end_column: Some(26),
+                },
+                Some((1, 25)),
+                selection_options(),
+            )
+            .unwrap();
+        assert_eq!(end_of_line.status, SourceSelectionStatus::Mapped);
+        assert_eq!(end_of_line.direct_ids, vec![0]);
     }
 
     #[test]

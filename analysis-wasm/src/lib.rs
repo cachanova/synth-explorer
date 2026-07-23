@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use synth_explorer_analysis::analysis::{
-    ConeDir, ConeOptions, FullNetlistOptions, MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort,
-    SourceSelectionOptions, SourceSelectionRange, TimingEstimate,
+    ConeDir, ConeOptions, FullNetlistOptions, GroupExpansionOptions, MAX_GROUP_EXPANSION_NODES,
+    MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort, SourceSelectionOptions, SourceSelectionRange,
+    TimingEstimate,
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
@@ -81,6 +82,36 @@ struct NetlistQuery {
     hide_const: Option<bool>,
     group_vectors: Option<bool>,
     group_memories: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct GroupExpansionQuery {
+    node: u32,
+    #[serde(default)]
+    expanded_nodes: Vec<u32>,
+    max_nodes: Option<usize>,
+    hide_control: Option<bool>,
+    hide_const: Option<bool>,
+    group_vectors: Option<bool>,
+    group_memories: Option<bool>,
+}
+
+fn validate_single_group_expansion(
+    expanded_nodes: &[u32],
+    base: u32,
+    group_count: usize,
+    group_id: u32,
+) -> Result<(), &'static str> {
+    for node in expanded_nodes {
+        let id = node
+            .checked_sub(base)
+            .filter(|id| (*id as usize) < group_count)
+            .ok_or("expanded node is not a grouped instance")?;
+        if id != group_id {
+            return Err("only one grouped instance can be expanded at a time");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -287,6 +318,46 @@ impl AnalysisSession {
             grouping,
         );
         response.truncated |= roots_truncated;
+        to_json(&response)
+    }
+
+    pub fn expand_group_json(&self, query_json: &str) -> Result<String, JsValue> {
+        let query: GroupExpansionQuery = parse_json(query_json, "group expansion query")?;
+        let base = self.design.graph.nodes.len() as u32;
+        let group_id = query
+            .node
+            .checked_sub(base)
+            .filter(|id| self.design.grouping.groups.get(*id as usize).is_some())
+            .ok_or_else(|| js_error("node is not a grouped instance"))?;
+        validate_single_group_expansion(
+            &query.expanded_nodes,
+            base,
+            self.design.grouping.groups.len(),
+            group_id,
+        )
+        .map_err(js_error)?;
+        let expanded_groups = [group_id];
+        let grouping = GroupingProjection::from_flags_with_expanded(
+            &self.design.grouping,
+            query.group_vectors.unwrap_or(false),
+            query.group_memories.unwrap_or(false),
+            &expanded_groups,
+        );
+        let response = self
+            .design
+            .analysis
+            .expand_group(
+                &self.design.graph,
+                &self.design.grouping,
+                group_id,
+                GroupExpansionOptions {
+                    max_nodes: query.max_nodes.unwrap_or(MAX_GROUP_EXPANSION_NODES),
+                    hide_control: query.hide_control.unwrap_or(true),
+                    hide_const: query.hide_const.unwrap_or(true),
+                },
+                grouping,
+            )
+            .ok_or_else(|| js_error("unknown group"))?;
         to_json(&response)
     }
 
@@ -857,5 +928,18 @@ mod tests {
                 (group as u32 + 1) * members_per_group - 1
             );
         }
+    }
+
+    #[test]
+    fn group_expansion_rejects_a_second_open_group() {
+        assert_eq!(validate_single_group_expansion(&[10], 10, 2, 0), Ok(()));
+        assert_eq!(
+            validate_single_group_expansion(&[10, 11], 10, 2, 0),
+            Err("only one grouped instance can be expanded at a time")
+        );
+        assert_eq!(
+            validate_single_group_expansion(&[12], 10, 2, 0),
+            Err("expanded node is not a grouped instance")
+        );
     }
 }

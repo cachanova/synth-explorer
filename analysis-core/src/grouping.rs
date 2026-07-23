@@ -60,6 +60,10 @@ pub struct GroupingProjection<'a> {
     pub partition: &'a GroupPartition,
     pub vectors: bool,
     pub memories: bool,
+    /// Canonical group ids rendered as their physical members for a local,
+    /// reversible expansion. The partition itself remains unchanged, keeping
+    /// every synthetic id stable when the group is collapsed again.
+    pub expanded_groups: &'a [GroupId],
 }
 
 impl<'a> GroupingProjection<'a> {
@@ -72,6 +76,21 @@ impl<'a> GroupingProjection<'a> {
             partition,
             vectors,
             memories,
+            expanded_groups: &[],
+        })
+    }
+
+    pub fn from_flags_with_expanded(
+        partition: &'a GroupPartition,
+        vectors: bool,
+        memories: bool,
+        expanded_groups: &'a [GroupId],
+    ) -> Option<Self> {
+        (vectors || memories).then_some(Self {
+            partition,
+            vectors,
+            memories,
+            expanded_groups,
         })
     }
 
@@ -80,11 +99,15 @@ impl<'a> GroupingProjection<'a> {
             partition,
             vectors: true,
             memories: true,
+            expanded_groups: &[],
         }
     }
 
     pub fn group_id(self, id: NodeId) -> Option<GroupId> {
         let group_id = *self.partition.group_of.get(&id)?;
+        if self.expanded_groups.contains(&group_id) {
+            return None;
+        }
         let group = self.partition.groups.get(group_id as usize)?;
         let enabled = match group.kind {
             GroupKind::Memory => self.memories,
@@ -2322,5 +2345,29 @@ mod tests {
         let first = GroupPartition::build(&divergent, &[], Vec::new());
         let second = GroupPartition::build(&divergent, &[], Vec::new());
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn projection_can_expand_one_group_without_disabling_the_others() {
+        let (graph, registers) = mux_row_graph();
+        let partition = GroupPartition::build(&graph, &registers, Vec::new());
+        let first_group = 0;
+        let member = partition.groups[first_group].members[0];
+
+        let collapsed = GroupingProjection::all(&partition);
+        assert_eq!(collapsed.group_id(member), Some(first_group as GroupId));
+
+        let expanded_groups = [first_group as GroupId];
+        let expanded =
+            GroupingProjection::from_flags_with_expanded(&partition, true, true, &expanded_groups)
+                .expect("grouping remains enabled");
+        assert_eq!(expanded.group_id(member), None);
+        if let Some(other) = partition
+            .groups
+            .get(1)
+            .and_then(|group| group.members.first())
+        {
+            assert_eq!(expanded.group_id(*other), Some(1));
+        }
     }
 }
