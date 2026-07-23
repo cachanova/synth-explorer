@@ -768,6 +768,7 @@ mod tests {
         let nodes: serde_json::Value = serde_json::from_str(&nodes_raw).expect("node JSON parses");
         assert_eq!(nodes["nodes"].as_array().map(Vec::len), Some(1));
         assert!(nodes["nodes"][0].get("src").is_some());
+        assert_eq!(nodes["nodes"][0]["port_direction"], "input");
 
         assert_eq!(
             [
@@ -780,7 +781,7 @@ mod tests {
                 0x46a2_3292_4aa2_e2bd,
                 0xfd05_2ab5_cbed_6e77,
                 0x7cb9_f6a4_9b9c_718c,
-                0x10c3_932e_9ca8_6bcf,
+                0x30f0_c349_fd9b_88b2,
             ],
             "update only after intentionally reviewing all provenance wire changes"
         );

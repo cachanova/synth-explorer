@@ -6,6 +6,8 @@ import type { ControlRef, GraphEdge, GraphNode, NodeRef } from '../types'
 import { shortNetName } from './prettyType'
 
 export type PortDirection = 'input' | 'output'
+export type PortBoundaryRole = PortDirection | 'internal'
+type DeclaredPortDirection = NonNullable<NodeRef['port_direction']>
 
 export type SymbolKind =
   | 'and'
@@ -83,19 +85,66 @@ export function inferPortDirection(
 export function inferPortDirections(
   nodeIds: Iterable<number>,
   edges: readonly Pick<GraphEdge, 'from' | 'to'>[],
+  extraDrivers: Iterable<number> = [],
+  declaredDirections: ReadonlyMap<number, DeclaredPortDirection> = new Map(),
 ): Map<number, PortDirection> {
+  const boundaries = inferPortBoundaryRoles(
+    nodeIds,
+    edges,
+    extraDrivers,
+    declaredDirections,
+  )
+  return new Map(
+    [...boundaries].map(([id, role]) => {
+      const declared = declaredDirections.get(id)
+      return [
+        id,
+        declared === 'input' || declared === 'output'
+          ? declared
+          : role === 'input'
+            ? 'input'
+            : 'output',
+      ]
+    }),
+  )
+}
+
+/** Infer only unambiguous primary boundaries for graph-layout constraints. */
+export function inferPortBoundaryRoles(
+  nodeIds: Iterable<number>,
+  edges: readonly Pick<GraphEdge, 'from' | 'to'>[],
+  extraDrivers: Iterable<number> = [],
+  declaredDirections: ReadonlyMap<number, DeclaredPortDirection> = new Map(),
+): Map<number, PortBoundaryRole> {
   const ports = new Set(nodeIds)
-  const drives = new Set<number>()
+  const drives = new Set([...extraDrivers].filter((id) => ports.has(id)))
   const driven = new Set<number>()
   for (const edge of edges) {
     if (ports.has(edge.from)) drives.add(edge.from)
     if (ports.has(edge.to)) driven.add(edge.to)
   }
   return new Map(
-    [...ports].map((id) => [
-      id,
-      drives.has(id) && !driven.has(id) ? 'input' : 'output',
-    ]),
+    [...ports].map((id) => {
+      const declared = declaredDirections.get(id)
+      return [
+        id,
+        declared === 'input'
+          ? driven.has(id)
+            ? 'internal'
+            : 'input'
+          : declared === 'output'
+            ? drives.has(id)
+              ? 'internal'
+              : 'output'
+          : declared === 'inout'
+            ? 'internal'
+            : drives.has(id) && !driven.has(id)
+              ? 'input'
+              : driven.has(id) && !drives.has(id)
+                ? 'output'
+                : 'internal',
+      ]
+    }),
   )
 }
 

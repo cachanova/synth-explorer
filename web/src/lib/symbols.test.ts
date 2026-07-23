@@ -8,6 +8,7 @@ import {
   controlLabel,
   controlDriverIds,
   controlsFor,
+  inferPortBoundaryRoles,
   inferPortDirections,
   inputBubbleAt,
   isSpecialPrimitive,
@@ -169,6 +170,57 @@ describe('graph topology helpers', () => {
         [1, 'input'],
         [2, 'output'],
         [3, 'output'],
+      ]),
+    )
+  })
+
+  it('uses declared top-level directions ahead of incomplete visible topology', () => {
+    const declared = new Map([
+      [1, 'input'],
+      [2, 'output'],
+      [3, 'inout'],
+    ] as const)
+
+    expect(
+      inferPortBoundaryRoles(
+        [1, 2, 3],
+        [],
+        [],
+        declared,
+      ),
+    ).toEqual(
+      new Map([
+        [1, 'input'],
+        [2, 'output'],
+        [3, 'internal'],
+      ]),
+    )
+    expect(inferPortDirections([1, 2], [], [], declared)).toEqual(
+      new Map([
+        [1, 'input'],
+        [2, 'output'],
+      ]),
+    )
+  })
+
+  it('does not pin declared ports when visible topology contradicts them', () => {
+    const declared = new Map([
+      [1, 'input'],
+      [2, 'output'],
+    ] as const)
+
+    expect(
+      inferPortBoundaryRoles([1, 2], [edge(2, 1)], [], declared),
+    ).toEqual(
+      new Map([
+        [1, 'internal'],
+        [2, 'internal'],
+      ]),
+    )
+    expect(inferPortDirections([1, 2], [edge(2, 1)], [], declared)).toEqual(
+      new Map([
+        [1, 'input'],
+        [2, 'output'],
       ]),
     )
   })

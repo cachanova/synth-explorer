@@ -610,6 +610,80 @@ describe('schematic layout sizing', () => {
     expect(graph.layoutOptions?.['elk.edgeRouting']).toBe('ORTHOGONAL')
   })
 
+  it('pins unambiguous primary inputs and outputs to opposite layout boundaries', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(30, 'port', {
+          kind: 'port',
+          name: 'result',
+          port_direction: 'output',
+        }),
+        node(20, '$_DFFSR_PPP_', {
+          seq: true,
+          controls: [
+            { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 2, fanout: 1 },
+          ],
+        }),
+        node(10, '$_MUX_'),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'clk',
+          port_direction: 'input',
+        }),
+        node(1, 'port', {
+          kind: 'port',
+          name: 'data',
+          port_direction: 'input',
+        }),
+        node(40, 'port', {
+          kind: 'port',
+          name: 'inout',
+          port_direction: 'inout',
+        }),
+      ],
+      edges: [
+        { from: 1, to: 10, from_port: 'data', to_port: 'A', net_name: 'data', bits: [1] },
+        { from: 10, to: 20, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [2] },
+        { from: 20, to: 40, from_port: 'Q', to_port: 'in', net_name: 'q', bits: [3] },
+        { from: 40, to: 30, from_port: 'out', to_port: 'result', net_name: 'result', bits: [4] },
+      ],
+      truncated: false,
+    }
+
+    const input = prepareLayoutInput(sub)
+    expect(input.nodes.map((candidate) => ({
+      id: candidate.id,
+      boundary: candidate.boundary,
+    }))).toEqual([
+      { id: 30, boundary: 'output' },
+      { id: 20, boundary: 'internal' },
+      { id: 10, boundary: 'internal' },
+      { id: 2, boundary: 'input' },
+      { id: 1, boundary: 'input' },
+      { id: 40, boundary: 'internal' },
+    ])
+
+    const graph = toElkGraph(input)
+    const layoutOptions = (id: string) =>
+      graph.children?.find((candidate) => candidate.id === id)?.layoutOptions
+    expect(layoutOptions('1')).toMatchObject({
+      'elk.layered.layering.layerConstraint': 'FIRST_SEPARATE',
+      'elk.alignment': 'LEFT',
+    })
+    expect(layoutOptions('2')).toMatchObject({
+      'elk.layered.layering.layerConstraint': 'FIRST_SEPARATE',
+      'elk.alignment': 'LEFT',
+    })
+    expect(layoutOptions('30')).toMatchObject({
+      'elk.layered.layering.layerConstraint': 'LAST_SEPARATE',
+      'elk.alignment': 'RIGHT',
+    })
+    expect(layoutOptions('40')).not.toHaveProperty(
+      'elk.layered.layering.layerConstraint',
+    )
+    expect(graph.layoutOptions?.['elk.direction']).toBe('RIGHT')
+  })
+
   it('reduces ELK thoroughness only on the robust very-large-graph path', () => {
     const input = prepareLayoutInput({
       nodes: [node(1, '$_AND_'), node(2, '$_OR_')],
@@ -674,6 +748,7 @@ describe('schematic layout sizing', () => {
         baseHeight: 46,
         controlHeight: 0,
         register: false,
+        boundary: 'internal' as const,
       })),
       edges: Array.from(
         {

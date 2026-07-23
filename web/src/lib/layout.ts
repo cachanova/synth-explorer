@@ -9,7 +9,14 @@ import {
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
 import { groupBadgeText, nodeLabel, nodeSublabel } from './prettyType'
-import { controlCaption, controlsFor, symbolKind } from './symbols'
+import {
+  controlCaption,
+  controlDriverIds,
+  controlsFor,
+  inferPortBoundaryRoles,
+  symbolKind,
+  type PortBoundaryRole,
+} from './symbols'
 
 export interface Point {
   x: number
@@ -70,6 +77,7 @@ export interface LayoutInputNode {
   baseHeight: number
   controlHeight: number
   register: boolean
+  boundary: PortBoundaryRole
 }
 
 export interface LayoutInputEdge {
@@ -511,6 +519,26 @@ function pinBodyHeight(node: LayoutInputNode, height: number): number {
 
 export function prepareLayoutInput(sub: Subgraph): LayoutInput {
   const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
+  // Hidden control edges retain their driver ids on the controlled node. Count
+  // those sources when classifying primary inputs so hiding control wiring does
+  // not move clock/reset ports away from the left boundary.
+  const controlDrivers = new Set<number>()
+  for (const node of sub.nodes) {
+    for (const control of controlsFor(node)) {
+      for (const driver of controlDriverIds(control)) controlDrivers.add(driver)
+    }
+  }
+  const portNodes = sub.nodes.filter((node) => node.kind === 'port')
+  const boundaryById = inferPortBoundaryRoles(
+    portNodes.map((node) => node.id),
+    sub.edges,
+    controlDrivers,
+    new Map(
+      portNodes.flatMap((node) =>
+        node.port_direction ? [[node.id, node.port_direction]] : [],
+      ),
+    ),
+  )
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -520,6 +548,7 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         baseHeight: height,
         controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
         register: isRegKind(node),
+        boundary: boundaryById.get(node.id) ?? 'internal',
       }
     }),
     edges: sub.edges.map((edge) => {
@@ -570,6 +599,18 @@ export function toElkGraph(
     const ins = inPins.get(n.id) ?? []
     const outs = outPins.get(n.id) ?? []
     const { width, height } = dimensionsForPins(n, ins.length, outs.length)
+    const boundaryLayoutOptions: NonNullable<ElkNode['layoutOptions']> =
+      n.boundary === 'input'
+      ? {
+          'elk.layered.layering.layerConstraint': 'FIRST_SEPARATE',
+          'elk.alignment': 'LEFT',
+        }
+      : n.boundary === 'output'
+        ? {
+            'elk.layered.layering.layerConstraint': 'LAST_SEPARATE',
+            'elk.alignment': 'RIGHT',
+          }
+        : {}
     if (n.register) {
       regIds.add(n.id)
       // Fixed D/control (west) and Q (east) ports keep every visible register
@@ -584,7 +625,10 @@ export function toElkGraph(
         id: String(n.id),
         width,
         height,
-        layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+        layoutOptions: {
+          ...boundaryLayoutOptions,
+          'elk.portConstraints': 'FIXED_POS',
+        },
         ports: [
           {
             id: `${n.id}#in`,
@@ -608,7 +652,7 @@ export function toElkGraph(
       }
     }
     if (ins.length === 0 && outs.length === 0) {
-      return { id: String(n.id), width, height }
+      return { id: String(n.id), width, height, layoutOptions: boundaryLayoutOptions }
     }
     const ports = [
       ...ins.map((pin, i) => ({
@@ -628,7 +672,10 @@ export function toElkGraph(
       id: String(n.id),
       width,
       height,
-      layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+      layoutOptions: {
+        ...boundaryLayoutOptions,
+        'elk.portConstraints': 'FIXED_POS',
+      },
       ports,
     }
   })
@@ -671,6 +718,10 @@ export function toElkGraph(
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
+      // Keep disconnected control-only inputs in the same layered coordinate
+      // system so FIRST/LEFT and LAST/RIGHT are global schematic boundaries,
+      // not per-component suggestions later shifted by component packing.
+      'elk.separateConnectedComponents': 'false',
       'elk.layered.spacing.nodeNodeBetweenLayers': '66',
       'elk.spacing.nodeNode': '30',
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',
