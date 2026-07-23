@@ -112,7 +112,7 @@ export function VivadoSetupDialog({
         <div className="app-modal-heading">
           <div>
             <h2 id="vivado-setup-title">Use Vivado on this computer</h2>
-            <p>Your RTL goes directly from this browser to Vivado. It is not sent to Synth Explorer servers.</p>
+            <p>RTL goes directly to local Vivado instance. Everything stays local.</p>
           </div>
           <button type="button" className="app-modal-close" onClick={onClose} aria-label="Close">×</button>
         </div>
