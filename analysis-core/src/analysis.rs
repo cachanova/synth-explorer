@@ -3,7 +3,8 @@
 use crate::delay_model::DelayModel;
 use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
-    is_infrastructure_cell, is_register_type, is_transparent_data_buffer, strip_bit_suffix,
+    is_infrastructure_cell, is_latch_type, is_register_type, is_transparent_data_buffer,
+    strip_bit_suffix,
 };
 use crate::grouping::{GroupId, GroupKind, GroupPartition, GroupingProjection};
 use crate::netlist::PortDirection;
@@ -133,6 +134,9 @@ pub struct GraphEdge {
     pub to_port: String,
     pub net_name: String,
     pub bits: Vec<u32>,
+    /// Labeled global-control semantics for filtering and presentation. A
+    /// logic-generated enable remains ordinary dataflow even though it lands
+    /// on a physical register enable pin.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control: Option<bool>,
 }
@@ -2197,7 +2201,8 @@ impl Analysis {
             .filter(|edge| seen.contains(&edge.from) && seen.contains(&edge.to))
             .collect();
         edges.sort_by(|a, b| compare_raw_edges(a, b));
-        let (edges, edges_truncated) = merge_edges(edges);
+        let (edges, edges_truncated) =
+            merge_edges(edges, |edge| is_labeled_control_edge(graph, edge));
         let subgraph = Subgraph {
             nodes,
             edges,
@@ -3683,7 +3688,18 @@ fn is_labeled_control_edge(graph: &Graph, edge: &Edge) -> bool {
     }
     match control_role(&edge.to_port) {
         ControlRole::Clock | ControlRole::Reset | ControlRole::Set => true,
-        ControlRole::Enable => graph.signal_fanout(edge) >= 8,
+        ControlRole::Enable => {
+            // A decoded/muxed enable is part of the dataflow feeding a
+            // register. Only a direct, high-fanout enable input is global
+            // control infrastructure. A latch's enable is its clock-like
+            // transparent gate, so preserve its existing control semantics.
+            let target_is_latch = graph.nodes[edge.to as usize]
+                .cell_type
+                .as_deref()
+                .is_some_and(is_latch_type);
+            graph.signal_fanout(edge) >= 8
+                && (target_is_latch || is_simple_control_source(graph, edge.from))
+        }
         ControlRole::Other => false,
     }
 }
@@ -4003,12 +4019,16 @@ fn has_visible_neighbor(
     Ok(false)
 }
 
-fn merge_edges(edges: Vec<&Edge>) -> (Vec<GraphEdge>, bool) {
+fn merge_edges(
+    edges: Vec<&Edge>,
+    is_labeled_control: impl Fn(&Edge) -> bool,
+) -> (Vec<GraphEdge>, bool) {
     let mut merged: BTreeMap<(NodeId, NodeId, String, String), GraphEdge> = BTreeMap::new();
     let mut kept_bit_keys: HashSet<(NodeId, NodeId, &str, &str, u32)> = HashSet::new();
     let mut truncated = false;
     let mut kept_bits = 0usize;
     for edge in edges {
+        let labeled_control = is_labeled_control(edge);
         let key = (
             edge.from,
             edge.to,
@@ -4026,7 +4046,7 @@ fn merge_edges(edges: Vec<&Edge>) -> (Vec<GraphEdge>, bool) {
             to_port: edge.to_port.clone(),
             net_name: edge.net_name.clone(),
             bits: Vec::new(),
-            control: edge.control.then_some(true),
+            control: labeled_control.then_some(true),
         });
         if let Some(bit) = edge.bit {
             let bit_key = (
@@ -4046,7 +4066,7 @@ fn merge_edges(edges: Vec<&Edge>) -> (Vec<GraphEdge>, bool) {
                 truncated = true;
             }
         }
-        if edge.control {
+        if labeled_control {
             entry.control = Some(true);
         }
     }
@@ -5293,7 +5313,7 @@ mod tests {
             })
             .collect();
         let started = Instant::now();
-        let (merged, truncated) = merge_edges(edges.iter().collect());
+        let (merged, truncated) = merge_edges(edges.iter().collect(), |edge| edge.control);
 
         assert!(started.elapsed().as_secs() < 5);
         assert!(truncated);

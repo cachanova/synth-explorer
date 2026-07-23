@@ -899,6 +899,46 @@ describe('schematic layout sizing', () => {
     expect(laidOut.edges[1].points[1]).toEqual({ x: 160, y: 40 + 58 * 0.5 })
   })
 
+  it('routes a dataflow-styled enable edge to the physical register enable pin', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_NOT_'),
+        node(2, '$_DFFE_PP_', { seq: true, register: true }),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'Y',
+          to_port: 'E',
+          net_name: 'generated_en',
+          bits: [20],
+        },
+      ],
+      truncated: false,
+    }
+
+    const input = prepareLayoutInput(sub)
+    const graph = toElkGraph(input)
+    const reg = graph.children?.find((child) => child.id === '2')
+    const ports = new Map(reg?.ports?.map((port) => [port.id, port]))
+
+    expect(graph.edges?.[0].targets).toEqual(['2#control:E'])
+    expect(ports.get('2#control:E')?.y).toBeCloseTo(58 * 0.88)
+
+    const laidOut = hydrateLayoutResult(sub, interpretResult(input, {
+      id: 'root',
+      width: 260,
+      height: 100,
+      children: [
+        { id: '1', x: 10, y: 20, width: 76, height: 52 },
+        { id: '2', x: 160, y: 20, width: 92, height: 58 },
+      ],
+      edges: [],
+    }))
+    expect(laidOut.edges[0].points[1]).toEqual({ x: 160, y: 20 + 58 * 0.88 })
+  })
+
   it('preserves register connectivity when ELK reorders or omits routed edges', () => {
     const sub: Subgraph = {
       nodes: [

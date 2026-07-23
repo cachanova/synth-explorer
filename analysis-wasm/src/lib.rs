@@ -779,7 +779,7 @@ mod tests {
             [
                 0x46a2_3292_4aa2_e2bd,
                 0xfd05_2ab5_cbed_6e77,
-                0x1d75_f01f_f710_e1c2,
+                0x7cb9_f6a4_9b9c_718c,
                 0x10c3_932e_9ca8_6bcf,
             ],
             "update only after intentionally reviewing all provenance wire changes"

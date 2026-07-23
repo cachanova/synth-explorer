@@ -53,7 +53,7 @@ export interface GraphEdge {
   to_port: string // e.g. "A", "D"
   net_name: string // best human name for the net ("sum[3]" or "$auto$123")
   bits: number[] // yosys bit indices carried by this edge (merged parallel edges)
-  control?: boolean // clock/reset/enable pin connection
+  control?: boolean // labeled global control; logic-generated enables remain dataflow edges
 }
 
 export interface Subgraph {
