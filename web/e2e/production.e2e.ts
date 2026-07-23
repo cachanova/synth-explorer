@@ -1043,6 +1043,70 @@ test('expanded register vectors exclude unrelated logic from their local frame',
       })
       .map((node) => node.dataset.nodeTooltip)
   }, { groupId })).toEqual([])
+  await expect.poll(() => page.evaluate(({ groupId }) => {
+    const members = [...document.querySelectorAll<SVGGElement>(
+      `[data-expanded-group-member="${groupId}"]`,
+    )].flatMap((node) => {
+      const outline = node.querySelector<SVGGraphicsElement>('.g-symbol-outline')
+      const matrix = node.transform.baseVal.consolidate()?.matrix
+      if (!outline || !matrix) return []
+      const box = outline.getBBox()
+      return [{
+        left: matrix.e + box.x,
+        top: matrix.f + box.y,
+        right: matrix.e + box.x + box.width,
+        bottom: matrix.f + box.y + box.height,
+      }]
+    })
+    const crossesMember = (
+      start: { x: number; y: number },
+      end: { x: number; y: number },
+    ) => members.some((member) => {
+      if (start.x === end.x) {
+        return start.x > member.left &&
+          start.x < member.right &&
+          Math.max(start.y, end.y) > member.top &&
+          Math.min(start.y, end.y) < member.bottom
+      }
+      if (start.y === end.y) {
+        return start.y > member.top &&
+          start.y < member.bottom &&
+          Math.max(start.x, end.x) > member.left &&
+          Math.min(start.x, end.x) < member.right
+      }
+      return true
+    })
+    const crossings: Array<{
+      segment: [number, number, number, number]
+      path: string
+    }> = []
+    for (const path of document.querySelectorAll<SVGPathElement>('.g-edge')) {
+      const pathData = path.getAttribute('d') ?? ''
+      const tokens = pathData.match(
+        /[ML]|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi,
+      ) ?? []
+      let previous: { x: number; y: number } | null = null
+      for (let index = 0; index < tokens.length;) {
+        const command = tokens[index++]
+        const point = {
+          x: Number(tokens[index++]),
+          y: Number(tokens[index++]),
+        }
+        if (command === 'M') {
+          previous = point
+          continue
+        }
+        if (previous && crossesMember(previous, point)) {
+          crossings.push({
+            segment: [previous.x, previous.y, point.x, point.y],
+            path: pathData,
+          })
+        }
+        previous = point
+      }
+    }
+    return crossings
+  }, { groupId })).toEqual([])
   await expect(viewport).toHaveAttribute('transform', viewportTransform ?? '')
 
   await page.locator(

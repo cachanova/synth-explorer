@@ -46,6 +46,26 @@ const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): Gra
   ...extra,
 })
 
+function segmentCrossesNodeInterior(
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+  node: { x: number; y: number; width: number; height: number },
+): boolean {
+  if (start.x === end.x) {
+    return start.x > node.x &&
+      start.x < node.x + node.width &&
+      Math.max(start.y, end.y) > node.y &&
+      Math.min(start.y, end.y) < node.y + node.height
+  }
+  if (start.y === end.y) {
+    return start.y > node.y &&
+      start.y < node.y + node.height &&
+      Math.max(start.x, end.x) > node.x &&
+      Math.min(start.x, end.x) < node.x + node.width
+  }
+  return true
+}
+
 describe('in-place group expansion layout', () => {
   it('keeps unrelated geometry fixed and opens members around the old group anchor', () => {
     const grouped = node(100, 'FDRE', {
@@ -125,7 +145,11 @@ describe('in-place group expansion layout', () => {
         {
           from: 9,
           to: 11,
-          points: [{ x: 96, y: 146 }, { x: 520, y: 386 }],
+          points: [
+            { x: 96, y: 146 },
+            { x: 520, y: 146 },
+            { x: 520, y: 386 },
+          ],
           edge: {
             from: 9,
             to: 11,
@@ -168,6 +192,14 @@ describe('in-place group expansion layout', () => {
           bits: [2],
         },
         {
+          from: 2,
+          to: 3,
+          from_port: 'Q',
+          to_port: 'D',
+          net_name: 'member_wrap',
+          bits: [5],
+        },
+        {
           from: 9,
           to: 11,
           from_port: 'Y',
@@ -203,8 +235,6 @@ describe('in-place group expansion layout', () => {
     const incoming = opened!.edges.find((edge) => edge.edge.net_name === 'in')!
     const outgoing = opened!.edges.find((edge) => edge.edge.net_name === 'out')!
     const clock = opened!.edges.find((edge) => edge.edge.net_name === 'clk')!
-    expect(incoming.points).toContainEqual(base.edges[0].points.at(-1))
-    expect(outgoing.points).toContainEqual(base.edges[1].points[0])
     const member1 = memberGeometry.find((entry) => entry.id === 1)!
     const member2 = memberGeometry.find((entry) => entry.id === 2)!
     const member3 = memberGeometry.find((entry) => entry.id === 3)!
@@ -221,10 +251,18 @@ describe('in-place group expansion layout', () => {
       y: member3.y +
         Math.min(member3.height, REG_BODY_HEIGHT) * registerControlYFraction('clock'),
     })
-    for (const edge of [incoming, outgoing, clock]) {
+    const unrelatedEdge = opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')!
+    const memberWrap = opened!.edges.find((edge) => edge.edge.net_name === 'member_wrap')!
+    for (const edge of [incoming, outgoing, clock, memberWrap, unrelatedEdge]) {
       expect(edge.points.slice(1).every((point, index) => {
         const previous = edge.points[index]
         return point.x === previous.x || point.y === previous.y
+      })).toBe(true)
+      expect(edge.points.slice(1).every((point, index) => {
+        const previous = edge.points[index]
+        return memberGeometry.every((member) =>
+          !segmentCrossesNodeInterior(previous, point, member)
+        )
       })).toBe(true)
     }
   })
@@ -350,8 +388,8 @@ describe('in-place group expansion layout', () => {
     expect(endpoints.every((point) =>
       point.y > member.y && point.y < member.y + member.height
     )).toBe(true)
-    expect(address0.points).toContainEqual(base.edges[0].points.at(-1))
-    expect(address1.points).toContainEqual(base.edges[1].points.at(-1))
+    expect(address0.points).toContainEqual(base.edges[0].points.at(-2))
+    expect(address1.points).toContainEqual(base.edges[1].points.at(-2))
   })
 
   it('preserves distinct quotient trunks for named output pins', () => {
@@ -437,10 +475,10 @@ describe('in-place group expansion layout', () => {
     const output0 = opened.edges.find((edge) => edge.edge.from_port === 'O0')!
     const output1 = opened.edges.find((edge) => edge.edge.from_port === 'O1')!
 
-    expect(output0.points).toContainEqual(base.edges[0].points[0])
-    expect(output0.points).not.toContainEqual(base.edges[1].points[0])
-    expect(output1.points).toContainEqual(base.edges[1].points[0])
-    expect(output1.points).not.toContainEqual(base.edges[0].points[0])
+    expect(output0.points).toContainEqual(base.edges[0].points[1])
+    expect(output0.points).not.toContainEqual(base.edges[1].points[1])
+    expect(output1.points).toContainEqual(base.edges[1].points[1])
+    expect(output1.points).not.toContainEqual(base.edges[0].points[1])
   })
 
   it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
@@ -474,6 +512,200 @@ describe('in-place group expansion layout', () => {
     const top = Math.min(...members.map((entry) => entry.y))
 
     expect(left >= 5_000 || top >= 5_000).toBe(true)
+  })
+
+  it('clips an old output trunk before reconnecting a group displaced beyond it', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[1:0]',
+      members: [1, 2],
+      member_count: 2,
+    })
+    const blocker = node(9, 'LUT6')
+    const sink = node(10, '$_BUF_')
+    const base = {
+      nodes: [
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 0, y: 0, width: 900, height: 5_000, node: blocker },
+        { id: 10, x: 900, y: 110, width: 76, height: 52, node: sink },
+      ],
+      edges: [{
+        from: 100,
+        to: 10,
+        points: [{ x: 370, y: 139 }, { x: 900, y: 139 }],
+        edge: {
+          from: 100,
+          to: 10,
+          from_port: 'Q',
+          to_port: 'A',
+          net_name: 'out',
+          bits: [1],
+        },
+      }],
+      width: 1_000,
+      height: 5_100,
+    }
+    const members = [node(1, 'FDRE'), node(2, 'FDRE')]
+    const sub: Subgraph = {
+      nodes: [...members, blocker, sink],
+      edges: [{
+        from: 1,
+        to: 10,
+        from_port: 'Q',
+        to_port: 'A',
+        net_name: 'out',
+        bits: [1],
+      }],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2],
+    })!
+    const memberGeometry = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
+    const output = opened.edges.find((edge) => edge.edge.net_name === 'out')!
+    const member1 = memberGeometry.find((entry) => entry.id === 1)!
+
+    expect(Math.min(...memberGeometry.map((entry) => entry.x))).toBeGreaterThan(976)
+    expect(output.points[0]).toEqual({
+      x: member1.x + member1.width,
+      y: member1.y + Math.min(member1.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
+    })
+    expect(output.points.at(-1)).toEqual(base.edges[0].points.at(-1))
+    expect(output.points.slice(1).every((point, index) =>
+      memberGeometry.every((member) =>
+        !segmentCrossesNodeInterior(output.points[index], point, member)
+      )
+    )).toBe(true)
+  })
+
+  it('uses grid corridors when heterogeneous members block the simple routes', () => {
+    const memberIds = Array.from({ length: 12 }, (_, index) => index + 1)
+    const grouped = node(100, 'FDRE', {
+      name: 'pipeline[11:0]',
+      members: memberIds,
+      member_count: memberIds.length,
+    })
+    const members = memberIds.map((id) => node(id, 'FDRE', id === 5
+      ? {
+          name: 'member_with_wide_control_rows',
+          controls: [
+            {
+              role: 'clock',
+              pin: 'C',
+              net_name: 'clk',
+              driver_id: 200,
+              fanout: 12,
+            },
+            {
+              role: 'reset',
+              pin: 'R',
+              net_name: 'rst',
+              driver_id: 201,
+              fanout: 1,
+            },
+          ],
+        }
+      : {}))
+    const base = {
+      nodes: [{ id: 100, x: 260, y: 100, width: 120, height: 78, node: grouped }],
+      edges: [],
+      width: 440,
+      height: 240,
+    }
+    const sub: Subgraph = {
+      nodes: members,
+      edges: [{
+        from: 2,
+        to: 8,
+        from_port: 'Q',
+        to_port: 'D',
+        net_name: 'member_wrap',
+        bits: [1],
+      }],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: memberIds,
+    })!
+    const memberGeometry = opened.nodes.filter((entry) => memberIds.includes(entry.id))
+    const wrap = opened.edges.find((edge) => edge.edge.net_name === 'member_wrap')!
+    const member2 = memberGeometry.find((entry) => entry.id === 2)!
+    const member8 = memberGeometry.find((entry) => entry.id === 8)!
+
+    expect(new Set(memberGeometry.map((entry) => entry.width)).size)
+      .toBeGreaterThan(1)
+    expect(wrap.points[0]).toEqual({
+      x: member2.x + member2.width,
+      y: member2.y + Math.min(member2.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
+    })
+    expect(wrap.points.at(-1)).toEqual({
+      x: member8.x,
+      y: member8.y + Math.min(member8.height, REG_BODY_HEIGHT) * REG_DATA_IN_Y_FRAC,
+    })
+    expect(wrap.points.slice(1).every((point, index) =>
+      memberGeometry.every((member) =>
+        !segmentCrossesNodeInterior(wrap.points[index], point, member)
+      )
+    )).toBe(true)
+  })
+
+  it('keeps perimeter routes inside content bounds and outside the group header', () => {
+    const memberIds = [1, 2, 3]
+    const grouped = node(100, 'FDRE', {
+      name: 'pipeline_with_a_long_group_label[2:0]',
+      members: memberIds,
+      member_count: memberIds.length,
+    })
+    const members = memberIds.map((id) => node(id, 'FDRE'))
+    const base = {
+      nodes: [{ id: 100, x: 0, y: 0, width: 120, height: 78, node: grouped }],
+      edges: [],
+      width: 120,
+      height: 78,
+    }
+    const sub: Subgraph = {
+      nodes: members,
+      edges: [{
+        from: 1,
+        to: 3,
+        from_port: 'Q',
+        to_port: 'D',
+        net_name: 'member_wrap',
+        bits: [1],
+      }],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: memberIds,
+    })!
+    const memberGeometry = opened.nodes.filter((entry) => memberIds.includes(entry.id))
+    const wrap = opened.edges.find((edge) => edge.edge.net_name === 'member_wrap')!
+    const memberLeft = Math.min(...memberGeometry.map((entry) => entry.x))
+    const memberTop = Math.min(...memberGeometry.map((entry) => entry.y))
+    const memberRight = Math.max(
+      ...memberGeometry.map((entry) => entry.x + entry.width),
+    )
+    const header = {
+      x: memberLeft - 12,
+      y: memberTop - 20,
+      width: memberRight - memberLeft + 24,
+      height: 20,
+    }
+
+    expect(wrap.points.every((point) =>
+      point.x >= 0 &&
+      point.y >= 0 &&
+      point.x <= opened.width &&
+      point.y <= opened.height
+    )).toBe(true)
+    expect(wrap.points.slice(1).every((point, index) =>
+      !segmentCrossesNodeInterior(wrap.points[index], point, header)
+    )).toBe(true)
   })
 
   it('declines local composition when the projection introduces new context', () => {

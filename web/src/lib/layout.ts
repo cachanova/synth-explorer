@@ -912,8 +912,11 @@ const LOCAL_GROUP_COLUMN_GAP = 20
 const LOCAL_GROUP_ROW_GAP = 16
 const LOCAL_GROUP_MARGIN_X = 14
 const LOCAL_GROUP_MARGIN_TOP = 28
-const LOCAL_GROUP_MARGIN_BOTTOM = 14
 const LOCAL_GROUP_COLLISION_GAP = 12
+const LOCAL_GROUP_EDGE_RAIL_GAP = 8
+const LOCAL_GROUP_ROUTE_MARGIN_X = 20
+const LOCAL_GROUP_ROUTE_MARGIN_TOP = 28
+const LOCAL_GROUP_ROUTE_MARGIN_BOTTOM = 20
 
 function localEdgePoints(
   start: Point,
@@ -928,9 +931,255 @@ function localEdgePoints(
   ]
 }
 
-function orthogonalBridge(start: Point, end: Point): Point[] {
-  if (start.x === end.x || start.y === end.y) return [start, end]
-  return [start, { x: end.x, y: start.y }, end]
+function compactRoute(points: Point[]): Point[] {
+  const unique = points.filter((point, index) => {
+    const previous = points[index - 1]
+    return !previous || point.x !== previous.x || point.y !== previous.y
+  })
+  return unique.filter((point, index) => {
+    const previous = unique[index - 1]
+    const next = unique[index + 1]
+    if (!previous || !next) return true
+    const vertical = previous.x === point.x && point.x === next.x
+    const horizontal = previous.y === point.y && point.y === next.y
+    return !vertical && !horizontal
+  })
+}
+
+function segmentIntersectsRectangle(
+  start: Point,
+  end: Point,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+): boolean {
+  return Math.max(start.x, end.x) > left &&
+    Math.min(start.x, end.x) < right &&
+    Math.max(start.y, end.y) > top &&
+    Math.min(start.y, end.y) < bottom
+}
+
+interface LocalRouteGrid {
+  gridX: number
+  gridY: number
+  maxMemberWidth: number
+  maxMemberHeight: number
+  columns: number
+  rows: number
+  cells: Array<LaidOutNode | undefined>
+  leftRail: number
+  rightRail: number
+  topRail: number
+  bottomRail: number
+  headerLeft: number
+  headerTop: number
+  headerRight: number
+  headerBottom: number
+}
+
+function segmentCrossesRouteGrid(
+  start: Point,
+  end: Point,
+  grid: LocalRouteGrid,
+): boolean {
+  if (start.x !== end.x && start.y !== end.y) return true
+  if (start.x === end.x && start.y === end.y) return false
+  if (segmentIntersectsRectangle(
+    start,
+    end,
+    grid.headerLeft,
+    grid.headerTop,
+    grid.headerRight,
+    grid.headerBottom,
+  )) return true
+  const stepX = grid.maxMemberWidth + LOCAL_GROUP_COLUMN_GAP
+  const stepY = grid.maxMemberHeight + LOCAL_GROUP_ROW_GAP
+  if (start.y === end.y) {
+    const relativeY = start.y - grid.gridY
+    const row = Math.floor(relativeY / stepY)
+    if (
+      row < 0 ||
+      row >= grid.rows ||
+      relativeY - row * stepY > grid.maxMemberHeight
+    ) return false
+    const minX = Math.min(start.x, end.x)
+    const maxX = Math.max(start.x, end.x)
+    const firstColumn = Math.max(0, Math.floor((minX - grid.gridX) / stepX))
+    const lastColumn = Math.min(
+      grid.columns - 1,
+      Math.floor((maxX - grid.gridX) / stepX),
+    )
+    for (let column = firstColumn; column <= lastColumn; column += 1) {
+      const node = grid.cells[row * grid.columns + column]
+      if (node && segmentIntersectsRectangle(
+        start,
+        end,
+        node.x,
+        node.y,
+        node.x + node.width,
+        node.y + node.height,
+      )) return true
+    }
+    return false
+  }
+  const relativeX = start.x - grid.gridX
+  const column = Math.floor(relativeX / stepX)
+  if (
+    column < 0 ||
+    column >= grid.columns ||
+    relativeX - column * stepX > grid.maxMemberWidth
+  ) return false
+  const minY = Math.min(start.y, end.y)
+  const maxY = Math.max(start.y, end.y)
+  const firstRow = Math.max(0, Math.floor((minY - grid.gridY) / stepY))
+  const lastRow = Math.min(
+    grid.rows - 1,
+    Math.floor((maxY - grid.gridY) / stepY),
+  )
+  for (let row = firstRow; row <= lastRow; row += 1) {
+    const node = grid.cells[row * grid.columns + column]
+    if (node && segmentIntersectsRectangle(
+      start,
+      end,
+      node.x,
+      node.y,
+      node.x + node.width,
+      node.y + node.height,
+    )) return true
+  }
+  return false
+}
+
+function memberAccessX(
+  column: number,
+  side: 'incoming' | 'outgoing',
+  grid: LocalRouteGrid,
+): number {
+  if (side === 'incoming') {
+    if (column === 0) return grid.leftRail
+    return grid.gridX +
+      column * (grid.maxMemberWidth + LOCAL_GROUP_COLUMN_GAP) -
+      LOCAL_GROUP_COLUMN_GAP / 2
+  }
+  if (column === grid.columns - 1) return grid.rightRail
+  return grid.gridX +
+    (column + 1) * grid.maxMemberWidth +
+    column * LOCAL_GROUP_COLUMN_GAP +
+    LOCAL_GROUP_COLUMN_GAP / 2
+}
+
+function perimeterAccess(point: Point, grid: LocalRouteGrid): Point {
+  if (point.x <= grid.leftRail || point.x >= grid.rightRail) return point
+  if (point.y <= grid.topRail || point.y >= grid.bottomRail) {
+    return {
+      x: point.x - grid.leftRail <= grid.rightRail - point.x
+        ? grid.leftRail
+        : grid.rightRail,
+      y: point.y,
+    }
+  }
+  return point
+}
+
+function routeAroundMemberGrid(
+  start: Point,
+  end: Point,
+  grid: LocalRouteGrid,
+  startColumn?: number,
+  endColumn?: number,
+): Point[] | null {
+  const startAccess = startColumn == null
+    ? perimeterAccess(start, grid)
+    : { x: memberAccessX(startColumn, 'outgoing', grid), y: start.y }
+  const endAccess = endColumn == null
+    ? perimeterAccess(end, grid)
+    : { x: memberAccessX(endColumn, 'incoming', grid), y: end.y }
+  const candidates: Point[][] = [
+    [start, end],
+    localEdgePoints(start, end),
+    [start, { x: end.x, y: start.y }, end],
+    [start, { x: start.x, y: end.y }, end],
+    ...[grid.topRail, grid.bottomRail].map((y) => [
+      start,
+      startAccess,
+      { x: startAccess.x, y },
+      { x: endAccess.x, y },
+      endAccess,
+      end,
+    ]),
+  ].map(compactRoute)
+  const clearCandidates = candidates.filter((points) =>
+    points.slice(1).every((point, index) =>
+      !segmentCrossesRouteGrid(points[index], point, grid)
+    )
+  )
+  const routeScore = (points: Point[]) =>
+    points.slice(1).reduce((score, point, index) => {
+      const previous = points[index]
+      return score +
+        Math.abs(point.x - previous.x) +
+        Math.abs(point.y - previous.y)
+    }, 0) +
+    Math.max(0, points.length - 2) * LOCAL_GROUP_EDGE_RAIL_GAP
+  clearCandidates.sort((a, b) => routeScore(a) - routeScore(b))
+  return clearCandidates[0] ?? null
+}
+
+function pointInsideRouteFrame(point: Point, grid: LocalRouteGrid): boolean {
+  return point.x > grid.leftRail &&
+    point.x < grid.rightRail &&
+    point.y > grid.topRail &&
+    point.y < grid.bottomRail
+}
+
+function segmentEntryToRouteFrame(
+  start: Point,
+  end: Point,
+  grid: LocalRouteGrid,
+): Point | null {
+  if (start.x === end.x) {
+    if (start.x < grid.leftRail || start.x > grid.rightRail) return null
+    if (start.y < grid.topRail && end.y >= grid.topRail) {
+      return { x: start.x, y: grid.topRail }
+    }
+    if (start.y > grid.bottomRail && end.y <= grid.bottomRail) {
+      return { x: start.x, y: grid.bottomRail }
+    }
+    return null
+  }
+  if (start.y !== end.y) return null
+  if (start.y < grid.topRail || start.y > grid.bottomRail) return null
+  if (start.x < grid.leftRail && end.x >= grid.leftRail) {
+    return { x: grid.leftRail, y: start.y }
+  }
+  if (start.x > grid.rightRail && end.x <= grid.rightRail) {
+    return { x: grid.rightRail, y: start.y }
+  }
+  return null
+}
+
+function trunkPrefixToRouteFrame(
+  points: Point[],
+  grid: LocalRouteGrid,
+): Point[] {
+  if (points.length === 0) return []
+  const retained = [points[0]]
+  if (pointInsideRouteFrame(points[0], grid)) return retained
+  for (let index = 1; index < points.length; index += 1) {
+    const entry = segmentEntryToRouteFrame(points[index - 1], points[index], grid)
+    if (entry) return compactRoute([...retained, entry])
+    if (pointInsideRouteFrame(points[index], grid)) return compactRoute(retained)
+    retained.push(points[index])
+  }
+  return compactRoute(retained)
+}
+
+function trunkSuffixFromRouteFrame(
+  points: Point[],
+  grid: LocalRouteGrid,
+): Point[] {
+  return trunkPrefixToRouteFrame([...points].reverse(), grid).reverse()
 }
 
 /**
@@ -1004,6 +1253,12 @@ export function layoutExpandedGroupInPlace(
     [0, -2],
   ] as const
   const blockers = base.nodes.filter((node) => node.id !== group.id)
+  const routeBlockers = base.edges
+    .filter((edge) => edge.from !== group.id && edge.to !== group.id)
+    .flatMap((edge) => edge.points.slice(1).map((point, index) => ({
+      start: edge.points[index],
+      end: point,
+    })))
   const rightmostBlocker = Math.max(
     LOCAL_GROUP_MARGIN_X,
     ...blockers.map((node) => node.x + node.width),
@@ -1020,7 +1275,9 @@ export function layoutExpandedGroupInPlace(
     // These two positions are guaranteed to clear every existing node, so a
     // dense graph never forces unrelated logic inside the expanded frame.
     {
-      x: rightmostBlocker + LOCAL_GROUP_COLLISION_GAP + LOCAL_GROUP_MARGIN_X,
+      x: rightmostBlocker +
+        LOCAL_GROUP_COLLISION_GAP +
+        LOCAL_GROUP_ROUTE_MARGIN_X,
       y: centeredY,
     },
     {
@@ -1029,12 +1286,12 @@ export function layoutExpandedGroupInPlace(
     },
   ]
   const candidates = candidatePositions.map((position) => {
-    const x = Math.max(LOCAL_GROUP_MARGIN_X, position.x)
+    const x = Math.max(LOCAL_GROUP_ROUTE_MARGIN_X, position.x)
     const y = Math.max(LOCAL_GROUP_MARGIN_TOP, position.y)
-    const left = x - LOCAL_GROUP_MARGIN_X
+    const left = x - LOCAL_GROUP_ROUTE_MARGIN_X
     const top = y - LOCAL_GROUP_MARGIN_TOP
-    const right = x + gridWidth + LOCAL_GROUP_MARGIN_X
-    const bottom = y + gridHeight + LOCAL_GROUP_MARGIN_BOTTOM
+    const right = x + gridWidth + LOCAL_GROUP_ROUTE_MARGIN_X
+    const bottom = y + gridHeight + LOCAL_GROUP_ROUTE_MARGIN_BOTTOM
     const overlap = blockers.reduce((area, node) => {
       const overlapWidth = Math.max(
         0,
@@ -1048,12 +1305,29 @@ export function layoutExpandedGroupInPlace(
       )
       return area + overlapWidth * overlapHeight
     }, 0)
+    const routeIntersections = routeBlockers.reduce(
+      (count, segment) =>
+        count +
+        Number(segmentIntersectsRectangle(
+          segment.start,
+          segment.end,
+          left,
+          top,
+          right,
+          bottom,
+        )),
+      0,
+    )
     const distance =
       (x + gridWidth / 2 - (anchor.x + anchor.width / 2)) ** 2 +
       (y + gridHeight / 2 - (anchor.y + anchor.height / 2)) ** 2
-    return { x, y, overlap, distance }
+    return { x, y, overlap, routeIntersections, distance }
   })
-  candidates.sort((a, b) => a.overlap - b.overlap || a.distance - b.distance)
+  candidates.sort((a, b) =>
+    a.overlap - b.overlap ||
+    a.routeIntersections - b.routeIntersections ||
+    a.distance - b.distance
+  )
   const gridX = candidates[0].x
   const gridY = candidates[0].y
 
@@ -1092,6 +1366,38 @@ export function layoutExpandedGroupInPlace(
     return existing ? [{ ...existing, node }] : []
   })
   const laidOutById = new Map(nodes.map((node) => [node.id, node]))
+  const memberLeft = Math.min(
+    ...[...memberGeometry.values()].map((node) => node.x),
+  )
+  const memberRight = Math.max(
+    ...[...memberGeometry.values()].map((node) => node.x + node.width),
+  )
+  const memberTop = Math.min(
+    ...[...memberGeometry.values()].map((node) => node.y),
+  )
+  const memberBottom = Math.max(
+    ...[...memberGeometry.values()].map((node) => node.y + node.height),
+  )
+  const memberColumnById = new Map(
+    memberNodes.map((node, index) => [node.id, index % columns]),
+  )
+  const routeGrid: LocalRouteGrid = {
+    gridX,
+    gridY,
+    maxMemberWidth,
+    maxMemberHeight,
+    columns,
+    rows,
+    cells: memberNodes.map((node) => memberGeometry.get(node.id)),
+    leftRail: memberLeft - LOCAL_GROUP_ROUTE_MARGIN_X,
+    rightRail: memberRight + LOCAL_GROUP_ROUTE_MARGIN_X,
+    topRail: memberTop - LOCAL_GROUP_ROUTE_MARGIN_TOP,
+    bottomRail: memberBottom + LOCAL_GROUP_ROUTE_MARGIN_BOTTOM,
+    headerLeft: memberLeft - 12,
+    headerTop: memberTop - 20,
+    headerRight: memberRight + 12,
+    headerBottom: memberTop,
+  }
   const baseEdgeKey = (edge: GraphEdge) =>
     `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}|${edge.net_name}|${edge.bits.join(',')}`
   const baseEdgesByKey = new Map(
@@ -1172,6 +1478,7 @@ export function layoutExpandedGroupInPlace(
     }
   }
 
+  let routeFailed = false
   const edges = sub.edges.flatMap((edge) => {
     const existing = baseEdgesByKey.get(baseEdgeKey(edge))
     if (existing) return [{ ...existing, edge }]
@@ -1188,14 +1495,25 @@ export function layoutExpandedGroupInPlace(
         outgoingTrunkByTarget.get(edge.to)
       if (trunk) {
         const memberPin = pinPoint(from, edge, 'outgoing')
-        const trunkStart = trunk.points[0]
+        const retainedTrunk = trunkSuffixFromRouteFrame(trunk.points, routeGrid)
+        const trunkStart = retainedTrunk[0]
+        const route = routeAroundMemberGrid(
+          memberPin,
+          trunkStart,
+          routeGrid,
+          memberColumnById.get(edge.from),
+        )
+        if (!route) {
+          routeFailed = true
+          return []
+        }
         return [{
           from: edge.from,
           to: edge.to,
-          points: [
-            ...orthogonalBridge(memberPin, trunkStart),
-            ...trunk.points.slice(1),
-          ],
+          points: compactRoute([
+            ...route,
+            ...retainedTrunk.slice(1),
+          ]),
           edge,
         }]
       }
@@ -1206,41 +1524,56 @@ export function layoutExpandedGroupInPlace(
         incomingTrunkBySourcePort.get(`${edge.from}|${edge.from_port}`) ??
         incomingTrunkBySource.get(edge.from)
       if (trunk) {
-        const trunkEnd = trunk.points.at(-1)!
+        const retainedTrunk = trunkPrefixToRouteFrame(trunk.points, routeGrid)
+        const trunkEnd = retainedTrunk.at(-1)!
         const memberPin = pinPoint(to, edge, 'incoming')
+        const route = routeAroundMemberGrid(
+          trunkEnd,
+          memberPin,
+          routeGrid,
+          undefined,
+          memberColumnById.get(edge.to),
+        )
+        if (!route) {
+          routeFailed = true
+          return []
+        }
         return [{
           from: edge.from,
           to: edge.to,
-          points: [
-            ...trunk.points,
-            ...orthogonalBridge(trunkEnd, memberPin).slice(1),
-          ],
+          points: compactRoute([
+            ...retainedTrunk,
+            ...route.slice(1),
+          ]),
           edge,
         }]
       }
     }
+    const route = routeAroundMemberGrid(
+      pinPoint(from, edge, 'outgoing'),
+      pinPoint(to, edge, 'incoming'),
+      routeGrid,
+      memberFrom ? memberColumnById.get(edge.from) : undefined,
+      memberTo ? memberColumnById.get(edge.to) : undefined,
+    )
+    if (!route) {
+      routeFailed = true
+      return []
+    }
     return [{
       from: edge.from,
       to: edge.to,
-      points: localEdgePoints(
-        pinPoint(from, edge, 'outgoing'),
-        pinPoint(to, edge, 'incoming'),
-      ),
+      points: route,
       edge,
     }]
   })
+  if (routeFailed) return null
 
-  const memberRight = Math.max(
-    ...[...memberGeometry.values()].map((node) => node.x + node.width),
-  )
-  const memberBottom = Math.max(
-    ...[...memberGeometry.values()].map((node) => node.y + node.height),
-  )
   return {
     nodes,
     edges,
-    width: Math.max(base.width, memberRight + LOCAL_GROUP_MARGIN_X),
-    height: Math.max(base.height, memberBottom + LOCAL_GROUP_MARGIN_BOTTOM),
+    width: Math.max(base.width, memberRight + LOCAL_GROUP_ROUTE_MARGIN_X),
+    height: Math.max(base.height, memberBottom + LOCAL_GROUP_ROUTE_MARGIN_BOTTOM),
   }
 }
 
