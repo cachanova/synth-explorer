@@ -803,6 +803,11 @@ function localEdgePoints(
   ]
 }
 
+function orthogonalBridge(start: Point, end: Point): Point[] {
+  if (start.x === end.x || start.y === end.y) return [start, end]
+  return [start, { x: end.x, y: start.y }, end]
+}
+
 /**
  * Open one quotient group without asking ELK to redraw the whole projection.
  * Existing nodes and routes keep their exact geometry. Members form a compact
@@ -1046,12 +1051,14 @@ export function layoutExpandedGroupInPlace(
         outgoingTrunkByTargetPort.get(`${edge.to}|${edge.to_port}`) ??
         outgoingTrunkByTarget.get(edge.to)
       if (trunk) {
+        const memberPin = pinPoint(from, edge, 'outgoing')
+        const trunkStart = trunk.points[0]
         return [{
           from: edge.from,
           to: edge.to,
           points: [
-            pinPoint(from, edge, 'outgoing'),
-            ...trunk.points,
+            ...orthogonalBridge(memberPin, trunkStart),
+            ...trunk.points.slice(1),
           ],
           edge,
         }]
@@ -1062,12 +1069,14 @@ export function layoutExpandedGroupInPlace(
         incomingTrunkBySourcePort.get(`${edge.from}|${edge.from_port}`) ??
         incomingTrunkBySource.get(edge.from)
       if (trunk) {
+        const trunkEnd = trunk.points.at(-1)!
+        const memberPin = pinPoint(to, edge, 'incoming')
         return [{
           from: edge.from,
           to: edge.to,
           points: [
             ...trunk.points,
-            pinPoint(to, edge, 'incoming'),
+            ...orthogonalBridge(trunkEnd, memberPin).slice(1),
           ],
           edge,
         }]

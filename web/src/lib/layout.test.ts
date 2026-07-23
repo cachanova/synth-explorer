@@ -27,6 +27,7 @@ import {
   REG_BODY_HEIGHT,
   REG_DATA_IN_Y_FRAC,
   REG_DATA_OUT_Y_FRAC,
+  registerControlYFraction,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   toElkGraph,
@@ -52,6 +53,7 @@ describe('in-place group expansion layout', () => {
     const externalIn = node(9, '$_BUF_')
     const externalOut = node(10, '$_BUF_')
     const unrelated = node(11, '$_AND_')
+    const externalClock = node(12, '$_BUF_')
     const members = [1, 2, 3, 4, 5].map((id) => node(id, 'FDRE'))
     const base = {
       nodes: [
@@ -59,12 +61,18 @@ describe('in-place group expansion layout', () => {
         { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
         { id: 10, x: 520, y: 120, width: 76, height: 52, node: externalOut },
         { id: 11, x: 520, y: 360, width: 76, height: 52, node: unrelated },
+        { id: 12, x: 20, y: 220, width: 76, height: 52, node: externalClock },
       ],
       edges: [
         {
           from: 9,
           to: 100,
-          points: [{ x: 96, y: 146 }, { x: 260, y: 139 }],
+          points: [
+            { x: 96, y: 146 },
+            { x: 180, y: 146 },
+            { x: 180, y: 139 },
+            { x: 260, y: 139 },
+          ],
           edge: {
             from: 9,
             to: 100,
@@ -77,7 +85,12 @@ describe('in-place group expansion layout', () => {
         {
           from: 100,
           to: 10,
-          points: [{ x: 370, y: 139 }, { x: 520, y: 146 }],
+          points: [
+            { x: 370, y: 139 },
+            { x: 445, y: 139 },
+            { x: 445, y: 146 },
+            { x: 520, y: 146 },
+          ],
           edge: {
             from: 100,
             to: 10,
@@ -85,6 +98,25 @@ describe('in-place group expansion layout', () => {
             to_port: 'A',
             net_name: 'out',
             bits: [2],
+          },
+        },
+        {
+          from: 12,
+          to: 100,
+          points: [
+            { x: 96, y: 246 },
+            { x: 180, y: 246 },
+            { x: 180, y: 151 },
+            { x: 260, y: 151 },
+          ],
+          edge: {
+            from: 12,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'CLK',
+            net_name: 'clk',
+            bits: [4],
+            control: true,
           },
         },
         {
@@ -105,8 +137,17 @@ describe('in-place group expansion layout', () => {
       height: 450,
     }
     const sub: Subgraph = {
-      nodes: [...members, externalIn, externalOut, unrelated],
+      nodes: [...members, externalIn, externalOut, unrelated, externalClock],
       edges: [
+        {
+          from: 12,
+          to: 3,
+          from_port: 'Y',
+          to_port: 'CLK',
+          net_name: 'clk',
+          bits: [4],
+          control: true,
+        },
         {
           from: 9,
           to: 1,
@@ -142,7 +183,7 @@ describe('in-place group expansion layout', () => {
 
     expect(opened).not.toBeNull()
     expect(opened!.nodes).not.toContainEqual(expect.objectContaining({ id: 100 }))
-    for (const id of [9, 10, 11]) {
+    for (const id of [9, 10, 11, 12]) {
       expect(opened!.nodes.find((entry) => entry.id === id)).toMatchObject(
         base.nodes.find((entry) => entry.id === id)!,
       )
@@ -155,13 +196,15 @@ describe('in-place group expansion layout', () => {
         Math.max(...memberGeometry.map((entry) => entry.x + entry.width))) / 2
     expect(memberCenterX).toBeCloseTo(315)
     expect(opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')?.points)
-      .toEqual(base.edges[2].points)
+      .toEqual(base.edges[3].points)
     const incoming = opened!.edges.find((edge) => edge.edge.net_name === 'in')!
     const outgoing = opened!.edges.find((edge) => edge.edge.net_name === 'out')!
+    const clock = opened!.edges.find((edge) => edge.edge.net_name === 'clk')!
     expect(incoming.points).toContainEqual(base.edges[0].points.at(-1))
     expect(outgoing.points).toContainEqual(base.edges[1].points[0])
     const member1 = memberGeometry.find((entry) => entry.id === 1)!
     const member2 = memberGeometry.find((entry) => entry.id === 2)!
+    const member3 = memberGeometry.find((entry) => entry.id === 3)!
     expect(incoming.points.at(-1)).toEqual({
       x: member1.x,
       y: member1.y + Math.min(member1.height, REG_BODY_HEIGHT) * REG_DATA_IN_Y_FRAC,
@@ -170,6 +213,17 @@ describe('in-place group expansion layout', () => {
       x: member2.x + member2.width,
       y: member2.y + Math.min(member2.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
     })
+    expect(clock.points.at(-1)).toEqual({
+      x: member3.x,
+      y: member3.y +
+        Math.min(member3.height, REG_BODY_HEIGHT) * registerControlYFraction('clock'),
+    })
+    for (const edge of [incoming, outgoing, clock]) {
+      expect(edge.points.slice(1).every((point, index) => {
+        const previous = edge.points[index]
+        return point.x === previous.x || point.y === previous.y
+      })).toBe(true)
+    }
   })
 
   it('uses the nearest collision-free local slot instead of enclosing another node', () => {
@@ -211,6 +265,88 @@ describe('in-place group expansion layout', () => {
 
     expect(overlapsBlocker).toBe(false)
     expect(opened.nodes.find((entry) => entry.id === 9)).toMatchObject(base.nodes[1])
+  })
+
+  it('spreads expanded memory edges across their named input pins', () => {
+    const grouped = node(100, 'RAM64M', {
+      name: 'memory [64×1]',
+      members: [1],
+      member_count: 1,
+    })
+    const sourceA = node(9, '$_BUF_')
+    const sourceB = node(10, '$_BUF_')
+    const base = {
+      nodes: [
+        { id: 9, x: 20, y: 70, width: 76, height: 52, node: sourceA },
+        { id: 10, x: 20, y: 170, width: 76, height: 52, node: sourceB },
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+      ],
+      edges: [
+        {
+          from: 9,
+          to: 100,
+          points: [{ x: 96, y: 96 }, { x: 180, y: 96 }, { x: 180, y: 126 }, { x: 260, y: 126 }],
+          edge: {
+            from: 9,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'A0',
+            net_name: 'address_0',
+            bits: [1],
+          },
+        },
+        {
+          from: 10,
+          to: 100,
+          points: [{ x: 96, y: 196 }, { x: 200, y: 196 }, { x: 200, y: 152 }, { x: 260, y: 152 }],
+          edge: {
+            from: 10,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'A1',
+            net_name: 'address_1',
+            bits: [2],
+          },
+        },
+      ],
+      width: 420,
+      height: 260,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM64M'), sourceA, sourceB],
+      edges: [
+        {
+          from: 9,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'A0',
+          net_name: 'address_0',
+          bits: [1],
+        },
+        {
+          from: 10,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'A1',
+          net_name: 'address_1',
+          bits: [2],
+        },
+      ],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1],
+    })!
+    const member = opened.nodes.find((entry) => entry.id === 1)!
+    const endpoints = opened.edges.map((edge) => edge.points.at(-1)!)
+
+    expect(endpoints.map((point) => point.x)).toEqual([member.x, member.x])
+    expect(endpoints[0].y).toBeLessThan(endpoints[1].y)
+    expect(endpoints.every((point) =>
+      point.y > member.y && point.y < member.y + member.height
+    )).toBe(true)
   })
 
   it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
