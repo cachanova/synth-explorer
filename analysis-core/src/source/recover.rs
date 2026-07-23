@@ -2892,11 +2892,11 @@ endmodule
 
     #[test]
     fn example_case_scans_cover_every_arm_and_the_full_always_block() {
-        let adder = scan_assignments(include_str!("../../web/src/data/examples/adder_chain.sv"));
+        let adder = scan_assignments(include_str!("../../../web/src/data/examples/adder_chain.sv"));
         assert!(adder.continuous.iter().any(|assignment| {
             assignment.start_line == 16 && assignment.lhs_identifiers == ["partial_sum"]
         }));
-        let fifo = scan_assignments(include_str!("../../web/src/data/examples/fifo_pipe.sv"));
+        let fifo = scan_assignments(include_str!("../../../web/src/data/examples/fifo_pipe.sv"));
         for line in [24, 27] {
             assert!(fifo.continuous.iter().any(|assignment| {
                 assignment.start_line == line && assignment.lhs_identifiers == ["ready"]
@@ -2904,7 +2904,7 @@ endmodule
         }
 
         let handshake = scan_assignments(include_str!(
-            "../../web/src/data/examples/handshake_controller.sv"
+            "../../../web/src/data/examples/handshake_controller.sv"
         ));
         assert!(handshake.blocks.contains(&ProceduralBlock {
             start_line: 31,
@@ -2941,7 +2941,7 @@ endmodule
         }
 
         let priority = scan_assignments(include_str!(
-            "../../web/src/data/examples/priority_encoder_case.sv"
+            "../../../web/src/data/examples/priority_encoder_case.sv"
         ));
         assert_eq!(
             priority.blocks,
@@ -2978,7 +2978,7 @@ endmodule
 
     #[test]
     fn preflatten_module_graph_recovers_only_reachable_instance_scopes() {
-        let netlist = parse_str(include_str!("../tests/fixtures/preflatten_scopes.json")).unwrap();
+        let netlist = parse_str(include_str!("../../tests/fixtures/preflatten_scopes.json")).unwrap();
 
         let scopes = module_scopes(&netlist, "scoped_children");
 

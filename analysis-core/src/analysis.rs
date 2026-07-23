@@ -8,7 +8,7 @@ use crate::graph::{
 };
 use crate::grouping::{GroupId, GroupKind, GroupPartition, GroupingProjection};
 use crate::netlist::PortDirection;
-use crate::source_index::SourceProvenanceIndex;
+use crate::source::SourceProvenanceIndex;
 use deepsize::DeepSizeOf;
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
@@ -8626,7 +8626,7 @@ mod tests {
             &netlist,
             "scoped_children",
             vec!["children.sv".to_owned()],
-            crate::source_provenance::SourceProvenance::default(),
+            crate::source::recover::SourceProvenance::default(),
         );
         let seen = |line| {
             index

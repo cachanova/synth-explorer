@@ -9,7 +9,7 @@ use crate::analysis::{
 };
 use crate::graph::{Graph, NodeId};
 use crate::netlist::YosysNetlist;
-use crate::source_provenance::SourceProvenance;
+use crate::source::recover::SourceProvenance;
 use deepsize::DeepSizeOf;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashSet};
