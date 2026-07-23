@@ -35,6 +35,7 @@ import {
   arithGlyph,
   boxBadge,
   bubbleAt,
+  controlDriverIds,
   controlCaption,
   controlsFor,
   inferPortDirections,
@@ -2159,11 +2160,28 @@ export const GraphView = memo(function GraphView({
       }
     }
 
+    const controlDrivers = new Set<number>()
+    for (const laidOutNode of graph.nodes) {
+      for (const control of controlsFor(laidOutNode.node)) {
+        for (const driver of controlDriverIds(control)) {
+          controlDrivers.add(driver)
+        }
+      }
+    }
+    const portNodes = graph.nodes.filter(
+      (laidOutNode) => laidOutNode.node.kind === 'port',
+    )
     const portDirection = inferPortDirections(
-      graph.nodes
-        .filter((laidOutNode) => laidOutNode.node.kind === 'port')
-        .map((laidOutNode) => laidOutNode.id),
+      portNodes.map((laidOutNode) => laidOutNode.id),
       graph.edges,
+      controlDrivers,
+      new Map(
+        portNodes.flatMap((laidOutNode) =>
+          laidOutNode.node.port_direction
+            ? [[laidOutNode.id, laidOutNode.node.port_direction]]
+            : [],
+        ),
+      ),
     )
     const pinsById = new Map<number, NodePins>()
     for (const [nodeId, pins] of pinSetsById) {

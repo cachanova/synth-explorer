@@ -7,6 +7,7 @@ export interface NodeRef {
   id: number
   kind: NodeKind
   name: string // human name: cell name (cleaned), "a[3]" for port bits, "1'b0" for consts
+  port_direction?: 'input' | 'output' | 'inout' // present only for top-level ports
   cell_type?: string // "$lut", "$_NAND_", "$add", "SB_LUT4", ... (kind === "cell")
   seq?: boolean // sequential cell (FF/memory/blackbox boundary)
   register?: boolean // true only for ordinary register/latch storage, not memories/SRLs/blackboxes

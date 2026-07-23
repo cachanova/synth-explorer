@@ -8,7 +8,7 @@ use synth_explorer_analysis::graph::{Graph, NodeKind};
 use synth_explorer_analysis::grouping::{
     GroupKind, GroupPartition, GroupingProjection, memory_arrays_from_source,
 };
-use synth_explorer_analysis::netlist::{parse_str, parse_value, select_top};
+use synth_explorer_analysis::netlist::{PortDirection, parse_str, parse_value, select_top};
 
 fn fixture(name: &str) -> (Graph, Analysis) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -153,6 +153,16 @@ fn grouped_netlist_collapses_register_banks_into_group_nodes() {
         .filter(|node| matches!(node.node.kind, ApiNodeKind::Port) && node.width == Some(8))
         .collect();
     assert_eq!(ports.len(), 2, "d and y ports each become one bus node");
+    assert_eq!(
+        ports
+            .iter()
+            .map(|node| (node.node.name.as_str(), node.node.port_direction))
+            .collect::<Vec<_>>(),
+        vec![
+            ("d[7:0]", Some(PortDirection::Input)),
+            ("y[7:0]", Some(PortDirection::Output)),
+        ],
+    );
 
     let member_ids: HashSet<u32> = partition
         .groups

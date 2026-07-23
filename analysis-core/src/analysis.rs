@@ -55,6 +55,8 @@ pub struct NodeRef {
     pub kind: ApiNodeKind,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_direction: Option<PortDirection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cell_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub seq: Option<bool>,
@@ -2741,6 +2743,12 @@ fn quotient_subgraph(
                     ApiNodeKind::Cell
                 },
                 name: group.label.clone(),
+                // Port groups contain bits from one named top-level port, whose
+                // declaration supplies one direction for every member.
+                port_direction: is_port
+                    .then_some(())
+                    .and_then(|()| group.members.first())
+                    .and_then(|id| graph.nodes[*id as usize].port_dir),
                 cell_type: (!is_port).then(|| group.cell_type.clone()),
                 seq: sequential.then_some(true),
                 register: sequential.then(|| register && is_register_type(&group.cell_type)),
@@ -2868,6 +2876,7 @@ pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
         id,
         kind,
         name: node.name.clone(),
+        port_direction: node.port_dir,
         cell_type: node.cell_type.clone(),
         seq: (node.kind == NodeKind::Cell && node.seq).then_some(node.seq),
         register: (node.kind == NodeKind::Cell && node.seq).then_some(is_register_node(node)),

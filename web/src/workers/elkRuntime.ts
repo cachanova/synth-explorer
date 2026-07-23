@@ -29,6 +29,7 @@ const warmupInput: LayoutInput = {
       baseHeight: 46,
       controlHeight: 0,
       register: false,
+      boundary: 'input',
     },
     {
       id: 1,
@@ -36,6 +37,7 @@ const warmupInput: LayoutInput = {
       baseHeight: 46,
       controlHeight: 0,
       register: false,
+      boundary: 'output',
     },
   ],
   edges: [

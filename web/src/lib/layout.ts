@@ -9,7 +9,14 @@ import {
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
 import { groupBadgeText, nodeLabel, nodeSublabel } from './prettyType'
-import { controlCaption, controlsFor, symbolKind } from './symbols'
+import {
+  controlCaption,
+  controlDriverIds,
+  controlsFor,
+  inferPortBoundaryRoles,
+  symbolKind,
+  type PortBoundaryRole,
+} from './symbols'
 
 export interface Point {
   x: number
@@ -70,6 +77,7 @@ export interface LayoutInputNode {
   baseHeight: number
   controlHeight: number
   register: boolean
+  boundary: PortBoundaryRole
 }
 
 export interface LayoutInputEdge {
@@ -83,6 +91,44 @@ export interface LayoutInputEdge {
 export interface LayoutInput {
   nodes: LayoutInputNode[]
   edges: LayoutInputEdge[]
+}
+
+export const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
+
+function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
+  const neighbors = new Map(
+    input.nodes.map((node) => [node.id, [] as number[]]),
+  )
+  for (const edge of input.edges) {
+    if (!neighbors.has(edge.from) || !neighbors.has(edge.to)) continue
+    neighbors.get(edge.from)!.push(edge.to)
+    neighbors.get(edge.to)!.push(edge.from)
+  }
+
+  const unseen = new Set(neighbors.keys())
+  let componentCount = 0
+  let boundaryComponentCount = 0
+  for (const root of neighbors.keys()) {
+    if (!unseen.delete(root)) continue
+    componentCount += 1
+    let hasBoundary = nodeById.get(root)?.boundary !== 'internal'
+    const pending = [root]
+    while (pending.length > 0) {
+      const node = pending.pop()!
+      for (const neighbor of neighbors.get(node) ?? []) {
+        if (!unseen.delete(neighbor)) continue
+        hasBoundary ||= nodeById.get(neighbor)?.boundary !== 'internal'
+        pending.push(neighbor)
+      }
+    }
+    if (hasBoundary) boundaryComponentCount += 1
+  }
+  const internalComponentCount = componentCount - boundaryComponentCount
+  return (
+    componentCount <= MAX_GLOBAL_LAYOUT_COMPONENTS ||
+    internalComponentCount <= MAX_GLOBAL_LAYOUT_COMPONENTS
+  )
 }
 
 export interface LayoutGeometry {
@@ -511,6 +557,26 @@ function pinBodyHeight(node: LayoutInputNode, height: number): number {
 
 export function prepareLayoutInput(sub: Subgraph): LayoutInput {
   const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
+  // Hidden control edges retain their driver ids on the controlled node. Count
+  // those sources when classifying primary inputs so hiding control wiring does
+  // not move clock/reset ports away from the left boundary.
+  const controlDrivers = new Set<number>()
+  for (const node of sub.nodes) {
+    for (const control of controlsFor(node)) {
+      for (const driver of controlDriverIds(control)) controlDrivers.add(driver)
+    }
+  }
+  const portNodes = sub.nodes.filter((node) => node.kind === 'port')
+  const boundaryById = inferPortBoundaryRoles(
+    portNodes.map((node) => node.id),
+    sub.edges,
+    controlDrivers,
+    new Map(
+      portNodes.flatMap((node) =>
+        node.port_direction ? [[node.id, node.port_direction]] : [],
+      ),
+    ),
+  )
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -520,6 +586,7 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         baseHeight: height,
         controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
         register: isRegKind(node),
+        boundary: boundaryById.get(node.id) ?? 'internal',
       }
     }),
     edges: sub.edges.map((edge) => {
@@ -570,6 +637,18 @@ export function toElkGraph(
     const ins = inPins.get(n.id) ?? []
     const outs = outPins.get(n.id) ?? []
     const { width, height } = dimensionsForPins(n, ins.length, outs.length)
+    const boundaryLayoutOptions: NonNullable<ElkNode['layoutOptions']> =
+      n.boundary === 'input'
+      ? {
+          'elk.layered.layering.layerConstraint': 'FIRST_SEPARATE',
+          'elk.alignment': 'LEFT',
+        }
+      : n.boundary === 'output'
+        ? {
+            'elk.layered.layering.layerConstraint': 'LAST_SEPARATE',
+            'elk.alignment': 'RIGHT',
+          }
+        : {}
     if (n.register) {
       regIds.add(n.id)
       // Fixed D/control (west) and Q (east) ports keep every visible register
@@ -584,7 +663,10 @@ export function toElkGraph(
         id: String(n.id),
         width,
         height,
-        layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+        layoutOptions: {
+          ...boundaryLayoutOptions,
+          'elk.portConstraints': 'FIXED_POS',
+        },
         ports: [
           {
             id: `${n.id}#in`,
@@ -608,7 +690,7 @@ export function toElkGraph(
       }
     }
     if (ins.length === 0 && outs.length === 0) {
-      return { id: String(n.id), width, height }
+      return { id: String(n.id), width, height, layoutOptions: boundaryLayoutOptions }
     }
     const ports = [
       ...ins.map((pin, i) => ({
@@ -628,7 +710,10 @@ export function toElkGraph(
       id: String(n.id),
       width,
       height,
-      layoutOptions: { 'elk.portConstraints': 'FIXED_POS' },
+      layoutOptions: {
+        ...boundaryLayoutOptions,
+        'elk.portConstraints': 'FIXED_POS',
+      },
       ports,
     }
   })
@@ -664,6 +749,7 @@ export function toElkGraph(
     nodePlacement === 'BRANDES_KOEPF' &&
     input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
     edgeDensity >= DENSE_LONGEST_PATH_EDGE_DENSITY
+  const keepGlobalBoundaries = shouldKeepGlobalBoundaries(input)
 
   return {
     id: 'root',
@@ -671,6 +757,11 @@ export function toElkGraph(
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
+      // Keep ordinary views in one coordinate system so FIRST_SEPARATE/LEFT and
+      // LAST_SEPARATE/RIGHT are global boundaries. Let ELK pack highly
+      // disconnected views independently instead of stacking hundreds of
+      // orphan nodes into one extremely tall layer.
+      'elk.separateConnectedComponents': keepGlobalBoundaries ? 'false' : 'true',
       'elk.layered.spacing.nodeNodeBetweenLayers': '66',
       'elk.spacing.nodeNode': '30',
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',

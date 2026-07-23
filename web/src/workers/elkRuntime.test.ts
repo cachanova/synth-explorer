@@ -5,7 +5,14 @@ import { runElkRequest, startElkWarmup } from './elkRuntime'
 
 const input: LayoutInput = {
   nodes: [
-    { id: 1, baseWidth: 62, baseHeight: 46, controlHeight: 0, register: false },
+    {
+      id: 1,
+      baseWidth: 62,
+      baseHeight: 46,
+      controlHeight: 0,
+      register: false,
+      boundary: 'internal',
+    },
   ],
   edges: [],
 }

@@ -3,6 +3,100 @@ import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
 describe('GraphView LUT labels', () => {
+  it('renders canonical input direction when visible topology is incomplete', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 1,
+                kind: 'port',
+                name: 'clk',
+                port_direction: 'input',
+              },
+            },
+          ],
+          edges: [],
+          width: 74,
+          height: 34,
+        }}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toMatch(
+      /data-node-tooltip="clk" class="g-node-body g-symbol-port-in/,
+    )
+  })
+
+  it('renders hidden control-only boundary drivers as primary inputs', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: { id: 1, kind: 'port', name: 'clk' },
+            },
+            {
+              id: 2,
+              x: 160,
+              y: 0,
+              width: 82,
+              height: 71,
+              node: {
+                id: 2,
+                kind: 'cell',
+                name: 'state',
+                cell_type: 'FDRE',
+                seq: true,
+                register: true,
+                controls: [
+                  { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 1, fanout: 1 },
+                ],
+              },
+            },
+          ],
+          edges: [],
+          width: 242,
+          height: 71,
+        }}
+        rootId={2}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toMatch(
+      /data-node-tooltip="clk" class="g-node-body g-symbol-port-in/,
+    )
+    expect(markup).not.toMatch(
+      /data-node-tooltip="clk" class="g-node-body g-symbol-port-out/,
+    )
+  })
+
   it('preserves the raw Vivado instance identity in the node tooltip', () => {
     const markup = renderToStaticMarkup(
       <GraphView
