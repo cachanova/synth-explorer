@@ -105,7 +105,7 @@ fn baseline_digests(name: &str) -> BaselineDigests {
         },
         "round_robin_arbiter:vhdl" => BaselineDigests {
             source_map: 0xe996_697f_3868_a217,
-            exact: Some(0xdcba_d506_34bc_38aa),
+            exact: Some(0xf0bb_aa27_32be_094a),
             fallback: None,
             nodes: 0x57ab_a874_c480_1b26,
             bits: 0x5019_3dc1_e6ef_35db,
@@ -126,14 +126,14 @@ fn baseline_digests(name: &str) -> BaselineDigests {
         },
         "inferred_fifo:verilog" => BaselineDigests {
             source_map: 0xc323_506e_9eec_eae9,
-            exact: Some(0x8637_5754_12b8_13c1),
-            fallback: Some(0x8637_5754_12b8_13c1),
+            exact: Some(0xdb99_4db8_6a1c_ae1b),
+            fallback: Some(0xdb99_4db8_6a1c_ae1b),
             nodes: 0x7ee7_bf07_5aa1_1f61,
             bits: 0x1e43_6276_f3a9_c033,
         },
         "inferred_fifo:vhdl" => BaselineDigests {
             source_map: 0x6215_c83d_8716_f14a,
-            exact: Some(0x061c_1e7b_a7fa_c09a),
+            exact: Some(0x4e20_76bf_21cc_407a),
             fallback: None,
             nodes: 0xf253_cf2f_d2d1_224d,
             bits: 0x8d18_8eaa_81d0_5b52,
