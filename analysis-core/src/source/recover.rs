@@ -1,12 +1,10 @@
 //! Source-range recovery from provenance-preserving synthesis artifacts.
 
-use crate::analysis::{
-    ParsedSourceSpan, SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_RANGE_INDEX_CAP,
-    SOURCE_ROOT_COLLECTION_CAP, parse_src_span,
-};
 use crate::graph::{Graph, NodeId, NodeKind, strip_bit_suffix};
 use crate::netlist::{PortDirection, YosysNetlist};
-use crate::source::types::{
+use crate::source::coordinates::{ParsedSourceSpan, parse_src_span};
+use crate::source::{
+    SOURCE_RANGE_ASSOCIATION_CAP, SOURCE_RANGE_INDEX_CAP, SOURCE_ROOT_COLLECTION_CAP,
     SourceProbeDirection, SourceProbeHint, SourceProbeHintKind, SourceRangeMapping,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};

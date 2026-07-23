@@ -1,17 +1,16 @@
 //! Canonical source-provenance storage and query indexes.
 
-use crate::analysis::{
-    SOURCE_BIT_RANGE_RESPONSE_CAP, SOURCE_LINE_RESPONSE_CAP, SOURCE_LINE_RESPONSE_NODE_BUDGET,
-    SOURCE_PROBE_TARGET_VISIT_CAP, SOURCE_RANGE_INDEX_CAP, SOURCE_RANGE_RESPONSE_CAP,
-    SOURCE_ROOT_COLLECTION_CAP, SOURCE_SPAN_INDEX_CAP, insert_src_lines, parse_src_span,
-    source_columns_are_authoritative, source_coordinates_overlap,
-};
 use crate::graph::{Graph, NodeId};
 use crate::netlist::YosysNetlist;
+use crate::source::coordinates::{
+    SpanCoordinates, insert_src_lines, parse_src_span, source_columns_are_authoritative,
+};
 use crate::source::recover::SourceProvenance;
-use crate::source::types::{
-    SourceBitRangesResponse, SourceMapResponse, SourceProbeDirection, SourceProbeHintKind,
-    SourceRangeMapping, SourceSelectionRange,
+use crate::source::{
+    SOURCE_BIT_RANGE_RESPONSE_CAP, SOURCE_LINE_RESPONSE_CAP, SOURCE_LINE_RESPONSE_NODE_BUDGET,
+    SOURCE_PROBE_TARGET_VISIT_CAP, SOURCE_RANGE_INDEX_CAP, SOURCE_RANGE_RESPONSE_CAP,
+    SOURCE_ROOT_COLLECTION_CAP, SOURCE_SPAN_INDEX_CAP, SourceBitRangesResponse, SourceMapResponse,
+    SourceProbeDirection, SourceProbeHintKind, SourceRangeMapping, SourceSelectionRange,
 };
 use deepsize::DeepSizeOf;
 use std::cmp::Reverse;
@@ -21,54 +20,6 @@ const ROLE_RECOVERED: u8 = 1 << 0;
 const ROLE_NATIVE: u8 = 1 << 1;
 const BIT_REVERSE_MAPPING_THRESHOLD: usize = 64;
 const BIT_REVERSE_ASSOCIATION_THRESHOLD: usize = 128;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, DeepSizeOf)]
-struct SpanCoordinates {
-    start_line: usize,
-    end_line: usize,
-    start_column: Option<usize>,
-    end_column: Option<usize>,
-}
-
-impl SpanCoordinates {
-    fn from_range(range: &SourceRangeMapping) -> Self {
-        Self {
-            start_line: range.start_line,
-            start_column: range.start_column,
-            end_line: range.end_line,
-            end_column: range.end_column,
-        }
-    }
-
-    fn overlaps(
-        self,
-        start_line: usize,
-        end_line: usize,
-        start_column: Option<usize>,
-        end_column: Option<usize>,
-    ) -> bool {
-        source_coordinates_overlap(
-            self.start_line,
-            self.start_column,
-            self.end_line,
-            self.end_column,
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-        )
-    }
-
-    fn format(self, file: &str) -> String {
-        match (self.start_column, self.end_column) {
-            (Some(start_column), Some(end_column)) => format!(
-                "{file}:{}.{start_column}-{}.{end_column}",
-                self.start_line, self.end_line
-            ),
-            _ => format!("{file}:{}-{}", self.start_line, self.end_line),
-        }
-    }
-}
 
 #[derive(Debug, Clone, DeepSizeOf)]
 struct IndexedSpan {
@@ -1014,7 +965,7 @@ impl SourceProvenanceIndex {
             }
         }
 
-        let mut range_node_budget = crate::analysis::SOURCE_RANGE_ASSOCIATION_CAP;
+        let mut range_node_budget = crate::source::SOURCE_RANGE_ASSOCIATION_CAP;
         for file in &self.files {
             for span in file.spans.iter().filter(|span| span.recovered()) {
                 for mapping in span.mappings() {

@@ -8,12 +8,17 @@ use crate::graph::{
 };
 use crate::grouping::{GroupId, GroupKind, GroupPartition, GroupingProjection};
 use crate::netlist::PortDirection;
+use crate::source::coordinates::parse_src_loc;
+#[cfg(test)]
+use crate::source::{
+    SOURCE_LINE_RESPONSE_CAP, SOURCE_PROBE_TARGET_VISIT_CAP, SOURCE_RANGE_INDEX_CAP,
+    SOURCE_RANGE_RESPONSE_CAP, SOURCE_ROOT_COLLECTION_CAP, SourceProbeHint, SourceProbeHintKind,
+    SourceRangeMapping,
+};
 use crate::source::{
     SourceBitRangesResponse, SourceMapResponse, SourceProbeDirection, SourceProvenanceIndex,
     SourceSelectionRange,
 };
-#[cfg(test)]
-use crate::source::{SourceProbeHint, SourceProbeHintKind, SourceRangeMapping};
 use deepsize::DeepSizeOf;
 use serde::Serialize;
 use std::cmp::{Ordering, Reverse};
@@ -35,15 +40,7 @@ const MAX_GROUP_EXPANSION_EDGE_VISITS: usize = MAX_SUBGRAPH_EDGES * 4;
 const MAX_BOUNDARY_ENDPOINTS: usize = 10_000;
 const MAX_BOUNDARY_ENDPOINT_BITS: usize = 100_000;
 const FULL_NETLIST_CONTEXT_NODE_BUDGET: usize = MAX_SUBGRAPH_NODES * 16;
-pub(crate) const SOURCE_ROOT_COLLECTION_CAP: usize = MAX_SUBGRAPH_NODES + 1;
-pub(crate) const SOURCE_LINE_RESPONSE_CAP: usize = 10_000;
-pub(crate) const SOURCE_LINE_RESPONSE_NODE_BUDGET: usize = 20_000;
-pub(crate) const SOURCE_RANGE_RESPONSE_CAP: usize = 10_000;
-pub(crate) const SOURCE_BIT_RANGE_RESPONSE_CAP: usize = 200;
-pub(crate) const SOURCE_RANGE_ASSOCIATION_CAP: usize = 20_000;
-pub(crate) const SOURCE_RANGE_INDEX_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
-pub(crate) const SOURCE_SPAN_INDEX_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
-pub(crate) const SOURCE_PROBE_TARGET_VISIT_CAP: usize = SOURCE_RANGE_ASSOCIATION_CAP;
+const _: () = assert!(crate::source::SOURCE_ROOT_COLLECTION_CAP == MAX_SUBGRAPH_NODES + 1);
 const SOURCE_BIDIRECTIONAL_DEPTH: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, DeepSizeOf)]
@@ -4475,82 +4472,6 @@ fn build_warnings(graph: &Graph, comb_loops: &[NodeId]) -> Vec<String> {
     warnings
 }
 
-pub(crate) fn source_columns_are_authoritative(file: &str) -> bool {
-    let lower = file.to_ascii_lowercase();
-    !lower.ends_with(".vhd") && !lower.ends_with(".vhdl")
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn source_coordinates_overlap(
-    range_start_line: usize,
-    range_start_column: Option<usize>,
-    range_end_line: usize,
-    range_end_column: Option<usize>,
-    start_line: usize,
-    start_column: Option<usize>,
-    end_line: usize,
-    end_column: Option<usize>,
-) -> bool {
-    if range_end_line < start_line || range_start_line > end_line {
-        return false;
-    }
-    let (Some(range_start_column), Some(range_end_column)) = (range_start_column, range_end_column)
-    else {
-        return true;
-    };
-    let (Some(start_column), Some(end_column)) = (start_column, end_column) else {
-        return true;
-    };
-    (range_start_line, range_start_column) <= (end_line, end_column)
-        && (start_line, start_column) <= (range_end_line, range_end_column)
-}
-
-pub(crate) fn insert_src_lines(mut src: &str, mut insert: impl FnMut(&str, usize)) {
-    while !src.is_empty() {
-        let (loc, rest) = src
-            .split_once('|')
-            .map_or((src, ""), |(loc, rest)| (loc, rest));
-        if let Some((file, start, end)) = parse_src_loc(loc) {
-            for line in start..=end.min(start + 199) {
-                insert(&file, line);
-            }
-        }
-        src = rest;
-    }
-}
-
-pub(crate) fn parse_src_loc(loc: &str) -> Option<(String, usize, usize)> {
-    let (file, start_line, _, end_line, _) = parse_src_span(loc)?;
-    Some((file, start_line, end_line))
-}
-
-pub(crate) type ParsedSourceSpan = (String, usize, Option<usize>, usize, Option<usize>);
-
-pub(crate) fn parse_src_span(loc: &str) -> Option<ParsedSourceSpan> {
-    let trimmed = loc.trim();
-    let (file, rest) = trimmed.rsplit_once(':')?;
-    let (start, end) = rest.split_once('-').map_or((rest, rest), |(a, b)| (a, b));
-    let parse_point = |point: &str| {
-        let (line, column) = point
-            .split_once('.')
-            .map_or((point, None), |(line, column)| (line, Some(column)));
-        Some((line.parse().ok()?, column.map(str::parse).transpose().ok()?))
-    };
-    let (start_line, start_column) = parse_point(start)?;
-    let (end_line, end_column) = parse_point(end)?;
-    let file_name = std::path::Path::new(file)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(file)
-        .to_owned();
-    let (end_line, end_column) = if end_line < start_line {
-        (start_line, start_column)
-    } else {
-        (end_line, end_column)
-    };
-    Some((file_name, start_line, start_column, end_line, end_column))
-}
-
 fn register_q_name(graph: &Graph, net: u32) -> Option<&str> {
     best_net_alias(graph, net, false)
 }
@@ -7271,80 +7192,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.status, SourceSelectionStatus::MappingIncomplete);
-    }
-
-    #[test]
-    fn source_spans_use_inclusive_columns_and_whole_line_fallbacks() {
-        let precise = SourceRangeMapping {
-            file: "top.sv".to_owned(),
-            start_line: 2,
-            end_line: 2,
-            start_column: Some(7),
-            end_column: Some(16),
-            node_ids: Vec::new(),
-            signal_bits: Vec::new(),
-            approximate_signal_bits: Vec::new(),
-            mapping_incomplete: false,
-        };
-        let overlaps = |range: &SourceRangeMapping, column| {
-            source_coordinates_overlap(
-                range.start_line,
-                range.start_column,
-                range.end_line,
-                range.end_column,
-                2,
-                Some(column),
-                2,
-                Some(column),
-            )
-        };
-        assert!(overlaps(&precise, 10));
-        assert!(!overlaps(&precise, 6));
-        assert!(!overlaps(&precise, 17));
-        let whole_line = SourceRangeMapping {
-            start_column: None,
-            end_column: None,
-            ..precise
-        };
-        assert!(overlaps(&whole_line, 100));
-        assert_eq!(
-            parse_src_span("top.sv:2.7-4.12"),
-            Some(("top.sv".to_owned(), 2, Some(7), 4, Some(12)))
-        );
-    }
-
-    #[test]
-    fn source_span_parser_keeps_valid_fragments_and_normalizes_existing_edge_cases() {
-        assert_eq!(
-            parse_src_span("  /tmp/generated/top.sv:5.7-6.11  "),
-            Some(("top.sv".to_owned(), 5, Some(7), 6, Some(11)))
-        );
-        assert_eq!(
-            parse_src_span("top.sv:8.3-7.2"),
-            Some(("top.sv".to_owned(), 8, Some(3), 8, Some(3)))
-        );
-        assert_eq!(
-            parse_src_span(r"C:\rtl\top.sv:2.1-2.4"),
-            Some((r"C:\rtl\top.sv".to_owned(), 2, Some(1), 2, Some(4)))
-        );
-        for malformed in [
-            "garbage",
-            "top.sv:not-a-line",
-            "top.sv:2.bad-2.4",
-            "top.sv:2.1-4.bad",
-        ] {
-            assert_eq!(parse_src_span(malformed), None, "fragment: {malformed}");
-        }
-
-        let mut retained = Vec::new();
-        insert_src_lines(
-            "garbage|/tmp/generated/top.sv:5.7-5.11|top.sv:not-a-line|top.sv:8.3-7.2",
-            |file, line| retained.push((file.to_owned(), line)),
-        );
-        assert_eq!(
-            retained,
-            vec![("top.sv".to_owned(), 5), ("top.sv".to_owned(), 8)]
-        );
     }
 
     #[test]
