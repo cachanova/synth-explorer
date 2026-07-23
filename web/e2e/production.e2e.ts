@@ -854,6 +854,8 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
 
   const countGroupId = await groupedCount.getAttribute('data-graph-node-id')
   expect(countGroupId).not.toBeNull()
+  const viewport = page.locator('.g-viewport')
+  const stationaryViewportTransform = await viewport.getAttribute('transform')
   const groupedCountTransform = await groupedCount.getAttribute('transform')
   const stationaryMemoryTransform = await groupedMemory.getAttribute('transform')
   await page.locator(
@@ -866,6 +868,10 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   await expect(groupedMemory).toHaveAttribute(
     'transform',
     stationaryMemoryTransform ?? '',
+  )
+  await expect(viewport).toHaveAttribute(
+    'transform',
+    stationaryViewportTransform ?? '',
   )
   const countBoundary = page.locator(
     `[data-expanded-group-id="${countGroupId}"] .g-expanded-group-boundary`,
@@ -896,8 +902,11 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
     'transform',
     groupedCountTransform ?? '',
   )
+  await expect(viewport).toHaveAttribute(
+    'transform',
+    stationaryViewportTransform ?? '',
+  )
 
-  const viewport = page.locator('.g-viewport')
   await zoomSchematicToScale(page, 0.5, groupedMemory)
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
   const compactDetails = page.locator(`[data-node-detail-id="${groupedId}"]`)

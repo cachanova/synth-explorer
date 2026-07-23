@@ -577,31 +577,41 @@ export function Graph({ active }: { active: boolean }) {
     [activeExpandedIds, groupExpansions, projectedNodeIds],
   )
 
-  // The selected projection is merged only with expansions that belong to it.
-  // In non-focus mode, selection changes leave both inputs identical and skip
-  // layout entirely.
-  const combined = useMemo(() => {
+  // Keep the neighborhood-expanded base stable while a quotient group opens
+  // or closes. Its object identity is the cache key for local group layout.
+  const groupedBase = useMemo(() => {
     if (!projectedSubgraph) return null
     const expanded = mergeSubgraphs(
       projectedSubgraph,
       activeExpansion?.graph ?? null,
       MAX_GRAPH_RENDER_NODES,
     )
-    const applied = applyGroupExpansions(
-      expanded.graph,
-      activeGroupExpansions,
-      MAX_GROUP_EXPANSION_RENDER_NODES,
-    )
     return {
-      graph: applied.graph,
-      groupedBaseGraph: expanded.graph,
-      expandedGroups: applied.groups,
+      graph: expanded.graph,
       expansionDroppedNodes:
         (activeExpansion?.droppedNodes ?? 0) + expanded.droppedNodes,
       expansionDroppedEdges:
         (activeExpansion?.droppedEdges ?? 0) + expanded.droppedEdges,
     }
-  }, [activeExpansion, activeGroupExpansions, projectedSubgraph])
+  }, [activeExpansion, projectedSubgraph])
+
+  // The selected projection is merged only with group expansions that belong
+  // to it. Applying a group does not rebuild the stable grouped base above.
+  const combined = useMemo(() => {
+    if (!groupedBase) return null
+    const applied = applyGroupExpansions(
+      groupedBase.graph,
+      activeGroupExpansions,
+      MAX_GROUP_EXPANSION_RENDER_NODES,
+    )
+    return {
+      graph: applied.graph,
+      groupedBaseGraph: groupedBase.graph,
+      expandedGroups: applied.groups,
+      expansionDroppedNodes: groupedBase.expansionDroppedNodes,
+      expansionDroppedEdges: groupedBase.expansionDroppedEdges,
+    }
+  }, [activeGroupExpansions, groupedBase])
   const combinedSubgraph = combined?.graph ?? null
   const groupedBaseSubgraph = combined?.groupedBaseGraph ?? null
   const visibleExpandedGroups = useMemo(

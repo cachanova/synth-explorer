@@ -351,6 +351,95 @@ describe('in-place group expansion layout', () => {
     expect(address1.points).toContainEqual(base.edges[1].points.at(-1))
   })
 
+  it('preserves distinct quotient trunks for named output pins', () => {
+    const grouped = node(100, 'RAM64M', {
+      name: 'memory [64×1]',
+      members: [1],
+      member_count: 1,
+    })
+    const target = node(9, '$_BUF_')
+    const base = {
+      nodes: [
+        { id: 100, x: 100, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 420, y: 120, width: 76, height: 52, node: target },
+      ],
+      edges: [
+        {
+          from: 100,
+          to: 9,
+          points: [
+            { x: 210, y: 126 },
+            { x: 300, y: 126 },
+            { x: 300, y: 146 },
+            { x: 420, y: 146 },
+          ],
+          edge: {
+            from: 100,
+            to: 9,
+            from_port: 'O0',
+            to_port: 'A',
+            net_name: 'output_0',
+            bits: [1],
+          },
+        },
+        {
+          from: 100,
+          to: 9,
+          points: [
+            { x: 210, y: 152 },
+            { x: 340, y: 152 },
+            { x: 340, y: 146 },
+            { x: 420, y: 146 },
+          ],
+          edge: {
+            from: 100,
+            to: 9,
+            from_port: 'O1',
+            to_port: 'A',
+            net_name: 'output_1',
+            bits: [2],
+          },
+        },
+      ],
+      width: 540,
+      height: 260,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM64M'), target],
+      edges: [
+        {
+          from: 1,
+          to: 9,
+          from_port: 'O0',
+          to_port: 'A',
+          net_name: 'output_0',
+          bits: [1],
+        },
+        {
+          from: 1,
+          to: 9,
+          from_port: 'O1',
+          to_port: 'A',
+          net_name: 'output_1',
+          bits: [2],
+        },
+      ],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1],
+    })!
+    const output0 = opened.edges.find((edge) => edge.edge.from_port === 'O0')!
+    const output1 = opened.edges.find((edge) => edge.edge.from_port === 'O1')!
+
+    expect(output0.points).toContainEqual(base.edges[0].points[0])
+    expect(output0.points).not.toContainEqual(base.edges[1].points[0])
+    expect(output1.points).toContainEqual(base.edges[1].points[0])
+    expect(output1.points).not.toContainEqual(base.edges[0].points[0])
+  })
+
   it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
     const grouped = node(100, 'FDRE', {
       name: 'count[1:0]',
