@@ -3952,7 +3952,7 @@ fn hard_cell_control_active_low(cell_type: &str, role: ControlRole) -> Option<bo
 fn is_simple_control_source(graph: &Graph, start: NodeId) -> bool {
     let mut current = start;
     let mut visited = HashSet::new();
-    while visited.insert(current) {
+    loop {
         let node = &graph.nodes[current as usize];
         if node.kind == NodeKind::PortBit
             && matches!(
@@ -3969,6 +3969,12 @@ fn is_simple_control_source(graph: &Graph, start: NodeId) -> bool {
         if node.kind != NodeKind::Cell || !transparent {
             return false;
         }
+        // Direct input ports and ordinary logic return above without ever
+        // allocating the cycle guard. Only transparent infrastructure chains
+        // need visited-node tracking.
+        if !visited.insert(current) {
+            return false;
+        }
         let mut incoming = graph.incoming[current as usize]
             .iter()
             .map(|idx| graph.edges[*idx].from);
@@ -3980,7 +3986,6 @@ fn is_simple_control_source(graph: &Graph, start: NodeId) -> bool {
         }
         current = next;
     }
-    false
 }
 
 fn should_hide_edge(graph: &Graph, edge: &Edge, hide_control: bool, hide_const: bool) -> bool {
