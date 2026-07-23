@@ -102,6 +102,67 @@ describe('logic-oriented ELK layout policy', () => {
       expect(edge.points.at(-1)!.x).toBeCloseTo(target.x)
     }
   })
+
+  it('packs orphan-heavy views without producing an extreme vertical ribbon', async () => {
+    const isolatedNodes = 128
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+        },
+        {
+          id: 2,
+          baseWidth: 76,
+          baseHeight: 52,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        },
+        {
+          id: 3,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+        },
+        ...Array.from({ length: isolatedNodes }, (_, index) => ({
+          id: index + 10,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal' as const,
+        })),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          fromPort: 'Y',
+          toPort: 'A',
+          control: false,
+        },
+        {
+          from: 2,
+          to: 3,
+          fromPort: 'Y',
+          toPort: 'A',
+          control: false,
+        },
+      ],
+    }
+
+    const result = await new ELK().layout(toElkGraph(input, 'BRANDES_KOEPF'))
+
+    expect(result.children).toHaveLength(isolatedNodes + 3)
+    expect(result.height).toBeLessThan(5_000)
+  })
 })
 
 describe('dense ELK layout policy', () => {

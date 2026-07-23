@@ -32,6 +32,7 @@ import {
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   shouldRefitProjection,
   toElkGraph,
+  type LayoutInput,
   viewportTransformAttribute,
   zoomViewportAt,
 } from './layout'
@@ -682,6 +683,37 @@ describe('schematic layout sizing', () => {
       'elk.layered.layering.layerConstraint',
     )
     expect(graph.layoutOptions?.['elk.direction']).toBe('RIGHT')
+    expect(graph.layoutOptions?.['elk.separateConnectedComponents']).toBe('false')
+  })
+
+  it('lets ELK pack highly disconnected views instead of building one tall layer', () => {
+    const input = prepareLayoutInput({
+      nodes: Array.from({ length: 40 }, (_, id) => node(id, '$_BUF_')),
+      edges: [],
+      truncated: false,
+    })
+
+    expect(
+      toElkGraph(input).layoutOptions?.['elk.separateConnectedComponents'],
+    ).toBe('true')
+  })
+
+  it('preserves global alignment when disconnected components are boundary ports', () => {
+    const input: LayoutInput = {
+      nodes: Array.from({ length: 40 }, (_, id) => ({
+        id,
+        baseWidth: 74,
+        baseHeight: 34,
+        controlHeight: 0,
+        register: false,
+        boundary: 'input',
+      })),
+      edges: [],
+    }
+
+    expect(
+      toElkGraph(input).layoutOptions?.['elk.separateConnectedComponents'],
+    ).toBe('false')
   })
 
   it('reduces ELK thoroughness only on the robust very-large-graph path', () => {

@@ -2160,9 +2160,14 @@ export const GraphView = memo(function GraphView({
       }
     }
 
-    const controlDrivers = graph.nodes.flatMap((laidOutNode) =>
-      controlsFor(laidOutNode.node).flatMap(controlDriverIds),
-    )
+    const controlDrivers = new Set<number>()
+    for (const laidOutNode of graph.nodes) {
+      for (const control of controlsFor(laidOutNode.node)) {
+        for (const driver of controlDriverIds(control)) {
+          controlDrivers.add(driver)
+        }
+      }
+    }
     const portNodes = graph.nodes.filter(
       (laidOutNode) => laidOutNode.node.kind === 'port',
     )

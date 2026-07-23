@@ -2743,6 +2743,8 @@ fn quotient_subgraph(
                     ApiNodeKind::Cell
                 },
                 name: group.label.clone(),
+                // Port groups contain bits from one named top-level port, whose
+                // declaration supplies one direction for every member.
                 port_direction: is_port
                     .then_some(())
                     .and_then(|()| group.members.first())

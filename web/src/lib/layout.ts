@@ -93,6 +93,43 @@ export interface LayoutInput {
   edges: LayoutInputEdge[]
 }
 
+const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
+
+function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
+  const neighbors = new Map(
+    input.nodes.map((node) => [node.id, [] as number[]]),
+  )
+  for (const edge of input.edges) {
+    if (!neighbors.has(edge.from) || !neighbors.has(edge.to)) continue
+    neighbors.get(edge.from)!.push(edge.to)
+    neighbors.get(edge.to)!.push(edge.from)
+  }
+
+  const unseen = new Set(neighbors.keys())
+  let componentCount = 0
+  let boundaryComponentCount = 0
+  for (const root of neighbors.keys()) {
+    if (!unseen.delete(root)) continue
+    componentCount += 1
+    let hasBoundary = nodeById.get(root)?.boundary !== 'internal'
+    const pending = [root]
+    while (pending.length > 0) {
+      const node = pending.pop()!
+      for (const neighbor of neighbors.get(node) ?? []) {
+        if (!unseen.delete(neighbor)) continue
+        hasBoundary ||= nodeById.get(neighbor)?.boundary !== 'internal'
+        pending.push(neighbor)
+      }
+    }
+    if (hasBoundary) boundaryComponentCount += 1
+  }
+  return (
+    componentCount <= MAX_GLOBAL_LAYOUT_COMPONENTS ||
+    boundaryComponentCount > 1
+  )
+}
+
 export interface LayoutGeometry {
   nodes: Array<Omit<LaidOutNode, 'node'>>
   edges: Array<{ inputIndex: number; points: Point[] }>
@@ -711,6 +748,7 @@ export function toElkGraph(
     nodePlacement === 'BRANDES_KOEPF' &&
     input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
     edgeDensity >= DENSE_LONGEST_PATH_EDGE_DENSITY
+  const keepGlobalBoundaries = shouldKeepGlobalBoundaries(input)
 
   return {
     id: 'root',
@@ -718,10 +756,11 @@ export function toElkGraph(
       'elk.algorithm': 'layered',
       'elk.direction': 'RIGHT',
       'elk.edgeRouting': 'ORTHOGONAL',
-      // Keep disconnected control-only inputs in the same layered coordinate
-      // system so FIRST/LEFT and LAST/RIGHT are global schematic boundaries,
-      // not per-component suggestions later shifted by component packing.
-      'elk.separateConnectedComponents': 'false',
+      // Keep ordinary views in one coordinate system so FIRST_SEPARATE/LEFT and
+      // LAST_SEPARATE/RIGHT are global boundaries. Let ELK pack highly
+      // disconnected views independently instead of stacking hundreds of
+      // orphan nodes into one extremely tall layer.
+      'elk.separateConnectedComponents': keepGlobalBoundaries ? 'false' : 'true',
       'elk.layered.spacing.nodeNodeBetweenLayers': '66',
       'elk.spacing.nodeNode': '30',
       'elk.layered.spacing.edgeNodeBetweenLayers': '20',

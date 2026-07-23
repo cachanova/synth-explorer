@@ -65,22 +65,6 @@ export function controlDriverIds(control: ControlRef): number[] {
     : [control.driver_id]
 }
 
-/** Infer a top-level port's data direction from the graph topology. */
-export function inferPortDirection(
-  nodeId: number,
-  edges: readonly Pick<GraphEdge, 'from' | 'to'>[],
-): PortDirection {
-  let drives = false
-  let isDriven = false
-  for (const edge of edges) {
-    if (edge.from === nodeId) drives = true
-    if (edge.to === nodeId) isDriven = true
-  }
-  // A pure source is an input. Terminal and unusual bidirectional nodes are
-  // rendered as outputs, which is the safer endpoint-oriented default.
-  return drives && !isDriven ? 'input' : 'output'
-}
-
 /** Infer many top-level port directions in one O(nodes + edges) pass. */
 export function inferPortDirections(
   nodeIds: Iterable<number>,
