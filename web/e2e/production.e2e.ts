@@ -1372,12 +1372,16 @@ for (const regression of [
       await page.getByLabel('Focus').uncheck()
       await expect(boundary).toHaveCount(1)
 
-      await expect(page.getByRole('button', {
+      const collapse = page.getByRole('button', {
         name: `Collapse group memory [${regression.depth}×16]`,
-      })).toBeVisible()
-      await page.getByRole('button', {
-        name: `Collapse group memory [${regression.depth}×16]`,
-      }).click()
+      })
+      await expect(collapse).toBeVisible()
+      // A fresh whole-graph layout can move this group outside the current
+      // pointer viewport after the Focus round-trip. Exercise the control's
+      // keyboard path without letting Playwright scroll the SVG beneath the
+      // fixed analysis tabs.
+      await collapse.focus()
+      await collapse.press('Enter')
       await expect(groupedMemory).toHaveCount(1)
       await expect(boundary).toHaveCount(0)
     }
