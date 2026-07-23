@@ -1266,6 +1266,7 @@ describe('GraphView group expansion controls', () => {
 
     expect(markup).toContain('data-group-action="expand"')
     expect(markup).toContain('aria-label="Expand group memory [16×16]"')
+    expect(markup).toContain('transform="translate(110,20)"')
     expect(markup).toContain('class="g-group-toggle-hit" r="10"')
     expect(markup).not.toContain('<circle r="6"></circle>')
   })
