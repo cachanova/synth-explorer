@@ -23,6 +23,7 @@ import {
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
+  layoutExpandedGroupInPlace,
   layoutSubgraph,
   prewarmLayoutWorker,
   type LaidOutGraph,
@@ -576,32 +577,47 @@ export function Graph({ active }: { active: boolean }) {
     [activeExpandedIds, groupExpansions, projectedNodeIds],
   )
 
-  // The selected projection is merged only with expansions that belong to it.
-  // In non-focus mode, selection changes leave both inputs identical and skip
-  // layout entirely.
-  const combined = useMemo(() => {
+  // Keep the neighborhood-expanded base stable while a quotient group opens
+  // or closes. Its object identity is the cache key for local group layout.
+  const groupedBase = useMemo(() => {
     if (!projectedSubgraph) return null
     const expanded = mergeSubgraphs(
       projectedSubgraph,
       activeExpansion?.graph ?? null,
       MAX_GRAPH_RENDER_NODES,
     )
-    const applied = applyGroupExpansions(
-      expanded.graph,
-      activeGroupExpansions,
-      MAX_GROUP_EXPANSION_RENDER_NODES,
-    )
     return {
-      graph: applied.graph,
-      expandedGroups: applied.groups,
+      graph: expanded.graph,
       expansionDroppedNodes:
         (activeExpansion?.droppedNodes ?? 0) + expanded.droppedNodes,
       expansionDroppedEdges:
         (activeExpansion?.droppedEdges ?? 0) + expanded.droppedEdges,
     }
-  }, [activeExpansion, activeGroupExpansions, projectedSubgraph])
+  }, [activeExpansion, projectedSubgraph])
+
+  // The selected projection is merged only with group expansions that belong
+  // to it. Applying a group does not rebuild the stable grouped base above.
+  const combined = useMemo(() => {
+    if (!groupedBase) return null
+    const applied = applyGroupExpansions(
+      groupedBase.graph,
+      activeGroupExpansions,
+      MAX_GROUP_EXPANSION_RENDER_NODES,
+    )
+    return {
+      graph: applied.graph,
+      groupedBaseGraph: groupedBase.graph,
+      expandedGroups: applied.groups,
+      expansionDroppedNodes: groupedBase.expansionDroppedNodes,
+      expansionDroppedEdges: groupedBase.expansionDroppedEdges,
+    }
+  }, [activeGroupExpansions, groupedBase])
   const combinedSubgraph = combined?.graph ?? null
-  const visibleExpandedGroups = combined?.expandedGroups ?? []
+  const groupedBaseSubgraph = combined?.groupedBaseGraph ?? null
+  const visibleExpandedGroups = useMemo(
+    () => combined?.expandedGroups ?? [],
+    [combined],
+  )
 
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
@@ -631,13 +647,34 @@ export function Graph({ active }: { active: boolean }) {
       if (!sameProjection) setFitNonce((n) => n + 1)
       return
     }
+    const expandedGroup = visibleExpandedGroups[0]
+    const groupedBaseLayout = groupedBaseSubgraph
+      ? layoutCache.current.get(groupedBaseSubgraph)
+      : null
+    const inPlaceLayout = expandedGroup && groupedBaseLayout
+      ? layoutExpandedGroupInPlace(toLayout, groupedBaseLayout, expandedGroup)
+      : null
+    if (inPlaceLayout) {
+      const nextDisplay = {
+        designId: ownerDesignId,
+        projectionKey,
+        subgraph: toLayout,
+        graph: inPlaceLayout,
+      }
+      layoutCache.current.set(toLayout, inPlaceLayout)
+      displayedGraphRef.current = nextDisplay
+      setDisplayedGraph(nextDisplay)
+      laidOutSubgraph.current = toLayout
+      setLayingOut(false)
+      if (!sameProjection) setFitNonce((n) => n + 1)
+      return
+    }
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    // Every expanded projection gets a fresh optimal ELK layout. Reusing the
-    // previous coordinates makes a focused subset inherit the full schematic's
-    // spacing and leaves large, awkward gaps. GraphView separately preserves a
-    // retained node's viewport position so the relayout does not feel like a jump.
+    // Fall back to a fresh ELK layout when there is no compatible grouped-base
+    // layout to compose locally (for example, a newly focused projection).
+    // GraphView preserves a retained node's viewport position across that fallback.
     layoutSubgraph(toLayout, controller.signal)
       .then((g) => {
         if (cancelled) return
@@ -670,8 +707,10 @@ export function Graph({ active }: { active: boolean }) {
     combinedSubgraph,
     focusActive,
     fullSubgraph?.designId,
+    groupedBaseSubgraph,
     projectionKey,
     relevantSubgraph?.designId,
+    visibleExpandedGroups,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(

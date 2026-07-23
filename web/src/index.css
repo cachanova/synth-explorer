@@ -2300,25 +2300,40 @@ th.sortable:hover {
 .g-group-toggle {
   cursor: pointer;
   outline: none;
+  opacity: 0.52;
+  transition: opacity 120ms ease;
 }
 .g-group-toggle circle {
-  fill: var(--bg-2);
-  stroke: var(--accent);
-  stroke-width: 1.25;
+  fill: color-mix(in srgb, var(--bg-2) 82%, transparent);
+  stroke: var(--text-faint);
+  stroke-width: 1;
   vector-effect: non-scaling-stroke;
+}
+.g-group-toggle .g-group-toggle-hit {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
 }
 .g-group-toggle path {
   fill: none;
-  stroke: var(--accent);
+  stroke: var(--text-muted);
   stroke-linecap: round;
-  stroke-width: 1.5;
+  stroke-width: 1.1;
   vector-effect: non-scaling-stroke;
   pointer-events: none;
 }
-.g-group-toggle:hover circle,
-.g-group-toggle:focus-visible circle {
-  fill: color-mix(in srgb, var(--accent) 18%, var(--bg-2));
-  filter: drop-shadow(0 0 2px var(--accent));
+.g-group-toggle:hover,
+.g-group-toggle:focus-visible {
+  opacity: 1;
+}
+.g-group-toggle:hover circle:not(.g-group-toggle-hit),
+.g-group-toggle:focus-visible circle:not(.g-group-toggle-hit) {
+  fill: color-mix(in srgb, var(--accent) 10%, var(--bg-2));
+  stroke: var(--accent);
+}
+.g-group-toggle:hover path,
+.g-group-toggle:focus-visible path {
+  stroke: var(--accent);
 }
 .g-node-details {
   pointer-events: none;

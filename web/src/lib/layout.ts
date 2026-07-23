@@ -39,6 +39,11 @@ export interface LaidOutGraph {
   height: number
 }
 
+export interface ExpandedGroupLayout {
+  id: number
+  members: number[]
+}
+
 export interface LayoutInputNode {
   id: number
   baseWidth: number
@@ -775,6 +780,342 @@ export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): La
     }),
     width: geometry.width,
     height: geometry.height,
+  }
+}
+
+const LOCAL_GROUP_COLUMN_GAP = 20
+const LOCAL_GROUP_ROW_GAP = 16
+const LOCAL_GROUP_MARGIN_X = 14
+const LOCAL_GROUP_MARGIN_TOP = 28
+const LOCAL_GROUP_MARGIN_BOTTOM = 14
+const LOCAL_GROUP_COLLISION_GAP = 12
+
+function localEdgePoints(
+  start: Point,
+  end: Point,
+): Point[] {
+  const middleX = (start.x + end.x) / 2
+  return [
+    start,
+    { x: middleX, y: start.y },
+    { x: middleX, y: end.y },
+    end,
+  ]
+}
+
+function orthogonalBridge(start: Point, end: Point): Point[] {
+  if (start.x === end.x || start.y === end.y) return [start, end]
+  return [start, { x: end.x, y: start.y }, end]
+}
+
+/**
+ * Open one quotient group without asking ELK to redraw the whole projection.
+ * Existing nodes and routes keep their exact geometry. Members form a compact
+ * grid centered on the quotient node's former position, while new boundary
+ * wiring reuses the quotient edge trunks where possible.
+ */
+export function layoutExpandedGroupInPlace(
+  sub: Subgraph,
+  base: LaidOutGraph,
+  group: ExpandedGroupLayout,
+): LaidOutGraph | null {
+  const anchor = base.nodes.find((node) => node.id === group.id)
+  if (!anchor) return null
+
+  const memberIds = new Set(group.members)
+  const subNodeById = new Map(sub.nodes.map((node) => [node.id, node]))
+  const memberNodes = group.members
+    .map((id) => subNodeById.get(id))
+    .filter((node): node is GraphNode => node != null)
+  if (memberNodes.length === 0) return null
+
+  const input = prepareLayoutInput(sub)
+  const pins = collectPinCatalog(input.edges)
+  const inputNodeById = new Map(input.nodes.map((node) => [node.id, node]))
+  const dimensions = new Map(input.nodes.map((node) => [
+    node.id,
+    dimensionsForPins(
+      node,
+      pins.incoming.get(node.id)?.length ?? 0,
+      pins.outgoing.get(node.id)?.length ?? 0,
+    ),
+  ]))
+  const maxMemberWidth = Math.max(
+    ...memberNodes.map((node) => dimensions.get(node.id)?.width ?? anchor.width),
+  )
+  const maxMemberHeight = Math.max(
+    ...memberNodes.map((node) => dimensions.get(node.id)?.height ?? anchor.height),
+  )
+  const columns = Math.max(
+    1,
+    Math.ceil(Math.sqrt(
+      memberNodes.length *
+      (maxMemberHeight + LOCAL_GROUP_ROW_GAP) /
+      (maxMemberWidth + LOCAL_GROUP_COLUMN_GAP),
+    )),
+  )
+  const rows = Math.ceil(memberNodes.length / columns)
+  const gridWidth =
+    columns * maxMemberWidth + Math.max(0, columns - 1) * LOCAL_GROUP_COLUMN_GAP
+  const gridHeight =
+    rows * maxMemberHeight + Math.max(0, rows - 1) * LOCAL_GROUP_ROW_GAP
+  const centeredX = anchor.x + anchor.width / 2 - gridWidth / 2
+  const centeredY = anchor.y + anchor.height / 2 - gridHeight / 2
+  const stepX = gridWidth + LOCAL_GROUP_COLUMN_GAP * 2
+  const stepY = gridHeight + LOCAL_GROUP_ROW_GAP * 2
+  const candidateOffsets = [
+    [0, 0],
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+    [2, 0],
+    [-2, 0],
+    [0, 2],
+    [0, -2],
+  ] as const
+  const blockers = base.nodes.filter((node) => node.id !== group.id)
+  const rightmostBlocker = Math.max(
+    LOCAL_GROUP_MARGIN_X,
+    ...blockers.map((node) => node.x + node.width),
+  )
+  const bottommostBlocker = Math.max(
+    LOCAL_GROUP_MARGIN_TOP,
+    ...blockers.map((node) => node.y + node.height),
+  )
+  const candidatePositions = [
+    ...candidateOffsets.map(([column, row]) => ({
+      x: centeredX + column * stepX,
+      y: centeredY + row * stepY,
+    })),
+    // These two positions are guaranteed to clear every existing node, so a
+    // dense graph never forces unrelated logic inside the expanded frame.
+    {
+      x: rightmostBlocker + LOCAL_GROUP_COLLISION_GAP + LOCAL_GROUP_MARGIN_X,
+      y: centeredY,
+    },
+    {
+      x: centeredX,
+      y: bottommostBlocker + LOCAL_GROUP_COLLISION_GAP + LOCAL_GROUP_MARGIN_TOP,
+    },
+  ]
+  const candidates = candidatePositions.map((position) => {
+    const x = Math.max(LOCAL_GROUP_MARGIN_X, position.x)
+    const y = Math.max(LOCAL_GROUP_MARGIN_TOP, position.y)
+    const left = x - LOCAL_GROUP_MARGIN_X
+    const top = y - LOCAL_GROUP_MARGIN_TOP
+    const right = x + gridWidth + LOCAL_GROUP_MARGIN_X
+    const bottom = y + gridHeight + LOCAL_GROUP_MARGIN_BOTTOM
+    const overlap = blockers.reduce((area, node) => {
+      const overlapWidth = Math.max(
+        0,
+        Math.min(right, node.x + node.width + LOCAL_GROUP_COLLISION_GAP) -
+          Math.max(left, node.x - LOCAL_GROUP_COLLISION_GAP),
+      )
+      const overlapHeight = Math.max(
+        0,
+        Math.min(bottom, node.y + node.height + LOCAL_GROUP_COLLISION_GAP) -
+          Math.max(top, node.y - LOCAL_GROUP_COLLISION_GAP),
+      )
+      return area + overlapWidth * overlapHeight
+    }, 0)
+    const distance =
+      (x + gridWidth / 2 - (anchor.x + anchor.width / 2)) ** 2 +
+      (y + gridHeight / 2 - (anchor.y + anchor.height / 2)) ** 2
+    return { x, y, overlap, distance }
+  })
+  candidates.sort((a, b) => a.overlap - b.overlap || a.distance - b.distance)
+  const gridX = candidates[0].x
+  const gridY = candidates[0].y
+
+  const memberGeometry = new Map<number, LaidOutNode>()
+  memberNodes.forEach((node, index) => {
+    const size = dimensions.get(node.id) ?? {
+      width: anchor.width,
+      height: anchor.height,
+    }
+    const column = index % columns
+    const row = Math.floor(index / columns)
+    memberGeometry.set(node.id, {
+      id: node.id,
+      x: gridX + column * (maxMemberWidth + LOCAL_GROUP_COLUMN_GAP) +
+        (maxMemberWidth - size.width) / 2,
+      y: gridY + row * (maxMemberHeight + LOCAL_GROUP_ROW_GAP) +
+        (maxMemberHeight - size.height) / 2,
+      width: size.width,
+      height: size.height,
+      node,
+    })
+  })
+
+  const baseNodeById = new Map(base.nodes.map((node) => [node.id, node]))
+  if (sub.nodes.some((node) =>
+    !memberIds.has(node.id) && !baseNodeById.has(node.id)
+  )) {
+    // This local composer only replaces one existing quotient node. Fall back
+    // to ELK if a future caller introduces additional context nodes.
+    return null
+  }
+  const nodes = sub.nodes.flatMap((node) => {
+    const member = memberGeometry.get(node.id)
+    if (member) return [member]
+    const existing = baseNodeById.get(node.id)
+    return existing ? [{ ...existing, node }] : []
+  })
+  const laidOutById = new Map(nodes.map((node) => [node.id, node]))
+  const baseEdgeKey = (edge: GraphEdge) =>
+    `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}|${edge.net_name}|${edge.bits.join(',')}`
+  const baseEdgesByKey = new Map(
+    base.edges.map((edge) => [baseEdgeKey(edge.edge), edge]),
+  )
+  const outgoingTrunks = base.edges.filter((edge) => edge.from === group.id)
+  const incomingTrunks = base.edges.filter((edge) => edge.to === group.id)
+  const outgoingTrunkByTarget = new Map<number, (typeof base.edges)[number]>()
+  const outgoingTrunkByTargetPort = new Map<string, (typeof base.edges)[number]>()
+  const outgoingTrunkByPorts = new Map<string, (typeof base.edges)[number]>()
+  const incomingTrunkBySource = new Map<number, (typeof base.edges)[number]>()
+  const incomingTrunkBySourcePort = new Map<string, (typeof base.edges)[number]>()
+  const incomingTrunkByPorts = new Map<string, (typeof base.edges)[number]>()
+  for (const trunk of outgoingTrunks) {
+    if (!outgoingTrunkByTarget.has(trunk.to)) {
+      outgoingTrunkByTarget.set(trunk.to, trunk)
+    }
+    const key = `${trunk.to}|${trunk.edge.to_port}`
+    if (!outgoingTrunkByTargetPort.has(key)) {
+      outgoingTrunkByTargetPort.set(key, trunk)
+    }
+    const portKey = `${trunk.edge.from_port}|${key}`
+    if (!outgoingTrunkByPorts.has(portKey)) {
+      outgoingTrunkByPorts.set(portKey, trunk)
+    }
+  }
+  for (const trunk of incomingTrunks) {
+    if (!incomingTrunkBySource.has(trunk.from)) {
+      incomingTrunkBySource.set(trunk.from, trunk)
+    }
+    const key = `${trunk.from}|${trunk.edge.from_port}`
+    if (!incomingTrunkBySourcePort.has(key)) {
+      incomingTrunkBySourcePort.set(key, trunk)
+    }
+    const portKey = `${key}|${trunk.edge.to_port}`
+    if (!incomingTrunkByPorts.has(portKey)) {
+      incomingTrunkByPorts.set(portKey, trunk)
+    }
+  }
+
+  const pinPoint = (
+    laidOut: LaidOutNode,
+    edge: GraphEdge,
+    side: 'incoming' | 'outgoing',
+  ): Point => {
+    const layoutNode = inputNodeById.get(laidOut.id)
+    if (!layoutNode) {
+      return {
+        x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
+        y: laidOut.y + laidOut.height / 2,
+      }
+    }
+    if (layoutNode.register) {
+      const body = Math.min(laidOut.height, REG_BODY_HEIGHT)
+      const fraction = side === 'outgoing'
+        ? REG_DATA_OUT_Y_FRAC
+        : edge.control
+          ? registerControlYFraction(controlRoleForPin(edge.to_port))
+          : REG_DATA_IN_Y_FRAC
+      return {
+        x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
+        y: laidOut.y + body * fraction,
+      }
+    }
+    const catalog = side === 'outgoing'
+      ? pins.outgoing.get(laidOut.id) ?? []
+      : pins.incoming.get(laidOut.id) ?? []
+    const index = side === 'outgoing'
+      ? pins.outgoingIndex.get(laidOut.id)?.get(edge.from_port)
+      : pins.incomingIndex.get(laidOut.id)?.get(edge.to_port)
+    return {
+      x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
+      y: index == null
+        ? laidOut.y + laidOut.height / 2
+        : laidOut.y +
+          ((index + 1) * pinBodyHeight(layoutNode, laidOut.height)) /
+            (catalog.length + 1),
+    }
+  }
+
+  const edges = sub.edges.flatMap((edge) => {
+    const existing = baseEdgesByKey.get(baseEdgeKey(edge))
+    if (existing) return [{ ...existing, edge }]
+
+    const from = laidOutById.get(edge.from)
+    const to = laidOutById.get(edge.to)
+    if (!from || !to) return []
+    const memberFrom = memberIds.has(edge.from)
+    const memberTo = memberIds.has(edge.to)
+    if (memberFrom && !memberTo) {
+      const trunk =
+        outgoingTrunkByPorts.get(`${edge.from_port}|${edge.to}|${edge.to_port}`) ??
+        outgoingTrunkByTargetPort.get(`${edge.to}|${edge.to_port}`) ??
+        outgoingTrunkByTarget.get(edge.to)
+      if (trunk) {
+        const memberPin = pinPoint(from, edge, 'outgoing')
+        const trunkStart = trunk.points[0]
+        return [{
+          from: edge.from,
+          to: edge.to,
+          points: [
+            ...orthogonalBridge(memberPin, trunkStart),
+            ...trunk.points.slice(1),
+          ],
+          edge,
+        }]
+      }
+    }
+    if (!memberFrom && memberTo) {
+      const trunk =
+        incomingTrunkByPorts.get(`${edge.from}|${edge.from_port}|${edge.to_port}`) ??
+        incomingTrunkBySourcePort.get(`${edge.from}|${edge.from_port}`) ??
+        incomingTrunkBySource.get(edge.from)
+      if (trunk) {
+        const trunkEnd = trunk.points.at(-1)!
+        const memberPin = pinPoint(to, edge, 'incoming')
+        return [{
+          from: edge.from,
+          to: edge.to,
+          points: [
+            ...trunk.points,
+            ...orthogonalBridge(trunkEnd, memberPin).slice(1),
+          ],
+          edge,
+        }]
+      }
+    }
+    return [{
+      from: edge.from,
+      to: edge.to,
+      points: localEdgePoints(
+        pinPoint(from, edge, 'outgoing'),
+        pinPoint(to, edge, 'incoming'),
+      ),
+      edge,
+    }]
+  })
+
+  const memberRight = Math.max(
+    ...[...memberGeometry.values()].map((node) => node.x + node.width),
+  )
+  const memberBottom = Math.max(
+    ...[...memberGeometry.values()].map((node) => node.y + node.height),
+  )
+  return {
+    nodes,
+    edges,
+    width: Math.max(base.width, memberRight + LOCAL_GROUP_MARGIN_X),
+    height: Math.max(base.height, memberBottom + LOCAL_GROUP_MARGIN_BOTTOM),
   }
 }
 

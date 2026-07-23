@@ -14,6 +14,7 @@ import {
   interpretResult,
   LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
   LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
+  layoutExpandedGroupInPlace,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
   NETWORK_SIMPLEX_NODE_LIMIT,
@@ -23,6 +24,10 @@ import {
   prewarmLayoutWorker,
   preserveViewportAnchor,
   prepareLayoutInput,
+  REG_BODY_HEIGHT,
+  REG_DATA_IN_Y_FRAC,
+  REG_DATA_OUT_Y_FRAC,
+  registerControlYFraction,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   toElkGraph,
@@ -36,6 +41,460 @@ const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): Gra
   name: `u${id}`,
   cell_type: cellType,
   ...extra,
+})
+
+describe('in-place group expansion layout', () => {
+  it('keeps unrelated geometry fixed and opens members around the old group anchor', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[4:0]',
+      members: [1, 2, 3, 4, 5],
+      member_count: 5,
+    })
+    const externalIn = node(9, '$_BUF_')
+    const externalOut = node(10, '$_BUF_')
+    const unrelated = node(11, '$_AND_')
+    const externalClock = node(12, '$_BUF_')
+    const members = [1, 2, 3, 4, 5].map((id) => node(id, 'FDRE'))
+    const base = {
+      nodes: [
+        { id: 9, x: 20, y: 120, width: 76, height: 52, node: externalIn },
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 10, x: 520, y: 120, width: 76, height: 52, node: externalOut },
+        { id: 11, x: 520, y: 360, width: 76, height: 52, node: unrelated },
+        { id: 12, x: 20, y: 220, width: 76, height: 52, node: externalClock },
+      ],
+      edges: [
+        {
+          from: 9,
+          to: 100,
+          points: [
+            { x: 96, y: 146 },
+            { x: 180, y: 146 },
+            { x: 180, y: 139 },
+            { x: 260, y: 139 },
+          ],
+          edge: {
+            from: 9,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'D',
+            net_name: 'in',
+            bits: [1],
+          },
+        },
+        {
+          from: 100,
+          to: 10,
+          points: [
+            { x: 370, y: 139 },
+            { x: 445, y: 139 },
+            { x: 445, y: 146 },
+            { x: 520, y: 146 },
+          ],
+          edge: {
+            from: 100,
+            to: 10,
+            from_port: 'Q',
+            to_port: 'A',
+            net_name: 'out',
+            bits: [2],
+          },
+        },
+        {
+          from: 12,
+          to: 100,
+          points: [
+            { x: 96, y: 246 },
+            { x: 180, y: 246 },
+            { x: 180, y: 151 },
+            { x: 260, y: 151 },
+          ],
+          edge: {
+            from: 12,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'CLK',
+            net_name: 'clk',
+            bits: [4],
+            control: true,
+          },
+        },
+        {
+          from: 9,
+          to: 11,
+          points: [{ x: 96, y: 146 }, { x: 520, y: 386 }],
+          edge: {
+            from: 9,
+            to: 11,
+            from_port: 'Y',
+            to_port: 'A',
+            net_name: 'unrelated',
+            bits: [3],
+          },
+        },
+      ],
+      width: 620,
+      height: 450,
+    }
+    const sub: Subgraph = {
+      nodes: [...members, externalIn, externalOut, unrelated, externalClock],
+      edges: [
+        {
+          from: 12,
+          to: 3,
+          from_port: 'Y',
+          to_port: 'CLK',
+          net_name: 'clk',
+          bits: [4],
+          control: true,
+        },
+        {
+          from: 9,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'D',
+          net_name: 'in',
+          bits: [1],
+        },
+        {
+          from: 2,
+          to: 10,
+          from_port: 'Q',
+          to_port: 'A',
+          net_name: 'out',
+          bits: [2],
+        },
+        {
+          from: 9,
+          to: 11,
+          from_port: 'Y',
+          to_port: 'A',
+          net_name: 'unrelated',
+          bits: [3],
+        },
+      ],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2, 3, 4, 5],
+    })
+
+    expect(opened).not.toBeNull()
+    expect(opened!.nodes).not.toContainEqual(expect.objectContaining({ id: 100 }))
+    for (const id of [9, 10, 11, 12]) {
+      expect(opened!.nodes.find((entry) => entry.id === id)).toMatchObject(
+        base.nodes.find((entry) => entry.id === id)!,
+      )
+    }
+    const memberGeometry = opened!.nodes.filter((entry) => entry.id <= 5)
+    expect(new Set(memberGeometry.map((entry) => entry.x)).size).toBeGreaterThan(1)
+    expect(new Set(memberGeometry.map((entry) => entry.y)).size).toBeGreaterThan(1)
+    const memberCenterX =
+      (Math.min(...memberGeometry.map((entry) => entry.x)) +
+        Math.max(...memberGeometry.map((entry) => entry.x + entry.width))) / 2
+    expect(memberCenterX).toBeCloseTo(315)
+    expect(opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')?.points)
+      .toEqual(base.edges[3].points)
+    const incoming = opened!.edges.find((edge) => edge.edge.net_name === 'in')!
+    const outgoing = opened!.edges.find((edge) => edge.edge.net_name === 'out')!
+    const clock = opened!.edges.find((edge) => edge.edge.net_name === 'clk')!
+    expect(incoming.points).toContainEqual(base.edges[0].points.at(-1))
+    expect(outgoing.points).toContainEqual(base.edges[1].points[0])
+    const member1 = memberGeometry.find((entry) => entry.id === 1)!
+    const member2 = memberGeometry.find((entry) => entry.id === 2)!
+    const member3 = memberGeometry.find((entry) => entry.id === 3)!
+    expect(incoming.points.at(-1)).toEqual({
+      x: member1.x,
+      y: member1.y + Math.min(member1.height, REG_BODY_HEIGHT) * REG_DATA_IN_Y_FRAC,
+    })
+    expect(outgoing.points[0]).toEqual({
+      x: member2.x + member2.width,
+      y: member2.y + Math.min(member2.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
+    })
+    expect(clock.points.at(-1)).toEqual({
+      x: member3.x,
+      y: member3.y +
+        Math.min(member3.height, REG_BODY_HEIGHT) * registerControlYFraction('clock'),
+    })
+    for (const edge of [incoming, outgoing, clock]) {
+      expect(edge.points.slice(1).every((point, index) => {
+        const previous = edge.points[index]
+        return point.x === previous.x || point.y === previous.y
+      })).toBe(true)
+    }
+  })
+
+  it('uses the nearest collision-free local slot instead of enclosing another node', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[1:0]',
+      members: [1, 2],
+      member_count: 2,
+    })
+    const blocker = node(9, 'LUT6')
+    const base = {
+      nodes: [
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 390, y: 100, width: 90, height: 78, node: blocker },
+      ],
+      edges: [],
+      width: 520,
+      height: 240,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'FDRE'), node(2, 'FDRE'), blocker],
+      edges: [],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2],
+    })!
+    const members = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
+    const membersRight = Math.max(...members.map((entry) => entry.x + entry.width))
+    const membersLeft = Math.min(...members.map((entry) => entry.x))
+    const membersBottom = Math.max(...members.map((entry) => entry.y + entry.height))
+    const membersTop = Math.min(...members.map((entry) => entry.y))
+    const overlapsBlocker =
+      membersLeft < 390 + 90 &&
+      membersRight > 390 &&
+      membersTop < 100 + 78 &&
+      membersBottom > 100
+
+    expect(overlapsBlocker).toBe(false)
+    expect(opened.nodes.find((entry) => entry.id === 9)).toMatchObject(base.nodes[1])
+  })
+
+  it('spreads expanded memory edges across their named input pins', () => {
+    const grouped = node(100, 'RAM64M', {
+      name: 'memory [64×1]',
+      members: [1],
+      member_count: 1,
+    })
+    const sourceA = node(9, '$_BUF_')
+    const base = {
+      nodes: [
+        { id: 9, x: 20, y: 70, width: 76, height: 52, node: sourceA },
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+      ],
+      edges: [
+        {
+          from: 9,
+          to: 100,
+          points: [{ x: 96, y: 96 }, { x: 180, y: 96 }, { x: 180, y: 126 }, { x: 260, y: 126 }],
+          edge: {
+            from: 9,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'A0',
+            net_name: 'address_0',
+            bits: [1],
+          },
+        },
+        {
+          from: 9,
+          to: 100,
+          points: [{ x: 96, y: 96 }, { x: 200, y: 96 }, { x: 200, y: 152 }, { x: 260, y: 152 }],
+          edge: {
+            from: 9,
+            to: 100,
+            from_port: 'Y',
+            to_port: 'A1',
+            net_name: 'address_1',
+            bits: [2],
+          },
+        },
+      ],
+      width: 420,
+      height: 260,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM64M'), sourceA],
+      edges: [
+        {
+          from: 9,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'A0',
+          net_name: 'address_0',
+          bits: [1],
+        },
+        {
+          from: 9,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'A1',
+          net_name: 'address_1',
+          bits: [2],
+        },
+      ],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1],
+    })!
+    const member = opened.nodes.find((entry) => entry.id === 1)!
+    const address0 = opened.edges.find((edge) => edge.edge.to_port === 'A0')!
+    const address1 = opened.edges.find((edge) => edge.edge.to_port === 'A1')!
+    const endpoints = [address0.points.at(-1)!, address1.points.at(-1)!]
+
+    expect(endpoints.map((point) => point.x)).toEqual([member.x, member.x])
+    expect(endpoints[0].y).toBeLessThan(endpoints[1].y)
+    expect(endpoints.every((point) =>
+      point.y > member.y && point.y < member.y + member.height
+    )).toBe(true)
+    expect(address0.points).toContainEqual(base.edges[0].points.at(-1))
+    expect(address1.points).toContainEqual(base.edges[1].points.at(-1))
+  })
+
+  it('preserves distinct quotient trunks for named output pins', () => {
+    const grouped = node(100, 'RAM64M', {
+      name: 'memory [64×1]',
+      members: [1],
+      member_count: 1,
+    })
+    const target = node(9, '$_BUF_')
+    const base = {
+      nodes: [
+        { id: 100, x: 100, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 420, y: 120, width: 76, height: 52, node: target },
+      ],
+      edges: [
+        {
+          from: 100,
+          to: 9,
+          points: [
+            { x: 210, y: 126 },
+            { x: 300, y: 126 },
+            { x: 300, y: 146 },
+            { x: 420, y: 146 },
+          ],
+          edge: {
+            from: 100,
+            to: 9,
+            from_port: 'O0',
+            to_port: 'A',
+            net_name: 'output_0',
+            bits: [1],
+          },
+        },
+        {
+          from: 100,
+          to: 9,
+          points: [
+            { x: 210, y: 152 },
+            { x: 340, y: 152 },
+            { x: 340, y: 146 },
+            { x: 420, y: 146 },
+          ],
+          edge: {
+            from: 100,
+            to: 9,
+            from_port: 'O1',
+            to_port: 'A',
+            net_name: 'output_1',
+            bits: [2],
+          },
+        },
+      ],
+      width: 540,
+      height: 260,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'RAM64M'), target],
+      edges: [
+        {
+          from: 1,
+          to: 9,
+          from_port: 'O0',
+          to_port: 'A',
+          net_name: 'output_0',
+          bits: [1],
+        },
+        {
+          from: 1,
+          to: 9,
+          from_port: 'O1',
+          to_port: 'A',
+          net_name: 'output_1',
+          bits: [2],
+        },
+      ],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1],
+    })!
+    const output0 = opened.edges.find((edge) => edge.edge.from_port === 'O0')!
+    const output1 = opened.edges.find((edge) => edge.edge.from_port === 'O1')!
+
+    expect(output0.points).toContainEqual(base.edges[0].points[0])
+    expect(output0.points).not.toContainEqual(base.edges[1].points[0])
+    expect(output1.points).toContainEqual(base.edges[1].points[0])
+    expect(output1.points).not.toContainEqual(base.edges[0].points[0])
+  })
+
+  it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
+    const grouped = node(100, 'FDRE', {
+      name: 'count[1:0]',
+      members: [1, 2],
+      member_count: 2,
+    })
+    const blocker = node(9, 'LUT6')
+    const base = {
+      nodes: [
+        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
+        { id: 9, x: 0, y: 0, width: 5_000, height: 5_000, node: blocker },
+      ],
+      edges: [],
+      width: 5_100,
+      height: 5_100,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'FDRE'), node(2, 'FDRE'), blocker],
+      edges: [],
+      truncated: false,
+    }
+
+    const opened = layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1, 2],
+    })!
+    const members = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
+    const left = Math.min(...members.map((entry) => entry.x))
+    const top = Math.min(...members.map((entry) => entry.y))
+
+    expect(left >= 5_000 || top >= 5_000).toBe(true)
+  })
+
+  it('declines local composition when the projection introduces new context', () => {
+    const grouped = node(100, 'FDRE', {
+      members: [1],
+      member_count: 1,
+    })
+    const base = {
+      nodes: [{ id: 100, x: 20, y: 20, width: 100, height: 58, node: grouped }],
+      edges: [],
+      width: 160,
+      height: 100,
+    }
+    const sub: Subgraph = {
+      nodes: [node(1, 'FDRE'), node(9, 'LUT6')],
+      edges: [],
+      truncated: false,
+    }
+
+    expect(layoutExpandedGroupInPlace(sub, base, {
+      id: 100,
+      members: [1],
+    })).toBeNull()
+  })
 })
 
 describe('schematic layout sizing', () => {

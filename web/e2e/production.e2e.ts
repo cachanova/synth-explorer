@@ -842,13 +842,71 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
     '.g-node-body.g-symbol-reg[data-member-count="7"][data-node-tooltip*="rdreg[0].q"]',
   )
   await expect(groupedReadRegister).toHaveCount(1)
+  const groupedCount = page.locator(
+    '.g-node-body.g-symbol-port-out[data-member-count="8"][data-node-tooltip="count[7:0]"]',
+  )
+  await expect(groupedCount).toHaveCount(1)
   const memberCount = Number(await groupedMemory.getAttribute('data-member-count'))
   expect(memberCount).toBeGreaterThan(1)
   const groupedId = await groupedMemory.getAttribute('data-graph-node-id')
   expect(groupedId).not.toBeNull()
   await expect(groupedMemory).toHaveAttribute('role', 'button')
 
+  const countGroupId = await groupedCount.getAttribute('data-graph-node-id')
+  expect(countGroupId).not.toBeNull()
   const viewport = page.locator('.g-viewport')
+  const stationaryViewportTransform = await viewport.getAttribute('transform')
+  const groupedCountTransform = await groupedCount.getAttribute('transform')
+  const stationaryMemoryTransform = await groupedMemory.getAttribute('transform')
+  await page.locator(
+    `[data-group-action="expand"][data-group-id="${countGroupId}"]`,
+  ).click()
+  const countMembers = page.locator(
+    `[data-expanded-group-member="${countGroupId}"]`,
+  )
+  await expect(countMembers).toHaveCount(8)
+  await expect(groupedMemory).toHaveAttribute(
+    'transform',
+    stationaryMemoryTransform ?? '',
+  )
+  await expect(viewport).toHaveAttribute(
+    'transform',
+    stationaryViewportTransform ?? '',
+  )
+  const countBoundary = page.locator(
+    `[data-expanded-group-id="${countGroupId}"] .g-expanded-group-boundary`,
+  )
+  await expect(countBoundary).toHaveCount(1)
+  await expect.poll(() => page.evaluate(({ countGroupId }) => {
+    const boundary = document.querySelector<SVGGraphicsElement>(
+      `[data-expanded-group-id="${countGroupId}"] .g-expanded-group-boundary`,
+    )
+    if (!boundary) return null
+    const box = boundary.getBoundingClientRect()
+    return [...document.querySelectorAll<SVGGraphicsElement>('.g-node-body')]
+      .filter((node) => node.dataset.expandedGroupMember !== countGroupId)
+      .filter((node) => {
+        const rect = node.getBoundingClientRect()
+        return rect.left < box.right &&
+          rect.right > box.left &&
+          rect.top < box.bottom &&
+          rect.bottom > box.top
+      })
+      .map((node) => node.dataset.nodeTooltip)
+  }, { countGroupId })).toEqual([])
+  await page.locator(
+    `[data-group-action="collapse"][data-group-id="${countGroupId}"]`,
+  ).click()
+  await expect(groupedCount).toHaveCount(1)
+  await expect(groupedCount).toHaveAttribute(
+    'transform',
+    groupedCountTransform ?? '',
+  )
+  await expect(viewport).toHaveAttribute(
+    'transform',
+    stationaryViewportTransform ?? '',
+  )
+
   await zoomSchematicToScale(page, 0.5, groupedMemory)
   await expect.poll(() => viewport.getAttribute('data-detail-level')).toBe('compact')
   const compactDetails = page.locator(`[data-node-detail-id="${groupedId}"]`)
@@ -984,7 +1042,10 @@ for (const regression of [
 ] as const) {
   test(`stacks ${regression.platform} inferred FIFO memory at depth ${regression.depth}`, async ({ page }) => {
     test.setTimeout(240_000)
-    if (regression.platform === 'ecp5' && regression.depth === 16) {
+    if (
+      regression.depth === 16 &&
+      (regression.platform === 'ice40' || regression.platform === 'ecp5')
+    ) {
       await page.addInitScript(() => {
         const requests: unknown[] = []
         const originalPostMessage = Worker.prototype.postMessage
@@ -1043,7 +1104,15 @@ for (const regression of [
       )).toHaveCount(0)
     }
 
-    if (regression.platform === 'ecp5' && regression.depth === 16) {
+    if (
+      regression.depth === 16 &&
+      (regression.platform === 'ice40' || regression.platform === 'ecp5')
+    ) {
+      const stationaryPort = page.locator(
+        '.g-node-body[data-node-tooltip="push_ready"]',
+      )
+      await expect(stationaryPort).toHaveCount(1)
+      const stationaryTransform = await stationaryPort.getAttribute('transform')
       await page.getByRole('button', {
         name: `Expand group memory [${regression.depth}×16]`,
       }).click()
@@ -1054,14 +1123,18 @@ for (const regression of [
       )).toBe(1)
       await expect(groupedMemory).toHaveCount(0)
       await expect(page.locator(
-        '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
+        `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
       )).toHaveCount(regression.count)
+      await expect(stationaryPort).toHaveAttribute(
+        'transform',
+        stationaryTransform ?? '',
+      )
       const boundary = page.locator('.g-expanded-group-boundary')
       await expect(boundary).toHaveCount(1)
       await expect.poll(async () => {
         const boundaryBox = await boundary.boundingBox()
         const laneBoxes = await page.locator(
-          '.g-node-body[data-node-tooltip^="TRELLIS_DPR16X4"]',
+          `.g-node-body[data-node-tooltip^="${regression.primitive}"]`,
         ).evaluateAll((nodes) => nodes.map((node) => {
           const rect = node.getBoundingClientRect()
           return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom }
@@ -1074,12 +1147,8 @@ for (const regression of [
         )
       }).toBe(true)
 
-      const unrelatedPort = page.locator(
-        '.g-node-body[data-node-tooltip="push_ready"]',
-      )
-      await expect(unrelatedPort).toHaveCount(1)
-      await unrelatedPort.focus()
-      await unrelatedPort.press('Enter')
+      await stationaryPort.focus()
+      await stationaryPort.press('Enter')
       await page.getByRole('button', { name: 'Fanin cone' }).click()
       await expect(boundary).toHaveCount(0)
       await expect(page.locator(

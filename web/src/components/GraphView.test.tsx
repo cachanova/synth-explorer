@@ -1058,6 +1058,8 @@ describe('GraphView group expansion controls', () => {
 
     expect(markup).toContain('data-group-action="expand"')
     expect(markup).toContain('aria-label="Expand group memory [16×16]"')
+    expect(markup).toContain('class="g-group-toggle-hit" r="10"')
+    expect(markup).toContain('<circle r="6"></circle>')
   })
 
   it('shows the plus for a singleton physical group', () => {
@@ -1131,6 +1133,8 @@ describe('GraphView group expansion controls', () => {
     expect(markup).toContain('class="g-expanded-group-boundary"')
     expect(markup).toContain('data-group-action="collapse"')
     expect(markup).toContain('aria-label="Collapse group memory [16×16]"')
+    expect(markup).toContain('class="g-group-toggle-hit" r="10"')
+    expect(markup).toContain('<circle r="6"></circle>')
   })
 })
 
