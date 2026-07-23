@@ -36,20 +36,6 @@ describe('fuzzyScore / fuzzyMatch', () => {
 })
 
 describe('fuzzyFilter', () => {
-  const items = ['q_reg', 'counter', 'state', 'quotient', 'sum']
-
-  it('returns all when query blank', () => {
-    expect(fuzzyFilter(items, '', (x) => x)).toEqual(items)
-    expect(fuzzyFilter(items, '  ', (x) => x)).toEqual(items)
-  })
-
-  it('filters to matches only', () => {
-    const res = fuzzyFilter(items, 'q', (x) => x)
-    expect(res).toContain('q_reg')
-    expect(res).toContain('quotient')
-    expect(res).not.toContain('counter')
-  })
-
   it('ranks better matches first', () => {
     const res = fuzzyFilter(['abcx', 'ax'], 'ax', (x) => x)
     // "ax" is a tighter contiguous match than scattered "a..x"

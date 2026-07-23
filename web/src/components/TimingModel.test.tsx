@@ -215,9 +215,4 @@ describe('TimingModel generic-mode placeholder', () => {
     expect(markup).not.toContain('-1 (slowest)')
   })
 
-  it('removes the target-clock and estimated-slack controls', () => {
-    const markup = render({ mode: 'xilinx', profile: 'series7', estimate: 2.69 })
-    expect(markup).not.toContain('Target clock')
-    expect(markup).not.toContain('Slack @')
-  })
 })

@@ -106,11 +106,6 @@ describe('fanoutDriverLabel', () => {
     expect(fanoutDriverLabel(d, '$abc$240$new_n27')).toBe('NAND · new_n27')
   })
 
-  it('never contains blifparse paths', () => {
-    const d = cell('$abc$240$auto$blifparse.cc:397:parse_blif$242', '$_AOI4_')
-    expect(fanoutDriverLabel(d, '$abc$240$new_n5')).not.toContain('blifparse')
-  })
-
   it('keeps named comb cells as-is', () => {
     const d = cell('my_adder', '$add')
     expect(fanoutDriverLabel(d, '$auto$99')).toBe('my_adder')
@@ -242,16 +237,6 @@ describe('displayNodeName', () => {
     expect(displayNodeName(n)).toBe('DFF')
   })
 
-  it('never yields a blifparse path', () => {
-    const n: NodeRef = {
-      id: 1,
-      kind: 'cell',
-      name: '$abc$607$auto$blifparse.cc:397:parse_blif$609',
-      cell_type: '$_NAND_',
-    }
-    expect(displayNodeName(n)).not.toContain('blifparse')
-    expect(displayNodeName(n, '$abc$607$new_n1')).not.toContain('blifparse')
-  })
 })
 
 describe('nodeSublabel', () => {

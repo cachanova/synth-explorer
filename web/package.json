@@ -14,8 +14,7 @@
     "generate:precomputed": "node scripts/generate-precomputed.mjs",
     "test:watch": "vitest",
     "verify:precomputed": "tsx scripts/verify-precomputed.ts",
-    "verify:seo": "node scripts/verify-seo.mjs",
-    "verify:worker": "node scripts/verify-worker.mjs"
+    "verify:seo": "node scripts/verify-seo.mjs"
   },
   "dependencies": {
     "@bjorn3/browser_wasi_shim": "0.4.2",

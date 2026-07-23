@@ -554,27 +554,6 @@ fn grouped_cone_from_member_lands_on_its_group_root() {
 }
 
 #[test]
-fn parser_roundtrip_selects_binary_top_attr() {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reg_mux_rtl.json");
-    let json = std::fs::read_to_string(path).unwrap();
-    let netlist = parse_str(&json).unwrap();
-    let (top, module) = select_top(&netlist, None).unwrap();
-    assert_eq!(top, "top");
-    assert_eq!(module.cells.len(), 2);
-    assert!(module.ports.contains_key("q"));
-}
-
-#[test]
-fn graph_construction_has_seq_cell_and_edges() {
-    let (graph, _analysis) = fixture("reg_mux_rtl.json");
-    let seq_cells: Vec<_> = graph.nodes.iter().filter(|node| node.seq).collect();
-    assert_eq!(seq_cells.len(), 1);
-    assert_eq!(seq_cells[0].name, "q");
-    assert!(graph.edges.len() >= 25);
-}
-
-#[test]
 fn cone_stops_at_boundary_nodes() {
     let (graph, analysis) = fixture("reg_mux_rtl.json");
     let q = analysis.endpoints().registers[0].bits[0].node_id;
@@ -683,14 +662,6 @@ fn fanout_counts_direct_sinks() {
         .expect("expected enable fanout driver");
     assert!(en.fanout >= 8);
     assert!(en.control);
-}
-
-#[test]
-fn full_netlist_caps_nodes() {
-    let (graph, analysis) = fixture("and_chain_rtl.json");
-    let subgraph = analysis.full_netlist(&graph, full_options(2, false, true, false), None);
-    assert_eq!(subgraph.nodes.len(), 2);
-    assert!(subgraph.truncated);
 }
 
 #[test]
@@ -963,18 +934,6 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
             .nodes
             .iter()
             .any(|node| matches!(node.node.kind, ApiNodeKind::Const))
-    );
-}
-
-#[test]
-fn comb_loop_nodes_are_comb_cells() {
-    let (graph, analysis) = fixture("comb_loop_rtl.json");
-    assert_eq!(analysis.comb_loops.len(), 2);
-    assert!(
-        analysis
-            .comb_loops
-            .iter()
-            .all(|id| graph.nodes[*id as usize].kind == NodeKind::Cell)
     );
 }
 

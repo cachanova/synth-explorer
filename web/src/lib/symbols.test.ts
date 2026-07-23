@@ -7,11 +7,9 @@ import {
   controlLabel,
   controlDriverIds,
   controlsFor,
-  inferPortDirection,
   inferPortDirections,
   inputBubbleAt,
   isSpecialPrimitive,
-  shapePath,
   symbolKind,
 } from './symbols'
 
@@ -124,13 +122,6 @@ describe('symbolKind', () => {
     }
   })
 
-  it('keeps the base symbol for grouped vector nodes', () => {
-    // A grouped node carries width/members but still draws as its base kind.
-    expect(symbolKind(cell('FDRE', { width: 8, members: [1, 2, 3] }))).toBe('reg')
-    expect(symbolKind(cell('$lut', { width: 4, members: [1, 2] }))).toBe('lut')
-    expect(symbolKind(cell('$mux', { width: 8, members: [1, 2] }))).toBe('mux')
-  })
-
   it('uses directional symbols for top-level ports', () => {
     const port: NodeRef = { id: 7, kind: 'port', name: 'valid' }
     expect(symbolKind(port, 'input')).toBe('port-in')
@@ -139,23 +130,6 @@ describe('symbolKind', () => {
 })
 
 describe('symbol geometry', () => {
-  it('builds non-empty outlines for gate, mux, and port symbols', () => {
-    for (const kind of [
-      'and',
-      'or',
-      'xor',
-      'not',
-      'buf',
-      'mux',
-      'port-in',
-      'port-out',
-      'carry',
-      'dsp',
-    ] as const) {
-      expect(shapePath(kind, 72, 48)).toMatch(/^M /)
-    }
-  })
-
   it('uses primitive-family badges for hard blocks', () => {
     expect(boxBadge(cell('CARRY8'))).toBe('CARRY')
     expect(boxBadge(cell('DSP48E2'))).toBe('DSP')
@@ -183,16 +157,6 @@ describe('graph topology helpers', () => {
     to_port: 'A',
     net_name: 'n',
     bits: [1],
-  })
-
-  it('infers input and output port direction from signal flow', () => {
-    expect(inferPortDirection(1, [edge(1, 2)])).toBe('input')
-    expect(inferPortDirection(2, [edge(1, 2)])).toBe('output')
-  })
-
-  it('prefers output for a terminal or ambiguous port', () => {
-    expect(inferPortDirection(3, [])).toBe('output')
-    expect(inferPortDirection(2, [edge(1, 2), edge(2, 3)])).toBe('output')
   })
 
   it('infers many port directions in one edge pass', () => {

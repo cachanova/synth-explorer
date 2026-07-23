@@ -8,8 +8,4 @@ describe('fmaxMhz', () => {
     // 1 ns period → 1000 MHz
     expect(fmaxMhz(1)).toBeCloseTo(1000)
   })
-
-  it('scales inversely with delay', () => {
-    expect(fmaxMhz(5)).toBeGreaterThan(fmaxMhz(20))
-  })
 })

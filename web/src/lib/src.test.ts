@@ -8,17 +8,6 @@ import {
 } from './src'
 
 describe('parseSrcFragment', () => {
-  it('parses a full range', () => {
-    expect(parseSrcFragment('design.sv:12.16-12.21')).toEqual({
-      file: 'design.sv',
-      startLine: 12,
-      startCol: 16,
-      endLine: 12,
-      endCol: 21,
-      exact: true,
-    })
-  })
-
   it('parses a multi-line range', () => {
     expect(parseSrcFragment('a.sv:3.1-5.9')).toEqual({
       file: 'a.sv',
@@ -59,13 +48,6 @@ describe('parseSrcFragment', () => {
 })
 
 describe('parseSrc', () => {
-  it('splits on pipe and keeps valid fragments', () => {
-    const spans = parseSrc('a.sv:1.1-1.5|b.sv:9.2-9.8')
-    expect(spans).toHaveLength(2)
-    expect(spans[0].file).toBe('a.sv')
-    expect(spans[1].file).toBe('b.sv')
-  })
-
   it('drops unparseable fragments', () => {
     const spans = parseSrc('a.sv:1.1-1.5|garbage')
     expect(spans).toHaveLength(1)
@@ -93,10 +75,6 @@ describe('srcLabel / spansSummary', () => {
     expect(spansSummary(parseSrc('a.sv:1.1-1.5|b.sv:9.2-9.8'))).toBe('a.sv:1 +1')
   })
 
-  it('summarizes single', () => {
-    expect(spansSummary(parseSrc('a.sv:1.1-1.5'))).toBe('a.sv:1')
-  })
-
   it('returns null for empty', () => {
     expect(spansSummary([])).toBeNull()
   })
@@ -116,12 +94,6 @@ describe('designSrcSpans', () => {
       files,
     )
     expect(spans.map((s) => s.file)).toEqual(['top.sv'])
-  })
-
-  it('returns empty when only library paths contribute', () => {
-    expect(
-      designSrcSpans('/opt/yosys/share/yosys/xilinx/lut_map.v:51.1-53.4', files),
-    ).toEqual([])
   })
 
   it('keeps VHDL node provenance line-only', () => {

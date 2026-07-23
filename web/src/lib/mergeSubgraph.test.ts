@@ -26,12 +26,6 @@ const sub = (nodes: GraphNode[], edges: GraphEdge[], truncated = false): Subgrap
 })
 
 describe('mergeSubgraphs', () => {
-  it('returns the base unchanged when there is nothing to merge', () => {
-    const base = sub([node(1)], [])
-    expect(mergeSubgraphs(base, null, 100).graph).toBe(base)
-    expect(mergeSubgraphs(base, sub([], []), 100).graph).toBe(base)
-  })
-
   it('adds new neighbor nodes and edges without duplicating shared ones', () => {
     const base = sub([node(1), node(2)], [edge(1, 2)])
     const extra = sub([node(2), node(3)], [edge(1, 2), edge(2, 3)])

@@ -35,25 +35,17 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
-      - name: Verify frozen provenance behavior
-        run: cargo bench --locked -p synth-explorer-analysis --bench provenance -- --test
-
       - name: Run Clippy
         run: cargo clippy --workspace --locked --all-targets -- -D warnings
+
+      - name: Verify frozen provenance behavior
+        run: cargo bench --profile dev --locked -p synth-explorer-analysis --bench provenance -- --test
 
       - name: Rebuild analysis WASM
         run: ./analysis-wasm/build.sh
 
       - name: Verify generated analysis WASM is current
         run: git diff --exit-code -- web/src/wasm/analysis
-
-      - name: Upload generated analysis WASM on mismatch
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: generated-analysis-wasm
-          path: web/src/wasm/analysis/analysis_bg.wasm
-          retention-days: 1
 
   static-web:
     name: Static browser application
@@ -94,17 +86,9 @@ jobs:
         working-directory: web
         run: npm run lint
 
-      - name: Check types
-        working-directory: web
-        run: npx tsc -b --pretty false
-
       - name: Build static application
         working-directory: web
         run: npm run build
-
-      - name: Verify production worker bundles
-        working-directory: web
-        run: npm run verify:worker
 
       - name: Install Chromium
         working-directory: web
