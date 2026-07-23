@@ -28,6 +28,19 @@ export interface GraphNode extends NodeRef {
   // Canonical group size; may exceed `width` in a bounded projection.
   member_count?: number
   members?: number[]
+  // Ordered physical lanes of a grouped top-level port. `bit` is the
+  // declaration slot, not a Yosys net id.
+  boundary_members?: BoundaryMember[]
+}
+
+export interface BoundaryMember {
+  member: number
+  bit: number
+}
+
+export interface EdgeBoundaryMember {
+  member: number
+  net_bits: number[]
 }
 
 export type ControlRole = 'clock' | 'reset' | 'set' | 'enable' | 'other'
@@ -55,6 +68,10 @@ export interface GraphEdge {
   net_name: string // best human name for the net ("sum[3]" or "$auto$123")
   bits: number[] // yosys bit indices carried by this edge (merged parallel edges)
   control?: boolean // labeled global control; logic-generated enables remain dataflow edges
+  // Exact physical grouped-boundary members contributing to either side of
+  // this collapsed edge. Omitted when that side is not a grouped top-level port.
+  source_boundary_members?: EdgeBoundaryMember[]
+  target_boundary_members?: EdgeBoundaryMember[]
 }
 
 export interface Subgraph {

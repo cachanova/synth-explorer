@@ -94,6 +94,23 @@ pub struct GraphNode {
     /// ids `/nodes` still addresses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<u32>>,
+    /// Ordered physical members of a grouped top-level port. `bit` is the
+    /// member's declared port slot, not a Yosys net id. Omitted for scalar
+    /// ports and non-boundary groups.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub boundary_members: Vec<BoundaryMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct BoundaryMember {
+    pub member: u32,
+    pub bit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EdgeBoundaryMember {
+    pub member: u32,
+    pub net_bits: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -143,6 +160,14 @@ pub struct GraphEdge {
     /// on a physical register enable pin.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control: Option<bool>,
+    /// Physical grouped-boundary sources that contributed to this quotient
+    /// edge, with their exact Yosys net bits.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub source_boundary_members: Vec<EdgeBoundaryMember>,
+    /// Physical grouped-boundary targets that contributed to this quotient
+    /// edge, with their exact Yosys net bits.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub target_boundary_members: Vec<EdgeBoundaryMember>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2162,6 +2187,7 @@ impl Analysis {
                     width: None,
                     member_count: None,
                     members: None,
+                    boundary_members: Vec::new(),
                 }
             })
             .collect();
@@ -2665,6 +2691,21 @@ fn quotient_subgraph(
         src_truncated |= acc.src_truncated;
         let is_root = acc.is_root;
         let is_port = matches!(group.kind, GroupKind::Port);
+        let mut boundary_members = if is_port {
+            members
+                .iter()
+                .filter_map(|&member| {
+                    let bit = graph.nodes[member as usize].port_bit?;
+                    Some(BoundaryMember {
+                        member,
+                        bit: u32::try_from(bit).expect("validated graph port slots fit in u32"),
+                    })
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        boundary_members.sort_by_key(|entry| (entry.bit, entry.member));
         nodes.push(GraphNode {
             node: NodeRef {
                 id: base + group_id,
@@ -2693,13 +2734,20 @@ fn quotient_subgraph(
             width: Some(members.len() as u32),
             member_count: Some(group.members.len() as u32),
             members: Some(members),
+            boundary_members,
         });
     }
     nodes.sort_by_key(|node| node.node.id);
 
     // Re-merge edges across unit ids: intra-group edges (same unit both ends)
     // vanish; parallel bus edges collapse to one carrying every bit.
-    let mut merged: BTreeMap<(u32, u32, String, String), GraphEdge> = BTreeMap::new();
+    struct MergedEdge {
+        edge: GraphEdge,
+        source_boundary_members: BTreeMap<u32, BTreeSet<u32>>,
+        target_boundary_members: BTreeMap<u32, BTreeSet<u32>>,
+    }
+
+    let mut merged: BTreeMap<(u32, u32, String, String), MergedEdge> = BTreeMap::new();
     for edge in subgraph.edges {
         let from = unit_id(Some(grouping), base, edge.from);
         let to = unit_id(Some(grouping), base, edge.to);
@@ -2707,27 +2755,85 @@ fn quotient_subgraph(
             continue;
         }
         let key = (from, to, edge.from_port.clone(), edge.to_port.clone());
-        let entry = merged.entry(key).or_insert_with(|| GraphEdge {
-            from,
-            to,
-            from_port: edge.from_port.clone(),
-            to_port: edge.to_port.clone(),
-            // A bus edge carries the vector net, not one bit's `name[k]`.
-            net_name: strip_bit_suffix(&edge.net_name).to_owned(),
-            bits: Vec::new(),
-            control: edge.control,
+        let entry = merged.entry(key).or_insert_with(|| MergedEdge {
+            edge: GraphEdge {
+                from,
+                to,
+                from_port: edge.from_port.clone(),
+                to_port: edge.to_port.clone(),
+                // A bus edge carries the vector net, not one bit's `name[k]`.
+                net_name: strip_bit_suffix(&edge.net_name).to_owned(),
+                bits: Vec::new(),
+                control: edge.control,
+                source_boundary_members: Vec::new(),
+                target_boundary_members: Vec::new(),
+            },
+            source_boundary_members: BTreeMap::new(),
+            target_boundary_members: BTreeMap::new(),
         });
-        entry.bits.extend_from_slice(&edge.bits);
+        entry.edge.bits.extend_from_slice(&edge.bits);
+        if grouping
+            .group(edge.from)
+            .is_some_and(|(_, group)| matches!(group.kind, GroupKind::Port))
+        {
+            entry
+                .source_boundary_members
+                .entry(edge.from)
+                .or_default()
+                .extend(edge.bits.iter().copied());
+        }
+        if grouping
+            .group(edge.to)
+            .is_some_and(|(_, group)| matches!(group.kind, GroupKind::Port))
+        {
+            entry
+                .target_boundary_members
+                .entry(edge.to)
+                .or_default()
+                .extend(edge.bits.iter().copied());
+        }
         if edge.control == Some(true) {
-            entry.control = Some(true);
+            entry.edge.control = Some(true);
         }
     }
     let edges = merged
         .into_values()
-        .map(|mut edge| {
-            edge.bits.sort_unstable();
-            edge.bits.dedup();
-            edge
+        .map(|mut merged| {
+            merged.edge.bits.sort_unstable();
+            merged.edge.bits.dedup();
+            merged.edge.source_boundary_members = merged
+                .source_boundary_members
+                .into_iter()
+                .map(|(member, net_bits)| EdgeBoundaryMember {
+                    member,
+                    net_bits: net_bits.into_iter().collect(),
+                })
+                .collect();
+            merged.edge.source_boundary_members.sort_by_key(|entry| {
+                (
+                    graph.nodes[entry.member as usize]
+                        .port_bit
+                        .unwrap_or_default(),
+                    entry.member,
+                )
+            });
+            merged.edge.target_boundary_members = merged
+                .target_boundary_members
+                .into_iter()
+                .map(|(member, net_bits)| EdgeBoundaryMember {
+                    member,
+                    net_bits: net_bits.into_iter().collect(),
+                })
+                .collect();
+            merged.edge.target_boundary_members.sort_by_key(|entry| {
+                (
+                    graph.nodes[entry.member as usize]
+                        .port_bit
+                        .unwrap_or_default(),
+                    entry.member,
+                )
+            });
+            merged.edge
         })
         .collect();
 
@@ -4124,6 +4230,8 @@ fn merge_edges(
             net_name: edge.net_name.clone(),
             bits: Vec::new(),
             control: labeled_control.then_some(true),
+            source_boundary_members: Vec::new(),
+            target_boundary_members: Vec::new(),
         });
         if let Some(bit) = edge.bit {
             let bit_key = (
@@ -4239,6 +4347,8 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
                     net_name: current.edge.net_name.clone(),
                     bits: Vec::new(),
                     control: current.control.then_some(true),
+                    source_boundary_members: Vec::new(),
+                    target_boundary_members: Vec::new(),
                 });
                 entry.bits.extend_from_slice(current.bits);
                 continue;
@@ -5525,6 +5635,7 @@ mod tests {
             width: None,
             member_count: None,
             members: None,
+            boundary_members: Vec::new(),
         };
         let subgraph = Subgraph {
             nodes: vec![mk(0, false), mk(1, true), mk(2, false)],
@@ -5537,6 +5648,8 @@ mod tests {
                     net_name: "a".to_owned(),
                     bits: vec![0],
                     control: None,
+                    source_boundary_members: Vec::new(),
+                    target_boundary_members: Vec::new(),
                 },
                 GraphEdge {
                     from: 1,
@@ -5546,6 +5659,8 @@ mod tests {
                     net_name: "y".to_owned(),
                     bits: vec![0],
                     control: None,
+                    source_boundary_members: Vec::new(),
+                    target_boundary_members: Vec::new(),
                 },
             ],
             truncated: false,
@@ -5604,6 +5719,7 @@ mod tests {
                 width: None,
                 member_count: None,
                 members: None,
+                boundary_members: Vec::new(),
             })
             .collect();
         let edge = |from, to, bits: Vec<u32>| GraphEdge {
@@ -5614,6 +5730,8 @@ mod tests {
             net_name: format!("n{from}_{to}"),
             bits,
             control: None,
+            source_boundary_members: Vec::new(),
+            target_boundary_members: Vec::new(),
         };
         let subgraph = Subgraph {
             nodes: projected_nodes,
@@ -8208,6 +8326,114 @@ mod tests {
     }
 
     #[test]
+    fn quotient_boundary_metadata_preserves_sparse_declared_slots() {
+        let mut nodes = (0..32)
+            .map(|bit| {
+                let mut node = port_node(bit, &format!("a[{bit}]"), PortDirection::Input);
+                node.raw_name = "a".to_owned();
+                node.port = Some("a".to_owned());
+                node.port_bit = Some(bit as usize);
+                node
+            })
+            .collect::<Vec<_>>();
+        nodes.push(combinational_node(32, "$or", None));
+        let graph = graph_from_parts(
+            "sparse_boundary",
+            nodes,
+            Vec::new(),
+            vec![Vec::new(); 33],
+            vec![Vec::new(); 33],
+        );
+        let partition = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Port,
+                members: (0..32).collect(),
+                label: "a[31:0]".to_owned(),
+                cell_type: String::new(),
+            }],
+            group_of: (0..32).map(|member| (member, 0)).collect(),
+        };
+        let projected_node = |id| GraphNode {
+            node: node_ref(&graph, id),
+            is_root: None,
+            is_boundary: None,
+            depth: None,
+            params: BTreeMap::new(),
+            controls: Vec::new(),
+            width: None,
+            member_count: None,
+            members: None,
+            boundary_members: Vec::new(),
+        };
+        let projected_edge = |member, bit| GraphEdge {
+            from: member,
+            to: 32,
+            from_port: "a".to_owned(),
+            to_port: "A".to_owned(),
+            net_name: format!("a[{member}]"),
+            bits: vec![bit],
+            control: None,
+            source_boundary_members: Vec::new(),
+            target_boundary_members: Vec::new(),
+        };
+        let projected = Subgraph {
+            nodes: vec![projected_node(0), projected_node(31), projected_node(32)],
+            edges: vec![projected_edge(0, 100), projected_edge(31, 131)],
+            truncated: true,
+        };
+
+        let quotient = quotient_subgraph(&graph, projected, GroupingProjection::all(&partition));
+        let boundary = quotient
+            .nodes
+            .iter()
+            .find(|node| node.node.name == "a[31:0]")
+            .expect("sparse grouped boundary");
+        assert_eq!(boundary.width, Some(2));
+        assert_eq!(boundary.member_count, Some(32));
+        assert_eq!(
+            boundary.boundary_members,
+            vec![
+                BoundaryMember { member: 0, bit: 0 },
+                BoundaryMember {
+                    member: 31,
+                    bit: 31
+                },
+            ]
+        );
+        let edge = quotient
+            .edges
+            .iter()
+            .find(|edge| edge.from == boundary.node.id)
+            .expect("collapsed sparse boundary edge");
+        assert_eq!(
+            edge.source_boundary_members,
+            vec![
+                EdgeBoundaryMember {
+                    member: 0,
+                    net_bits: vec![100],
+                },
+                EdgeBoundaryMember {
+                    member: 31,
+                    net_bits: vec![131],
+                },
+            ]
+        );
+        assert!(edge.target_boundary_members.is_empty());
+
+        let permuted = Subgraph {
+            nodes: vec![projected_node(32), projected_node(31), projected_node(0)],
+            edges: vec![projected_edge(31, 131), projected_edge(0, 100)],
+            truncated: true,
+        };
+        let permuted = quotient_subgraph(&graph, permuted, GroupingProjection::all(&partition));
+        assert_eq!(
+            serde_json::to_value(permuted).unwrap(),
+            serde_json::to_value(quotient).unwrap(),
+            "quotient metadata must not depend on projected node or edge order"
+        );
+    }
+
+    #[test]
     fn grouped_source_fragment_cap_marks_the_projection_truncated() {
         let graph = graph_from_parts(
             "grouped_src_cap",
@@ -8243,6 +8469,7 @@ mod tests {
                     width: None,
                     member_count: None,
                     members: None,
+                    boundary_members: Vec::new(),
                 })
                 .collect(),
             edges: Vec::new(),
@@ -9008,6 +9235,7 @@ mod tests {
                 width: None,
                 member_count: None,
                 members: None,
+                boundary_members: Vec::new(),
             })
             .collect();
         let mut edges = Vec::new();
@@ -9020,6 +9248,8 @@ mod tests {
                 net_name: format!("to_hidden_{hidden}"),
                 bits: vec![hidden as u32],
                 control: None,
+                source_boundary_members: Vec::new(),
+                target_boundary_members: Vec::new(),
             });
             for sink in 0..sink_count {
                 let sink_id = (hidden_count + 1 + sink) as NodeId;
@@ -9031,6 +9261,8 @@ mod tests {
                     net_name: format!("h{hidden}_s{sink}"),
                     bits: vec![(hidden * sink_count + sink) as u32],
                     control: None,
+                    source_boundary_members: Vec::new(),
+                    target_boundary_members: Vec::new(),
                 });
             }
         }
@@ -9073,6 +9305,7 @@ mod tests {
                 width: None,
                 member_count: None,
                 members: None,
+                boundary_members: Vec::new(),
             })
             .collect();
         let mut edges = Vec::with_capacity(1 + 2 * branches);
@@ -9084,6 +9317,8 @@ mod tests {
             net_name: "wide".to_owned(),
             bits: (0..width as u32).collect(),
             control: None,
+            source_boundary_members: Vec::new(),
+            target_boundary_members: Vec::new(),
         });
         for branch in 0..branches {
             let branch_id = (branch + 2) as NodeId;
@@ -9095,6 +9330,8 @@ mod tests {
                 net_name: format!("branch_{branch}"),
                 bits: Vec::new(),
                 control: None,
+                source_boundary_members: Vec::new(),
+                target_boundary_members: Vec::new(),
             });
             edges.push(GraphEdge {
                 from: branch_id,
@@ -9104,6 +9341,8 @@ mod tests {
                 net_name: format!("sink_{branch}"),
                 bits: vec![branch as u32],
                 control: None,
+                source_boundary_members: Vec::new(),
+                target_boundary_members: Vec::new(),
             });
         }
         (

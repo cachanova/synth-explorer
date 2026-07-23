@@ -2,7 +2,14 @@
 // positioned nodes + routed edges for SVG rendering.
 
 import type { ElkExtendedEdge, ElkNode } from 'elkjs/lib/elk-api'
-import type { ControlRole, GraphEdge, GraphNode, Subgraph } from '../types'
+import type {
+  BoundaryMember,
+  ControlRole,
+  EdgeBoundaryMember,
+  GraphEdge,
+  GraphNode,
+  Subgraph,
+} from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import {
   MAX_GRAPH_EDGES,
@@ -78,6 +85,7 @@ export interface LayoutInputNode {
   controlHeight: number
   register: boolean
   boundary: PortBoundaryRole
+  boundaryMembers?: BoundaryMember[]
 }
 
 export interface LayoutInputEdge {
@@ -86,6 +94,8 @@ export interface LayoutInputEdge {
   fromPort: string
   toPort: string
   control: boolean
+  sourceBoundaryMembers?: EdgeBoundaryMember[]
+  targetBoundaryMembers?: EdgeBoundaryMember[]
 }
 
 export interface LayoutInput {
@@ -555,6 +565,53 @@ function pinBodyHeight(node: LayoutInputNode, height: number): number {
   return Math.max(1, height - node.controlHeight)
 }
 
+function normalizeBoundaryMembers(
+  members: readonly BoundaryMember[] | undefined,
+): BoundaryMember[] | undefined {
+  if (!members || members.length === 0) return undefined
+  const unique = new Map<string, BoundaryMember>()
+  for (const member of members) {
+    unique.set(`${member.bit}:${member.member}`, {
+      member: member.member,
+      bit: member.bit,
+    })
+  }
+  return [...unique.values()].sort(
+    (left, right) => left.bit - right.bit || left.member - right.member,
+  )
+}
+
+function normalizeEdgeBoundaryMembers(
+  members: readonly EdgeBoundaryMember[] | undefined,
+  boundaryMembers: readonly BoundaryMember[] | undefined,
+): EdgeBoundaryMember[] | undefined {
+  if (!members || members.length === 0) return undefined
+  const bitByMember = new Map(
+    boundaryMembers?.map((entry) => [entry.member, entry.bit] as const),
+  )
+  const netBitsByMember = new Map<number, Set<number>>()
+  for (const entry of members) {
+    const netBits = netBitsByMember.get(entry.member) ?? new Set<number>()
+    for (const bit of entry.net_bits) netBits.add(bit)
+    netBitsByMember.set(entry.member, netBits)
+  }
+  return [...netBitsByMember]
+    .sort(([left], [right]) => {
+      const leftBit = bitByMember.get(left)
+      const rightBit = bitByMember.get(right)
+      if (leftBit != null && rightBit != null && leftBit !== rightBit) {
+        return leftBit - rightBit
+      }
+      if (leftBit != null && rightBit == null) return -1
+      if (leftBit == null && rightBit != null) return 1
+      return left - right
+    })
+    .map(([member, netBits]) => ({
+      member,
+      net_bits: [...netBits].sort((left, right) => left - right),
+    }))
+}
+
 export function prepareLayoutInput(sub: Subgraph): LayoutInput {
   const nodeById = new Map(sub.nodes.map((node) => [node.id, node]))
   // Hidden control edges retain their driver ids on the controlled node. Count
@@ -580,6 +637,7 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
+      const boundaryMembers = normalizeBoundaryMembers(node.boundary_members)
       return {
         id: node.id,
         baseWidth: width,
@@ -587,10 +645,19 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
         register: isRegKind(node),
         boundary: boundaryById.get(node.id) ?? 'internal',
+        ...(boundaryMembers != null ? { boundaryMembers } : {}),
       }
     }),
     edges: sub.edges.map((edge) => {
       const target = nodeById.get(edge.to)
+      const sourceBoundaryMembers = normalizeEdgeBoundaryMembers(
+        edge.source_boundary_members,
+        nodeById.get(edge.from)?.boundary_members,
+      )
+      const targetBoundaryMembers = normalizeEdgeBoundaryMembers(
+        edge.target_boundary_members,
+        target?.boundary_members,
+      )
       return {
         from: edge.from,
         to: edge.to,
@@ -602,6 +669,8 @@ export function prepareLayoutInput(sub: Subgraph): LayoutInput {
         control:
           edge.control === true ||
           Boolean(target && isRegKind(target) && isRegisterControlPin(edge.to_port)),
+        ...(sourceBoundaryMembers != null ? { sourceBoundaryMembers } : {}),
+        ...(targetBoundaryMembers != null ? { targetBoundaryMembers } : {}),
       }
     }),
   }
