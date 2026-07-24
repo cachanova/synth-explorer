@@ -55,10 +55,14 @@ async function schematicContrast(page: Page) {
       return probe
     }
     const controlEdge =
-      document.querySelector('.g-edge.control:not(.hl)') ??
+      document.querySelector(
+        '.g-edge.control:not(.hl):not(.g-dimmed):not([data-relevant="0"])',
+      ) ??
       controlProbe('g-edge control')
     const controlArrow =
-      document.querySelector('.g-edge-arrows.control:not(.hl)') ??
+      document.querySelector(
+        '.g-edge-arrows.control:not(.hl):not(.g-dimmed):not([data-relevant="0"])',
+      ) ??
       controlProbe('g-edge-arrows control')
     const fixtures = {
       context,
