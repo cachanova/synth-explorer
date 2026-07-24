@@ -98,6 +98,7 @@ fn register_cut(graph: &Graph, id: NodeId, response: &mut SourceNodeTiersRespons
     MappedCut {
         outputs: outputs.into_iter().collect(),
         inputs: Vec::new(),
+        feeds_registers: Vec::new(),
         truncated: false,
         selected_is_sequential: true,
     }
@@ -118,6 +119,7 @@ fn combinational_cut(
 ) -> MappedCut {
     let mut outputs = BTreeSet::new();
     let mut inputs = BTreeSet::new();
+    let mut feeds_registers = BTreeSet::new();
     let mut truncated = false;
     let mut budget = MAPPED_VISIT_CAP;
 
@@ -150,9 +152,24 @@ fn combinational_cut(
                 }
                 continue;
             }
-            // Unresolvable output net: expand through its consumer.
+            // Unresolvable output net: expand through its consumer. A
+            // sequential consumer means the selection is (part of) that
+            // register's D driver — its Q names let the RTL D-cone stand
+            // in as the output region.
             let consumer = &graph.nodes[edge.to as usize];
-            if consumer.seq || consumer.kind != NodeKind::Cell {
+            if consumer.seq {
+                response.approximate = true;
+                if feeds_registers.len() < MAPPED_FRONTIER_CAP {
+                    for &q_edge in &graph.outgoing[edge.to as usize] {
+                        let q = &graph.edges[q_edge];
+                        collect_net_names(graph, q.bit, &q.net_name, &mut feeds_registers);
+                    }
+                } else {
+                    truncated = true;
+                }
+                continue;
+            }
+            if consumer.kind != NodeKind::Cell {
                 continue;
             }
             response.approximate = true;
@@ -196,6 +213,7 @@ fn combinational_cut(
     MappedCut {
         outputs: outputs.into_iter().collect(),
         inputs: inputs.into_iter().collect(),
+        feeds_registers: feeds_registers.into_iter().collect(),
         truncated,
         selected_is_sequential: false,
     }

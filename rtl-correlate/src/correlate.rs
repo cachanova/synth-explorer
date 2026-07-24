@@ -51,6 +51,11 @@ pub struct MappedCut {
     pub outputs: Vec<String>,
     /// Boundary net names feeding the selected logic.
     pub inputs: Vec<String>,
+    /// Q-net names of registers the selected logic feeds through
+    /// unresolvable nets (the ubiquitous `q_i_1_n_0`-style D drivers). The
+    /// matching RTL register's D-cone becomes part of the output region —
+    /// a superset of the selection, so the caller flags it approximate.
+    pub feeds_registers: Vec<String>,
     /// The mapped-side walk hit its own caps before reaching boundaries.
     pub truncated: bool,
     /// The selection is a sequential element (register attribution mode).
@@ -181,6 +186,12 @@ impl CorrelationIndex {
                                 entry.select_bits.push(net);
                             } else if mux {
                                 entry.data_bits.push(net);
+                            } else if seq && (port == "D" || port == "AD") {
+                                // Register data inputs, distinct from
+                                // clock/enable/reset pins: the D-cone
+                                // stand-in for feeds_registers must not
+                                // pull control cones into the exact tier.
+                                entry.data_bits.push(net);
                             }
                         }
                     }
@@ -234,13 +245,32 @@ impl CorrelationIndex {
             truncated: cut.truncated,
             ..Attribution::default()
         };
-        let (output_bits, outputs_missing) = self.resolve_names(&cut.outputs, false);
+        let (mut output_bits, outputs_missing) = self.resolve_names(&cut.outputs, false);
         // Input boundaries stop the walk on every bit of the named net: a
         // boundary bus is a boundary regardless of which bit the mapped cone
         // consumed, and bit-precise stops would let word-level RTL cells
         // ($add, comparators) leak the walk through their other bits.
         let (input_bits, inputs_missing) = self.resolve_names(&cut.inputs, true);
         result.approximate |= outputs_missing || inputs_missing;
+        // Logic feeding a register through an anonymous net attributes as
+        // that register's D-cone: a superset of the selection. Only the
+        // data pins seed the region — clock/enable/reset cones belong to
+        // the register's own attribution, not a neighboring LUT's exact
+        // tier. Registers without a recognized data pin contribute nothing
+        // rather than an over-wide guess.
+        for q_name in &cut.feeds_registers {
+            let (q_bits, _) = self.resolve_names(std::slice::from_ref(q_name), false);
+            for bit in q_bits {
+                let Some(&cell) = self.driver_of_bit.get(&bit) else {
+                    continue;
+                };
+                let entry = &self.cells[cell as usize];
+                if entry.seq {
+                    output_bits.extend(entry.data_bits.iter().copied());
+                    result.approximate = true;
+                }
+            }
+        }
         if output_bits.is_empty() {
             result.approximate = true;
             return result;
@@ -526,6 +556,21 @@ impl CorrelationIndex {
         for base in self.dialect.register_base_candidates(normalized) {
             if let Some(bits) = self.bits_by_name.get(base) {
                 return Resolved::Bus(bits);
+            }
+        }
+        // Vivado net renames (buffer suffixes, flop pin nets, FSM recode
+        // prefixes); bussed forms like `data_in_IBUF[3]` unmangle their
+        // base and keep the bit index.
+        for candidate in self.dialect.net_base_candidates(normalized) {
+            if let Some(bits) = self.bits_by_name.get(candidate) {
+                return Resolved::Bus(bits);
+            }
+        }
+        if let Some((base, index)) = split_bit_suffix(normalized) {
+            for candidate in self.dialect.net_base_candidates(base) {
+                if let Some(bits) = self.bits_by_name.get(candidate) {
+                    return Resolved::Bit(bits, index);
+                }
             }
         }
         Resolved::None
