@@ -7,27 +7,27 @@ import init, {
 } from '../wasm/layout/schemweave'
 import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 import {
-  runSchemWeaveRequest,
-  type SchemWeaveRequest,
-  type SchemWeaveResponse,
-} from './schemweaveRuntime'
+  type SchemWeaveWorkerRequest,
+  type SchemWeaveWorkerResponse,
+} from './schemweaveProtocol'
+import { runSchemWeaveWorkerRequest } from './schemweaveWorkerRuntime'
 export type {
-  SchemWeaveRequest,
-  SchemWeaveResponse,
-} from './schemweaveRuntime'
+  SchemWeaveWorkerRequest,
+  SchemWeaveWorkerResponse,
+} from './schemweaveProtocol'
 
 const ensureEngine = lazyLoad('failed to load the comparison layout engine', () => init())
 void ensureEngine().catch(() => undefined)
 
-self.onmessage = (event: MessageEvent<SchemWeaveRequest>) => {
+self.onmessage = (event: MessageEvent<SchemWeaveWorkerRequest>) => {
   void handle(event.data)
 }
 
-async function handle(request: SchemWeaveRequest) {
-  let response: SchemWeaveResponse
+async function handle(request: SchemWeaveWorkerRequest) {
+  let response: SchemWeaveWorkerResponse
   try {
     await ensureEngine()
-    response = runSchemWeaveRequest(
+    response = runSchemWeaveWorkerRequest(
       { layout_json, expand_group_json, collapse_group_json },
       request,
     )

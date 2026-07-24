@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
-import { SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK } from '../workers/schemweaveRuntime'
+import type { SchemWeaveWorkerRequest } from '../workers/schemweaveProtocol'
 import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
@@ -11,14 +11,18 @@ import {
   buildSchemWeaveLayoutRequest,
   clearLayoutGeometryCache,
   comparisonLayoutEngine,
+  configureLayoutWorkerFactory,
   controlRoleForPin,
   DENSE_LAYOUT_NODE_THRESHOLD,
   DENSE_LONGEST_PATH_EDGE_DENSITY,
   fitViewportToContent,
   hydrateLayoutResult,
+  interpretSchemWeaveResult,
   interpretResult,
   LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
   LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
+  layoutCollapsedGroupWithSchemWeave,
+  layoutExpandedGroupWithSchemWeave,
   MAX_GLOBAL_LAYOUT_COMPONENTS,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
@@ -35,6 +39,7 @@ import {
   toElkGraph,
   toSchemWeaveLayoutRequest,
   type LayoutInput,
+  type SchemWeaveLayout,
   type SchemWeaveSnapshot,
   viewportTransformAttribute,
   zoomViewportAt,
@@ -2326,6 +2331,7 @@ describe('schematic layout sizing', () => {
         input: ReturnType<typeof prepareLayoutInput>
         placement?: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
         request?: ReturnType<typeof toSchemWeaveLayoutRequest>
+        kind?: SchemWeaveWorkerRequest['kind']
       }> = []
 
       constructor(url: URL) {
@@ -2337,6 +2343,29 @@ describe('schematic layout sizing', () => {
         this.requests.push(request)
       }
     }
+
+  const schemWeaveWorkerResponse = (
+    request: FakeWorker['requests'][number],
+    layout: SchemWeaveLayout,
+    degraded = false,
+  ): MessageEvent => {
+    const prepared = buildSchemWeaveLayoutRequest(request.input)
+    return {
+      data: {
+        id: request.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: interpretSchemWeaveResult(
+            layout,
+            prepared.catalog,
+            prepared.request,
+          ),
+          degraded,
+        },
+      },
+    } as MessageEvent
+  }
 
   const workerSubgraph = (id = 1): Subgraph => ({
     nodes: [node(id, '$_AND_', { members: [1, 2], params: { secret: 'resident' } })],
@@ -2350,6 +2379,14 @@ describe('schematic layout sizing', () => {
     width: 76,
     height: 66,
   }
+
+  configureLayoutWorkerFactory((engine) =>
+    new Worker(new URL(
+      engine === 'schemweave'
+        ? '../workers/schemweave.worker.ts'
+        : '../workers/elk.worker.ts',
+      import.meta.url,
+    )))
 
   afterEach(() => {
     clearLayoutGeometryCache()
@@ -2386,11 +2423,12 @@ describe('schematic layout sizing', () => {
     expect(schemweave.url).toContain('schemweave.worker.ts')
     expect(schemweave.requests[0]).toEqual({
       id: expect.any(Number),
-      request: toSchemWeaveLayoutRequest(prepareLayoutInput(sub)),
+      kind: 'layout',
+      input: prepareLayoutInput(sub),
     })
-    schemweave.onmessage?.({
-      data: { id: schemweave.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
+    schemweave.onmessage?.(
+      schemWeaveWorkerResponse(schemweave.requests[0], geometry),
+    )
     await schemWeaveLayout
 
     expect(FakeWorker.instances).toHaveLength(2)
@@ -2431,12 +2469,12 @@ describe('schematic layout sizing', () => {
 
     const pendingLayout = layoutSubgraph(sub, undefined, 'schemweave')
     const worker = FakeWorker.instances[0]
-    expect(worker.requests[0].request?.graph.edges).toHaveLength(2)
-    worker.onmessage?.({
-      data: {
-        id: worker.requests[0].id,
-        ok: true,
-        result: {
+    expect(
+      buildSchemWeaveLayoutRequest(worker.requests[0].input)
+        .request.graph.edges,
+    ).toHaveLength(2)
+    worker.onmessage?.(
+      schemWeaveWorkerResponse(worker.requests[0], {
           nodes: [
             { id: 1, x: 0, y: 0, width: 62, height: 46 },
             { id: 2, x: 140, y: 0, width: 74, height: 34 },
@@ -2473,9 +2511,8 @@ describe('schematic layout sizing', () => {
           }],
           width: 214,
           height: 46,
-        },
-      },
-    } as MessageEvent)
+      }),
+    )
 
     const laidOut = await pendingLayout
     expect(laidOut.edges.map((edge) => edge.edge.bits)).toEqual([[56], [55]])
@@ -2555,16 +2592,12 @@ describe('schematic layout sizing', () => {
     const degraded = layoutSubgraph(bundled(), undefined, 'schemweave')
     const worker = FakeWorker.instances[0]
     expect(
-      worker.requests[0].request?.constraints.boundary_bundles,
+      buildSchemWeaveLayoutRequest(worker.requests[0].input)
+        .request.constraints.boundary_bundles,
     ).toHaveLength(2)
-    worker.onmessage?.({
-      data: {
-        id: worker.requests[0].id,
-        ok: true,
-        result: rawGeometry,
-        fallback: SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
-      },
-    } as MessageEvent)
+    worker.onmessage?.(
+      schemWeaveWorkerResponse(worker.requests[0], rawGeometry, true),
+    )
     await expect(degraded).resolves.toMatchObject({ boundaryBundles: [] })
 
     const strict = layoutSubgraph(
@@ -2574,15 +2607,12 @@ describe('schematic layout sizing', () => {
     )
     expect(worker.requests).toHaveLength(2)
     expect(
-      worker.requests[1].request?.constraints.boundary_bundles,
+      buildSchemWeaveLayoutRequest(worker.requests[1].input)
+        .request.constraints.boundary_bundles,
     ).toHaveLength(2)
-    worker.onmessage?.({
-      data: {
-        id: worker.requests[1].id,
-        ok: true,
-        result: strictGeometry,
-      },
-    } as MessageEvent)
+    worker.onmessage?.(
+      schemWeaveWorkerResponse(worker.requests[1], strictGeometry),
+    )
     await expect(strict).resolves.toMatchObject({
       boundaryBundles: [{ id: 0 }],
     })
@@ -2598,7 +2628,7 @@ describe('schematic layout sizing', () => {
     worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
-  it('rejects a fallback marker on a request without boundary bundles', async () => {
+  it('rejects a full-layout response that requests another full relayout', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
     const worker = FakeWorker.instances[0]
@@ -2607,199 +2637,17 @@ describe('schematic layout sizing', () => {
       data: {
         id: worker.requests[0].id,
         ok: true,
-        result: geometry,
-        fallback: SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'geometry',
+        },
       },
     } as MessageEvent)
 
     await expect(pending).rejects.toThrow(
-      'SchemWeave fallback marker requires boundary bundle constraints',
+      'full SchemWeave layout requested another full relayout',
     )
     worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('rejects null, unknown, or bundle-bearing fallback responses', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const bundled = (): Subgraph => ({
-      nodes: [
-        node(1, 'port', {
-          kind: 'port',
-          port_direction: 'input',
-          member_count: 1,
-          boundary_members: [{ member: 10, bit: 0 }],
-        }),
-        node(2, '$_BUF_'),
-      ],
-      edges: [{
-        from: 1,
-        to: 2,
-        from_port: 'a',
-        to_port: 'A',
-        net_name: 'a',
-        bits: [100],
-        source_boundary_members: [{ member: 10, net_bits: [100] }],
-      }],
-      truncated: false,
-    })
-    const workerGeometry = {
-      nodes: [
-        { id: 1, x: 0, y: 0, width: 74, height: 34 },
-        { id: 2, x: 140, y: 0, width: 62, height: 46 },
-      ],
-      edges: [{
-        id: 0,
-        points: [{ x: 74, y: 17 }, { x: 140, y: 23 }],
-      }],
-      width: 202,
-      height: 46,
-    }
-    const malformed = layoutSubgraph(bundled(), undefined, 'schemweave')
-    const worker = FakeWorker.instances[0]
-    worker.onmessage?.({
-      data: {
-        id: worker.requests[0].id,
-        ok: true,
-        result: workerGeometry,
-        fallback: 'invented-fallback',
-      },
-    } as MessageEvent)
-    await expect(malformed).rejects.toThrow(
-      'invalid SchemWeave fallback marker',
-    )
-
-    const nullMarked = layoutSubgraph(
-      structuredClone(bundled()),
-      undefined,
-      'schemweave',
-    )
-    worker.onmessage?.({
-      data: {
-        id: worker.requests[1].id,
-        ok: true,
-        result: workerGeometry,
-        fallback: null,
-      },
-    } as MessageEvent)
-    await expect(nullMarked).rejects.toThrow(
-      'invalid SchemWeave fallback marker',
-    )
-
-    const bundleBearing = layoutSubgraph(
-      structuredClone(bundled()),
-      undefined,
-      'schemweave',
-    )
-    worker.onmessage?.({
-      data: {
-        id: worker.requests[2].id,
-        ok: true,
-        result: {
-          ...workerGeometry,
-          boundary_bundles: [{
-            id: 0,
-            endpoint: { node: 1, port: 0 },
-            role: 'input',
-            width: 1,
-            collector: {
-              start: { x: 84, y: 17 },
-              end: { x: 84, y: 17 },
-            },
-            spine: {
-              start: { x: 74, y: 17 },
-              end: { x: 84, y: 17 },
-            },
-            members: [{
-              edge: 0,
-              slots: [0],
-              tap: { x: 84, y: 17 },
-            }],
-          }],
-        },
-        fallback: SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
-      },
-    } as MessageEvent)
-    await expect(bundleBearing).rejects.toThrow(
-      'SchemWeave fallback geometry cannot contain boundary bundles',
-    )
-    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('rejects an interpretation failure from an ok SchemWeave response immediately', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
-    const schemweave = FakeWorker.instances[0]
-
-    schemweave.onmessage?.({
-      data: {
-        id: schemweave.requests[0].id,
-        ok: true,
-        result: {
-          ...geometry,
-          boundary_bundles: [{
-            id: 0,
-            endpoint: { node: 1, port: 0 },
-            role: 'input',
-            width: 1,
-            collector: {
-              start: { x: 0, y: 0 },
-              end: { x: 0, y: 0 },
-            },
-            spine: {
-              start: { x: 0, y: 0 },
-              end: { x: 0, y: 0 },
-            },
-            // This reproduces the interpreter throw that used to detach the
-            // pending request before its promise could be rejected.
-            members: null,
-          }],
-        },
-      },
-    } as MessageEvent)
-
-    await expect(pending).rejects.toThrow(
-      'boundary bundle 0 members must be an array',
-    )
-    schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('rejects SchemWeave bundle geometry with an unknown edge owner', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
-    const schemweave = FakeWorker.instances[0]
-
-    schemweave.onmessage?.({
-      data: {
-        id: schemweave.requests[0].id,
-        ok: true,
-        result: {
-          ...geometry,
-          boundary_bundles: [{
-            id: 0,
-            endpoint: { node: 1, port: 0 },
-            role: 'input',
-            width: 1,
-            collector: {
-              start: { x: 0, y: 0 },
-              end: { x: 0, y: 0 },
-            },
-            spine: {
-              start: { x: 0, y: 0 },
-              end: { x: 0, y: 0 },
-            },
-            members: [{
-              edge: 99,
-              slots: [0],
-              tap: { x: 0, y: 0 },
-            }],
-          }],
-        },
-      },
-    } as MessageEvent)
-
-    await expect(pending).rejects.toThrow(
-      'boundary bundle 0 references unknown edge 99',
-    )
-    schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('recreates a worker that crashes during otherwise-idle prewarm', async () => {
@@ -2860,35 +2708,97 @@ describe('schematic layout sizing', () => {
     )
     const first = FakeWorker.instances[0]
     const staleHandler = first.onmessage
-    const staleId = first.requests[0].id
 
     controller.abort()
     await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
 
     const latest = layoutSubgraph(workerSubgraph(2), undefined, 'schemweave')
     const replacement = FakeWorker.instances[1]
-    staleHandler?.({
-      data: {
-        id: staleId,
-        ok: true,
-        result: geometry,
-      },
-    } as MessageEvent)
-    replacement.onmessage?.({
-      data: {
-        id: replacement.requests[0].id,
-        ok: true,
-        result: {
+    staleHandler?.(
+      schemWeaveWorkerResponse(first.requests[0], geometry),
+    )
+    replacement.onmessage?.(
+      schemWeaveWorkerResponse(replacement.requests[0], {
           ...geometry,
           nodes: [{ ...geometry.nodes[0], id: 2 }],
-        },
-      },
-    } as MessageEvent)
+      }),
+    )
 
     await expect(latest).resolves.toMatchObject({
       nodes: [{ id: 2 }],
       width: 76,
     })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('aborts an expansion without letting its stale response replace a later expansion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+    const controller = new AbortController()
+
+    const stale = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      controller.signal,
+      [group],
+    )
+    const first = FakeWorker.instances[0]
+    const staleHandler = first.onmessage
+    const firstRequest = first.requests[0]
+
+    controller.abort()
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const latest = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const replacement = FakeWorker.instances[1]
+    const replacementRequest = replacement.requests[0]
+    let latestSettled = false
+    void latest.finally(() => {
+      latestSettled = true
+    })
+    staleHandler?.({
+      data: {
+        id: firstRequest.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: { ...baseGeometry, width: 999 },
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+    await Promise.resolve()
+    expect(latestSettled).toBe(false)
+    replacement.onmessage?.({
+      data: {
+        id: replacementRequest.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+
+    await expect(latest).resolves.toMatchObject({ width: 76, height: 66 })
+    expect(FakeWorker.instances).toHaveLength(2)
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
@@ -3334,6 +3244,60 @@ describe('schematic layout sizing', () => {
       data: { id: replacement.requests[0].id, ok: true, result: geometry },
     } as MessageEvent)
     await expect(current).resolves.toMatchObject({ width: 76 })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('times out a collapse and lets the next collapse use a fresh worker', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    const expanded = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const timedOut = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      sub,
+      expanded,
+      group,
+      [],
+    )
+    const first = FakeWorker.instances[0]
+    const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
+      name: 'LayoutTimeoutError',
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await timeoutExpectation
+    expect(first.requests).toHaveLength(1)
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const current = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      sub,
+      expanded,
+      group,
+      [],
+    )
+    const replacement = FakeWorker.instances[1]
+    const request = replacement.requests[0]
+    replacement.onmessage?.({
+      data: {
+        id: request.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+
+    await expect(current).resolves.toMatchObject({ width: 76, height: 66 })
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 

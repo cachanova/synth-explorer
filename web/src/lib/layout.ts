@@ -11,12 +11,10 @@ import type {
   Subgraph,
 } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
-import {
-  SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
-  type SchemWeaveExpansionResponse,
-  type SchemWeaveRequest,
-  type SchemWeaveResponse,
-} from '../workers/schemweaveRuntime'
+import type {
+  SchemWeaveWorkerRequest,
+  SchemWeaveWorkerResponse,
+} from '../workers/schemweaveProtocol'
 import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
@@ -2941,6 +2939,7 @@ function compactRoute(points: Point[]): Point[] {
 }
 
 const workers: Partial<Record<LayoutEngine, Worker>> = {}
+let workerFactory: ((engine: LayoutEngine) => Worker) | null = null
 let seq = 0
 interface LayoutRunResult {
   geometry: LayoutGeometry
@@ -2951,9 +2950,6 @@ const pending = new Map<
   number,
   {
     engine: LayoutEngine
-    allowsBoundaryBundleFallback: boolean
-    schemCatalog?: SchemWeaveGraphCatalog
-    schemRequest?: SchemWeaveLayoutRequest
     resolve: (result: LayoutRunResult) => void
     reject: (e: Error) => void
   }
@@ -2961,9 +2957,6 @@ const pending = new Map<
 const expansionPending = new Map<
   number,
   {
-    catalog: SchemWeaveGraphCatalog
-    request: SchemWeaveLayoutRequest
-    groups: ExpandedGroupLayout[]
     resolve: (geometry: LayoutGeometry | null) => void
     reject: (error: Error) => void
   }
@@ -3009,20 +3002,12 @@ function getWorker(engine: LayoutEngine): Worker {
   if (engine === 'schemweave' && !import.meta.env.DEV) {
     throw new Error('SchemWeave comparison is available only in local development')
   }
-  // Vite requires the complete Worker(new URL(...)) expression to remain
-  // statically analyzable so each module worker and its WASM dependency are
-  // compiled rather than copied as untransformed TypeScript.
-  const w = engine === 'schemweave'
-    ? new Worker(
-        new URL('../workers/schemweave.worker.ts', import.meta.url),
-        { type: 'module' },
-      )
-    : new Worker(
-        new URL('../workers/elk.worker.ts', import.meta.url),
-        { type: 'module' },
-      )
+  if (!workerFactory) {
+    throw new Error('layout worker factory is not configured')
+  }
+  const w = workerFactory(engine)
   w.onmessage = (
-    ev: MessageEvent<ElkResponse | SchemWeaveResponse>,
+    ev: MessageEvent<ElkResponse | SchemWeaveWorkerResponse>,
   ) => {
     const msg = ev.data
     const expansionEntry = expansionPending.get(msg.id)
@@ -3033,7 +3018,9 @@ function getWorker(engine: LayoutEngine): Worker {
         return
       }
       try {
-        const result = msg.result as SchemWeaveExpansionResponse
+        const result = (
+          msg as Extract<SchemWeaveWorkerResponse, { ok: true }>
+        ).result
         if (result.status === 'needs_full_relayout') {
           expansionEntry.resolve(null)
           return
@@ -3041,33 +3028,7 @@ function getWorker(engine: LayoutEngine): Worker {
         if (result.status !== 'layout') {
           throw new Error('invalid SchemWeave expansion response')
         }
-        const geometry = interpretSchemWeaveResult(
-          result.layout,
-          expansionEntry.catalog,
-          expansionEntry.request,
-        )
-        if (geometry.schemWeaveSnapshot) {
-          geometry.schemWeaveSnapshot.expandedGroups = expansionEntry.groups
-        }
-        geometry.groups = expansionEntry.groups.map((group) => {
-          const memberIds = new Set(group.members)
-          const members = geometry.nodes.filter((node) => memberIds.has(node.id))
-          if (members.length !== memberIds.size) {
-            throw new Error('SchemWeave expansion omitted a grouped member')
-          }
-          const left = Math.min(...members.map((node) => node.x))
-          const top = Math.min(...members.map((node) => node.y))
-          const right = Math.max(...members.map((node) => node.x + node.width))
-          const bottom = Math.max(...members.map((node) => node.y + node.height))
-          return {
-            id: group.id,
-            x: left - 16,
-            y: top - 30,
-            width: right - left + 32,
-            height: bottom - top + 46,
-          }
-        }).sort((first, second) => first.id - second.id)
-        expansionEntry.resolve(geometry)
+        expansionEntry.resolve(result.geometry)
       } catch (error) {
         expansionEntry.reject(
           error instanceof Error ? error : new Error(String(error)),
@@ -3082,42 +3043,17 @@ function getWorker(engine: LayoutEngine): Worker {
       try {
         if (engine === 'schemweave') {
           const schemResponse = msg as Extract<
-            SchemWeaveResponse,
+            SchemWeaveWorkerResponse,
             { ok: true }
           >
-          const layoutResult = schemResponse.result as SchemWeaveLayout
-          const rawFallback = (schemResponse as { fallback?: unknown }).fallback
-          if (
-            rawFallback !== undefined &&
-            rawFallback !== SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK
-          ) {
-            throw new Error('invalid SchemWeave fallback marker')
-          }
-          if (
-            rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK &&
-            !entry.allowsBoundaryBundleFallback
-          ) {
+          if (schemResponse.result.status !== 'layout') {
             throw new Error(
-              'SchemWeave fallback marker requires boundary bundle constraints',
-            )
-          }
-          const geometry = interpretSchemWeaveResult(
-            layoutResult,
-            entry.schemCatalog,
-            entry.schemRequest,
-          )
-          if (
-            rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK &&
-            (geometry.boundaryBundles?.length ?? 0) > 0
-          ) {
-            throw new Error(
-              'SchemWeave fallback geometry cannot contain boundary bundles',
+              'full SchemWeave layout requested another full relayout',
             )
           }
           entry.resolve({
-            geometry,
-            degraded:
-              rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
+            geometry: schemResponse.result.geometry,
+            degraded: schemResponse.result.degraded,
           })
         } else {
           entry.resolve({
@@ -3146,6 +3082,13 @@ function getWorker(engine: LayoutEngine): Worker {
   return w
 }
 
+/** Configure browser-owned worker entrypoints before rendering the application. */
+export function configureLayoutWorkerFactory(
+  factory: (engine: LayoutEngine) => Worker,
+): void {
+  workerFactory = factory
+}
+
 /** Load and initialize the selected reusable worker before the first schematic opens. */
 export function prewarmLayoutWorker(engine: LayoutEngine = 'elk'): void {
   getWorker(engine)
@@ -3158,13 +3101,14 @@ function runLayout(
   placement?: NodePlacement,
   signal?: AbortSignal,
 ): Promise<LayoutRunResult> {
-  const preparedSchemRequest = engine === 'schemweave'
-    ? buildSchemWeaveLayoutRequest(input)
-    : undefined
-  const schemRequest = preparedSchemRequest?.request
-  const req: ElkRequest | SchemWeaveRequest = schemRequest
-    ? { id: ++seq, request: schemRequest }
-    : {
+  const req: ElkRequest | SchemWeaveWorkerRequest =
+    engine === 'schemweave'
+      ? {
+          id: ++seq,
+          kind: 'layout',
+          input,
+        }
+      : {
         id: ++seq,
         input,
         placement: placement ?? 'NETWORK_SIMPLEX',
@@ -3189,14 +3133,6 @@ function runLayout(
     }
     pending.set(id, {
       engine,
-      allowsBoundaryBundleFallback:
-        (schemRequest?.constraints.boundary_bundles?.length ?? 0) > 0,
-      ...(preparedSchemRequest
-        ? {
-            schemCatalog: preparedSchemRequest.catalog,
-            schemRequest: preparedSchemRequest.request,
-          }
-        : {}),
       resolve: (value) => {
         cleanup()
         resolve(value)
@@ -3226,16 +3162,14 @@ export async function layoutExpandedGroupWithSchemWeave(
   if (signal?.aborted) throw abortError()
   const snapshot = base.schemWeaveSnapshot
   if (!snapshot) return null
-  const prepared = buildSchemWeaveExpansionRequest(
-    snapshot,
-    prepareLayoutInput(sub),
-    group,
-  )
   const id = ++seq
-  const request: SchemWeaveRequest = {
+  const request: SchemWeaveWorkerRequest = {
     id,
     kind: 'expand',
-    request: prepared.request,
+    snapshot,
+    input: prepareLayoutInput(sub),
+    group,
+    activeGroups,
   }
   const worker = getWorker('schemweave')
   const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
@@ -3253,9 +3187,6 @@ export async function layoutExpandedGroupWithSchemWeave(
       terminateWorker('schemweave', worker, abortError())
     }
     expansionPending.set(id, {
-      catalog: prepared.catalog,
-      request: prepared.expandedRequest,
-      groups: activeGroups,
       resolve: (value) => {
         cleanup()
         resolve(value)
@@ -3290,17 +3221,15 @@ export async function layoutCollapsedGroupWithSchemWeave(
   if (signal?.aborted) throw abortError()
   const snapshot = expandedLayout.schemWeaveSnapshot
   if (!snapshot) return null
-  const prepared = buildSchemWeaveCollapseRequest(
-    snapshot,
-    prepareLayoutInput(expandedSub),
-    prepareLayoutInput(compactSub),
-    group,
-  )
   const id = ++seq
-  const request: SchemWeaveRequest = {
+  const request: SchemWeaveWorkerRequest = {
     id,
     kind: 'collapse',
-    request: prepared.request,
+    snapshot,
+    expandedInput: prepareLayoutInput(expandedSub),
+    compactInput: prepareLayoutInput(compactSub),
+    group,
+    activeGroups,
   }
   const worker = getWorker('schemweave')
   const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
@@ -3318,9 +3247,6 @@ export async function layoutCollapsedGroupWithSchemWeave(
       terminateWorker('schemweave', worker, abortError())
     }
     expansionPending.set(id, {
-      catalog: prepared.catalog,
-      request: prepared.compactRequest,
-      groups: activeGroups,
       resolve: (value) => {
         cleanup()
         resolve(value)
