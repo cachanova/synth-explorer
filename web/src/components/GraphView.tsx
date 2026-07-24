@@ -232,8 +232,8 @@ function nodeVisual(
   highlighted: boolean,
 ): NodeVisual {
   const isRoot = node.id === rootId || Boolean(node.is_root)
-  let fill = 'var(--bg-2)'
-  let stroke = 'var(--border-strong)'
+  let fill = 'var(--schematic-gate-fill)'
+  let stroke = 'var(--schematic-gate-stroke)'
 
   if (kind === 'port-in' || kind === 'port-out') {
     fill = 'color-mix(in srgb, var(--green) 14%, var(--bg-2))'

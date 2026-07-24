@@ -17,6 +17,9 @@
   --amber: #c69026;
   --red: #e5534b;
   --seq: #c8a5f0;
+  --schematic-gate-fill: var(--bg-2);
+  --schematic-gate-stroke: var(--border-strong);
+  --schematic-wire: var(--border-strong);
   --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, 'Cascadia Code',
     Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -2173,7 +2176,7 @@ th.sortable:hover {
 
 .g-edge {
   fill: none;
-  stroke: var(--border-strong);
+  stroke: var(--schematic-wire);
   stroke-width: 1.3;
 }
 .g-edge.control {
@@ -2189,7 +2192,7 @@ th.sortable:hover {
   stroke-width: 2.2;
 }
 .g-edge-arrows {
-  fill: var(--border-strong);
+  fill: var(--schematic-wire);
   stroke: none;
   pointer-events: none;
 }
@@ -2905,4 +2908,20 @@ th.sortable:hover {
   --red: #fe4450;
   --blue: #36f9f6;
   color-scheme: dark;
+}
+
+/* Thin schematic marks need stronger separation than panel borders on light
+   canvases. Keep these local to the graph instead of darkening all UI chrome. */
+:root[data-theme='light'] {
+  --schematic-gate-fill: color-mix(in srgb, var(--text) 6%, var(--bg-2));
+  --schematic-gate-stroke: color-mix(
+    in srgb,
+    var(--text-dim) 75%,
+    var(--border-strong)
+  );
+  --schematic-wire: color-mix(
+    in srgb,
+    var(--text-dim) 70%,
+    var(--border-strong)
+  );
 }
