@@ -286,31 +286,35 @@ impl CorrelationIndex {
                 }
             }
         }
-        // Declaration spans (port selections) join the exact tier without
-        // implying any approximation.
-        let mut declaration_spans = SpanCollector::new(limits.span_cap);
+        // Declaration spans (port selections) seed the exact-tier collector
+        // without implying any approximation, so the tier's cap, dedup, and
+        // ordering apply to the union like any other spans. Sequential cuts
+        // never carry declarations (register_cut leaves them empty), so
+        // only the combinational path needs the seed.
+        let mut exact_seed = SpanCollector::new(limits.span_cap);
         let (declaration_bits, _) = self.resolve_names(&cut.declarations, true);
         for bit in declaration_bits {
             if let Some(spans) = self.decl_spans_of_bit.get(&bit) {
-                declaration_spans.extend(spans);
+                exact_seed.extend(spans);
             }
         }
 
         if output_bits.is_empty() {
-            if declaration_spans.is_empty() {
+            if exact_seed.is_empty() {
                 result.approximate = true;
                 return result;
             }
+            result.exact = exact_seed.into_spans(&self.files, &mut result.truncated);
         } else if cut.selected_is_sequential {
             self.attribute_register(&output_bits, limits, &mut result);
         } else {
-            self.attribute_combinational(&output_bits, &input_bits, limits, &mut result);
-        }
-
-        if !declaration_spans.is_empty() {
-            let mut exact: BTreeSet<SrcSpan> = result.exact.drain(..).collect();
-            exact.extend(declaration_spans.into_spans(&self.files, &mut result.truncated));
-            result.exact = exact.into_iter().collect();
+            self.attribute_combinational(
+                &output_bits,
+                &input_bits,
+                limits,
+                exact_seed,
+                &mut result,
+            );
         }
         result
     }
@@ -421,9 +425,10 @@ impl CorrelationIndex {
         output_bits: &BTreeSet<u32>,
         input_bits: &BTreeSet<u32>,
         limits: &CorrelationLimits,
+        exact_seed: SpanCollector,
         result: &mut Attribution,
     ) {
-        let mut exact = SpanCollector::new(limits.span_cap);
+        let mut exact = exact_seed;
         let mut contributing = SpanCollector::new(limits.span_cap);
         let mut visited = HashSet::new();
         let mut budget = limits.cell_visit_cap;

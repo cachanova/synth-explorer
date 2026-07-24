@@ -493,3 +493,41 @@ fn feeds_registers_exclude_enable_and_control_cones() {
     assert_eq!(lines(&attribution.exact), vec![5, 6]);
     assert!(attribution.approximate);
 }
+
+#[test]
+fn declaration_cuts_join_the_exact_tier_precisely() {
+    // Declarations resolve from netname src attributes; a declaration-only
+    // cut is precise, and combined with an output region the union stays
+    // deduplicated under one collector.
+    let attribution = index().attribute(
+        &MappedCut {
+            outputs: Vec::new(),
+            inputs: Vec::new(),
+            feeds_registers: Vec::new(),
+            declarations: vec!["sum".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    // `sum`'s netname declaration span is line 2.
+    assert_eq!(lines(&attribution.exact), vec![2]);
+    assert!(!attribution.approximate);
+    assert!(attribution.contributing.is_empty());
+
+    let combined = index().attribute(
+        &MappedCut {
+            outputs: vec!["gated".to_owned()],
+            inputs: vec!["sum".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: vec!["gated".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    // Declaration (line 3 netname) and enclosed $and (line 3 cell) merge
+    // and dedup by span under the shared cap.
+    assert_eq!(lines(&combined.exact), vec![3, 3]);
+    assert!(!combined.approximate);
+}
