@@ -206,7 +206,6 @@ impl CorrelationIndex {
             port_bits.extend(port.bits.iter().filter_map(YosysBit::net));
         }
 
-        drop(intern);
         Ok(Self {
             dialect,
             cells,
