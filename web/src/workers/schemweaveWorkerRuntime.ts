@@ -31,17 +31,30 @@ export interface SchemWeaveWorkerSession {
 }
 
 export interface SchemWeaveWorkerSessionStore {
+  epoch: string
   nextId: number
   entries: Map<number, SchemWeaveWorkerSession>
   retainedBytes: number
+  maxEntries: number
+  maxBytes: number
 }
 
-export function createSchemWeaveWorkerSessionStore():
+export function createSchemWeaveWorkerSessionStore(
+  options: {
+    epoch?: string
+    maxEntries?: number
+    maxBytes?: number
+  } = {},
+):
   SchemWeaveWorkerSessionStore {
   return {
+    epoch: options.epoch ?? globalThis.crypto.randomUUID(),
     nextId: 0,
     entries: new Map(),
     retainedBytes: 0,
+    maxEntries:
+      options.maxEntries ?? SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES,
+    maxBytes: options.maxBytes ?? SCHEMWEAVE_WORKER_SESSION_MAX_BYTES,
   }
 }
 
@@ -79,6 +92,23 @@ function estimatedSessionBytes(
       ) ?? 0),
     0,
   )
+  const retainedStringBytes =
+    [...snapshot.catalog.portIds.keys()].reduce(
+      (total, key) => total + key.length * 2,
+      0,
+    ) +
+    snapshot.catalog.fragments.reduce(
+      (total, fragment) => total + fragment.netKey.length * 2,
+      0,
+    ) +
+    input.edges.reduce(
+      (total, edge) =>
+        total +
+        edge.fromPort.length * 2 +
+        edge.toPort.length * 2 +
+        (edge.netKey?.length ?? 0) * 2,
+      0,
+    )
   return (
     snapshot.request.graph.nodes.length * 160 +
     graphPortCount * 48 +
@@ -92,6 +122,7 @@ function estimatedSessionBytes(
     input.nodes.length * 96 +
     input.edges.length * 128 +
     inputBitCount * 8 +
+    retainedStringBytes +
     (input.groups?.reduce(
       (total, group) => total + 64 + group.members.length * 8,
       0,
@@ -102,12 +133,13 @@ function estimatedSessionBytes(
 
 function session(
   store: SchemWeaveWorkerSessionStore,
-  id: number,
+  handle: SchemWeaveSessionHandle,
 ): SchemWeaveWorkerSession | null {
-  const entry = store.entries.get(id)
+  if (handle.sessionEpoch !== store.epoch) return null
+  const entry = store.entries.get(handle.sessionId)
   if (!entry) return null
-  store.entries.delete(id)
-  store.entries.set(id, entry)
+  store.entries.delete(handle.sessionId)
+  store.entries.set(handle.sessionId, entry)
   return entry
 }
 
@@ -121,7 +153,7 @@ function retainSession(
     throw new Error('SchemWeave geometry omitted its worker snapshot')
   }
   const retainedBytes = estimatedSessionBytes(snapshot, input)
-  if (retainedBytes > SCHEMWEAVE_WORKER_SESSION_MAX_BYTES) {
+  if (retainedBytes > store.maxBytes) {
     delete geometry.schemWeaveSnapshot
     return
   }
@@ -129,8 +161,8 @@ function retainSession(
   store.entries.set(sessionId, { snapshot, input, retainedBytes })
   store.retainedBytes += retainedBytes
   while (
-    store.entries.size > SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES ||
-    store.retainedBytes > SCHEMWEAVE_WORKER_SESSION_MAX_BYTES
+    store.entries.size > store.maxEntries ||
+    store.retainedBytes > store.maxBytes
   ) {
     const oldestId = store.entries.keys().next().value
     if (oldestId == null) break
@@ -139,6 +171,7 @@ function retainSession(
     store.retainedBytes -= oldest?.retainedBytes ?? 0
   }
   const handle: SchemWeaveSessionHandle = {
+    sessionEpoch: store.epoch,
     sessionId,
     ...(snapshot.expandedGroups
       ? { expandedGroups: snapshot.expandedGroups }
@@ -310,7 +343,7 @@ export function runSchemWeaveWorkerRequest(
       return layoutResult(request, response, prepared, sessions)
     }
     if (request.kind === 'expand') {
-      const base = session(sessions, request.sessionId)
+      const base = session(sessions, request.session)
       if (!base) return missingSession(request.id)
       const prepared = buildSchemWeaveExpansionRequest(
         base.snapshot,
@@ -331,7 +364,7 @@ export function runSchemWeaveWorkerRequest(
         sessions,
       )
     }
-    const base = session(sessions, request.sessionId)
+    const base = session(sessions, request.session)
     if (!base) return missingSession(request.id)
     const prepared = buildSchemWeaveCollapseRequest(
       base.snapshot,

@@ -968,6 +968,7 @@ export interface SchemWeaveSnapshot {
  * multi-megabyte snapshots from being cloned across the UI boundary.
  */
 export interface SchemWeaveSessionHandle {
+  sessionEpoch: string
   sessionId: number
   expandedGroups?: ExpandedGroupLayout[]
 }
@@ -3190,7 +3191,7 @@ export async function layoutExpandedGroupWithSchemWeave(
   const request: SchemWeaveWorkerRequest = {
     id,
     kind: 'expand',
-    sessionId: session.sessionId,
+    session,
     input: prepareLayoutInput(sub),
     group,
     activeGroups,
@@ -3248,7 +3249,7 @@ export async function layoutCollapsedGroupWithSchemWeave(
   const request: SchemWeaveWorkerRequest = {
     id,
     kind: 'collapse',
-    sessionId: session.sessionId,
+    session,
     compactInput: prepareLayoutInput(compactSub),
     group,
     activeGroups,

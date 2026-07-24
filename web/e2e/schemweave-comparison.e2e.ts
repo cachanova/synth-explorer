@@ -147,11 +147,32 @@ test('priority encoder carries and renders every live boundary bundle', async ({
   await expect(page.locator('.graph-error')).toHaveCount(0)
 })
 
-for (const example of [
-  'priority_encoder_case',
-  'priority_encoder_for',
-  'priority_encoder_carry',
-]) {
+for (const [example, expectedBundles] of [
+  [
+    'priority_encoder_case',
+    [
+      { id: 0, width: 32, members: 105 },
+      { id: 1, width: 5, members: 5 },
+      { id: 2, width: 32, members: 32 },
+    ],
+  ],
+  [
+    'priority_encoder_for',
+    [
+      { id: 0, width: 32, members: 98 },
+      { id: 1, width: 5, members: 5 },
+      { id: 2, width: 32, members: 32 },
+    ],
+  ],
+  [
+    'priority_encoder_carry',
+    [
+      { id: 0, width: 32, members: 106 },
+      { id: 1, width: 5, members: 5 },
+      { id: 2, width: 32, members: 32 },
+    ],
+  ],
+] as const) {
   test(`${example} keeps strict LUT4 boundary cohorts`, async ({ page }) => {
     await page.addInitScript(() => {
       const requests: unknown[] = []
@@ -257,14 +278,12 @@ for (const example of [
         })),
       }
     })
-
     expect(strict.sameRequest).toBe(true)
     expect(strict.requestEdges).toBeGreaterThan(0)
     expect(strict.requestedWidths).toHaveLength(3)
     expect(strict.responseOk).toBe(true)
     expect(strict.fallback).toBeNull()
-    expect(strict.returned).toHaveLength(3)
-    expect(strict.returned?.every((bundle) => bundle.members > 0)).toBe(true)
+    expect(strict.returned).toEqual(expectedBundles)
     expect(strict.returned?.map((bundle) => bundle.width).sort(
       (left, right) => left - right,
     )).toEqual(strict.requestedWidths)
@@ -432,12 +451,22 @@ test('an evicted worker session rebuilds the compact base and preserves expansio
         message: unknown,
         transfer?: Transferable[],
       ): void {
-        const request = message as { kind?: string; sessionId?: number }
+        const request = message as {
+          kind?: string
+          session?: { sessionEpoch: string; sessionId: number }
+        }
         const outgoing =
           this.comparisonWorker &&
             request.kind === 'expand' &&
+            request.session &&
             !this.invalidated
-            ? { ...request, sessionId: Number.MAX_SAFE_INTEGER }
+            ? {
+                ...request,
+                session: {
+                  ...request.session,
+                  sessionId: Number.MAX_SAFE_INTEGER,
+                },
+              }
             : message
         if (outgoing !== message) this.invalidated = true
         if (this.comparisonWorker) requests.push(structuredClone(outgoing))

@@ -12,6 +12,8 @@ import {
   SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES,
 } from './schemweaveWorkerRuntime'
 
+const TEST_SESSION_EPOCH = 'test-worker'
+
 const input: LayoutInput = {
   nodes: [
     {
@@ -56,7 +58,9 @@ it('prepares, runs, validates, and interprets a full layout in the worker', () =
     height: 46,
   }))
 
-  const sessions = createSchemWeaveWorkerSessionStore()
+  const sessions = createSchemWeaveWorkerSessionStore({
+    epoch: TEST_SESSION_EPOCH,
+  })
   const response = runSchemWeaveWorkerRequest(
     { layout_json },
     { id: 71, kind: 'layout', input },
@@ -75,7 +79,10 @@ it('prepares, runs, validates, and interprets a full layout in the worker', () =
           points: [{ x: 62, y: 23 }, { x: 128, y: 23 }],
           netBits: [17],
         }],
-        schemWeaveSession: expect.objectContaining({ sessionId: 1 }),
+        schemWeaveSession: expect.objectContaining({
+          sessionEpoch: TEST_SESSION_EPOCH,
+          sessionId: 1,
+        }),
       }),
     },
   })
@@ -129,7 +136,9 @@ it('bounds retained sessions and requests a full relayout for an evicted handle'
     width: 190,
     height: 46,
   }))
-  const sessions = createSchemWeaveWorkerSessionStore()
+  const sessions = createSchemWeaveWorkerSessionStore({
+    epoch: TEST_SESSION_EPOCH,
+  })
   for (
     let id = 1;
     id <= SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES + 1;
@@ -143,7 +152,10 @@ it('bounds retained sessions and requests a full relayout for an evicted handle'
       ok: true,
       result: {
         geometry: {
-          schemWeaveSession: { sessionId: id },
+          schemWeaveSession: {
+            sessionEpoch: TEST_SESSION_EPOCH,
+            sessionId: id,
+          },
         },
       },
     })
@@ -165,7 +177,10 @@ it('bounds retained sessions and requests a full relayout for an evicted handle'
     {
       id: 99,
       kind: 'expand',
-      sessionId: 1,
+      session: {
+        sessionEpoch: TEST_SESSION_EPOCH,
+        sessionId: 1,
+      },
       input,
       group: { id: 1, members: [1] },
       activeGroups: [{ id: 1, members: [1] }],
@@ -173,6 +188,166 @@ it('bounds retained sessions and requests a full relayout for an evicted handle'
     sessions,
   )).toEqual({
     id: 99,
+    ok: true,
+    result: {
+      status: 'needs_full_relayout',
+      reason: 'geometry',
+    },
+  })
+})
+
+it('enforces aggregate and single-session byte budgets below the entry cap', () => {
+  const layout_json = vi.fn().mockReturnValue(JSON.stringify({
+    nodes: [
+      { id: 1, x: 0, y: 0, width: 62, height: 46 },
+      { id: 2, x: 128, y: 0, width: 62, height: 46 },
+    ],
+    edges: [{
+      id: 0,
+      points: [{ x: 62, y: 23 }, { x: 128, y: 23 }],
+    }],
+    width: 190,
+    height: 46,
+  }))
+  const probe = createSchemWeaveWorkerSessionStore({ epoch: 'probe' })
+  runSchemWeaveWorkerRequest(
+    { layout_json },
+    { id: 1, kind: 'layout', input },
+    probe,
+  )
+  const entryBytes = probe.entries.get(1)?.retainedBytes
+  expect(entryBytes).toBeGreaterThan(0)
+
+  const aggregate = createSchemWeaveWorkerSessionStore({
+    epoch: 'aggregate',
+    maxEntries: SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES,
+    maxBytes: entryBytes! * 2 - 1,
+  })
+  for (const id of [1, 2]) {
+    runSchemWeaveWorkerRequest(
+      { layout_json },
+      { id, kind: 'layout', input },
+      aggregate,
+    )
+  }
+  expect(aggregate.entries.size).toBe(1)
+  expect(aggregate.entries.has(1)).toBe(false)
+  expect(aggregate.entries.has(2)).toBe(true)
+  expect(aggregate.retainedBytes).toBe(entryBytes)
+
+  const oversized = createSchemWeaveWorkerSessionStore({
+    epoch: 'oversized',
+    maxEntries: SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES,
+    maxBytes: entryBytes! - 1,
+  })
+  const response = runSchemWeaveWorkerRequest(
+    { layout_json },
+    { id: 3, kind: 'layout', input },
+    oversized,
+  )
+  expect(response).toMatchObject({
+    ok: true,
+    result: { status: 'layout' },
+  })
+  expect(
+    response.ok && response.result.status === 'layout'
+      ? response.result.geometry
+      : null,
+  ).not.toHaveProperty('schemWeaveSession')
+  expect(oversized.entries.size).toBe(0)
+  expect(oversized.retainedBytes).toBe(0)
+
+  const stringBudget = createSchemWeaveWorkerSessionStore({
+    epoch: 'string-budget',
+    maxEntries: SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES,
+    maxBytes: entryBytes! + 1_000,
+  })
+  const longString = 'net'.repeat(1_400)
+  const stringHeavyInput: LayoutInput = {
+    ...input,
+    edges: [{
+      ...input.edges[0],
+      fromPort: longString,
+      toPort: longString,
+      netKey: longString,
+    }],
+  }
+  const stringResponse = runSchemWeaveWorkerRequest(
+    { layout_json },
+    { id: 4, kind: 'layout', input: stringHeavyInput },
+    stringBudget,
+  )
+  expect(stringResponse).toMatchObject({
+    ok: true,
+    result: { status: 'layout' },
+  })
+  expect(
+    stringResponse.ok && stringResponse.result.status === 'layout'
+      ? stringResponse.result.geometry
+      : null,
+  ).not.toHaveProperty('schemWeaveSession')
+  expect(stringBudget.entries.size).toBe(0)
+  expect(stringBudget.retainedBytes).toBe(0)
+})
+
+it('rejects a colliding numeric session id from a prior worker epoch', () => {
+  const layout_json = vi.fn().mockReturnValue(JSON.stringify({
+    nodes: [
+      { id: 1, x: 0, y: 0, width: 62, height: 46 },
+      { id: 2, x: 128, y: 0, width: 62, height: 46 },
+    ],
+    edges: [{
+      id: 0,
+      points: [{ x: 62, y: 23 }, { x: 128, y: 23 }],
+    }],
+    width: 190,
+    height: 46,
+  }))
+  const firstWorker = createSchemWeaveWorkerSessionStore({
+    epoch: 'worker-a',
+  })
+  const firstResponse = runSchemWeaveWorkerRequest(
+    { layout_json },
+    { id: 1, kind: 'layout', input },
+    firstWorker,
+  )
+  const firstHandle =
+    firstResponse.ok && firstResponse.result.status === 'layout'
+      ? firstResponse.result.geometry.schemWeaveSession
+      : undefined
+  expect(firstHandle).toEqual({
+    sessionEpoch: 'worker-a',
+    sessionId: 1,
+    expandedGroups: [],
+  })
+
+  const replacementWorker = createSchemWeaveWorkerSessionStore({
+    epoch: 'worker-b',
+  })
+  runSchemWeaveWorkerRequest(
+    { layout_json },
+    { id: 2, kind: 'layout', input },
+    replacementWorker,
+  )
+  expect(replacementWorker.entries.has(1)).toBe(true)
+  expect(runSchemWeaveWorkerRequest(
+    {
+      layout_json,
+      expand_group_json: vi.fn(() => {
+        throw new Error('an old epoch must not reach WASM')
+      }),
+    },
+    {
+      id: 3,
+      kind: 'expand',
+      session: firstHandle!,
+      input,
+      group: { id: 1, members: [1] },
+      activeGroups: [{ id: 1, members: [1] }],
+    },
+    replacementWorker,
+  )).toEqual({
+    id: 3,
     ok: true,
     result: {
       status: 'needs_full_relayout',
@@ -300,7 +475,9 @@ it('returns validated degraded geometry for the bounded bundle-free retry', () =
     })
     .mockReturnValueOnce(JSON.stringify(fallback))
 
-  const sessions = createSchemWeaveWorkerSessionStore()
+  const sessions = createSchemWeaveWorkerSessionStore({
+    epoch: TEST_SESSION_EPOCH,
+  })
   const response = runSchemWeaveWorkerRequest(
     { layout_json },
     { id: 75, kind: 'layout', input: bundledInput },
@@ -313,7 +490,10 @@ it('returns validated degraded geometry for the bounded bundle-free retry', () =
       status: 'layout',
       degraded: true,
       geometry: {
-        schemWeaveSession: { sessionId: 1 },
+        schemWeaveSession: {
+          sessionEpoch: TEST_SESSION_EPOCH,
+          sessionId: 1,
+        },
       },
     },
   })
@@ -330,7 +510,7 @@ it('returns validated degraded geometry for the bounded bundle-free retry', () =
   expect(retry.constraints).not.toHaveProperty('boundary_bundles')
 })
 
-it('prepares expansion and collapse contracts without returning to the UI thread', () => {
+it('prepares group changes, preserves peers, and promotes the base session in LRU order', () => {
   const compact: LayoutInput = {
     nodes: [
       {
@@ -444,7 +624,10 @@ it('prepares expansion and collapse contracts without returning to the UI thread
     })
   })
   const engine = { layout_json, expand_group_json, collapse_group_json }
-  const sessions = createSchemWeaveWorkerSessionStore()
+  const sessions = createSchemWeaveWorkerSessionStore({
+    epoch: TEST_SESSION_EPOCH,
+    maxEntries: 2,
+  })
 
   const compactResponse = runSchemWeaveWorkerRequest(
     engine,
@@ -460,7 +643,11 @@ it('prepares expansion and collapse contracts without returning to the UI thread
     compactResult as Extract<SchemWeaveWorkerResult, { status: 'layout' }>
   ).geometry
   const snapshot = compactGeometry.schemWeaveSession
-  expect(snapshot).toEqual({ sessionId: 1, expandedGroups: [] })
+  expect(snapshot).toEqual({
+    sessionEpoch: TEST_SESSION_EPOCH,
+    sessionId: 1,
+    expandedGroups: [],
+  })
   if (!snapshot) {
     throw new Error('compact layout omitted its worker session')
   }
@@ -481,7 +668,7 @@ it('prepares expansion and collapse contracts without returning to the UI thread
     {
       id: 84,
       kind: 'expand',
-      sessionId: snapshot.sessionId,
+      session: snapshot,
       input: expanded,
       group,
       activeGroups: [group],
@@ -493,12 +680,28 @@ it('prepares expansion and collapse contracts without returning to the UI thread
     error: 'SchemWeave expansion omitted a grouped member',
   })
 
+  expect(runSchemWeaveWorkerRequest(
+    engine,
+    { id: 85, kind: 'layout', input: compact },
+    sessions,
+  )).toMatchObject({
+    ok: true,
+    result: {
+      geometry: {
+        schemWeaveSession: {
+          sessionEpoch: TEST_SESSION_EPOCH,
+          sessionId: 2,
+        },
+      },
+    },
+  })
+
   const expansionResponse = runSchemWeaveWorkerRequest(
     engine,
     {
       id: 82,
       kind: 'expand',
-      sessionId: snapshot.sessionId,
+      session: snapshot,
       input: expanded,
       group,
       activeGroups: [peer, group],
@@ -514,12 +717,16 @@ it('prepares expansion and collapse contracts without returning to the UI thread
       geometry: {
         groups: [{ id: 10 }, { id: 20 }],
         schemWeaveSession: {
-          sessionId: 2,
+          sessionEpoch: TEST_SESSION_EPOCH,
+          sessionId: 3,
           expandedGroups: [group, peer],
         },
       },
     },
   })
+  expect(sessions.entries.has(1)).toBe(true)
+  expect(sessions.entries.has(2)).toBe(false)
+  expect(sessions.entries.has(3)).toBe(true)
   expect(expand_group_json).toHaveBeenCalledOnce()
   const expandedGeometry = (
     expansionResponse as Extract<
@@ -537,7 +744,7 @@ it('prepares expansion and collapse contracts without returning to the UI thread
     {
       id: 83,
       kind: 'collapse',
-      sessionId: expandedSnapshot.sessionId,
+      session: expandedSnapshot,
       compactInput: compact,
       group,
       activeGroups: [peer],
@@ -553,7 +760,8 @@ it('prepares expansion and collapse contracts without returning to the UI thread
       geometry: {
         groups: [{ id: 20 }],
         schemWeaveSession: {
-          sessionId: 3,
+          sessionEpoch: TEST_SESSION_EPOCH,
+          sessionId: 4,
           expandedGroups: [peer],
         },
       },

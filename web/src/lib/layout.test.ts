@@ -2740,7 +2740,10 @@ describe('schematic layout sizing', () => {
       prepared.catalog,
       prepared.request,
     )
-    baseGeometry.schemWeaveSession = { sessionId: 1 }
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 1,
+    }
     const base = hydrateLayoutResult(sub, baseGeometry)
     const group = { id: 90, members: [1], referenceHeight: 66 }
     const controller = new AbortController()
@@ -2812,7 +2815,10 @@ describe('schematic layout sizing', () => {
       prepared.catalog,
       prepared.request,
     )
-    baseGeometry.schemWeaveSession = { sessionId: 41 }
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 41,
+    }
     const base = hydrateLayoutResult(sub, baseGeometry)
     const group = { id: 90, members: [1], referenceHeight: 66 }
 
@@ -2826,7 +2832,10 @@ describe('schematic layout sizing', () => {
     const worker = FakeWorker.instances[0]
     expect(worker.requests[0]).toMatchObject({
       kind: 'expand',
-      sessionId: 41,
+      session: {
+        sessionEpoch: 'test-worker',
+        sessionId: 41,
+      },
     })
     worker.onmessage?.({
       data: {
@@ -3299,7 +3308,10 @@ describe('schematic layout sizing', () => {
       prepared.catalog,
       prepared.request,
     )
-    baseGeometry.schemWeaveSession = { sessionId: 1 }
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 1,
+    }
     const expanded = hydrateLayoutResult(sub, baseGeometry)
     const group = { id: 90, members: [1], referenceHeight: 66 }
 
