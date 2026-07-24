@@ -46,6 +46,7 @@ import {
   layoutExpandedGroupWithSchemWeave,
   layoutSubgraph,
   prewarmLayoutWorker,
+  refreshSchemWeaveLayout,
   shouldRefitProjection,
   type ExpandedGroupLayout,
   type LaidOutGraph,
@@ -906,72 +907,89 @@ export function Graph({ active }: { active: boolean }) {
         }
         return { group, response }
       })
-      let currentLayout = baseLayout
-      let startIndex = 0
-      for (let index = sequence.length - 1; index >= 0; index--) {
-        const cached = cachedGroupLayout(
-          groupLayoutSession.current,
-          groupedBaseSubgraph,
-          sequence[index].response.requestKey,
-        )
-        if (!cached) continue
-        currentLayout = cached
-        startIndex = index + 1
-        break
-      }
-      for (let index = startIndex; index < sequence.length; index++) {
-        const { group, response } = sequence[index]
-        const prefix = sequence
-          .slice(0, index + 1)
-          .map((entry) => entry.response)
-        const activeLayoutPrefix = sequence
-          .slice(0, index + 1)
-          .map((entry) => entry.group)
-        const step = applyGroupExpansions(
-          groupedBaseSubgraph,
-          prefix,
-          MAX_GROUP_EXPANSION_RENDER_NODES,
-        )
-        let expanded: LaidOutGraph | null
-        try {
-          expanded = await layoutExpandedGroupWithSchemWeave(
-            step.graph,
-            currentLayout,
-            group,
-            controller.signal,
-            activeLayoutPrefix,
-          )
-        } catch (error) {
-          if (!controller.signal.aborted && groupExpansionOwnerKey) {
-            dispatchGroupExpansion({
-              type: 'failed',
-              ownerKey: groupExpansionOwnerKey,
-              id: group.id,
-            })
+      for (let attempt = 0; attempt < 2; attempt++) {
+        let currentLayout = baseLayout
+        let startIndex = 0
+        if (attempt === 0) {
+          for (let index = sequence.length - 1; index >= 0; index--) {
+            const cached = cachedGroupLayout(
+              groupLayoutSession.current,
+              groupedBaseSubgraph,
+              sequence[index].response.requestKey,
+            )
+            if (!cached) continue
+            currentLayout = cached
+            startIndex = index + 1
+            break
           }
-          throw error
         }
-        if (!expanded) {
+        let missingGroup: ExpandedGroupLayout | null = null
+        for (let index = startIndex; index < sequence.length; index++) {
+          const { group, response } = sequence[index]
+          const prefix = sequence
+            .slice(0, index + 1)
+            .map((entry) => entry.response)
+          const activeLayoutPrefix = sequence
+            .slice(0, index + 1)
+            .map((entry) => entry.group)
+          const step = applyGroupExpansions(
+            groupedBaseSubgraph,
+            prefix,
+            MAX_GROUP_EXPANSION_RENDER_NODES,
+          )
+          let expanded: LaidOutGraph | null
+          try {
+            expanded = await layoutExpandedGroupWithSchemWeave(
+              step.graph,
+              currentLayout,
+              group,
+              controller.signal,
+              activeLayoutPrefix,
+            )
+          } catch (error) {
+            if (!controller.signal.aborted && groupExpansionOwnerKey) {
+              dispatchGroupExpansion({
+                type: 'failed',
+                ownerKey: groupExpansionOwnerKey,
+                id: group.id,
+              })
+            }
+            throw error
+          }
+          if (!expanded) {
+            missingGroup = group
+            break
+          }
+          currentLayout = expanded
+          cacheGroupLayout(
+            groupLayoutSession.current,
+            groupedBaseSubgraph,
+            response.requestKey,
+            expanded,
+          )
+        }
+        if (!missingGroup) return currentLayout
+        if (attempt > 0) {
           if (groupExpansionOwnerKey) {
             dispatchGroupExpansion({
               type: 'failed',
               ownerKey: groupExpansionOwnerKey,
-              id: group.id,
+              id: missingGroup.id,
             })
           }
           throw new Error(
-            `SchemWeave could not preserve expanded group ${group.id} in this projection`,
+            `SchemWeave could not preserve expanded group ${missingGroup.id} in this projection`,
           )
         }
-        currentLayout = expanded
-        cacheGroupLayout(
-          groupLayoutSession.current,
+        resetGroupLayoutSession(groupLayoutSession.current, null)
+        baseLayout = await refreshSchemWeaveLayout(
           groupedBaseSubgraph,
-          response.requestKey,
-          expanded,
+          [],
+          controller.signal,
         )
+        layoutCache.current.set(groupedBaseSubgraph, baseLayout)
       }
-      return currentLayout
+      throw new Error('SchemWeave group recovery exhausted its retry')
     }
     const collapseWithSchemWeave = async (): Promise<LaidOutGraph | null> => {
       const pendingCollapse = pendingGroupCollapse.current
@@ -1002,7 +1020,6 @@ export function Graph({ active }: { active: boolean }) {
       }
       const collapsed = await layoutCollapsedGroupWithSchemWeave(
         toLayout,
-        pendingCollapse.display.subgraph,
         pendingCollapse.display.graph,
         removed[0],
         expandedGroupsForLayout,
@@ -1190,7 +1207,7 @@ export function Graph({ active }: { active: boolean }) {
     pendingGroupCollapse.current =
       layoutEngine === 'schemweave' &&
         display &&
-        display.graph.schemWeaveSnapshot &&
+        display.graph.schemWeaveSession &&
         groups.length > 1 &&
         groups.some((group) => group.id === groupId)
         ? { groupId, display, groups }

@@ -38,19 +38,12 @@ function estimatedRetainedBytes(key: string, layout: LaidOutGraph): number {
     (total, edge) => total + edge.points.length,
     0,
   )
-  const snapshot = layout.schemWeaveSnapshot
   return (
     key.length * 2 +
     layout.nodes.length * 192 +
     layout.edges.length * 128 +
     (layout.groups?.length ?? 0) * 80 +
     (layout.boundaryBundles?.length ?? 0) * 320 +
-    (snapshot
-      ? snapshot.request.graph.nodes.length * 128 +
-        snapshot.request.graph.edges.length * 96 +
-        snapshot.layout.nodes.length * 64 +
-        snapshot.layout.edges.length * 96
-      : 0) +
     pointCount * 48 +
     256
   )
