@@ -704,6 +704,118 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(page.locator('.msg.err')).toHaveCount(0)
 })
 
+test('opening another group keeps the completed peer visible while prefixes reload', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    let expansionQueries = 0
+    const gate: {
+      pending: number
+      releases: Array<() => void>
+    } = {
+      pending: 0,
+      releases: [],
+    }
+    Object.defineProperty(window, '__groupPrefixReloadGate', {
+      value: gate,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        const request = message as { kind?: string; method?: string }
+        const send = () => {
+          if (transfer) super.postMessage(message, transfer)
+          else super.postMessage(message)
+        }
+        if (request.kind === 'query' && request.method === 'expandGroup') {
+          expansionQueries += 1
+          if (expansionQueries > 1) {
+            gate.releases.push(send)
+            gate.pending = gate.releases.length
+            return
+          }
+        }
+        send()
+      }
+    }
+  })
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('reg_mux')
+  await page.getByLabel('Platform').selectOption('gates')
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const register = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="8"]',
+  )
+  const mux = page.locator(
+    '.g-node-body.g-symbol-mux[data-member-count="8"]',
+  )
+  await expect(register).toHaveCount(1)
+  await expect(mux).toHaveCount(1)
+  const registerId = await register.getAttribute('data-graph-node-id')
+  const muxId = await mux.getAttribute('data-graph-node-id')
+  expect(registerId).not.toBeNull()
+  expect(muxId).not.toBeNull()
+
+  const activateWithKeyboard = (selector: string) =>
+    page.locator(selector).first().evaluate((control) => {
+      control.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        bubbles: true,
+      }))
+    })
+  expect(Number(muxId)).toBeGreaterThan(Number(registerId))
+  await activateWithKeyboard(
+    `[data-group-action="expand"][data-group-id="${muxId}"]`,
+  )
+  const muxMembers = page.locator(
+    `[data-expanded-group-member="${muxId}"]`,
+  )
+  await expect(muxMembers).toHaveCount(8)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+
+  await activateWithKeyboard(
+    `[data-group-action="expand"][data-group-id="${registerId}"]`,
+  )
+  await expect.poll(() => page.evaluate(() =>
+    (
+      window as unknown as {
+        __groupPrefixReloadGate: { pending: number }
+      }
+    ).__groupPrefixReloadGate.pending
+  )).toBe(2)
+  expect(await muxMembers.count()).toBe(8)
+  expect(await page.locator('.g-expanded-group-boundary').count()).toBe(1)
+  await page.evaluate(() => {
+    const gate = (
+      window as unknown as {
+        __groupPrefixReloadGate: {
+          pending: number
+          releases: Array<() => void>
+        }
+      }
+    ).__groupPrefixReloadGate
+    const releases = gate.releases.splice(0)
+    gate.pending = 0
+    for (const release of releases) release()
+  })
+
+  await expect(
+    page.locator(`[data-expanded-group-member="${registerId}"]`),
+  ).toHaveCount(8)
+  await expect(muxMembers).toHaveCount(8)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
+  await expect(page.locator('.msg.err')).toHaveCount(0)
+})
+
 test('middle collapse waits for delayed prefixes and preserves peer group state', async ({
   page,
 }) => {
