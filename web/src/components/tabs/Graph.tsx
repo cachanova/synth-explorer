@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react'
 import {
   ApiRequestError,
   expandGroup,
@@ -14,6 +21,8 @@ import {
 import { graphProjection } from '../../lib/graphProjection'
 import {
   applyGroupExpansions,
+  groupExpansionReducer,
+  initialGroupExpansionState,
   type ExpandedGroup,
 } from '../../lib/groupExpansion'
 import {
@@ -62,12 +71,6 @@ interface ExpansionState {
   graph: Subgraph
   droppedNodes: number
   droppedEdges: number
-}
-
-interface ExpandedGroupSpec {
-  id: number
-  label: string
-  referenceHeight: number
 }
 
 interface DisplayedGraph {
@@ -139,8 +142,11 @@ export function Graph({ active }: { active: boolean }) {
   // active projection before layout. The owner keeps full-view expansions stable
   // while non-focus selections update only their highlights.
   const [expansionState, setExpansionState] = useState<ExpansionState | null>(null)
-  const [expandedGroupSpecs, setExpandedGroupSpecs] = useState<ExpandedGroupSpec[]>([])
-  const [groupExpansions, setGroupExpansions] = useState<ExpandedGroup[]>([])
+  const [groupExpansionState, dispatchGroupExpansion] = useReducer(
+    groupExpansionReducer,
+    undefined,
+    initialGroupExpansionState,
+  )
   const [displayedGraph, setDisplayedGraph] = useState<DisplayedGraph | null>(null)
   const [fetchingFull, setFetchingFull] = useState(false)
   const [fetchingRelevant, setFetchingRelevant] = useState(false)
@@ -154,7 +160,9 @@ export function Graph({ active }: { active: boolean }) {
   const [fitNonce, setFitNonce] = useState(0)
   const reqSeq = useRef(0)
   const expansionControllers = useRef(new Set<AbortController>())
-  const groupExpansionController = useRef<AbortController | null>(null)
+  const groupExpansionControllers = useRef(new Map<number, AbortController>())
+  const groupExpansionControllerKeys = useRef(new Map<number, string>())
+  const groupExpansionRequestContext = useRef<string | null>(null)
   const loadedFullGraphKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   const displayedGraphRef = useRef<DisplayedGraph | null>(null)
@@ -252,6 +260,35 @@ export function Graph({ active }: { active: boolean }) {
   const currentRequestKey = design
     ? `${design.design_id}|${coneReq?.nonce ?? 'full'}|${optsKey}`
     : null
+  const groupExpansionOwnerKey = design
+    ? `${design.design_id}|${graphOptions.groupVectors}|${graphOptions.groupMemories}`
+    : null
+  const {
+    specs: expandedGroupSpecs,
+    expansions: groupExpansions,
+  } = useMemo(
+    () => groupExpansionState.ownerKey === groupExpansionOwnerKey
+      ? groupExpansionState
+      : { specs: [], expansions: [] },
+    [groupExpansionOwnerKey, groupExpansionState],
+  )
+  const groupExpansionDataContext = groupExpansionOwnerKey
+    ? [
+        groupExpansionOwnerKey,
+        graphOptions.hideControl,
+        graphOptions.hideConst,
+      ].join('|')
+    : null
+  const groupExpansionRequestKeyById = useMemo(() => {
+    const keys = new Map<number, string>()
+    if (!groupExpansionDataContext) return keys
+    const prefix: number[] = []
+    for (const group of expandedGroupSpecs) {
+      prefix.push(group.id)
+      keys.set(group.id, `${groupExpansionDataContext}|${prefix.join(',')}`)
+    }
+    return keys
+  }, [expandedGroupSpecs, groupExpansionDataContext])
   const requestDesignMismatch = Boolean(
     design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
   )
@@ -263,11 +300,15 @@ export function Graph({ active }: { active: boolean }) {
   // Per-group expansion is a presentation state owned by one synthesized
   // design and grouping policy. A new design or global policy starts clean.
   useEffect(() => {
-    groupExpansionController.current?.abort()
-    setExpandedGroupSpecs([])
-    setGroupExpansions([])
+    for (const controller of groupExpansionControllers.current.values()) {
+      controller.abort()
+    }
+    groupExpansionControllers.current.clear()
+    groupExpansionControllerKeys.current.clear()
+    groupExpansionRequestContext.current = null
+    dispatchGroupExpansion({ type: 'reset', ownerKey: groupExpansionOwnerKey })
     setFetchingGroups(false)
-  }, [design?.design_id, graphOptions.groupMemories, graphOptions.groupVectors])
+  }, [groupExpansionOwnerKey])
 
   // The full projection changes only with the design or analysis options.
   useEffect(() => {
@@ -284,8 +325,11 @@ export function Graph({ active }: { active: boolean }) {
       edgeSourceProbeRef.current?.cancel()
       for (const inFlight of expansionControllers.current) inFlight.abort()
       expansionControllers.current.clear()
-      groupExpansionController.current?.abort()
-      groupExpansionController.current = null
+      for (const controller of groupExpansionControllers.current.values()) {
+        controller.abort()
+      }
+      groupExpansionControllers.current.clear()
+      groupExpansionControllerKeys.current.clear()
     },
     [],
   )
@@ -494,64 +538,137 @@ export function Graph({ active }: { active: boolean }) {
     requestDesignMismatch,
   ])
 
-  // Keep at most one local group open. A single bounded request avoids
-  // quadratic rebuilds while still letting every grouped instance expose an
-  // expansion control.
+  // Fetch each open group independently. Controllers and responses are keyed
+  // by the stable synthetic group id, so closing one group cannot cancel or
+  // discard any other open group.
   useEffect(() => {
-    groupExpansionController.current?.abort()
-    groupExpansionController.current = null
+    const controllers = groupExpansionControllers.current
+    const controllerKeys = groupExpansionControllerKeys.current
     if (
       !active ||
       analysisState !== 'current' ||
       !design ||
+      !groupExpansionOwnerKey ||
+      !groupExpansionDataContext ||
       expandedGroupSpecs.length === 0
     ) {
-      setGroupExpansions([])
+      for (const controller of controllers.values()) controller.abort()
+      controllers.clear()
+      controllerKeys.clear()
+      groupExpansionRequestContext.current = null
+      if (groupExpansionOwnerKey) {
+        dispatchGroupExpansion({
+          type: 'invalidate',
+          ownerKey: groupExpansionOwnerKey,
+        })
+      }
       setFetchingGroups(false)
       return
     }
-    const controller = new AbortController()
-    groupExpansionController.current = controller
+
     const designId = design.design_id
-    const group = expandedGroupSpecs[0]
-    setGroupExpansions([])
-    setFetchingGroups(true)
-    expandGroup(designId, {
+    const desiredIds = new Set(expandedGroupSpecs.map((group) => group.id))
+    const requestContext = groupExpansionDataContext
+    const contextChanged = groupExpansionRequestContext.current !== requestContext
+    if (contextChanged) {
+      for (const controller of controllers.values()) controller.abort()
+      controllers.clear()
+      controllerKeys.clear()
+      groupExpansionRequestContext.current = requestContext
+      dispatchGroupExpansion({
+        type: 'invalidate',
+        ownerKey: groupExpansionOwnerKey,
+      })
+    }
+
+    for (const [id, controller] of controllers) {
+      if (
+        desiredIds.has(id) &&
+        controllerKeys.get(id) === groupExpansionRequestKeyById.get(id)
+      ) {
+        continue
+      }
+      controller.abort()
+      controllers.delete(id)
+      controllerKeys.delete(id)
+    }
+    const loadedRequestKeyById = contextChanged
+      ? new Map<number, string>()
+      : new Map(groupExpansions.map((group) => [group.id, group.requestKey]))
+    const expandedPrefix: number[] = []
+    for (const group of expandedGroupSpecs) {
+      expandedPrefix.push(group.id)
+      const requestKey = groupExpansionRequestKeyById.get(group.id)
+      if (!requestKey) continue
+      if (
+        loadedRequestKeyById.get(group.id) === requestKey ||
+        controllers.has(group.id)
+      ) {
+        continue
+      }
+      const controller = new AbortController()
+      controllers.set(group.id, controller)
+      controllerKeys.set(group.id, requestKey)
+      setFetchingGroups(true)
+      expandGroup(designId, {
         node: group.id,
-        expanded_nodes: [group.id],
+        expanded_nodes: [...expandedPrefix],
         max_nodes: MAX_GROUP_EXPANSION_RENDER_NODES,
         hide_control: graphOptions.hideControl,
         hide_const: graphOptions.hideConst,
         group_vectors: graphOptions.groupVectors,
         group_memories: graphOptions.groupMemories,
       }, controller.signal)
-      .then((response) => ({ id: group.id, label: group.label, ...response }))
-      .then((expansion) => {
-        if (controller.signal.aborted || currentDesignIdRef.current !== designId) return
-        setGroupExpansions([expansion])
-      })
-      .catch((e) => {
-        if (controller.signal.aborted) return
-        setGroupExpansions([])
-        setExpandedGroupSpecs((current) =>
-          current[0]?.id === group.id ? [] : current,
-        )
-        setError(
-          `Could not expand group: ${e instanceof ApiRequestError ? e.message : String(e)}`,
-        )
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          groupExpansionController.current = null
-          setFetchingGroups(false)
-        }
-      })
-    return () => controller.abort()
+        .then((response) => ({
+          id: group.id,
+          label: group.label,
+          requestKey,
+          ...response,
+        }))
+        .then((expansion) => {
+          if (
+            controller.signal.aborted ||
+            currentDesignIdRef.current !== designId ||
+            groupExpansionRequestContext.current !== requestContext ||
+            controllerKeys.get(group.id) !== requestKey
+          ) {
+            return
+          }
+          dispatchGroupExpansion({
+            type: 'loaded',
+            ownerKey: groupExpansionOwnerKey,
+            expansion,
+          })
+        })
+        .catch((e) => {
+          if (controller.signal.aborted) return
+          dispatchGroupExpansion({
+            type: 'failed',
+            ownerKey: groupExpansionOwnerKey,
+            id: group.id,
+          })
+          setError(
+            `Could not expand group: ${e instanceof ApiRequestError ? e.message : String(e)}`,
+          )
+        })
+        .finally(() => {
+          if (controllers.get(group.id) === controller) {
+            controllers.delete(group.id)
+            controllerKeys.delete(group.id)
+          }
+          setFetchingGroups(controllers.size > 0)
+        })
+    }
+    setFetchingGroups(controllers.size > 0)
   }, [
     active,
     analysisState,
     design,
     expandedGroupSpecs,
+    groupExpansionDataContext,
+    groupExpansionOwnerKey,
+    groupExpansionRequestKeyById,
+    groupExpansions,
     graphOptions.groupMemories,
     graphOptions.groupVectors,
     graphOptions.hideConst,
@@ -580,9 +697,16 @@ export function Graph({ active }: { active: boolean }) {
   )
   const activeGroupExpansions = useMemo(
     () => groupExpansions.filter((group) =>
-      activeExpandedIds.has(group.id) && projectedNodeIds.has(group.id),
+      activeExpandedIds.has(group.id) &&
+      projectedNodeIds.has(group.id) &&
+      group.requestKey === groupExpansionRequestKeyById.get(group.id),
     ),
-    [activeExpandedIds, groupExpansions, projectedNodeIds],
+    [
+      activeExpandedIds,
+      groupExpansionRequestKeyById,
+      groupExpansions,
+      projectedNodeIds,
+    ],
   )
 
   // Merge ordinary one-hop context before applying the one open quotient group.
@@ -672,22 +796,14 @@ export function Graph({ active }: { active: boolean }) {
       if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
       return
     }
-    const expandedGroup = expandedGroupsForLayout[0]
     const groupedBaseLayout = groupedBaseSubgraph
       ? layoutCache.current.get(groupedBaseSubgraph)
       : null
-    const displayedBaseLayout =
-      expandedGroup &&
-      sameProjection &&
-      previousDisplay?.graph.nodes.some((node) => node.id === expandedGroup.id)
-        ? previousDisplay.graph
-        : null
-    const localBaseLayout = displayedBaseLayout ?? groupedBaseLayout
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    const expandWithSchemWeave = async (group: ExpandedGroupLayout) => {
-      let baseLayout = localBaseLayout
+    const expandWithSchemWeave = async (groups: ExpandedGroupLayout[]) => {
+      let baseLayout = groupedBaseLayout
       if (!baseLayout && groupedBaseSubgraph) {
         baseLayout = await layoutSubgraph(
           groupedBaseSubgraph,
@@ -704,24 +820,60 @@ export function Graph({ active }: { active: boolean }) {
           expandedGroupsForLayout,
         )
       }
-      const expanded = await layoutExpandedGroupWithSchemWeave(
-        toLayout,
-        baseLayout,
-        group,
-        controller.signal,
+      const expansionById = new Map(
+        activeGroupExpansions.map((expansion) => [expansion.id, expansion]),
       )
-      if (!expanded) {
-        setGroupExpansions([])
-        setExpandedGroupSpecs([])
-        throw new Error(
-          'SchemWeave could not preserve the expanded group in this projection',
+      const prefix: ExpandedGroup[] = []
+      const activeLayoutPrefix: ExpandedGroupLayout[] = []
+      let currentLayout = baseLayout
+      for (const group of groups) {
+        const response = expansionById.get(group.id)
+        if (!response || !groupedBaseSubgraph) continue
+        prefix.push(response)
+        activeLayoutPrefix.push(group)
+        const step = applyGroupExpansions(
+          groupedBaseSubgraph,
+          prefix,
+          MAX_GROUP_EXPANSION_RENDER_NODES,
         )
+        let expanded: LaidOutGraph | null
+        try {
+          expanded = await layoutExpandedGroupWithSchemWeave(
+            step.graph,
+            currentLayout,
+            group,
+            controller.signal,
+            [...activeLayoutPrefix],
+          )
+        } catch (error) {
+          if (!controller.signal.aborted && groupExpansionOwnerKey) {
+            dispatchGroupExpansion({
+              type: 'failed',
+              ownerKey: groupExpansionOwnerKey,
+              id: group.id,
+            })
+          }
+          throw error
+        }
+        if (!expanded) {
+          if (groupExpansionOwnerKey) {
+            dispatchGroupExpansion({
+              type: 'failed',
+              ownerKey: groupExpansionOwnerKey,
+              id: group.id,
+            })
+          }
+          throw new Error(
+            `SchemWeave could not preserve expanded group ${group.id} in this projection`,
+          )
+        }
+        currentLayout = expanded
       }
-      return expanded
+      return currentLayout
     }
     const layoutPromise =
-      layoutEngine === 'schemweave' && expandedGroup
-        ? expandWithSchemWeave(expandedGroup)
+      layoutEngine === 'schemweave' && expandedGroupsForLayout.length > 0
+        ? expandWithSchemWeave(expandedGroupsForLayout)
         : layoutSubgraph(
             toLayout,
             controller.signal,
@@ -757,15 +909,16 @@ export function Graph({ active }: { active: boolean }) {
     }
   }, [
     active,
+    activeGroupExpansions,
     combinedSubgraph,
     focusActive,
     fullSubgraph?.designId,
+    groupExpansionOwnerKey,
     groupedBaseSubgraph,
     layoutEngine,
     projectionKey,
     relevantSubgraph?.designId,
     expandedGroupsForLayout,
-    visibleExpandedGroups,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(
@@ -838,27 +991,41 @@ export function Graph({ active }: { active: boolean }) {
   const designId = design?.design_id
   const onExpandGroup = useCallback((node: GraphNode) => {
     if (node.member_count == null && node.members == null) return
-    if (groupExpansionController.current) return
-    const referenceHeight = displayedGraphRef.current?.graph.height
+    if (!groupExpansionOwnerKey) return
+    if (groupExpansionControllers.current.has(node.id)) return
+    const referenceHeight = (
+      groupedBaseSubgraph
+        ? layoutCache.current.get(groupedBaseSubgraph)?.height
+        : null
+    ) ?? displayedGraphRef.current?.graph.height
     if (referenceHeight == null) return
     setSelected(null)
     setError(null)
-    setGroupExpansions([])
-    setExpandedGroupSpecs([{
-      id: node.id,
-      label: node.name || node.cell_type || 'group',
-      referenceHeight,
-    }])
-  }, [])
+    dispatchGroupExpansion({
+      type: 'open',
+      ownerKey: groupExpansionOwnerKey,
+      spec: {
+        id: node.id,
+        label: node.name || node.cell_type || 'group',
+        referenceHeight,
+      },
+    })
+  }, [groupExpansionOwnerKey, groupedBaseSubgraph])
 
-  const onCollapseGroup = useCallback((_groupId: number) => {
-    groupExpansionController.current?.abort()
-    groupExpansionController.current = null
+  const onCollapseGroup = useCallback((groupId: number) => {
+    const controller = groupExpansionControllers.current.get(groupId)
+    controller?.abort()
+    groupExpansionControllers.current.delete(groupId)
+    groupExpansionControllerKeys.current.delete(groupId)
     setSelected(null)
-    setFetchingGroups(false)
-    setExpandedGroupSpecs([])
-    setGroupExpansions([])
-  }, [])
+    setFetchingGroups(groupExpansionControllers.current.size > 0)
+    if (!groupExpansionOwnerKey) return
+    dispatchGroupExpansion({
+      type: 'close',
+      ownerKey: groupExpansionOwnerKey,
+      id: groupId,
+    })
+  }, [groupExpansionOwnerKey])
 
   const onExpand = useCallback(
     (node: GraphNode) => {

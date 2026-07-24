@@ -124,6 +124,12 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
   ])
   expect(expanded.request.reference_height).toBe(50)
   expect(expanded.catalog.fragments).toHaveLength(4)
+  expect(expanded.expandedRequest.graph).toEqual(
+    expanded.request.expanded_graph,
+  )
+  expect(expanded.expandedRequest.constraints).toEqual(
+    expanded.request.constraints,
+  )
 
   const legacyExpanded = buildSchemWeaveExpansionRequest(
     compactSnapshot,

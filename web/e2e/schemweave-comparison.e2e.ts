@@ -391,6 +391,102 @@ test('group expansion uses Rust in place and collapse restores without layout', 
   )).toBe(requestCount)
 })
 
+test('multiple groups preserve independent expansion state in any toggle order', async ({
+  page,
+}) => {
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('reg_mux')
+  await page.getByLabel('Platform').selectOption('gates')
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const register = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="8"]',
+  )
+  const mux = page.locator(
+    '.g-node-body.g-symbol-mux[data-member-count="8"]',
+  )
+  await expect(register).toHaveCount(1)
+  await expect(mux).toHaveCount(1)
+  const registerId = await register.getAttribute('data-graph-node-id')
+  const muxId = await mux.getAttribute('data-graph-node-id')
+  expect(registerId).not.toBeNull()
+  expect(muxId).not.toBeNull()
+
+  for (const [group, id] of [
+    [register, registerId],
+    [mux, muxId],
+  ] as const) {
+    await group.hover()
+    await page.locator(
+      `[data-group-action="expand"][data-group-id="${id}"]`,
+    ).click()
+    await expect(
+      page.locator(`[data-expanded-group-member="${id}"]`),
+    ).toHaveCount(8)
+  }
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
+  await expect(page.locator('.msg.err')).toHaveCount(0)
+
+  const activateWithKeyboard = async (
+    selector: string,
+  ) => {
+    await page.locator(selector).first().evaluate((control) => {
+      control.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        bubbles: true,
+      }))
+    })
+  }
+  await activateWithKeyboard(
+    `[data-group-action="collapse"][data-group-id="${registerId}"]`,
+  )
+  await expect(
+    page.locator(`[data-expanded-group-member="${registerId}"]`),
+  ).toHaveCount(0)
+  await expect(
+    page.locator(`[data-expanded-group-member="${muxId}"]`),
+  ).toHaveCount(8)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  await expect(page.locator('.msg.err')).toHaveCount(0)
+
+  await activateWithKeyboard(
+    `[data-group-action="expand"][data-group-id="${registerId}"]`,
+  )
+  await expect(
+    page.locator(`[data-expanded-group-member="${registerId}"]`),
+  ).toHaveCount(8)
+  await expect(
+    page.locator(`[data-expanded-group-member="${muxId}"]`),
+  ).toHaveCount(8)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
+  await expect(page.locator('.msg.err')).toHaveCount(0)
+
+  for (const id of [registerId, muxId]) {
+    await activateWithKeyboard(
+      `[data-group-action="collapse"][data-group-id="${id}"]`,
+    )
+  }
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(0)
+
+  for (const id of [muxId, registerId]) {
+    await activateWithKeyboard(
+      `[data-group-action="expand"][data-group-id="${id}"]`,
+    )
+    await expect(
+      page.locator(`[data-expanded-group-member="${id}"]`),
+    ).toHaveCount(8)
+  }
+  await expect(
+    page.locator(`[data-expanded-group-member="${registerId}"]`),
+  ).toHaveCount(8)
+  await expect(
+    page.locator(`[data-expanded-group-member="${muxId}"]`),
+  ).toHaveCount(8)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
+  await expect(page.locator('.msg.err')).toHaveCount(0)
+})
+
 test('focused register expansion keeps its grid shape and keepout', async ({
   page,
 }) => {
