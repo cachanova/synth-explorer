@@ -1862,3 +1862,117 @@ fn abc_renamed_flops_and_anonymous_nets_attribute_approximately() {
     assert_eq!(lines(&register_tiers.exact), vec![5, 6]);
     assert!(register_tiers.approximate);
 }
+
+#[test]
+fn vivado_dialect_attributes_renamed_registers_through_the_full_design() {
+    // RTL snapshot comes from WASM Yosys even on the Vivado path; the
+    // mapped netlist below is shaped like a normalized Vivado result:
+    // FDRE-style flop renamed `q_reg`, LUT names Vivado-style, and no
+    // Yosys src attributes anywhere in the mapped module.
+    let source_netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4]},
+              "b": {"direction": "input", "bits": [6]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "$add$top.sv:2$1": {
+                "type": "$add",
+                "attributes": {"src": "top.sv:2.20-2.25"},
+                "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                "connections": {"A": [4], "B": [6], "Y": [8]}
+              },
+              "$procmux$2": {
+                "type": "$mux",
+                "attributes": {"src": "top.sv:5.13-5.22|top.sv:6.13-6.20"},
+                "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"},
+                "connections": {"A": [8], "B": [6], "S": [3], "Y": [14]}
+              },
+              "$procdff$3": {
+                "type": "$dff",
+                "attributes": {"src": "top.sv:4.3-6.20"},
+                "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                "connections": {"CLK": [2], "D": [14], "Q": [12]}
+              }
+            },
+            "netnames": {
+              "sum": {"bits": [8]},
+              "q": {"bits": [12]},
+              "a": {"bits": [4]},
+              "b": {"bits": [6]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4]},
+              "b": {"direction": "input", "bits": [6]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "sum0_i_1": {
+                "type": "LUT2",
+                "port_directions": {"I0": "input", "I1": "input", "O": "output"},
+                "connections": {"I0": [4], "I1": [6], "O": [8]}
+              },
+              "q_i_1": {
+                "type": "LUT3",
+                "port_directions": {"I0": "input", "I1": "input", "I2": "input", "O": "output"},
+                "connections": {"I0": [8], "I1": [6], "I2": [3], "O": [14]}
+              },
+              "q_reg": {
+                "type": "FDRE",
+                "port_directions": {"C": "input", "D": "input", "Q": "output"},
+                "connections": {"C": [2], "D": [14], "Q": [12]}
+              }
+            },
+            "netnames": {
+              "sum0": {"bits": [8]},
+              "q_reg_n_0": {"bits": [12]},
+              "q": {"bits": [12]},
+              "a": {"bits": [4]},
+              "b": {"bits": [6]},
+              "sel": {"bits": [3]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
+        "xilinx",
+        DelayProfile::Series7,
+        NetlistDialect::Vivado,
+    )
+    .unwrap();
+    let lines = |spans: &[synth_explorer_analysis::source::SourceTierSpan]| {
+        spans.iter().map(|span| span.start_line).collect::<Vec<_>>()
+    };
+
+    let dff = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("FDRE"))
+        .expect("FDRE register present");
+    assert!(dff.seq, "FDRE must classify as sequential");
+    let register_tiers = design.source_tiers_for_nodes(&[dff.id]);
+    // The renamed q_reg still resolves to RTL `q`; exact = both branch
+    // assignments from the mux src pool.
+    assert_eq!(lines(&register_tiers.exact), vec![5, 6]);
+    assert!(lines(&register_tiers.contributing).contains(&2));
+}
