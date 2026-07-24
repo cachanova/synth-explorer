@@ -3,6 +3,38 @@ import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
 describe('GraphView LUT labels', () => {
+  it('uses the schematic contrast tokens for constant nodes', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [{
+            id: 1,
+            x: 0,
+            y: 0,
+            width: 48,
+            height: 28,
+            node: { id: 1, kind: 'const', name: "1'b0" },
+          }],
+          edges: [],
+          width: 48,
+          height: 28,
+        }}
+        rootId={-1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('class="g-node-body g-symbol-const')
+    expect(markup).toContain('fill="var(--schematic-gate-fill)"')
+    expect(markup).toContain('stroke="var(--schematic-gate-stroke)"')
+  })
+
   it('renders canonical input direction when visible topology is incomplete', () => {
     const markup = renderToStaticMarkup(
       <GraphView
