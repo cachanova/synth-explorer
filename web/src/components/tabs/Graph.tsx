@@ -23,8 +23,13 @@ import {
   applyGroupExpansions,
   groupExpansionReducer,
   initialGroupExpansionState,
-  type ExpandedGroup,
 } from '../../lib/groupExpansion'
+import {
+  cacheGroupLayout,
+  cachedGroupLayout,
+  createGroupLayoutSession,
+  resetGroupLayoutSession,
+} from '../../lib/groupLayoutSession'
 import {
   createLatestRequestQueue,
   type LatestRequestQueue,
@@ -167,6 +172,7 @@ export function Graph({ active }: { active: boolean }) {
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   const displayedGraphRef = useRef<DisplayedGraph | null>(null)
   const layoutCache = useRef(new WeakMap<Subgraph, LaidOutGraph>())
+  const groupLayoutSession = useRef(createGroupLayoutSession())
   // The full projection is independent of source/cone selection. Reusing this
   // single entry keeps non-focus selection changes free of netlist refetches.
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
@@ -760,6 +766,10 @@ export function Graph({ active }: { active: boolean }) {
     }))
   }, [expandedGroupSpecs, visibleExpandedGroups])
 
+  useEffect(() => {
+    resetGroupLayoutSession(groupLayoutSession.current, groupedBaseSubgraph)
+  }, [groupedBaseSubgraph])
+
   // Lay out only while visible, and retain a completed layout across tabs.
   useEffect(() => {
     if (!active) return
@@ -812,7 +822,7 @@ export function Graph({ active }: { active: boolean }) {
         )
         layoutCache.current.set(groupedBaseSubgraph, baseLayout)
       }
-      if (!baseLayout) {
+      if (!baseLayout || !groupedBaseSubgraph) {
         return layoutSubgraph(
           toLayout,
           controller.signal,
@@ -823,14 +833,34 @@ export function Graph({ active }: { active: boolean }) {
       const expansionById = new Map(
         activeGroupExpansions.map((expansion) => [expansion.id, expansion]),
       )
-      const prefix: ExpandedGroup[] = []
-      const activeLayoutPrefix: ExpandedGroupLayout[] = []
-      let currentLayout = baseLayout
-      for (const group of groups) {
+      const sequence = groups.map((group) => {
         const response = expansionById.get(group.id)
-        if (!response || !groupedBaseSubgraph) continue
-        prefix.push(response)
-        activeLayoutPrefix.push(group)
+        if (!response) {
+          throw new Error(`missing expansion projection for group ${group.id}`)
+        }
+        return { group, response }
+      })
+      let currentLayout = baseLayout
+      let startIndex = 0
+      for (let index = sequence.length - 1; index >= 0; index--) {
+        const cached = cachedGroupLayout(
+          groupLayoutSession.current,
+          groupedBaseSubgraph,
+          sequence[index].response.requestKey,
+        )
+        if (!cached) continue
+        currentLayout = cached
+        startIndex = index + 1
+        break
+      }
+      for (let index = startIndex; index < sequence.length; index++) {
+        const { group, response } = sequence[index]
+        const prefix = sequence
+          .slice(0, index + 1)
+          .map((entry) => entry.response)
+        const activeLayoutPrefix = sequence
+          .slice(0, index + 1)
+          .map((entry) => entry.group)
         const step = applyGroupExpansions(
           groupedBaseSubgraph,
           prefix,
@@ -843,7 +873,7 @@ export function Graph({ active }: { active: boolean }) {
             currentLayout,
             group,
             controller.signal,
-            [...activeLayoutPrefix],
+            activeLayoutPrefix,
           )
         } catch (error) {
           if (!controller.signal.aborted && groupExpansionOwnerKey) {
@@ -868,6 +898,12 @@ export function Graph({ active }: { active: boolean }) {
           )
         }
         currentLayout = expanded
+        cacheGroupLayout(
+          groupLayoutSession.current,
+          groupedBaseSubgraph,
+          response.requestKey,
+          expanded,
+        )
       }
       return currentLayout
     }
