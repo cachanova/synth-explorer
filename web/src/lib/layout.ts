@@ -1000,10 +1000,18 @@ export const MAX_INCREMENTAL_BOUNDARY_BIT_MEMBERSHIPS = 262_144
 export const MAX_INCREMENTAL_BOUNDARY_MATCH_CHECKS = 262_144
 export const SCHEMWEAVE_INCREMENTAL_WORK_LIMIT_ERROR_NAME =
   'SchemWeaveIncrementalWorkLimit'
+export const SCHEMWEAVE_INCREMENTAL_GEOMETRY_ERROR_NAME =
+  'SchemWeaveIncrementalGeometry'
 
 function incrementalBoundaryWorkLimit(message: string): never {
   const error = new Error(message)
   error.name = SCHEMWEAVE_INCREMENTAL_WORK_LIMIT_ERROR_NAME
+  throw error
+}
+
+function incrementalGeometryFallback(message: string): never {
+  const error = new Error(message)
+  error.name = SCHEMWEAVE_INCREMENTAL_GEOMETRY_ERROR_NAME
   throw error
 }
 
@@ -1672,14 +1680,18 @@ export function buildSchemWeaveExpansionRequest(
     if (members.has(node.id)) return node
     const compactNode = compactNodeById.get(node.id)
     if (!compactNode) {
-      throw new Error(`expanded projection introduced retained node ${node.id}`)
+      incrementalGeometryFallback(
+        `expanded projection introduced retained node ${node.id}`,
+      )
     }
     if (
       node.width !== compactNode.width ||
       node.height !== compactNode.height ||
       node.cycle_breaker !== compactNode.cycle_breaker
     ) {
-      throw new Error(`expanded projection changed retained node ${node.id}`)
+      incrementalGeometryFallback(
+        `expanded projection changed retained node ${node.id}`,
+      )
     }
     const compactPorts = compactPortsByNode.get(node.id) ?? []
     const expandedPorts = expandedPortsByNode.get(node.id) ?? []
@@ -1687,7 +1699,9 @@ export function buildSchemWeaveExpansionRequest(
       compactPorts.length !== expandedPorts.length ||
       compactPorts.some(([key], index) => key !== expandedPorts[index][0])
     ) {
-      throw new Error(`expanded projection changed retained pins on node ${node.id}`)
+      incrementalGeometryFallback(
+        `expanded projection changed retained pins on node ${node.id}`,
+      )
     }
     const compactPortById = new Map(
       compactNode.ports.map((port) => [port.id, port] as const),
@@ -1706,7 +1720,9 @@ export function buildSchemWeaveExpansionRequest(
         compactPort.side !== expandedPort.side ||
         compactPort.offset !== expandedPort.offset
       ) {
-        throw new Error(`expanded projection changed retained pin ${key}`)
+        incrementalGeometryFallback(
+          `expanded projection changed retained pin ${key}`,
+        )
       }
       remap.set(expandedPortId, compactPortId)
     })
@@ -1840,7 +1856,7 @@ export function buildSchemWeaveExpansionRequest(
     const compactIds = compactRetainedBySignature.get(key)
     const compactId = compactIds?.shift()
     if (compactId == null) {
-      throw new Error(
+      incrementalGeometryFallback(
         `expanded projection changed retained electrical edge ${key}`,
       )
     }
@@ -1849,7 +1865,7 @@ export function buildSchemWeaveExpansionRequest(
   const unmatchedRetained = [...compactRetainedBySignature.entries()]
     .find(([, ids]) => ids.length > 0)
   if (unmatchedRetained) {
-    throw new Error(
+    incrementalGeometryFallback(
       `expanded projection omitted retained electrical edge ${unmatchedRetained[0]}`,
     )
   }
@@ -1953,12 +1969,12 @@ export function buildSchemWeaveExpansionRequest(
       if (exact) candidates.push(exact)
     }
     if (candidates.length === 0) {
-      throw new Error(
+      incrementalGeometryFallback(
         `expanded group introduced an unmapped boundary edge ${expandedEdge.exactKey}`,
       )
     }
     if (candidates.length > 1) {
-      throw new Error(
+      incrementalGeometryFallback(
         `expanded boundary edge ${expandedEdge.exactKey} matches multiple ` +
         `collapsed boundary trunks ${candidates
           .map((candidate) => candidate.exactKey)
@@ -1975,7 +1991,7 @@ export function buildSchemWeaveExpansionRequest(
     const expandedEdges =
       (expandedByTrunk.get(trunk) ?? []).sort(compareExpandedBoundary)
     if (expandedEdges.length < trunk.ids.length) {
-      throw new Error(
+      incrementalGeometryFallback(
         `expanded group omitted collapsed boundary trunk ${trunk.exactKey}`,
       )
     }
@@ -1989,7 +2005,7 @@ export function buildSchemWeaveExpansionRequest(
       }
       const missingBits = trunk.netBits.filter((bit) => !coveredBits.has(bit))
       if (missingBits.length > 0) {
-        throw new Error(
+        incrementalGeometryFallback(
           `expanded group omitted collapsed boundary bits ` +
           `${missingBits.join(',')} from ${trunk.exactKey}`,
         )

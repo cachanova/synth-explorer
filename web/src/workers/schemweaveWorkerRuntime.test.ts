@@ -880,3 +880,94 @@ it('falls back to a full layout when incremental boundary metadata exceeds its b
   })
   expect(expand_group_json).not.toHaveBeenCalled()
 })
+
+it('falls back to a full layout when expansion changes retained pin topology', () => {
+  const retained = {
+    id: 1,
+    baseWidth: 62,
+    baseHeight: 46,
+    controlHeight: 0,
+    register: false,
+    boundary: 'internal' as const,
+  }
+  const groupProxy = { ...retained, id: 100 }
+  const compact: LayoutInput = {
+    nodes: [retained, groupProxy],
+    edges: [{
+      from: 1,
+      to: 100,
+      fromPort: 'Y',
+      toPort: 'D',
+      control: false,
+      netBits: [1],
+    }],
+  }
+  const expanded: LayoutInput = {
+    nodes: [retained, { ...retained, id: 10 }, { ...retained, id: 11 }],
+    edges: [
+      {
+        ...compact.edges[0],
+        to: 10,
+      },
+      {
+        ...compact.edges[0],
+        to: 11,
+        fromPort: 'Z',
+        netBits: [2],
+      },
+    ],
+  }
+  const layoutFor = (graph: SchemWeaveGraph) => ({
+    nodes: graph.nodes.map((node, index) => ({
+      id: node.id,
+      x: index * 100,
+      y: 0,
+      width: node.width,
+      height: node.height,
+    })),
+    edges: graph.edges.map((edge) => ({ id: edge.id, points: [] })),
+    width: graph.nodes.length * 100,
+    height: 50,
+  })
+  const layout_json = vi.fn((serialized: string) => {
+    const request = JSON.parse(serialized) as { graph: SchemWeaveGraph }
+    return JSON.stringify(layoutFor(request.graph))
+  })
+  const expand_group_json = vi.fn()
+  const sessions = createSchemWeaveWorkerSessionStore({
+    epoch: TEST_SESSION_EPOCH,
+  })
+  const compactResponse = runSchemWeaveWorkerRequest(
+    { layout_json, expand_group_json },
+    { id: 92, kind: 'layout', input: compact },
+    sessions,
+  )
+  if (
+    !compactResponse.ok ||
+    compactResponse.result.status !== 'layout' ||
+    !compactResponse.result.geometry.schemWeaveSession
+  ) {
+    throw new Error('compact layout omitted its worker session')
+  }
+
+  expect(runSchemWeaveWorkerRequest(
+    { layout_json, expand_group_json },
+    {
+      id: 93,
+      kind: 'expand',
+      session: compactResponse.result.geometry.schemWeaveSession,
+      input: expanded,
+      group: { id: 100, members: [10, 11] },
+      activeGroups: [{ id: 100, members: [10, 11] }],
+    },
+    sessions,
+  )).toEqual({
+    id: 93,
+    ok: true,
+    result: {
+      status: 'needs_full_relayout',
+      reason: 'geometry',
+    },
+  })
+  expect(expand_group_json).not.toHaveBeenCalled()
+})
