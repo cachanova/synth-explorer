@@ -31,6 +31,7 @@ import {
   type SourceTierSelection,
 } from './lib/sourceTierSelection'
 import type { SourceTierSpan } from './lib/sourceTiers'
+import type { SourceNetSelection } from './lib/sourceTiers'
 import {
   firstYosysSourceError,
   type SynthesisDiagnostic,
@@ -298,6 +299,7 @@ export interface Store {
   editorHighlight: EditorHighlight | null
   highlightSources: (spans: SrcSpan[]) => void
   selectSchematicNodes: (nodeIds: number[]) => void
+  selectSchematicNets: (selection: SourceNetSelection) => void
 
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
@@ -461,7 +463,10 @@ export function StoreProvider({
     )
   }
   const selectSchematicNodes = useCallback((nodeIds: number[]) => {
-    sourceTierControllerRef.current!(nodeIds)
+    sourceTierControllerRef.current!({ kind: 'nodes', nodeIds })
+  }, [])
+  const selectSchematicNets = useCallback((selection: SourceNetSelection) => {
+    sourceTierControllerRef.current!({ kind: 'nets', ...selection })
   }, [])
   sourceTierCommitRef.current = (selection) => {
     if (!selection) {
@@ -483,7 +488,9 @@ export function StoreProvider({
       primary: 0,
       nonce: nextNonce(),
       sourceTiers: {
-        nodeIds: selection.nodeIds,
+        nodeIds: selection.target.kind === 'nodes'
+          ? selection.target.nodeIds
+          : [],
         exact,
         contributing,
         approximate: selection.response.approximate,
@@ -1185,7 +1192,7 @@ export function StoreProvider({
   }, [])
 
   const highlightSources = useCallback((spans: SrcSpan[]) => {
-    sourceTierControllerRef.current!([])
+    sourceTierControllerRef.current!({ kind: 'nodes', nodeIds: [] })
     if (spans.length === 0) {
       return
     }
@@ -1329,6 +1336,7 @@ export function StoreProvider({
       editorHighlight,
       highlightSources,
       selectSchematicNodes,
+      selectSchematicNets,
       sourceSelection,
       setSourceSelection,
     }),
@@ -1387,6 +1395,7 @@ export function StoreProvider({
       editorHighlight,
       highlightSources,
       selectSchematicNodes,
+      selectSchematicNets,
       sourceSelection,
       setSourceSelection,
     ],

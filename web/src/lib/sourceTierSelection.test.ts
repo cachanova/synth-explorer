@@ -28,17 +28,23 @@ describe('selected schematic node source-tier wiring', () => {
       fetchSourceTiers,
     )
 
-    select([17])
+    select({ kind: 'nodes', nodeIds: [17] })
     expect(commits).toEqual([null])
-    expect(fetchSourceTiers).toHaveBeenCalledWith([17])
+    expect(fetchSourceTiers).toHaveBeenCalledWith({
+      kind: 'nodes',
+      nodeIds: [17],
+    })
     await Promise.resolve()
     expect(commits).toEqual([
       null,
-      { nodeIds: [17], response: response(4) },
+      {
+        target: { kind: 'nodes', nodeIds: [17] },
+        response: response(4),
+      },
     ])
   })
 
-  it('ignores an older response after the selection changes', async () => {
+  it('replaces a node lookup with a net lookup and ignores the older response', async () => {
     const first = deferred<SourceTiersResponse>()
     const second = deferred<SourceTiersResponse>()
     const fetchSourceTiers = vi.fn()
@@ -50,8 +56,8 @@ describe('selected schematic node source-tier wiring', () => {
       fetchSourceTiers,
     )
 
-    select([1])
-    select([2])
+    select({ kind: 'nodes', nodeIds: [1] })
+    select({ kind: 'nets', names: ['gated'], bits: [10] })
     first.resolve(response(1))
     await Promise.resolve()
     expect(commits).toEqual([null, null])
@@ -59,8 +65,29 @@ describe('selected schematic node source-tier wiring', () => {
     second.resolve(response(2))
     await Promise.resolve()
     expect(commits.at(-1)).toEqual({
-      nodeIds: [2],
+      target: { kind: 'nets', names: ['gated'], bits: [10] },
       response: response(2),
+    })
+  })
+
+  it('fetches an anonymous net selection from its retained bits', async () => {
+    const commits: unknown[] = []
+    const fetchSourceTiers = vi.fn().mockResolvedValue(response(7))
+    const select = createSourceTierSelectionController(
+      (value) => commits.push(value),
+      fetchSourceTiers,
+    )
+
+    select({ kind: 'nets', names: [], bits: [30] })
+    expect(fetchSourceTiers).toHaveBeenCalledWith({
+      kind: 'nets',
+      names: [],
+      bits: [30],
+    })
+    await Promise.resolve()
+    expect(commits.at(-1)).toEqual({
+      target: { kind: 'nets', names: [], bits: [30] },
+      response: response(7),
     })
   })
 
@@ -72,8 +99,8 @@ describe('selected schematic node source-tier wiring', () => {
       vi.fn().mockReturnValue(pending.promise),
     )
 
-    select([9])
-    select([])
+    select({ kind: 'nets', names: ['sum'], bits: [8] })
+    select({ kind: 'nets', names: [], bits: [] })
     pending.resolve(response(9))
     await Promise.resolve()
 
@@ -88,7 +115,7 @@ describe('selected schematic node source-tier wiring', () => {
       vi.fn().mockReturnValue(pending.promise),
     )
 
-    select([3])
+    select({ kind: 'nodes', nodeIds: [3] })
     pending.reject(new Error('not wired'))
     await Promise.resolve()
     await Promise.resolve()

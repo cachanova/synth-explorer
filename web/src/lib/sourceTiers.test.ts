@@ -1,5 +1,32 @@
-import { describe, expect, it } from 'vitest'
-import { sourceTierMessage } from './sourceTiers'
+import { describe, expect, it, vi } from 'vitest'
+import {
+  fetchSourceTiersForNets,
+  sourceTierMessage,
+} from './sourceTiers'
+
+const { queryAnalysis } = vi.hoisted(() => ({ queryAnalysis: vi.fn() }))
+vi.mock('./analysisClient', () => ({ queryAnalysis }))
+
+describe('source tier queries', () => {
+  it('sends selected net names through the net-tier worker method', async () => {
+    const response = {
+      exact: [],
+      contributing: [],
+      approximate: false,
+      truncated: false,
+    }
+    queryAnalysis.mockResolvedValueOnce(response)
+
+    await expect(fetchSourceTiersForNets({
+      names: ['sum', 'sum_alias'],
+      bits: [8, 9],
+    })).resolves.toBe(response)
+    expect(queryAnalysis).toHaveBeenCalledWith(
+      'sourceForNets',
+      { names: ['sum', 'sum_alias'], bits: [8, 9] },
+    )
+  })
+})
 
 describe('source tier messages', () => {
   it('describes approximate highlights', () => {

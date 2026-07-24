@@ -319,6 +319,62 @@ impl CorrelationIndex {
         result
     }
 
+    /// Attribute selected nets: their declarations and immediate drivers are
+    /// exact, while the remaining fan-in cone is contributing context.
+    pub fn attribute_net(&self, cut: &MappedCut, limits: &CorrelationLimits) -> Attribution {
+        let mut result = Attribution {
+            truncated: cut.truncated,
+            ..Attribution::default()
+        };
+        let (output_bits, outputs_missing) = self.resolve_names(&cut.outputs, false);
+        let (declaration_bits, _) = self.resolve_names(&cut.declarations, true);
+        result.approximate = outputs_missing;
+
+        let mut exact = SpanCollector::new(limits.span_cap);
+        for bit in declaration_bits {
+            if let Some(spans) = self.decl_spans_of_bit.get(&bit) {
+                exact.extend(spans);
+            }
+        }
+
+        let mut visited = HashSet::new();
+        let mut upstream = Vec::new();
+        let mut budget = limits.cell_visit_cap;
+        for bit in output_bits {
+            let Some(&cell) = self.driver_of_bit.get(&bit) else {
+                continue;
+            };
+            if !visited.insert(cell) {
+                continue;
+            }
+            if budget == 0 {
+                result.truncated = true;
+                break;
+            }
+            budget -= 1;
+            let entry = &self.cells[cell as usize];
+            exact.extend(&entry.spans);
+            if entry.seq {
+                upstream.extend(entry.data_bits.iter().copied());
+            } else {
+                upstream.extend(entry.input_bits.iter().copied());
+            }
+        }
+
+        let mut contributing = SpanCollector::new(limits.span_cap);
+        self.walk_cone(
+            upstream,
+            &BTreeSet::new(),
+            &mut contributing,
+            &mut visited,
+            &mut budget,
+            &mut result.truncated,
+        );
+        result.exact = exact.into_spans(&self.files, &mut result.truncated);
+        result.contributing = contributing.into_spans(&self.files, &mut result.truncated);
+        result
+    }
+
     /// Register mode: exact = per-case spans on the D-side mux tree (falling
     /// back to the flop's whole-block span), conditions = mux select cones,
     /// contributing = the remaining D-cone statements up to shells.

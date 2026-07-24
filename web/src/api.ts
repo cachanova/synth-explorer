@@ -13,7 +13,6 @@ import {
   localNodes,
   localPaths,
   localSourceMap,
-  localSourceRangesForBits,
   localTiming,
   synthesizeLocally,
 } from './lib/localEngine'
@@ -30,7 +29,6 @@ import type {
   NodesResponse,
   PathsResponse,
   SourceMapResponse,
-  SourceBitRangesResponse,
   GroupExpansion,
   Subgraph,
   SynthesizeRequest,
@@ -199,13 +197,6 @@ export function expandGroup(
 
 export function getSourceMap(id: string): Promise<SourceMapResponse> {
   return localSourceMap(id)
-}
-
-export function getSourceRangesForBits(
-  id: string,
-  bits: number[],
-): Promise<SourceBitRangesResponse> {
-  return localSourceRangesForBits(id, bits)
 }
 
 /** Resolve node ids to display metadata. Caps at the contract's 200-id limit. */

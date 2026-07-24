@@ -21,6 +21,14 @@ struct SourceFile {
     content: String,
 }
 
+#[derive(Default, Deserialize)]
+struct SourceNetsQuery {
+    #[serde(default)]
+    names: Vec<String>,
+    #[serde(default)]
+    bits: Vec<u32>,
+}
+
 #[derive(Serialize)]
 struct Summary<'a> {
     design_id: &'a str,
@@ -209,6 +217,11 @@ impl AnalysisSession {
         to_json(&response)
     }
 
+    pub fn source_for_nets_json(&self, query_json: &str) -> Result<String, JsValue> {
+        let query: SourceNetsQuery = parse_json(query_json, "selected nets")?;
+        to_json(&self.design.source_tiers_for_nets(&query.names, &query.bits))
+    }
+
     pub fn timing_json(&self, query_json: &str) -> Result<String, JsValue> {
         let query: TimingQuery = parse_json(query_json, "timing query")?;
         let (base, profile) = self.resolve_model(query.model, query.profile.as_deref())?;
@@ -385,11 +398,6 @@ impl AnalysisSession {
 
     pub fn source_map_json(&self) -> Result<String, JsValue> {
         to_json(&self.design.analysis.source_map())
-    }
-
-    pub fn source_ranges_for_bits_json(&self, bits_json: &str) -> Result<String, JsValue> {
-        let bits: Vec<u32> = parse_json(bits_json, "source net bits")?;
-        to_json(&self.design.analysis.source_ranges_for_bits(&bits))
     }
 
     pub fn nodes_json(&self, ids_json: &str) -> Result<String, JsValue> {
@@ -710,17 +718,6 @@ mod tests {
                 && range.get("signal_bits").is_none()
                 && range.get("approximate_signal_bits").is_none()
         }));
-        let signal_range = ranges
-            .iter()
-            .find(|range| {
-                range["signalBits"]
-                    .as_array()
-                    .is_some_and(|bits| !bits.is_empty())
-            })
-            .expect("fixture has an exact signal-bit range");
-        let signal_bit = signal_range["signalBits"][0]
-            .as_u64()
-            .expect("signal bit is numeric");
         let locations = ranges
             .iter()
             .map(|range| {
@@ -734,22 +731,6 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(locations.windows(2).all(|pair| pair[0] <= pair[1]));
-
-        let reverse_raw = session
-            .source_ranges_for_bits_json(&serde_json::json!([signal_bit, signal_bit]).to_string())
-            .expect("reverse source query succeeds");
-        assert_json_keys_in_order(&reverse_raw, &["ranges", "truncated", "approximate"]);
-        let reverse: serde_json::Value =
-            serde_json::from_str(&reverse_raw).expect("reverse source JSON parses");
-        let reverse_ranges = reverse["ranges"]
-            .as_array()
-            .expect("reverse ranges are an array");
-        assert!(!reverse_ranges.is_empty());
-        assert!(reverse_ranges.iter().all(|range| {
-            range["node_ids"] == serde_json::json!([])
-                && range.get("signalBits").is_none()
-                && range.get("approximateSignalBits").is_none()
-        }));
 
         let selection_raw = session
             .source_selection_json(
@@ -787,13 +768,11 @@ mod tests {
         assert_eq!(
             [
                 json_digest(&source_map_raw),
-                json_digest(&reverse_raw),
                 json_digest(&selection_raw),
                 json_digest(&nodes_raw),
             ],
             [
                 0x46a2_3292_4aa2_e2bd,
-                0xfd05_2ab5_cbed_6e77,
                 0x7cb9_f6a4_9b9c_718c,
                 0x30f0_c349_fd9b_88b2,
             ],
@@ -1070,5 +1049,59 @@ mod tests {
             assert!(span.get("start_line").is_some());
             assert!(span.get("file").is_some());
         }
+    }
+
+    #[test]
+    fn source_for_nets_returns_the_bit_provenance_span() {
+        let session = session("gates", "generic");
+        let (name, bit, expected) = session
+            .design
+            .graph
+            .edges
+            .iter()
+            .find_map(|edge| {
+                let bit = edge.bit?;
+                if edge.net_name.is_empty() {
+                    return None;
+                }
+                let expected = session
+                    .design
+                    .analysis
+                    .source_ranges_for_bits(&[bit])
+                    .ranges
+                    .into_iter()
+                    .next()?;
+                Some((edge.net_name.clone(), bit, expected))
+            })
+            .expect("fixture has a named net with bit provenance");
+        assert_eq!(
+            (
+                expected.file.as_str(),
+                expected.start_line,
+                expected.end_line,
+                expected.start_column,
+                expected.end_column,
+            ),
+            ("round_robin_arbiter.sv", 16, 16, Some(32), Some(48),),
+        );
+        let response = session
+            .source_for_nets_json(
+                &serde_json::json!({ "names": [name], "bits": [bit] }).to_string(),
+            )
+            .expect("hybrid net query succeeds");
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        for key in ["exact", "contributing", "approximate", "truncated"] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        assert!(
+            parsed["exact"].as_array().unwrap().iter().any(|span| {
+                span["file"] == "round_robin_arbiter.sv"
+                    && span["start_line"] == 16
+                    && span["end_line"] == 16
+                    && span.get("start_column").and_then(serde_json::Value::as_u64) == Some(32)
+                    && span.get("end_column").and_then(serde_json::Value::as_u64) == Some(48)
+            }),
+            "exact tier omitted the selected bit's source span: {response}",
+        );
     }
 }
