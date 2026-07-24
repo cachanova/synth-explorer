@@ -394,6 +394,30 @@ test('group expansion uses Rust in place and collapse restores without layout', 
 test('multiple groups preserve independent expansion state in any toggle order', async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    Object.defineProperty(window, '__multiGroupSchemRequests', {
+      value: requests,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private readonly comparisonWorker: boolean
+
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.comparisonWorker = String(url).includes('schemweave')
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        if (this.comparisonWorker) requests.push(structuredClone(message))
+        if (transfer) super.postMessage(message, transfer)
+        else super.postMessage(message)
+      }
+    }
+  })
   await page.goto('/?layout=schemweave')
   await page.getByLabel('Bundled example').selectOption('reg_mux')
   await page.getByLabel('Platform').selectOption('gates')
@@ -424,6 +448,15 @@ test('multiple groups preserve independent expansion state in any toggle order',
       page.locator(`[data-expanded-group-member="${id}"]`),
     ).toHaveCount(8)
   }
+  const expansionRequestCount = () => page.evaluate(() =>
+    (
+      window as unknown as {
+        __multiGroupSchemRequests: Array<{ kind?: string }>
+      }
+    ).__multiGroupSchemRequests.filter((request) => request.kind === 'expand')
+      .length
+  )
+  expect(await expansionRequestCount()).toBe(2)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 
@@ -447,6 +480,7 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(
     page.locator(`[data-expanded-group-member="${muxId}"]`),
   ).toHaveCount(8)
+  expect(await expansionRequestCount()).toBe(3)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 
@@ -459,6 +493,7 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(
     page.locator(`[data-expanded-group-member="${muxId}"]`),
   ).toHaveCount(8)
+  expect(await expansionRequestCount()).toBe(3)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 
@@ -483,6 +518,7 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(
     page.locator(`[data-expanded-group-member="${muxId}"]`),
   ).toHaveCount(8)
+  expect(await expansionRequestCount()).toBe(3)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 })
