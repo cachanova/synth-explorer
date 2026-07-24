@@ -56,7 +56,9 @@ export function editorHighlightDecorations(
   tierSpans.forEach(({ span, kind }) => {
     if (span.file !== activeFile) return
     const start = Math.min(Math.max(span.startLine, 1), doc.lines)
-    const end = Math.min(Math.max(span.endLine, start), doc.lines)
+    // Mirror the Rust-side 200-line cap so one block-sized span cannot
+    // turn selection handling into a doc-length loop on the main thread.
+    const end = Math.min(Math.max(span.endLine, start), doc.lines, start + 199)
     for (let line = start; line <= end; line += 1) {
       linePriority.set(line, strongerHighlight(linePriority.get(line), kind))
     }

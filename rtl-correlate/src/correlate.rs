@@ -72,9 +72,22 @@ pub struct Attribution {
     pub truncated: bool,
 }
 
+/// A span with its file name interned: one RTL statement drives many cells,
+/// so per-cell owned file strings would duplicate a handful of file names
+/// across the whole snapshot. `Copy` keeps walk-time collection free of
+/// allocation entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, deepsize::DeepSizeOf)]
+struct IndexedSpan {
+    file: u32,
+    start_line: usize,
+    start_column: Option<usize>,
+    end_line: usize,
+    end_column: Option<usize>,
+}
+
 #[derive(Debug, Default, deepsize::DeepSizeOf)]
 struct RtlCell {
-    spans: Vec<SrcSpan>,
+    spans: Vec<IndexedSpan>,
     seq: bool,
     mux: bool,
     input_bits: Vec<u32>,
@@ -88,6 +101,8 @@ struct RtlCell {
 pub struct CorrelationIndex {
     dialect: NetlistDialect,
     cells: Vec<RtlCell>,
+    /// Interned span file names, indexed by `IndexedSpan::file`.
+    files: Vec<String>,
     driver_of_bit: HashMap<u32, u32>,
     bits_by_name: HashMap<String, Vec<YosysBit>>,
     port_bits: HashSet<u32>,
@@ -114,6 +129,21 @@ impl CorrelationIndex {
         let mut cells = Vec::with_capacity(module.cells.len());
         let mut driver_of_bit = HashMap::new();
         let mut seq_out_bits = HashSet::new();
+        let mut files: Vec<String> = Vec::new();
+        let mut file_ids: HashMap<String, u32> = HashMap::new();
+        let mut intern = |span: SrcSpan| {
+            let file = *file_ids.entry(span.file).or_insert_with_key(|file| {
+                files.push(file.clone());
+                (files.len() - 1) as u32
+            });
+            IndexedSpan {
+                file,
+                start_line: span.start_line,
+                start_column: span.start_column,
+                end_line: span.end_line,
+                end_column: span.end_column,
+            }
+        };
         // BTreeMap iteration keeps cell indices deterministic across runs.
         for cell in module.cells.values() {
             let index = cells.len() as u32;
@@ -123,7 +153,7 @@ impl CorrelationIndex {
                 spans: cell
                     .attributes
                     .get("src")
-                    .map(|src| parse_src_pool(src).collect())
+                    .map(|src| parse_src_pool(src).map(&mut intern).collect())
                     .unwrap_or_default(),
                 seq,
                 mux,
@@ -176,9 +206,11 @@ impl CorrelationIndex {
             port_bits.extend(port.bits.iter().filter_map(YosysBit::net));
         }
 
+        drop(intern);
         Ok(Self {
             dialect,
             cells,
+            files,
             driver_of_bit,
             bits_by_name,
             port_bits,
@@ -187,9 +219,14 @@ impl CorrelationIndex {
     }
 
     /// Whether a raw mapped-side net name resolves to an RTL boundary.
-    /// Mapped-side walks use this to decide where a selection's cut stops.
+    /// Mapped-side walks call this per candidate name per edge; it must not
+    /// allocate or materialize bit vectors.
     pub fn is_boundary(&self, raw: &str) -> bool {
-        self.resolve_name(raw, false).is_some()
+        match self.resolve(raw) {
+            Resolved::Bus(_) => true,
+            Resolved::Bit(bits, index) => bits.get(index).and_then(YosysBit::net).is_some(),
+            Resolved::None => false,
+        }
     }
 
     /// Attribute a mapped-side cut against the RTL snapshot.
@@ -297,6 +334,11 @@ impl CorrelationIndex {
             exact = flop_spans;
         }
 
+        // Shares `visited` and `budget` with the data walk above, so a
+        // select cone overlapping the data cone is not re-attributed here.
+        // That is acceptable only because callers fold `conditions` and
+        // `contributing` into the same presentation tier — the overlapping
+        // statement still surfaces, just via the other collector.
         self.walk_cone(
             condition_seeds.iter().copied(),
             &BTreeSet::new(),
@@ -306,9 +348,9 @@ impl CorrelationIndex {
             &mut result.truncated,
         );
 
-        result.exact = exact.into_spans(&mut result.truncated);
-        result.conditions = conditions.into_spans(&mut result.truncated);
-        result.contributing = contributing.into_spans(&mut result.truncated);
+        result.exact = exact.into_spans(&self.files, &mut result.truncated);
+        result.conditions = conditions.into_spans(&self.files, &mut result.truncated);
+        result.contributing = contributing.into_spans(&self.files, &mut result.truncated);
     }
 
     /// Combinational mode: exact = cells enclosed between the output frontier
@@ -344,8 +386,8 @@ impl CorrelationIndex {
             &mut result.truncated,
         );
 
-        result.exact = exact.into_spans(&mut result.truncated);
-        result.contributing = contributing.into_spans(&mut result.truncated);
+        result.exact = exact.into_spans(&self.files, &mut result.truncated);
+        result.contributing = contributing.into_spans(&self.files, &mut result.truncated);
     }
 
     /// Collect spans of cells strictly between `seeds` and `stop_bits`,
@@ -439,53 +481,70 @@ impl CorrelationIndex {
         let mut bits = BTreeSet::new();
         let mut missing = false;
         for name in names {
-            match self.resolve_name(name, full_bus) {
-                Some(resolved) => bits.extend(resolved),
-                None => missing = true,
-            }
+            missing |= !self.resolve_name_into(name, full_bus, &mut bits);
         }
         (bits, missing)
     }
 
-    fn resolve_name(&self, raw: &str, full_bus: bool) -> Option<Vec<u32>> {
-        let normalized = normalize_net_name(self.dialect, raw);
-        if let Some(bits) = self.lookup(&normalized) {
-            return Some(bits);
-        }
-        // `foo[3]` selects one bit of the RTL bus `foo` — or the whole bus
-        // when the caller needs boundary-stop semantics.
-        if let Some((base, index)) = split_bit_suffix(&normalized)
-            && let Some(bits) = self.bits_by_name.get(base)
-        {
-            if full_bus {
-                return Some(bits.iter().filter_map(YosysBit::net).collect());
+    /// Resolve one raw name into `bits`; false when it names no boundary.
+    fn resolve_name_into(&self, raw: &str, full_bus: bool, into: &mut BTreeSet<u32>) -> bool {
+        match self.resolve(raw) {
+            Resolved::Bus(bits) => {
+                into.extend(bits.iter().filter_map(YosysBit::net));
+                true
             }
-            return bits
-                .get(index)
-                .and_then(YosysBit::net)
-                .map(|net| vec![net]);
-        }
-        // Vivado renames registers; try the dialect's logical base names.
-        for base in self.dialect.register_base_candidates(&normalized) {
-            if let Some(bits) = self.lookup(base) {
-                return Some(bits);
+            Resolved::Bit(bits, index) => {
+                if full_bus {
+                    into.extend(bits.iter().filter_map(YosysBit::net));
+                    return true;
+                }
+                match bits.get(index).and_then(YosysBit::net) {
+                    Some(net) => {
+                        into.insert(net);
+                        true
+                    }
+                    None => false,
+                }
             }
+            Resolved::None => false,
         }
-        None
     }
 
-    fn lookup(&self, name: &str) -> Option<Vec<u32>> {
-        self.bits_by_name
-            .get(name)
-            .map(|bits| bits.iter().filter_map(YosysBit::net).collect())
+    /// Boundary resolution without materializing bit vectors; the hot
+    /// `is_boundary` path only needs the discriminant.
+    fn resolve(&self, raw: &str) -> Resolved<'_> {
+        let normalized = normalize_net_name(raw);
+        if let Some(bits) = self.bits_by_name.get(normalized) {
+            return Resolved::Bus(bits);
+        }
+        // `foo[3]` selects one bit of the RTL bus `foo`.
+        if let Some((base, index)) = split_bit_suffix(normalized)
+            && let Some(bits) = self.bits_by_name.get(base)
+        {
+            return Resolved::Bit(bits, index);
+        }
+        // Vivado renames registers; try the dialect's logical base names.
+        for base in self.dialect.register_base_candidates(normalized) {
+            if let Some(bits) = self.bits_by_name.get(base) {
+                return Resolved::Bus(bits);
+            }
+        }
+        Resolved::None
     }
+}
+
+enum Resolved<'a> {
+    Bus(&'a [YosysBit]),
+    Bit(&'a [YosysBit], usize),
+    None,
 }
 
 /// Normalize a mapped-netlist net name to its boundary key: strip the
 /// `$abc$<id>$` alias wrapper (which embeds the original name) and any
 /// leading `\`. `$techmap…` names never normalize to boundaries — template
-/// internals are not RTL nets.
-pub fn normalize_net_name(_dialect: NetlistDialect, name: &str) -> String {
+/// internals are not RTL nets. Always a subslice: the per-click walk calls
+/// this per candidate name and must not allocate.
+pub fn normalize_net_name(name: &str) -> &str {
     let mut candidate = name;
     if let Some(rest) = candidate.strip_prefix("$abc$")
         && let Some((digits, embedded)) = rest.split_once('$')
@@ -494,7 +553,7 @@ pub fn normalize_net_name(_dialect: NetlistDialect, name: &str) -> String {
     {
         candidate = embedded;
     }
-    clean_public_name(candidate).to_owned()
+    clean_public_name(candidate)
 }
 
 fn clean_public_name(name: &str) -> &str {
@@ -540,10 +599,12 @@ fn sequential_cell_type(cell_type: &str) -> bool {
         || cell_type.starts_with("$_DLATCH")
 }
 
-/// Bounded, deduplicating span accumulator.
+/// Bounded, deduplicating span accumulator over interned spans. Collection
+/// is allocation-free; owned `SrcSpan`s materialize only at the capped
+/// output boundary.
 #[derive(Debug)]
 struct SpanCollector {
-    spans: BTreeSet<SrcSpan>,
+    spans: BTreeSet<IndexedSpan>,
     cap: usize,
     dropped: bool,
 }
@@ -557,15 +618,13 @@ impl SpanCollector {
         }
     }
 
-    fn extend<'a>(&mut self, spans: impl IntoIterator<Item = &'a SrcSpan>) {
-        for span in spans {
-            if self.spans.len() >= self.cap {
-                if !self.spans.contains(span) {
-                    self.dropped = true;
-                }
+    fn extend<'a>(&mut self, spans: impl IntoIterator<Item = &'a IndexedSpan>) {
+        for &span in spans {
+            if self.spans.len() >= self.cap && !self.spans.contains(&span) {
+                self.dropped = true;
                 continue;
             }
-            self.spans.insert(span.clone());
+            self.spans.insert(span);
         }
     }
 
@@ -573,8 +632,17 @@ impl SpanCollector {
         self.spans.is_empty()
     }
 
-    fn into_spans(self, truncated: &mut bool) -> Vec<SrcSpan> {
+    fn into_spans(self, files: &[String], truncated: &mut bool) -> Vec<SrcSpan> {
         *truncated |= self.dropped;
-        self.spans.into_iter().collect()
+        self.spans
+            .into_iter()
+            .map(|span| SrcSpan {
+                file: files[span.file as usize].clone(),
+                start_line: span.start_line,
+                start_column: span.start_column,
+                end_line: span.end_line,
+                end_column: span.end_column,
+            })
+            .collect()
     }
 }

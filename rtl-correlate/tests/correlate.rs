@@ -78,17 +78,17 @@ fn lines(spans: &[rtl_correlate::SrcSpan]) -> Vec<usize> {
 
 #[test]
 fn abc_alias_names_normalize_to_their_embedded_original() {
-    assert_eq!(normalize_net_name(NetlistDialect::Yosys, "$abc$42$sum"), "sum");
+    assert_eq!(normalize_net_name("$abc$42$sum"), "sum");
     assert_eq!(
-        normalize_net_name(NetlistDialect::Yosys, "$abc$42$\\sum"),
+        normalize_net_name("$abc$42$\\sum"),
         "sum"
     );
     // Not an abc alias: digits segment malformed.
     assert_eq!(
-        normalize_net_name(NetlistDialect::Yosys, "$abc$x$sum"),
+        normalize_net_name("$abc$x$sum"),
         "$abc$x$sum"
     );
-    assert_eq!(normalize_net_name(NetlistDialect::Yosys, "\\sum"), "sum");
+    assert_eq!(normalize_net_name("\\sum"), "sum");
 }
 
 #[test]
@@ -238,4 +238,65 @@ fn vivado_reg_suffixed_boundaries_resolve_via_dialect() {
         &CorrelationLimits::default(),
     );
     assert_eq!(lines(&attribution.exact), vec![5, 6]);
+}
+
+#[test]
+fn register_conditions_carry_select_cone_sources() {
+    // The mux select is computed logic ($eq on line 4), not a bare port:
+    // its span must surface in the conditions tier.
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "clk": {"direction": "input", "bits": [2]},
+                "mode": {"direction": "input", "bits": [3]},
+                "a": {"direction": "input", "bits": [4]},
+                "q": {"direction": "output", "bits": [12]}
+              },
+              "cells": {
+                "$eq$top.sv:4$1": {
+                  "type": "$eq",
+                  "attributes": {"src": "top.sv:4.9-4.20"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [3], "B": [4], "Y": [16]}
+                },
+                "$procmux$2": {
+                  "type": "$mux",
+                  "attributes": {"src": "top.sv:5.13-5.22"},
+                  "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"},
+                  "connections": {"A": [12], "B": [4], "S": [16], "Y": [14]}
+                },
+                "$procdff$3": {
+                  "type": "$dff",
+                  "attributes": {"src": "top.sv:4.3-5.22"},
+                  "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                  "connections": {"CLK": [2], "D": [14], "Q": [12]}
+                }
+              },
+              "netnames": {
+                "q": {"bits": [12]},
+                "a": {"bits": [4]},
+                "mode": {"bits": [3]}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute(
+        &MappedCut {
+            outputs: vec!["q".to_owned()],
+            inputs: Vec::new(),
+            truncated: false,
+            selected_is_sequential: true,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert_eq!(lines(&attribution.exact), vec![5]);
+    assert_eq!(lines(&attribution.conditions), vec![4]);
+    assert!(!attribution.approximate);
 }

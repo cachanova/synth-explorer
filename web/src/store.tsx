@@ -25,7 +25,7 @@ import {
 import { displayNodeName } from './lib/prettyType'
 import { createLatestGuard } from './lib/latest'
 import { mergeComputerFiles } from './lib/computerFiles'
-import { designSrcSpans, type SrcSpan } from './lib/src'
+import type { SrcSpan } from './lib/src'
 import {
   createSourceTierSelectionController,
   type SourceTierSelection,
@@ -297,7 +297,6 @@ export interface Store {
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
   highlightSources: (spans: SrcSpan[]) => void
-  highlightNodeSources: (src?: string | null) => void
   selectSchematicNodes: (nodeIds: number[]) => void
 
   // cross-probe: editor -> graph nodes
@@ -1199,11 +1198,6 @@ export function StoreProvider({
     setEditorHighlight({ spans, primary: primaryIndex, nonce: nextNonce() })
   }, [nextNonce])
 
-  const highlightNodeSources = useCallback(
-    (src?: string | null) => highlightSources(designSrcSpans(src, filesRef.current)),
-    [highlightSources],
-  )
-
   const setSourceSelection = useCallback(
     (
       file: string,
@@ -1334,7 +1328,6 @@ export function StoreProvider({
       registerGraphProbeReset,
       editorHighlight,
       highlightSources,
-      highlightNodeSources,
       selectSchematicNodes,
       sourceSelection,
       setSourceSelection,
@@ -1393,7 +1386,6 @@ export function StoreProvider({
       registerGraphProbeReset,
       editorHighlight,
       highlightSources,
-      highlightNodeSources,
       selectSchematicNodes,
       sourceSelection,
       setSourceSelection,

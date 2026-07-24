@@ -1039,4 +1039,36 @@ mod tests {
             Err("expanded node is not a grouped instance")
         );
     }
+
+    #[test]
+    fn source_for_nodes_resolves_synthetic_group_ids_to_member_unions() {
+        let session = session("gates", "generic");
+        let base = session.design.graph.nodes.len() as u32;
+        let group_index = session
+            .design
+            .grouping
+            .groups
+            .iter()
+            .position(|group| !group.members.is_empty())
+            .expect("fixture design produces at least one group");
+        let members = session.design.grouping.groups[group_index].members.clone();
+
+        let group_response = session
+            .source_for_nodes_json(&serde_json::to_string(&[base + group_index as u32]).unwrap())
+            .expect("group id resolves");
+        let member_response = session
+            .source_for_nodes_json(&serde_json::to_string(&members).unwrap())
+            .expect("member ids resolve");
+        // A synthetic group id attributes exactly as the union of its
+        // members, and the wire shape keeps its snake_case contract.
+        assert_eq!(group_response, member_response);
+        let parsed: serde_json::Value = serde_json::from_str(&group_response).unwrap();
+        for key in ["exact", "contributing", "approximate", "truncated"] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        for span in parsed["exact"].as_array().unwrap() {
+            assert!(span.get("start_line").is_some());
+            assert!(span.get("file").is_some());
+        }
+    }
 }

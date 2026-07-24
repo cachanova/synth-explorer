@@ -33,8 +33,7 @@ pub struct AnalysisDesign {
     pub delay_model: DelayModel,
     pub delay_profile: DelayProfile,
     /// RTL-snapshot correlation index for schematic→source attribution.
-    /// Absent when the snapshot's top module could not be resolved.
-    correlation: Option<CorrelationIndex>,
+    correlation: CorrelationIndex,
     mode: String,
 }
 
@@ -80,7 +79,9 @@ impl AnalysisDesign {
         let memory_arrays =
             memory_arrays_from_source(&graph, source_netlist, source_top, registers);
         let grouping = GroupPartition::build(&graph, registers, memory_arrays);
-        let correlation = CorrelationIndex::build(source_netlist, source_top, dialect).ok();
+        // Infallible in practice: select_top already resolved this module.
+        let correlation = CorrelationIndex::build(source_netlist, source_top, dialect)
+            .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
 
         Ok(Self {
             graph,
@@ -95,13 +96,7 @@ impl AnalysisDesign {
 
     /// Tiered source attribution for selected schematic nodes.
     pub fn source_tiers_for_nodes(&self, ids: &[u32]) -> SourceNodeTiersResponse {
-        let Some(correlation) = &self.correlation else {
-            return SourceNodeTiersResponse {
-                approximate: true,
-                ..SourceNodeTiersResponse::default()
-            };
-        };
-        source_tiers_for_nodes(&self.graph, correlation, ids)
+        source_tiers_for_nodes(&self.graph, &self.correlation, ids)
     }
 
     pub fn stats(&self) -> Stats {

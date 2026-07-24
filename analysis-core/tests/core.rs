@@ -1733,3 +1733,132 @@ fn schematic_selection_attributes_tiered_source_spans() {
     assert!(lines(&register_tiers.contributing).contains(&3));
     assert!(!register_tiers.approximate);
 }
+
+#[test]
+fn abc_renamed_flops_and_anonymous_nets_attribute_approximately() {
+    let source_netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4, 5]},
+              "b": {"direction": "input", "bits": [6, 7]},
+              "q": {"direction": "output", "bits": [12, 13]}
+            },
+            "cells": {
+              "$add$top.sv:2$1": {
+                "type": "$add",
+                "attributes": {"src": "top.sv:2.20-2.25"},
+                "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                "connections": {"A": [4, 5], "B": [6, 7], "Y": [8, 9]}
+              },
+              "$and$top.sv:3$2": {
+                "type": "$and",
+                "attributes": {"src": "top.sv:3.22-3.29"},
+                "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                "connections": {"A": [8, 9], "B": [6, 7], "Y": [10, 11]}
+              },
+              "$procmux$3": {
+                "type": "$mux",
+                "attributes": {"src": "top.sv:5.13-5.24|top.sv:6.13-6.22"},
+                "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"},
+                "connections": {"A": [8, 9], "B": [10, 11], "S": [3], "Y": [14, 15]}
+              },
+              "$procdff$4": {
+                "type": "$dff",
+                "attributes": {"src": "top.sv:4.3-6.22"},
+                "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                "connections": {"CLK": [2], "D": [14, 15], "Q": [12, 13]}
+              }
+            },
+            "netnames": {
+              "sum": {"bits": [8, 9]},
+              "gated": {"bits": [10, 11]},
+              "q": {"bits": [12, 13]},
+              "a": {"bits": [4, 5]},
+              "b": {"bits": [6, 7]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    // Mapped: lut_a drives an anonymous net (30) consumed by lut_b, and the
+    // flop was rebuilt under an $abc$ name (abc -dff shape).
+    let netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4]},
+              "b": {"direction": "input", "bits": [6]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "$abc$8$lut_a": {
+                "type": "$lut",
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [4, 6], "Y": [30]}
+              },
+              "$abc$9$lut_b": {
+                "type": "$lut",
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [30, 6], "Y": [10]}
+              },
+              "$abc$77$q_dff": {
+                "type": "$_DFF_P_",
+                "port_directions": {"C": "input", "D": "input", "Q": "output"},
+                "connections": {"C": [2], "D": [10], "Q": [12]}
+              }
+            },
+            "netnames": {
+              "gated": {"bits": [10]},
+              "q": {"bits": [12]},
+              "a": {"bits": [4]},
+              "b": {"bits": [6]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
+        "lut4",
+        DelayProfile::Generic,
+        NetlistDialect::Yosys,
+    )
+    .unwrap();
+    let lines = |spans: &[synth_explorer_analysis::source::SourceTierSpan]| {
+        spans.iter().map(|span| span.start_line).collect::<Vec<_>>()
+    };
+
+    // Selecting lut_a expands forward through the anonymous net to the
+    // nearest resolvable boundary (`gated`), attributing the merged region
+    // as a flagged superset.
+    let lut_a = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.raw_name.contains("lut_a"))
+        .unwrap();
+    let tiers = design.source_tiers_for_nodes(&[lut_a.id]);
+    assert_eq!(lines(&tiers.exact), vec![2, 3]);
+    assert!(tiers.approximate);
+
+    // An $abc$-renamed flop still attributes through its Q net but is
+    // flagged approximate: abc -dff rebuilds make flop matching unreliable.
+    let dff = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.raw_name.starts_with("$abc$77$"))
+        .unwrap();
+    let register_tiers = design.source_tiers_for_nodes(&[dff.id]);
+    assert_eq!(lines(&register_tiers.exact), vec![5, 6]);
+    assert!(register_tiers.approximate);
+}
