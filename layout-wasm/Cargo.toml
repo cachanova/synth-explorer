@@ -9,7 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 js-sys = "=0.3.99"
-schemweave = { git = "https://github.com/cachanova/schemweave.git", rev = "a77abaf4d703ec09c5f89ab1f71459a60fe1b0ba" }
+schemweave = { git = "https://github.com/cachanova/schemweave.git", rev = "81065486f9fe202af9a86d6123e594ab4a4dd194" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wasm-bindgen = "=0.2.122"
