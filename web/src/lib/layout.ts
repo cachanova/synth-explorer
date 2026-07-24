@@ -1562,9 +1562,8 @@ function fragmentSignature(
   )
 }
 
-function boundaryFragmentKey(
+function boundaryFragmentEndpointKey(
   edge: SchemWeaveGraph['edges'][number],
-  fragment: SchemWeaveGraphCatalog['fragments'][number],
   members: ReadonlySet<number>,
   anchor?: number,
 ): string | null {
@@ -1576,8 +1575,25 @@ function boundaryFragmentKey(
     : edge.target.node === anchor
   if (sourceInside === targetInside) return null
   return sourceInside
-    ? `out:${edge.target.node}:${edge.target.port}|${fragment.netKey}`
-    : `in:${edge.source.node}:${edge.source.port}|${fragment.netKey}`
+    ? `out:${edge.target.node}:${edge.target.port}`
+    : `in:${edge.source.node}:${edge.source.port}`
+}
+
+function boundaryFragmentKey(
+  edge: SchemWeaveGraph['edges'][number],
+  fragment: SchemWeaveGraphCatalog['fragments'][number],
+  members: ReadonlySet<number>,
+  anchor?: number,
+): string | null {
+  const endpointKey = boundaryFragmentEndpointKey(edge, members, anchor)
+  return endpointKey == null ? null : `${endpointKey}|${fragment.netKey}`
+}
+
+function normalizedFragmentBits(
+  fragment: SchemWeaveGraphCatalog['fragments'][number],
+): number[] {
+  return [...new Set(fragment.netBits ?? [])]
+    .sort((left, right) => left - right)
 }
 
 /**
@@ -1677,8 +1693,22 @@ export function buildSchemWeaveExpansionRequest(
       target: remapEndpoint(edge.target),
     })),
   }
+  interface CompactBoundaryTrunk {
+    exactKey: string
+    endpointKey: string
+    netBits: number[]
+    netBitSet: Set<number>
+    ids: number[]
+  }
+  interface ExpandedBoundaryEdge {
+    id: number
+    exactKey: string
+    endpointKey: string
+    netKey: string
+    netBits: number[]
+  }
   const compactRetainedBySignature = new Map<string, number[]>()
-  const compactTrunksByKey = new Map<string, number[]>()
+  const compactTrunksByKey = new Map<string, CompactBoundaryTrunk>()
 
   compactGraph.edges.forEach((edge) => {
     const fragment = compactFragments[edge.id]
@@ -1691,34 +1721,69 @@ export function buildSchemWeaveExpansionRequest(
       members,
       group.id,
     )
-    const catalog = boundaryKey == null
-      ? compactRetainedBySignature
-      : compactTrunksByKey
-    const key = boundaryKey ?? fragmentSignature(edge, fragment)
-    const ids = catalog.get(key) ?? []
-    ids.push(edge.id)
-    catalog.set(key, ids)
+    if (boundaryKey == null) {
+      const key = fragmentSignature(edge, fragment)
+      const ids = compactRetainedBySignature.get(key) ?? []
+      ids.push(edge.id)
+      compactRetainedBySignature.set(key, ids)
+      return
+    }
+    const endpointKey = boundaryFragmentEndpointKey(
+      edge,
+      members,
+      group.id,
+    )
+    if (endpointKey == null) {
+      throw new Error(`failed to classify compact boundary edge ${edge.id}`)
+    }
+    const netBits = normalizedFragmentBits(fragment)
+    const trunk = compactTrunksByKey.get(boundaryKey)
+    if (trunk) {
+      if (compareNumberArrays(trunk.netBits, netBits) !== 0) {
+        throw new Error(
+          `compact boundary trunk ${boundaryKey} has inconsistent net bits`,
+        )
+      }
+      trunk.ids.push(edge.id)
+      return
+    }
+    compactTrunksByKey.set(boundaryKey, {
+      exactKey: boundaryKey,
+      endpointKey,
+      netBits,
+      netBitSet: new Set(netBits),
+      ids: [edge.id],
+    })
   })
-  for (const ids of [
-    ...compactRetainedBySignature.values(),
-    ...compactTrunksByKey.values(),
-  ]) {
+  for (const ids of compactRetainedBySignature.values()) {
     ids.sort((left, right) => left - right)
   }
+  for (const trunk of compactTrunksByKey.values()) {
+    trunk.ids.sort((left, right) => left - right)
+  }
 
-  const boundaryByKey = new Map<string, number[]>()
+  const expandedBoundary: ExpandedBoundaryEdge[] = []
   const retainedAssignments = new Map<number, number>()
   const internalEdges: number[] = []
   expandedGraph.edges.forEach((edge) => {
     const fragment = expanded.catalog.fragments[edge.id]
+    if (!fragment) {
+      throw new Error(`expanded SchemWeave graph is missing edge ${edge.id}`)
+    }
     const sourceMember = members.has(edge.source.node)
     const targetMember = members.has(edge.target.node)
     if (sourceMember !== targetMember) {
-      const key = boundaryFragmentKey(edge, fragment, members)
-      if (key == null) throw new Error('failed to classify expansion boundary edge')
-      const ids = boundaryByKey.get(key) ?? []
-      ids.push(edge.id)
-      boundaryByKey.set(key, ids)
+      const endpointKey = boundaryFragmentEndpointKey(edge, members)
+      if (endpointKey == null) {
+        throw new Error('failed to classify expansion boundary edge')
+      }
+      expandedBoundary.push({
+        id: edge.id,
+        exactKey: `${endpointKey}|${fragment.netKey}`,
+        endpointKey,
+        netKey: fragment.netKey,
+        netBits: normalizedFragmentBits(fragment),
+      })
       return
     }
     if (sourceMember) {
@@ -1745,26 +1810,113 @@ export function buildSchemWeaveExpansionRequest(
 
   const boundaryAssignments = new Map<number, number>()
   const boundaryTrunks = new Map<number, number>()
-  for (const [key, compactIds] of compactTrunksByKey) {
-    const expandedIds = boundaryByKey.get(key) ?? []
-    if (expandedIds.length < compactIds.length) {
-      throw new Error(`expanded group omitted collapsed boundary trunk ${key}`)
+  const compactTrunksByEndpointBit = new Map<
+    string,
+    Map<number, CompactBoundaryTrunk[]>
+  >()
+  const compactTrunks = [...compactTrunksByKey.values()]
+    .sort((left, right) => left.exactKey.localeCompare(right.exactKey))
+  for (const trunk of compactTrunks) {
+    let byBit = compactTrunksByEndpointBit.get(trunk.endpointKey)
+    if (!byBit) {
+      byBit = new Map()
+      compactTrunksByEndpointBit.set(trunk.endpointKey, byBit)
     }
-    compactIds.forEach((compactId, index) => {
-      const expandedId = expandedIds[index]
+    for (const bit of trunk.netBits) {
+      const trunks = byBit.get(bit) ?? []
+      trunks.push(trunk)
+      byBit.set(bit, trunks)
+    }
+  }
+  for (const byBit of compactTrunksByEndpointBit.values()) {
+    for (const trunks of byBit.values()) {
+      trunks.sort((left, right) => left.exactKey.localeCompare(right.exactKey))
+    }
+  }
+  const compareExpandedBoundary = (
+    left: ExpandedBoundaryEdge,
+    right: ExpandedBoundaryEdge,
+  ) =>
+    compareNumberArrays(left.netBits, right.netBits) ||
+    left.netKey.localeCompare(right.netKey) ||
+    left.id - right.id
+  const expandedByTrunk = new Map<
+    CompactBoundaryTrunk,
+    ExpandedBoundaryEdge[]
+  >()
+  for (const expandedEdge of expandedBoundary.sort(compareExpandedBoundary)) {
+    const candidates: CompactBoundaryTrunk[] = []
+    if (expandedEdge.netBits.length > 0) {
+      const firstBit = expandedEdge.netBits[0]
+      const bitCandidates =
+        compactTrunksByEndpointBit.get(expandedEdge.endpointKey)
+          ?.get(firstBit) ?? []
+      for (const candidate of bitCandidates) {
+        if (
+          expandedEdge.netBits.every((bit) => candidate.netBitSet.has(bit))
+        ) {
+          candidates.push(candidate)
+          if (candidates.length > 1) break
+        }
+      }
+      if (candidates.length === 0) {
+        const exact = compactTrunksByKey.get(expandedEdge.exactKey)
+        if (exact?.netBits.length === 0) candidates.push(exact)
+      }
+    } else {
+      const exact = compactTrunksByKey.get(expandedEdge.exactKey)
+      if (exact) candidates.push(exact)
+    }
+    if (candidates.length === 0) {
+      throw new Error(
+        `expanded group introduced an unmapped boundary edge ${expandedEdge.exactKey}`,
+      )
+    }
+    if (candidates.length > 1) {
+      throw new Error(
+        `expanded boundary edge ${expandedEdge.exactKey} matches multiple ` +
+        `collapsed boundary trunks ${candidates
+          .map((candidate) => candidate.exactKey)
+          .join(', ')}`,
+      )
+    }
+    const trunk = candidates[0]
+    const matches = expandedByTrunk.get(trunk) ?? []
+    matches.push(expandedEdge)
+    expandedByTrunk.set(trunk, matches)
+  }
+
+  for (const trunk of compactTrunks) {
+    const expandedEdges =
+      (expandedByTrunk.get(trunk) ?? []).sort(compareExpandedBoundary)
+    if (expandedEdges.length < trunk.ids.length) {
+      throw new Error(
+        `expanded group omitted collapsed boundary trunk ${trunk.exactKey}`,
+      )
+    }
+    if (
+      trunk.netBits.length > 0 &&
+      expandedEdges.every((edge) => edge.netBits.length > 0)
+    ) {
+      const coveredBits = new Set(
+        expandedEdges.flatMap((edge) => edge.netBits),
+      )
+      const missingBits = trunk.netBits.filter((bit) => !coveredBits.has(bit))
+      if (missingBits.length > 0) {
+        throw new Error(
+          `expanded group omitted collapsed boundary bits ` +
+          `${missingBits.join(',')} from ${trunk.exactKey}`,
+        )
+      }
+    }
+    trunk.ids.forEach((compactId, index) => {
+      const expandedId = expandedEdges[index].id
       boundaryAssignments.set(expandedId, compactId)
       boundaryTrunks.set(expandedId, compactId)
     })
-    expandedIds.slice(compactIds.length).forEach((expandedId) => {
-      boundaryTrunks.set(expandedId, compactIds[0])
+    expandedEdges.slice(trunk.ids.length).forEach((expandedEdge) => {
+      boundaryTrunks.set(expandedEdge.id, trunk.ids[0])
     })
-    boundaryByKey.delete(key)
-  }
-  const unmatchedBoundary = [...boundaryByKey.keys()][0]
-  if (unmatchedBoundary) {
-    throw new Error(
-      `expanded group introduced an unmapped boundary edge ${unmatchedBoundary}`,
-    )
   }
 
   let nextId = compactGraph.edges.length
