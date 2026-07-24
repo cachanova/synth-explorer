@@ -620,6 +620,59 @@ describe('GraphView LUT labels', () => {
     expect(selectedEdgeIndexes(markup)).toEqual([0, 1])
   })
 
+  it('dims unrelated nodes and edges while selected and clears dimming on deselect', () => {
+    const graph = {
+      nodes: [1, 2, 3, 4].map((id) => ({
+        id,
+        x: id * 100,
+        y: id > 2 ? 80 : 0,
+        width: 76,
+        height: 52,
+        node: {
+          id,
+          kind: 'cell' as const,
+          name: `node${id}`,
+          cell_type: '$_BUF_',
+        },
+      })),
+      edges: [
+        laidOutEdge(1, 2, 'selected_component'),
+        laidOutEdge(3, 4, 'disconnected_component'),
+      ],
+      width: 500,
+      height: 132,
+    }
+    const renderGraph = (selectedId: number | null) => renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={selectedId}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    const selectedMarkup = renderGraph(2)
+    const nodeTags =
+      selectedMarkup.match(/<g[^>]*class="g-node-body[^>]*>/g) ?? []
+    const nodeTag = (nodeId: number) =>
+      nodeTags.find((tag) => tag.includes(`data-node-id="${nodeId}"`))
+    expect(nodeTag(1)).not.toContain('g-dimmed')
+    expect(nodeTag(2)).not.toContain('g-dimmed')
+    expect(nodeTag(3)).toContain('g-dimmed')
+    expect(nodeTag(4)).toContain('g-dimmed')
+    expect(selectedMarkup).toMatch(
+      /<path class="g-edge g-dimmed"[^>]*data-edge-count="1"/,
+    )
+
+    const deselectedMarkup = renderGraph(null)
+    expect(deselectedMarkup).not.toContain('g-dimmed')
+  })
+
   it('highlights visible wires represented by a selected grouped node', () => {
     const markup = renderToStaticMarkup(
       <GraphView

@@ -54,6 +54,7 @@ import {
   edgeHitCellKey,
   edgeHitCellKeys,
 } from '../lib/edgeHitGrid'
+import { relatedCone, type RelatedCone } from '../lib/relatedCone'
 
 interface RegisterControlPin {
   pin: string
@@ -105,6 +106,10 @@ const EMPTY_NODE_PINS: NodePins = { incoming: [], outgoing: [], controlInputs: [
 const EMPTY_HIGHLIGHTED_BITS = new Set<number>()
 const EMPTY_EXPANDED_GROUPS: ExpandedGroupFrame[] = []
 const EMPTY_SELECTED_NET_NAMES: string[] = []
+const EMPTY_RELATED_CONE: RelatedCone = {
+  nodeIds: new Set<number>(),
+  edgeKeys: new Set<number>(),
+}
 
 interface MutableNodePins {
   incoming: Set<string>
@@ -689,6 +694,7 @@ interface SchematicNodeProps {
   relevant: boolean
   highlighted: boolean
   selected: boolean
+  dimmed: boolean
   portDirection: PortDirection
   interactive: boolean
   tabIndex: 0 | -1
@@ -720,6 +726,7 @@ const SchematicNode = memo(function SchematicNode({
   relevant,
   highlighted,
   selected,
+  dimmed,
   portDirection,
   interactive,
   tabIndex,
@@ -742,7 +749,7 @@ const SchematicNode = memo(function SchematicNode({
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       data-graph-node-id={node.id}
       data-node-tooltip={title}
-      className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${interactive ? '' : ' noninteractive'}`}
+      className={`g-node-body g-symbol-${kind}${highlighted ? ' hl' : ''}${selected ? ' selected' : ''}${dimmed ? ' g-dimmed' : ''}${interactive ? '' : ' noninteractive'}`}
       data-relevant={relevant ? 1 : 0}
       data-node-id={node.id}
       data-member-count={node.member_count ?? node.width}
@@ -802,6 +809,8 @@ interface SchematicNodeShellsProps {
   relevantIds: Set<number>
   overlayIds: Set<number>
   selectedId: number | null
+  relatedNodeIds: Set<number>
+  selectionActive: boolean
   portDirection: Map<number, PortDirection>
   interactive: boolean
   rovingTabStopId: number | null
@@ -815,6 +824,8 @@ const SchematicNodeShells = memo(function SchematicNodeShells({
   relevantIds,
   overlayIds,
   selectedId,
+  relatedNodeIds,
+  selectionActive,
   portDirection,
   interactive,
   rovingTabStopId,
@@ -829,6 +840,7 @@ const SchematicNodeShells = memo(function SchematicNodeShells({
       relevant={relevantIds.size === 0 || relevantIds.has(laidOutNode.id)}
       highlighted={overlayIds.has(laidOutNode.id)}
       selected={laidOutNode.id === selectedId}
+      dimmed={selectionActive && !relatedNodeIds.has(laidOutNode.id)}
       portDirection={portDirection.get(laidOutNode.id) ?? 'input'}
       interactive={interactive}
       tabIndex={laidOutNode.id === rovingTabStopId ? 0 : -1}
@@ -1184,6 +1196,7 @@ function SchematicNodeDetails({
   highlighted,
   relevant,
   selected,
+  dimmed,
   portDirection,
   pins,
   forceFull,
@@ -1195,6 +1208,7 @@ function SchematicNodeDetails({
   highlighted: boolean
   relevant: boolean
   selected: boolean
+  dimmed: boolean
   portDirection: PortDirection
   pins: NodePins
   forceFull: boolean
@@ -1210,7 +1224,7 @@ function SchematicNodeDetails({
   const renderedLevel = forceFull ? 'full' : detailLevel
   return (
     <g
-      className={`g-node-details${forceFull ? ' force-full' : ''}`}
+      className={`g-node-details${forceFull ? ' force-full' : ''}${dimmed ? ' g-dimmed' : ''}`}
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       data-node-detail-id={node.id}
       data-relevant={relevant ? 1 : 0}
@@ -1261,6 +1275,7 @@ function SchematicNodeStack({
   highlighted,
   relevant,
   selected,
+  dimmed,
   portDirection,
   forceFull,
 }: {
@@ -1269,6 +1284,7 @@ function SchematicNodeStack({
   highlighted: boolean
   relevant: boolean
   selected: boolean
+  dimmed: boolean
   portDirection: PortDirection
   forceFull: boolean
 }) {
@@ -1282,7 +1298,7 @@ function SchematicNodeStack({
   const strokeWidth = selected ? 2.4 : visual.isRoot || highlighted ? 1.8 : 1.2
   return (
     <g
-      className={`g-node-details${forceFull ? ' force-full' : ''}`}
+      className={`g-node-details${forceFull ? ' force-full' : ''}${dimmed ? ' g-dimmed' : ''}`}
       transform={`translate(${laidOutNode.x},${laidOutNode.y})`}
       data-node-stack-id={node.id}
       data-relevant={relevant ? 1 : 0}
@@ -1331,6 +1347,8 @@ interface SchematicNodeDetailOverlaysProps {
   relevantIds: Set<number>
   overlayIds: Set<number>
   selectedId: number | null
+  relatedNodeIds: Set<number>
+  selectionActive: boolean
   interactive: boolean
   onControlSelect?: (control: ControlRef, node: GraphNode) => void
 }
@@ -1350,6 +1368,8 @@ const SchematicNodeDetailOverlays = memo(function SchematicNodeDetailOverlays({
   relevantIds,
   overlayIds,
   selectedId,
+  relatedNodeIds,
+  selectionActive,
   interactive,
   onControlSelect,
 }: SchematicNodeDetailOverlaysProps) {
@@ -1392,6 +1412,7 @@ const SchematicNodeDetailOverlays = memo(function SchematicNodeDetailOverlays({
           highlighted={overlayIds.has(nodeId)}
           relevant={relevantIds.size === 0 || relevantIds.has(nodeId)}
           selected={nodeId === selectedId}
+          dimmed={selectionActive && !relatedNodeIds.has(nodeId)}
           portDirection={portDirection.get(nodeId) ?? 'input'}
           forceFull={nodeId === selectedId || nodeId === focusedId}
         />
@@ -1405,6 +1426,7 @@ const SchematicNodeDetailOverlays = memo(function SchematicNodeDetailOverlays({
           highlighted={overlayIds.has(nodeId)}
           relevant={relevantIds.size === 0 || relevantIds.has(nodeId)}
           selected={nodeId === selectedId}
+          dimmed={selectionActive && !relatedNodeIds.has(nodeId)}
           portDirection={portDirection.get(nodeId) ?? 'input'}
           pins={pinsById.get(nodeId) ?? EMPTY_NODE_PINS}
           forceFull={nodeId === selectedId || nodeId === focusedId}
@@ -1547,6 +1569,7 @@ interface PreparedSchematicEdge {
   relevant: boolean
   control: boolean
   highlighted: boolean
+  dimmed: boolean
   batchKey: string
   mid: Point | null
 }
@@ -1560,6 +1583,7 @@ interface SchematicEdgeBatch {
   control: boolean
   isBus: boolean
   highlighted: boolean
+  dimmed: boolean
 }
 
 interface SchematicArrowBatch {
@@ -1569,6 +1593,7 @@ interface SchematicArrowBatch {
   relevant: boolean
   control: boolean
   highlighted: boolean
+  dimmed: boolean
 }
 
 interface PreparedSchematicEdges {
@@ -1585,16 +1610,18 @@ function edgeBatchKey(
   control: boolean,
   isBus: boolean,
   highlighted: boolean,
+  dimmed = false,
 ): string {
-  return `${relevant ? 1 : 0}${control ? 1 : 0}${isBus ? 1 : 0}${highlighted ? 1 : 0}`
+  return `${relevant ? 1 : 0}${control ? 1 : 0}${isBus ? 1 : 0}${highlighted ? 1 : 0}${dimmed ? 1 : 0}`
 }
 
 function edgeClassName(
   control: boolean,
   isBus: boolean,
   highlighted: boolean,
+  dimmed = false,
 ): string {
-  return `g-edge${control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}`
+  return `g-edge${control ? ' control' : ''}${isBus ? ' bus' : ''}${highlighted ? ' hl' : ''}${dimmed ? ' g-dimmed' : ''}`
 }
 
 function edgePaintOrder(batch: {
@@ -1602,6 +1629,7 @@ function edgePaintOrder(batch: {
   control: boolean
   isBus?: boolean
   highlighted: boolean
+  dimmed?: boolean
 }): number {
   // Paint context first and highlighted nets last. This makes the semantic
   // overlay deterministic instead of depending on backend edge order.
@@ -1609,7 +1637,8 @@ function edgePaintOrder(batch: {
     (batch.highlighted ? 8 : 0) +
     (batch.relevant ? 4 : 0) +
     (batch.control ? 2 : 0) +
-    (batch.isBus ? 1 : 0)
+    (batch.isBus ? 1 : 0) +
+    (batch.dimmed ? 0 : 16)
   )
 }
 
@@ -1666,6 +1695,8 @@ function prepareSchematicEdges({
   overlayIds,
   highlightedBits,
   extendOverlayToBoundaryNets,
+  relatedEdgeKeys,
+  selectionActive,
 }: {
   edges: LaidOutEdge[]
   nodeById: Map<number, LaidOutNode>
@@ -1673,6 +1704,8 @@ function prepareSchematicEdges({
   overlayIds: Set<number>
   highlightedBits: Set<number>
   extendOverlayToBoundaryNets: boolean
+  relatedEdgeKeys: Set<number>
+  selectionActive: boolean
 }): PreparedSchematicEdges {
   const prepared: PreparedSchematicEdge[] = []
   const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
@@ -1721,7 +1754,8 @@ function prepareSchematicEdges({
     const bits = laidOutEdge.edge.bits.length
     const isBus = bits > 1
     const control = Boolean(laidOutEdge.edge.control)
-    const batchKey = edgeBatchKey(relevant, control, isBus, highlighted)
+    const dimmed = selectionActive && !relatedEdgeKeys.has(index)
+    const batchKey = edgeBatchKey(relevant, control, isBus, highlighted, dimmed)
     const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
     const title = `${shortNetName(laidOutEdge.edge.net_name)} (${bits} bit${isBus ? 's' : ''}): ${laidOutEdge.edge.from_port}→${laidOutEdge.edge.to_port}`
     const edge: PreparedSchematicEdge = {
@@ -1736,6 +1770,7 @@ function prepareSchematicEdges({
       relevant,
       control,
       highlighted,
+      dimmed,
       batchKey,
       mid,
     }
@@ -1759,6 +1794,7 @@ function prepareSchematicEdges({
         control,
         isBus,
         highlighted,
+        dimmed,
         paths: [],
       }
       batchBuilders.set(batchKey, batch)
@@ -1769,7 +1805,7 @@ function prepareSchematicEdges({
 
     const arrow = edgeArrowD(points, edgeStrokeWidth(edge))
     if (arrow) {
-      const arrowKey = `${relevant ? 1 : 0}${control ? 1 : 0}${highlighted ? 1 : 0}`
+      const arrowKey = `${relevant ? 1 : 0}${control ? 1 : 0}${highlighted ? 1 : 0}${dimmed ? 1 : 0}`
       let arrowBatch = arrowBuilders.get(arrowKey)
       if (!arrowBatch) {
         arrowBatch = {
@@ -1779,6 +1815,7 @@ function prepareSchematicEdges({
           relevant,
           control,
           highlighted,
+          dimmed,
           paths: [],
         }
         arrowBuilders.set(arrowKey, arrowBatch)
@@ -1812,7 +1849,12 @@ const SchematicEdges = memo(function SchematicEdges({ prepared }: SchematicEdges
       {prepared.batches.map((batch) => (
         <path
           key={batch.key}
-          className={edgeClassName(batch.control, batch.isBus, batch.highlighted)}
+          className={edgeClassName(
+            batch.control,
+            batch.isBus,
+            batch.highlighted,
+            batch.dimmed,
+          )}
           d={batch.d}
           data-edge-batch={batch.key}
           data-edge-count={batch.count}
@@ -1824,7 +1866,7 @@ const SchematicEdges = memo(function SchematicEdges({ prepared }: SchematicEdges
       {prepared.arrows.map((batch) => (
         <path
           key={batch.key}
-          className={`g-edge-arrows${batch.control ? ' control' : ''}${batch.highlighted ? ' hl' : ''}`}
+          className={`g-edge-arrows${batch.control ? ' control' : ''}${batch.highlighted ? ' hl' : ''}${batch.dimmed ? ' g-dimmed' : ''}`}
           d={batch.d}
           data-arrow-count={batch.count}
           data-relevant={batch.relevant ? 1 : 0}
@@ -1834,7 +1876,7 @@ const SchematicEdges = memo(function SchematicEdges({ prepared }: SchematicEdges
       {prepared.edges.map((edge) => edge.isBus && edge.mid ? (
         <text
           key={edge.index}
-          className="g-bus-label"
+          className={`g-bus-label${edge.dimmed ? ' g-dimmed' : ''}`}
           x={edge.mid.x}
           y={edge.mid.y - 3}
           textAnchor="middle"
@@ -2417,6 +2459,27 @@ export const GraphView = memo(function GraphView({
       group.members.map((member) => [member, group.id] as const),
     ),
   ), [expandedGroups])
+  const selectedRelatedCone = useMemo<RelatedCone | null>(() => {
+    let cone: RelatedCone
+    const nodes = graph.nodes.map((laidOutNode) => ({
+      id: laidOutNode.id,
+      members: laidOutNode.node.members,
+    }))
+    if (selectedId != null) {
+      cone = relatedCone(nodes, graph.edges, { kind: 'node', nodeId: selectedId })
+    } else if (selectedNetNames.length > 0) {
+      const names = new Set(selectedNetNames)
+      const edgeKeys = graph.edges.flatMap((edge, index) =>
+        names.has(edge.edge.net_name) ? [index] : [],
+      )
+      cone = relatedCone(nodes, graph.edges, { kind: 'edge', edgeKeys })
+    } else {
+      return null
+    }
+    return cone.nodeIds.size > 0 || cone.edgeKeys.size > 0 ? cone : null
+  }, [graph.edges, graph.nodes, selectedId, selectedNetNames])
+  const selectionActive = selectedRelatedCone != null
+  const related = selectedRelatedCone ?? EMPTY_RELATED_CONE
   const preparedEdges = useMemo(
     () => prepareSchematicEdges({
       edges: graph.edges,
@@ -2425,6 +2488,8 @@ export const GraphView = memo(function GraphView({
       overlayIds,
       highlightedBits,
       extendOverlayToBoundaryNets,
+      relatedEdgeKeys: related.edgeKeys,
+      selectionActive,
     }),
     [
       extendOverlayToBoundaryNets,
@@ -2433,6 +2498,8 @@ export const GraphView = memo(function GraphView({
       metadata.nodeById,
       overlayIds,
       relevantIds,
+      related.edgeKeys,
+      selectionActive,
     ],
   )
   const selectedEdges = useMemo(() => {
@@ -3160,6 +3227,8 @@ export const GraphView = memo(function GraphView({
             relevantIds={relevantIds}
             overlayIds={overlayIds}
             selectedId={selectedId}
+            relatedNodeIds={related.nodeIds}
+            selectionActive={selectionActive}
             interactive={interactive}
             onControlSelect={onControlSelect}
           >
@@ -3169,6 +3238,8 @@ export const GraphView = memo(function GraphView({
               relevantIds={relevantIds}
               overlayIds={overlayIds}
               selectedId={selectedId}
+              relatedNodeIds={related.nodeIds}
+              selectionActive={selectionActive}
               portDirection={metadata.portDirection}
               interactive={interactive}
               rovingTabStopId={rovingTabStopId}
