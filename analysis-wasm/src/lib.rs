@@ -155,6 +155,9 @@ pub struct AnalysisSession {
 #[wasm_bindgen]
 impl AnalysisSession {
     #[wasm_bindgen(constructor)]
+    // The wasm-bindgen constructor is positional at the JS boundary; a
+    // params struct would erase types on the worker side.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         design_id: &str,
         netlist_json: &str,
