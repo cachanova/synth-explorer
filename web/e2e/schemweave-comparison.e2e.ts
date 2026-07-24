@@ -816,7 +816,7 @@ test('opening another group keeps the completed peer visible while prefixes relo
   await expect(page.locator('.msg.err')).toHaveCount(0)
 })
 
-test('middle collapse waits for delayed prefixes and preserves peer group state', async ({
+test('middle collapse stays incremental and preserves peer group state', async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -983,7 +983,7 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
     `[data-group-action="collapse"][data-group-id="${targets[1].id}"]`,
   )
   await page.waitForTimeout(50)
-  // The later prefix is deliberately delayed. Do not flash a partial layout.
+  // Keep the complete prior frame visible while the collapse is in flight.
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(3)
   await expect(
     page.locator(`[data-expanded-group-member="${targets[1].id}"]`),
@@ -993,10 +993,10 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
   ).toHaveCount(0)
   expect(await requestCounts()).toEqual({
     layout: 1,
-    expand: 4,
+    expand: 3,
     collapse: 1,
-    collapseStatus: 'needs_full_relayout',
-    collapseReason: 'geometry',
+    collapseStatus: 'layout',
+    collapseReason: null,
   })
   expect(await gridTopology(targets[0].id)).toEqual(firstShapeBefore)
   expect(await gridTopology(targets[2].id)).toEqual(thirdShapeBefore)
@@ -1014,10 +1014,10 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
   ).toHaveCount(0)
   expect(await requestCounts()).toEqual({
     layout: 1,
-    expand: 5,
+    expand: 3,
     collapse: 2,
-    collapseStatus: 'needs_full_relayout',
-    collapseReason: 'geometry',
+    collapseStatus: 'layout',
+    collapseReason: null,
   })
   expect(await gridTopology(targets[2].id)).toEqual(thirdShapeBefore)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
