@@ -11,7 +11,7 @@ if [[ "$actual_wasm_bindgen" != "$expected_wasm_bindgen" ]]; then
   exit 1
 fi
 
-expected_schemweave_rev="586f63b797b5b4d44d5d05f5d89cabb3064886d4"
+expected_schemweave_rev="a77abaf4d703ec09c5f89ab1f71459a60fe1b0ba"
 expected_schemweave_source="source = \"git+https://github.com/cachanova/schemweave.git?rev=$expected_schemweave_rev#$expected_schemweave_rev\""
 if ! grep -Fqx "$expected_schemweave_source" "$repo_dir/Cargo.lock"; then
   echo "Cargo.lock does not pin SchemWeave at $expected_schemweave_rev" >&2
