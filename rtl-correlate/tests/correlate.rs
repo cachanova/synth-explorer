@@ -94,6 +94,7 @@ fn lut_cone_attributes_enclosed_cells_exactly() {
         &MappedCut {
             outputs: vec!["$abc$7$gated".to_owned()],
             inputs: vec!["sum".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: false,
         },
@@ -111,6 +112,7 @@ fn register_attribution_reads_case_level_mux_sources() {
         &MappedCut {
             outputs: vec!["q".to_owned()],
             inputs: Vec::new(),
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: true,
         },
@@ -130,6 +132,7 @@ fn bit_suffixed_boundaries_resolve_single_bits() {
         &MappedCut {
             outputs: vec!["gated[1]".to_owned()],
             inputs: vec!["sum[1]".to_owned(), "b[1]".to_owned()],
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: false,
         },
@@ -145,6 +148,7 @@ fn unresolved_boundaries_flag_approximate_attribution() {
         &MappedCut {
             outputs: vec!["$techmap$something.internal".to_owned()],
             inputs: Vec::new(),
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: false,
         },
@@ -191,6 +195,7 @@ fn unconditional_register_falls_back_to_block_span() {
         &MappedCut {
             outputs: vec!["q".to_owned()],
             inputs: Vec::new(),
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: true,
         },
@@ -206,6 +211,7 @@ fn caps_truncate_instead_of_walking_unbounded() {
         &MappedCut {
             outputs: vec!["q".to_owned()],
             inputs: Vec::new(),
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: true,
         },
@@ -226,6 +232,7 @@ fn vivado_reg_suffixed_boundaries_resolve_via_dialect() {
         &MappedCut {
             outputs: vec!["q_reg".to_owned()],
             inputs: Vec::new(),
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: true,
         },
@@ -285,6 +292,7 @@ fn register_conditions_carry_select_cone_sources() {
         &MappedCut {
             outputs: vec!["q".to_owned()],
             inputs: Vec::new(),
+            feeds_registers: Vec::new(),
             truncated: false,
             selected_is_sequential: true,
         },

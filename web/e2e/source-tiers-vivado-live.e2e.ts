@@ -111,3 +111,50 @@ test('attributes tiered source through a real local Vivado synthesis', async ({
     )
     .toBe(true)
 })
+
+test('keeps register attribution precise in a standard (non-OOC) Vivado build', async ({
+  page,
+  baseURL,
+}) => {
+  const appOrigin = new URL(baseURL ?? 'http://127.0.0.1:4173').origin
+  test.skip(
+    !(await bridgeAvailable(appOrigin)),
+    'no local Vivado bridge on 127.0.0.1:32123',
+  )
+  test.setTimeout(600_000)
+
+  await page.goto('/')
+  await replaceEditorText(page, SOURCE)
+  await page.getByLabel('Top').fill('top')
+  await page.getByLabel('Synthesis tool').selectOption('vivado')
+  await expect(page.getByLabel('Family')).toBeVisible()
+  await expect
+    .poll(async () => (await page.getByLabel('Family').locator('option').count()), {
+      timeout: 30_000,
+    })
+    .toBeGreaterThan(0)
+  // Clearing the default -mode out_of_context runs a standard build with
+  // IBUF/OBUF insertion; buffer-net unmangling must keep boundaries intact.
+  await page.getByLabel('Vivado flags').fill('')
+
+  await page.getByRole('button', { name: 'Synthesize' }).click()
+  const analysisPane = page.locator('.pane-right')
+  await expect(analysisPane).toHaveAttribute('data-analysis-state', 'current', {
+    timeout: 480_000,
+  })
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const registerNode = page.locator('.g-node-body.g-symbol-reg').first()
+  await expect(registerNode).toBeVisible()
+  await registerNode.click()
+  await expect(registerNode).toHaveClass(/selected/)
+
+  const exactLines = page.locator('.cm-line.cm-src-hl')
+  await expect
+    .poll(() => exactLines.count(), { timeout: 30_000 })
+    .toBeGreaterThan(0)
+  await expect(
+    exactLines.filter({ hasText: 'if (sel) q <= sum;' }),
+  ).toHaveCount(1)
+  await expect(exactLines.filter({ hasText: 'else q <= b;' })).toHaveCount(1)
+})

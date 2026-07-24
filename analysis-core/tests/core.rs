@@ -1976,3 +1976,146 @@ fn vivado_dialect_attributes_renamed_registers_through_the_full_design() {
     assert_eq!(lines(&register_tiers.exact), vec![5, 6]);
     assert!(lines(&register_tiers.contributing).contains(&2));
 }
+
+#[test]
+fn vivado_standard_mode_buffered_netlist_attributes_registers_exactly() {
+    // Standard (non-OOC) Vivado shape from harvested netlists: IBUF/OBUF
+    // cells, `*_IBUF`/`*_OBUF` nets, and the flop Q driving the pre-buffer
+    // net rather than the port.
+    let source_netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4]},
+              "b": {"direction": "input", "bits": [6]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "$add$top.sv:2$1": {
+                "type": "$add",
+                "attributes": {"src": "top.sv:2.20-2.25"},
+                "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                "connections": {"A": [4], "B": [6], "Y": [8]}
+              },
+              "$procmux$2": {
+                "type": "$mux",
+                "attributes": {"src": "top.sv:5.13-5.22|top.sv:6.13-6.20"},
+                "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"},
+                "connections": {"A": [8], "B": [6], "S": [3], "Y": [14]}
+              },
+              "$procdff$3": {
+                "type": "$dff",
+                "attributes": {"src": "top.sv:4.3-6.20"},
+                "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                "connections": {"CLK": [2], "D": [14], "Q": [12]}
+              }
+            },
+            "netnames": {
+              "sum": {"bits": [8]},
+              "q": {"bits": [12]},
+              "a": {"bits": [4]},
+              "b": {"bits": [6]},
+              "sel": {"bits": [3]},
+              "clk": {"bits": [2]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4]},
+              "b": {"direction": "input", "bits": [6]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "clk_IBUF_BUFG_inst": {
+                "type": "BUFG",
+                "port_directions": {"I": "input", "O": "output"},
+                "connections": {"I": [20], "O": [21]}
+              },
+              "clk_IBUF_inst": {
+                "type": "IBUF",
+                "port_directions": {"I": "input", "O": "output"},
+                "connections": {"I": [2], "O": [20]}
+              },
+              "sel_IBUF_inst": {
+                "type": "IBUF",
+                "port_directions": {"I": "input", "O": "output"},
+                "connections": {"I": [3], "O": [22]}
+              },
+              "q_OBUF_inst": {
+                "type": "OBUF",
+                "port_directions": {"I": "input", "O": "output"},
+                "connections": {"I": [24], "O": [12]}
+              },
+              "q_i_1": {
+                "type": "LUT3",
+                "port_directions": {"I0": "input", "I1": "input", "I2": "input", "O": "output"},
+                "connections": {"I0": [4], "I1": [6], "I2": [22], "O": [14]}
+              },
+              "q_reg": {
+                "type": "FDRE",
+                "port_directions": {"C": "input", "D": "input", "Q": "output"},
+                "connections": {"C": [21], "D": [14], "Q": [24]}
+              }
+            },
+            "netnames": {
+              "clk_IBUF": {"bits": [20]},
+              "clk_IBUF_BUFG": {"bits": [21]},
+              "sel_IBUF": {"bits": [22]},
+              "q_OBUF": {"bits": [24]},
+              "q": {"bits": [12]},
+              "a": {"bits": [4]},
+              "b": {"bits": [6]},
+              "sel": {"bits": [3]},
+              "clk": {"bits": [2]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
+        "xilinx",
+        DelayProfile::Series7,
+        NetlistDialect::Vivado,
+    )
+    .unwrap();
+    let lines = |spans: &[synth_explorer_analysis::source::SourceTierSpan]| {
+        spans.iter().map(|span| span.start_line).collect::<Vec<_>>()
+    };
+
+    // The flop's Q drives the pre-buffer `q_OBUF` net; the dialect resolves
+    // it to RTL `q`, so attribution stays statement-precise and clean.
+    let dff = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("FDRE"))
+        .unwrap();
+    let register_tiers = design.source_tiers_for_nodes(&[dff.id]);
+    assert_eq!(lines(&register_tiers.exact), vec![5, 6]);
+    assert!(!register_tiers.approximate);
+
+    // The LUT consumes `sel_IBUF`/port nets and drives the flop D: its
+    // boundaries all resolve, keeping the exact tier tight.
+    let lut = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("LUT3"))
+        .unwrap();
+    let lut_tiers = design.source_tiers_for_nodes(&[lut.id]);
+    assert!(lines(&lut_tiers.exact).contains(&5) || lines(&lut_tiers.exact).contains(&2));
+}
