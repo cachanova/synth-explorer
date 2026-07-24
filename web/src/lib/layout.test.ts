@@ -1,21 +1,29 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
+import type { SchemWeaveWorkerRequest } from '../workers/schemweaveProtocol'
 import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
 import {
+  buildSchemWeaveCollapseRequest,
+  buildSchemWeaveExpansionRequest,
+  buildSchemWeaveLayoutRequest,
   clearLayoutGeometryCache,
+  comparisonLayoutEngine,
+  configureLayoutWorkerFactory,
   controlRoleForPin,
   DENSE_LAYOUT_NODE_THRESHOLD,
   DENSE_LONGEST_PATH_EDGE_DENSITY,
   fitViewportToContent,
   hydrateLayoutResult,
+  interpretSchemWeaveResult,
   interpretResult,
   LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
   LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
+  layoutCollapsedGroupWithSchemWeave,
+  layoutExpandedGroupWithSchemWeave,
   MAX_GLOBAL_LAYOUT_COMPONENTS,
-  layoutExpandedGroupInPlace,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
   NETWORK_SIMPLEX_NODE_LIMIT,
@@ -25,18 +33,346 @@ import {
   prewarmLayoutWorker,
   preserveViewportAnchor,
   prepareLayoutInput,
-  REG_BODY_HEIGHT,
-  REG_DATA_IN_Y_FRAC,
-  REG_DATA_OUT_Y_FRAC,
-  registerControlYFraction,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   shouldRefitProjection,
   toElkGraph,
+  toSchemWeaveLayoutRequest,
   type LayoutInput,
+  type SchemWeaveLayout,
+  type SchemWeaveSnapshot,
   viewportTransformAttribute,
   zoomViewportAt,
 } from './layout'
+
+it('preserves compact trunk ids while expanding electrical boundary edges', () => {
+  const layoutNode = (
+    id: number,
+    boundary: LayoutInput['nodes'][number]['boundary'] = 'internal',
+  ): LayoutInput['nodes'][number] => ({
+    id,
+    baseWidth: 80,
+    baseHeight: 50,
+    controlHeight: 0,
+    register: false,
+    boundary,
+  })
+  const layoutEdge = (
+    from: number,
+    to: number,
+    net: number,
+  ): LayoutInput['edges'][number] => ({
+    from,
+    to,
+    fromPort: 'Y',
+    toPort: 'A',
+    control: false,
+    net,
+  })
+  const compactInput: LayoutInput = {
+    nodes: [
+      layoutNode(1, 'input'),
+      layoutNode(100),
+      layoutNode(2, 'output'),
+    ],
+    edges: [
+      layoutEdge(1, 100, 7),
+      layoutEdge(100, 2, 8),
+    ],
+  }
+  const compact = buildSchemWeaveLayoutRequest(compactInput)
+  const compactSnapshot: SchemWeaveSnapshot = {
+    request: compact.request,
+    catalog: compact.catalog,
+    layout: {
+      nodes: [
+        { id: 1, x: 0, y: 0, width: 80, height: 50 },
+        { id: 100, x: 146, y: 0, width: 80, height: 50 },
+        { id: 2, x: 292, y: 0, width: 80, height: 50 },
+      ],
+      edges: [
+        { id: 0, points: [{ x: 80, y: 25 }, { x: 146, y: 25 }] },
+        { id: 1, points: [{ x: 226, y: 25 }, { x: 292, y: 25 }] },
+      ],
+      width: 372,
+      height: 50,
+    },
+  }
+  const expandedInput: LayoutInput = {
+    nodes: [
+      layoutNode(1, 'input'),
+      layoutNode(10),
+      layoutNode(11),
+      layoutNode(2, 'output'),
+    ],
+    edges: [
+      layoutEdge(1, 10, 7),
+      layoutEdge(1, 11, 7),
+      layoutEdge(10, 2, 8),
+      layoutEdge(11, 2, 8),
+    ],
+  }
+
+  const expanded = buildSchemWeaveExpansionRequest(
+    compactSnapshot,
+    expandedInput,
+    { id: 100, members: [10, 11], referenceHeight: 50 },
+  )
+
+  expect(expanded.request.expanded_graph.edges.map((edge) => edge.id)).toEqual([
+    0, 1, 2, 3,
+  ])
+  expect(expanded.request.expansion.boundary_trunks).toEqual([
+    { expanded_edge: 0, compact_edge: 0 },
+    { expanded_edge: 1, compact_edge: 1 },
+    { expanded_edge: 2, compact_edge: 0 },
+    { expanded_edge: 3, compact_edge: 1 },
+  ])
+  expect(expanded.request.reference_height).toBe(50)
+  expect(expanded.catalog.fragments).toHaveLength(4)
+  expect(expanded.expandedRequest.graph).toEqual(
+    expanded.request.expanded_graph,
+  )
+  expect(expanded.expandedRequest.constraints).toEqual(
+    expanded.request.constraints,
+  )
+
+  const legacyExpanded = buildSchemWeaveExpansionRequest(
+    compactSnapshot,
+    expandedInput,
+    { id: 100, members: [10, 11] },
+  )
+  expect(legacyExpanded.request.reference_height).toBe(
+    compactSnapshot.layout.height,
+  )
+
+  const expandedSnapshot: SchemWeaveSnapshot = {
+    request: expanded.expandedRequest,
+    catalog: expanded.catalog,
+    layout: {
+      nodes: expanded.request.expanded_graph.nodes.map((node, index) => ({
+        id: node.id,
+        x: index * 100,
+        y: 0,
+        width: node.width,
+        height: node.height,
+      })),
+      edges: expanded.request.expanded_graph.edges.map((edge) => ({
+        id: edge.id,
+        points: [],
+      })),
+      width: 400,
+      height: 50,
+    },
+  }
+  const collapsed = buildSchemWeaveCollapseRequest(
+    expandedSnapshot,
+    expandedInput,
+    compactInput,
+    { id: 100, members: [10, 11], referenceHeight: 50 },
+  )
+  expect(collapsed.request.expanded_graph).toEqual(
+    expanded.request.expanded_graph,
+  )
+  expect(collapsed.request.compact_graph).toEqual(compact.request.graph)
+  expect(collapsed.request.expansion).toEqual(expanded.request.expansion)
+  expect(collapsed.compactRequest).toEqual(compact.request)
+})
+
+it('reconstructs inverse collapse after another group remains expanded', () => {
+  const makeNode = (
+    id: number,
+    boundary: LayoutInput['nodes'][number]['boundary'] = 'internal',
+  ): LayoutInput['nodes'][number] => ({
+    id,
+    baseWidth: 80,
+    baseHeight: 50,
+    controlHeight: 0,
+    register: false,
+    boundary,
+  })
+  const makeEdge = (
+    from: number,
+    to: number,
+    net: number,
+  ): LayoutInput['edges'][number] => ({
+    from,
+    to,
+    fromPort: 'Y',
+    toPort: 'A',
+    control: false,
+    net,
+  })
+  const layoutFor = (
+    request: ReturnType<typeof buildSchemWeaveLayoutRequest>,
+  ): SchemWeaveSnapshot => ({
+    request: request.request,
+    catalog: request.catalog,
+    layout: {
+      nodes: request.request.graph.nodes.map((node, index) => ({
+        id: node.id,
+        x: index * 100,
+        y: 0,
+        width: node.width,
+        height: node.height,
+      })),
+      edges: request.request.graph.edges.map((edge) => ({
+        id: edge.id,
+        points: [],
+      })),
+      width: request.request.graph.nodes.length * 100,
+      height: 50,
+    },
+  })
+  const baseInput: LayoutInput = {
+    nodes: [makeNode(1, 'input'), makeNode(100), makeNode(200), makeNode(2, 'output')],
+    edges: [makeEdge(1, 100, 1), makeEdge(100, 200, 2), makeEdge(200, 2, 3)],
+  }
+  const firstInput: LayoutInput = {
+    nodes: [
+      makeNode(1, 'input'),
+      makeNode(10),
+      makeNode(11),
+      makeNode(200),
+      makeNode(2, 'output'),
+    ],
+    edges: [
+      makeEdge(1, 10, 1),
+      makeEdge(1, 11, 1),
+      makeEdge(10, 200, 2),
+      makeEdge(11, 200, 2),
+      makeEdge(200, 2, 3),
+    ],
+  }
+  const secondInput: LayoutInput = {
+    nodes: [
+      makeNode(1, 'input'),
+      makeNode(10),
+      makeNode(11),
+      makeNode(20),
+      makeNode(21),
+      makeNode(2, 'output'),
+    ],
+    edges: [
+      makeEdge(1, 10, 1),
+      makeEdge(1, 11, 1),
+      makeEdge(10, 20, 2),
+      makeEdge(10, 21, 2),
+      makeEdge(11, 20, 2),
+      makeEdge(11, 21, 2),
+      makeEdge(20, 2, 3),
+      makeEdge(21, 2, 3),
+    ],
+  }
+  const targetInput: LayoutInput = {
+    nodes: [
+      makeNode(1, 'input'),
+      makeNode(100),
+      makeNode(20),
+      makeNode(21),
+      makeNode(2, 'output'),
+    ],
+    edges: [
+      makeEdge(1, 100, 1),
+      makeEdge(100, 20, 2),
+      makeEdge(100, 21, 2),
+      makeEdge(20, 2, 3),
+      makeEdge(21, 2, 3),
+    ],
+  }
+  const base = layoutFor(buildSchemWeaveLayoutRequest(baseInput))
+  const first = buildSchemWeaveExpansionRequest(
+    base,
+    firstInput,
+    { id: 100, members: [10, 11] },
+  )
+  const firstSnapshot = layoutFor({
+    request: first.expandedRequest,
+    catalog: first.catalog,
+  })
+  const second = buildSchemWeaveExpansionRequest(
+    firstSnapshot,
+    secondInput,
+    { id: 200, members: [20, 21] },
+  )
+  const secondSnapshot = layoutFor({
+    request: second.expandedRequest,
+    catalog: second.catalog,
+  })
+  secondSnapshot.layout.edges = secondSnapshot.layout.edges.map((edge) => ({
+    ...edge,
+    points: [
+      { x: edge.id, y: edge.id + 0.25 },
+      { x: edge.id + 0.5, y: edge.id + 0.75 },
+    ],
+  }))
+  const bundledEdge = second.expandedRequest.graph.edges[0]
+  secondSnapshot.layout.boundary_bundles = [{
+    id: 0,
+    endpoint: bundledEdge.source,
+    role: 'input',
+    width: 1,
+    collector: {
+      start: { x: 10, y: 11 },
+      end: { x: 10, y: 12 },
+    },
+    spine: {
+      start: { x: 8, y: 11 },
+      end: { x: 10, y: 11 },
+    },
+    members: [{
+      edge: bundledEdge.id,
+      slots: [0],
+      tap: { x: 10, y: 11 },
+    }],
+  }]
+
+  const collapsed = buildSchemWeaveCollapseRequest(
+    secondSnapshot,
+    secondInput,
+    targetInput,
+    { id: 100, members: [10, 11] },
+  )
+  expect(collapsed.request.expanded_graph.nodes.map((node) => node.id)).toEqual(
+    second.expandedRequest.graph.nodes.map((node) => node.id),
+  )
+  expect(
+    collapsed.request.expanded_layout.edges.map((edge) => edge.id),
+  ).toEqual(
+    collapsed.request.expanded_graph.edges.map((edge) => edge.id),
+  )
+  expect(
+    collapsed.request.compact_graph.nodes.map((node) => node.id).sort(
+      (left, right) => left - right,
+    ),
+  ).toEqual(
+    targetInput.nodes.map((node) => node.id).sort(
+      (left, right) => left - right,
+    ),
+  )
+  for (const edge of collapsed.request.expanded_layout.edges) {
+    const oldId = edge.points[0].x
+    const oldEdge = second.expandedRequest.graph.edges[oldId]
+    const remapped = collapsed.request.expanded_graph.edges[edge.id]
+    expect([remapped.source.node, remapped.target.node]).toEqual([
+      oldEdge.source.node,
+      oldEdge.target.node,
+    ])
+  }
+  const remappedBundle =
+    collapsed.request.expanded_layout.boundary_bundles?.[0]
+  expect(remappedBundle).toBeDefined()
+  const remappedBundleEdge = collapsed.request.expanded_layout.edges.find(
+    (edge) => edge.id === remappedBundle!.members[0].edge,
+  )
+  expect(remappedBundleEdge?.points[0].x).toBe(bundledEdge.id)
+  expect(remappedBundle?.endpoint).toEqual(
+    collapsed.request.expanded_graph.edges[
+      remappedBundle!.members[0].edge
+    ].source,
+  )
+  expect(remappedBundle?.members[0].tap).toEqual({ x: 10, y: 11 })
+})
 
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({
   id,
@@ -44,692 +380,6 @@ const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): Gra
   name: `u${id}`,
   cell_type: cellType,
   ...extra,
-})
-
-function segmentCrossesNodeInterior(
-  start: { x: number; y: number },
-  end: { x: number; y: number },
-  node: { x: number; y: number; width: number; height: number },
-): boolean {
-  if (start.x === end.x) {
-    return start.x > node.x &&
-      start.x < node.x + node.width &&
-      Math.max(start.y, end.y) > node.y &&
-      Math.min(start.y, end.y) < node.y + node.height
-  }
-  if (start.y === end.y) {
-    return start.y > node.y &&
-      start.y < node.y + node.height &&
-      Math.max(start.x, end.x) > node.x &&
-      Math.min(start.x, end.x) < node.x + node.width
-  }
-  return true
-}
-
-describe('in-place group expansion layout', () => {
-  it('keeps unrelated geometry fixed and opens members around the old group anchor', () => {
-    const grouped = node(100, 'FDRE', {
-      name: 'count[4:0]',
-      members: [1, 2, 3, 4, 5],
-      member_count: 5,
-    })
-    const externalIn = node(9, '$_BUF_')
-    const externalOut = node(10, '$_BUF_')
-    const unrelated = node(11, '$_AND_')
-    const externalClock = node(12, '$_BUF_')
-    const members = [1, 2, 3, 4, 5].map((id) => node(id, 'FDRE'))
-    const base = {
-      nodes: [
-        { id: 9, x: 20, y: 120, width: 76, height: 52, node: externalIn },
-        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
-        { id: 10, x: 520, y: 120, width: 76, height: 52, node: externalOut },
-        { id: 11, x: 520, y: 360, width: 76, height: 52, node: unrelated },
-        { id: 12, x: 20, y: 220, width: 76, height: 52, node: externalClock },
-      ],
-      edges: [
-        {
-          from: 9,
-          to: 100,
-          points: [
-            { x: 96, y: 146 },
-            { x: 180, y: 146 },
-            { x: 180, y: 139 },
-            { x: 260, y: 139 },
-          ],
-          edge: {
-            from: 9,
-            to: 100,
-            from_port: 'Y',
-            to_port: 'D',
-            net_name: 'in',
-            bits: [1],
-          },
-        },
-        {
-          from: 100,
-          to: 10,
-          points: [
-            { x: 370, y: 139 },
-            { x: 445, y: 139 },
-            { x: 445, y: 146 },
-            { x: 520, y: 146 },
-          ],
-          edge: {
-            from: 100,
-            to: 10,
-            from_port: 'Q',
-            to_port: 'A',
-            net_name: 'out',
-            bits: [2],
-          },
-        },
-        {
-          from: 12,
-          to: 100,
-          points: [
-            { x: 96, y: 246 },
-            { x: 180, y: 246 },
-            { x: 180, y: 151 },
-            { x: 260, y: 151 },
-          ],
-          edge: {
-            from: 12,
-            to: 100,
-            from_port: 'Y',
-            to_port: 'CLK',
-            net_name: 'clk',
-            bits: [4],
-            control: true,
-          },
-        },
-        {
-          from: 9,
-          to: 11,
-          points: [
-            { x: 96, y: 146 },
-            { x: 520, y: 146 },
-            { x: 520, y: 386 },
-          ],
-          edge: {
-            from: 9,
-            to: 11,
-            from_port: 'Y',
-            to_port: 'A',
-            net_name: 'unrelated',
-            bits: [3],
-          },
-        },
-      ],
-      width: 620,
-      height: 450,
-    }
-    const sub: Subgraph = {
-      nodes: [...members, externalIn, externalOut, unrelated, externalClock],
-      edges: [
-        {
-          from: 12,
-          to: 3,
-          from_port: 'Y',
-          to_port: 'CLK',
-          net_name: 'clk',
-          bits: [4],
-          control: true,
-        },
-        {
-          from: 9,
-          to: 1,
-          from_port: 'Y',
-          to_port: 'D',
-          net_name: 'in',
-          bits: [1],
-        },
-        {
-          from: 2,
-          to: 10,
-          from_port: 'Q',
-          to_port: 'A',
-          net_name: 'out',
-          bits: [2],
-        },
-        {
-          from: 2,
-          to: 3,
-          from_port: 'Q',
-          to_port: 'D',
-          net_name: 'member_wrap',
-          bits: [5],
-        },
-        {
-          from: 9,
-          to: 11,
-          from_port: 'Y',
-          to_port: 'A',
-          net_name: 'unrelated',
-          bits: [3],
-        },
-      ],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1, 2, 3, 4, 5],
-    })
-
-    expect(opened).not.toBeNull()
-    expect(opened!.nodes).not.toContainEqual(expect.objectContaining({ id: 100 }))
-    for (const id of [9, 10, 11, 12]) {
-      expect(opened!.nodes.find((entry) => entry.id === id)).toMatchObject(
-        base.nodes.find((entry) => entry.id === id)!,
-      )
-    }
-    const memberGeometry = opened!.nodes.filter((entry) => entry.id <= 5)
-    expect(new Set(memberGeometry.map((entry) => entry.x)).size).toBeGreaterThan(1)
-    expect(new Set(memberGeometry.map((entry) => entry.y)).size).toBeGreaterThan(1)
-    const memberCenterX =
-      (Math.min(...memberGeometry.map((entry) => entry.x)) +
-        Math.max(...memberGeometry.map((entry) => entry.x + entry.width))) / 2
-    expect(memberCenterX).toBeCloseTo(315)
-    expect(opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')?.points)
-      .toEqual(base.edges[3].points)
-    const incoming = opened!.edges.find((edge) => edge.edge.net_name === 'in')!
-    const outgoing = opened!.edges.find((edge) => edge.edge.net_name === 'out')!
-    const clock = opened!.edges.find((edge) => edge.edge.net_name === 'clk')!
-    const member1 = memberGeometry.find((entry) => entry.id === 1)!
-    const member2 = memberGeometry.find((entry) => entry.id === 2)!
-    const member3 = memberGeometry.find((entry) => entry.id === 3)!
-    expect(incoming.points.at(-1)).toEqual({
-      x: member1.x,
-      y: member1.y + Math.min(member1.height, REG_BODY_HEIGHT) * REG_DATA_IN_Y_FRAC,
-    })
-    expect(outgoing.points[0]).toEqual({
-      x: member2.x + member2.width,
-      y: member2.y + Math.min(member2.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
-    })
-    expect(clock.points.at(-1)).toEqual({
-      x: member3.x,
-      y: member3.y +
-        Math.min(member3.height, REG_BODY_HEIGHT) * registerControlYFraction('clock'),
-    })
-    const unrelatedEdge = opened!.edges.find((edge) => edge.edge.net_name === 'unrelated')!
-    const memberWrap = opened!.edges.find((edge) => edge.edge.net_name === 'member_wrap')!
-    for (const edge of [incoming, outgoing, clock, memberWrap, unrelatedEdge]) {
-      expect(edge.points.slice(1).every((point, index) => {
-        const previous = edge.points[index]
-        return point.x === previous.x || point.y === previous.y
-      })).toBe(true)
-      expect(edge.points.slice(1).every((point, index) => {
-        const previous = edge.points[index]
-        return memberGeometry.every((member) =>
-          !segmentCrossesNodeInterior(previous, point, member)
-        )
-      })).toBe(true)
-    }
-  })
-
-  it('uses the nearest collision-free local slot instead of enclosing another node', () => {
-    const grouped = node(100, 'FDRE', {
-      name: 'count[1:0]',
-      members: [1, 2],
-      member_count: 2,
-    })
-    const blocker = node(9, 'LUT6')
-    const base = {
-      nodes: [
-        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
-        { id: 9, x: 390, y: 100, width: 90, height: 78, node: blocker },
-      ],
-      edges: [],
-      width: 520,
-      height: 240,
-    }
-    const sub: Subgraph = {
-      nodes: [node(1, 'FDRE'), node(2, 'FDRE'), blocker],
-      edges: [],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1, 2],
-    })!
-    const members = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
-    const membersRight = Math.max(...members.map((entry) => entry.x + entry.width))
-    const membersLeft = Math.min(...members.map((entry) => entry.x))
-    const membersBottom = Math.max(...members.map((entry) => entry.y + entry.height))
-    const membersTop = Math.min(...members.map((entry) => entry.y))
-    const overlapsBlocker =
-      membersLeft < 390 + 90 &&
-      membersRight > 390 &&
-      membersTop < 100 + 78 &&
-      membersBottom > 100
-
-    expect(overlapsBlocker).toBe(false)
-    expect(opened.nodes.find((entry) => entry.id === 9)).toMatchObject(base.nodes[1])
-  })
-
-  it('spreads expanded memory edges across their named input pins', () => {
-    const grouped = node(100, 'RAM64M', {
-      name: 'memory [64×1]',
-      members: [1],
-      member_count: 1,
-    })
-    const sourceA = node(9, '$_BUF_')
-    const base = {
-      nodes: [
-        { id: 9, x: 20, y: 70, width: 76, height: 52, node: sourceA },
-        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
-      ],
-      edges: [
-        {
-          from: 9,
-          to: 100,
-          points: [{ x: 96, y: 96 }, { x: 180, y: 96 }, { x: 180, y: 126 }, { x: 260, y: 126 }],
-          edge: {
-            from: 9,
-            to: 100,
-            from_port: 'Y',
-            to_port: 'A0',
-            net_name: 'address_0',
-            bits: [1],
-          },
-        },
-        {
-          from: 9,
-          to: 100,
-          points: [{ x: 96, y: 96 }, { x: 200, y: 96 }, { x: 200, y: 152 }, { x: 260, y: 152 }],
-          edge: {
-            from: 9,
-            to: 100,
-            from_port: 'Y',
-            to_port: 'A1',
-            net_name: 'address_1',
-            bits: [2],
-          },
-        },
-      ],
-      width: 420,
-      height: 260,
-    }
-    const sub: Subgraph = {
-      nodes: [node(1, 'RAM64M'), sourceA],
-      edges: [
-        {
-          from: 9,
-          to: 1,
-          from_port: 'Y',
-          to_port: 'A0',
-          net_name: 'address_0',
-          bits: [1],
-        },
-        {
-          from: 9,
-          to: 1,
-          from_port: 'Y',
-          to_port: 'A1',
-          net_name: 'address_1',
-          bits: [2],
-        },
-      ],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1],
-    })!
-    const member = opened.nodes.find((entry) => entry.id === 1)!
-    const address0 = opened.edges.find((edge) => edge.edge.to_port === 'A0')!
-    const address1 = opened.edges.find((edge) => edge.edge.to_port === 'A1')!
-    const endpoints = [address0.points.at(-1)!, address1.points.at(-1)!]
-
-    expect(endpoints.map((point) => point.x)).toEqual([member.x, member.x])
-    expect(endpoints[0].y).toBeLessThan(endpoints[1].y)
-    expect(endpoints.every((point) =>
-      point.y > member.y && point.y < member.y + member.height
-    )).toBe(true)
-    expect(address0.points).toContainEqual(base.edges[0].points.at(-2))
-    expect(address1.points).toContainEqual(base.edges[1].points.at(-2))
-  })
-
-  it('preserves distinct quotient trunks for named output pins', () => {
-    const grouped = node(100, 'RAM64M', {
-      name: 'memory [64×1]',
-      members: [1],
-      member_count: 1,
-    })
-    const target = node(9, '$_BUF_')
-    const base = {
-      nodes: [
-        { id: 100, x: 100, y: 100, width: 110, height: 78, node: grouped },
-        { id: 9, x: 420, y: 120, width: 76, height: 52, node: target },
-      ],
-      edges: [
-        {
-          from: 100,
-          to: 9,
-          points: [
-            { x: 210, y: 126 },
-            { x: 300, y: 126 },
-            { x: 300, y: 146 },
-            { x: 420, y: 146 },
-          ],
-          edge: {
-            from: 100,
-            to: 9,
-            from_port: 'O0',
-            to_port: 'A',
-            net_name: 'output_0',
-            bits: [1],
-          },
-        },
-        {
-          from: 100,
-          to: 9,
-          points: [
-            { x: 210, y: 152 },
-            { x: 340, y: 152 },
-            { x: 340, y: 146 },
-            { x: 420, y: 146 },
-          ],
-          edge: {
-            from: 100,
-            to: 9,
-            from_port: 'O1',
-            to_port: 'A',
-            net_name: 'output_1',
-            bits: [2],
-          },
-        },
-      ],
-      width: 540,
-      height: 260,
-    }
-    const sub: Subgraph = {
-      nodes: [node(1, 'RAM64M'), target],
-      edges: [
-        {
-          from: 1,
-          to: 9,
-          from_port: 'O0',
-          to_port: 'A',
-          net_name: 'output_0',
-          bits: [1],
-        },
-        {
-          from: 1,
-          to: 9,
-          from_port: 'O1',
-          to_port: 'A',
-          net_name: 'output_1',
-          bits: [2],
-        },
-      ],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1],
-    })!
-    const output0 = opened.edges.find((edge) => edge.edge.from_port === 'O0')!
-    const output1 = opened.edges.find((edge) => edge.edge.from_port === 'O1')!
-
-    expect(output0.points).toContainEqual(base.edges[0].points[1])
-    expect(output0.points).not.toContainEqual(base.edges[1].points[1])
-    expect(output1.points).toContainEqual(base.edges[1].points[1])
-    expect(output1.points).not.toContainEqual(base.edges[0].points[1])
-  })
-
-  it('falls back to a guaranteed clear slot when every nearby slot is occupied', () => {
-    const grouped = node(100, 'FDRE', {
-      name: 'count[1:0]',
-      members: [1, 2],
-      member_count: 2,
-    })
-    const blocker = node(9, 'LUT6')
-    const base = {
-      nodes: [
-        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
-        { id: 9, x: 0, y: 0, width: 5_000, height: 5_000, node: blocker },
-      ],
-      edges: [],
-      width: 5_100,
-      height: 5_100,
-    }
-    const sub: Subgraph = {
-      nodes: [node(1, 'FDRE'), node(2, 'FDRE'), blocker],
-      edges: [],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1, 2],
-    })!
-    const members = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
-    const left = Math.min(...members.map((entry) => entry.x))
-    const top = Math.min(...members.map((entry) => entry.y))
-
-    expect(left >= 5_000 || top >= 5_000).toBe(true)
-  })
-
-  it('clips an old output trunk before reconnecting a group displaced beyond it', () => {
-    const grouped = node(100, 'FDRE', {
-      name: 'count[1:0]',
-      members: [1, 2],
-      member_count: 2,
-    })
-    const blocker = node(9, 'LUT6')
-    const sink = node(10, '$_BUF_')
-    const base = {
-      nodes: [
-        { id: 100, x: 260, y: 100, width: 110, height: 78, node: grouped },
-        { id: 9, x: 0, y: 0, width: 900, height: 5_000, node: blocker },
-        { id: 10, x: 900, y: 110, width: 76, height: 52, node: sink },
-      ],
-      edges: [{
-        from: 100,
-        to: 10,
-        points: [{ x: 370, y: 139 }, { x: 900, y: 139 }],
-        edge: {
-          from: 100,
-          to: 10,
-          from_port: 'Q',
-          to_port: 'A',
-          net_name: 'out',
-          bits: [1],
-        },
-      }],
-      width: 1_000,
-      height: 5_100,
-    }
-    const members = [node(1, 'FDRE'), node(2, 'FDRE')]
-    const sub: Subgraph = {
-      nodes: [...members, blocker, sink],
-      edges: [{
-        from: 1,
-        to: 10,
-        from_port: 'Q',
-        to_port: 'A',
-        net_name: 'out',
-        bits: [1],
-      }],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1, 2],
-    })!
-    const memberGeometry = opened.nodes.filter((entry) => entry.id === 1 || entry.id === 2)
-    const output = opened.edges.find((edge) => edge.edge.net_name === 'out')!
-    const member1 = memberGeometry.find((entry) => entry.id === 1)!
-
-    expect(Math.min(...memberGeometry.map((entry) => entry.x))).toBeGreaterThan(976)
-    expect(output.points[0]).toEqual({
-      x: member1.x + member1.width,
-      y: member1.y + Math.min(member1.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
-    })
-    expect(output.points.at(-1)).toEqual(base.edges[0].points.at(-1))
-    expect(output.points.slice(1).every((point, index) =>
-      memberGeometry.every((member) =>
-        !segmentCrossesNodeInterior(output.points[index], point, member)
-      )
-    )).toBe(true)
-  })
-
-  it('uses grid corridors when heterogeneous members block the simple routes', () => {
-    const memberIds = Array.from({ length: 12 }, (_, index) => index + 1)
-    const grouped = node(100, 'FDRE', {
-      name: 'pipeline[11:0]',
-      members: memberIds,
-      member_count: memberIds.length,
-    })
-    const members = memberIds.map((id) => node(id, 'FDRE', id === 5
-      ? {
-          name: 'member_with_wide_control_rows',
-          controls: [
-            {
-              role: 'clock',
-              pin: 'C',
-              net_name: 'clk',
-              driver_id: 200,
-              fanout: 12,
-            },
-            {
-              role: 'reset',
-              pin: 'R',
-              net_name: 'rst',
-              driver_id: 201,
-              fanout: 1,
-            },
-          ],
-        }
-      : {}))
-    const base = {
-      nodes: [{ id: 100, x: 260, y: 100, width: 120, height: 78, node: grouped }],
-      edges: [],
-      width: 440,
-      height: 240,
-    }
-    const sub: Subgraph = {
-      nodes: members,
-      edges: [{
-        from: 2,
-        to: 8,
-        from_port: 'Q',
-        to_port: 'D',
-        net_name: 'member_wrap',
-        bits: [1],
-      }],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: memberIds,
-    })!
-    const memberGeometry = opened.nodes.filter((entry) => memberIds.includes(entry.id))
-    const wrap = opened.edges.find((edge) => edge.edge.net_name === 'member_wrap')!
-    const member2 = memberGeometry.find((entry) => entry.id === 2)!
-    const member8 = memberGeometry.find((entry) => entry.id === 8)!
-
-    expect(new Set(memberGeometry.map((entry) => entry.width)).size)
-      .toBeGreaterThan(1)
-    expect(wrap.points[0]).toEqual({
-      x: member2.x + member2.width,
-      y: member2.y + Math.min(member2.height, REG_BODY_HEIGHT) * REG_DATA_OUT_Y_FRAC,
-    })
-    expect(wrap.points.at(-1)).toEqual({
-      x: member8.x,
-      y: member8.y + Math.min(member8.height, REG_BODY_HEIGHT) * REG_DATA_IN_Y_FRAC,
-    })
-    expect(wrap.points.slice(1).every((point, index) =>
-      memberGeometry.every((member) =>
-        !segmentCrossesNodeInterior(wrap.points[index], point, member)
-      )
-    )).toBe(true)
-  })
-
-  it('keeps perimeter routes inside content bounds and outside the group header', () => {
-    const memberIds = [1, 2, 3]
-    const grouped = node(100, 'FDRE', {
-      name: 'pipeline_with_a_long_group_label[2:0]',
-      members: memberIds,
-      member_count: memberIds.length,
-    })
-    const members = memberIds.map((id) => node(id, 'FDRE'))
-    const base = {
-      nodes: [{ id: 100, x: 0, y: 0, width: 120, height: 78, node: grouped }],
-      edges: [],
-      width: 120,
-      height: 78,
-    }
-    const sub: Subgraph = {
-      nodes: members,
-      edges: [{
-        from: 1,
-        to: 3,
-        from_port: 'Q',
-        to_port: 'D',
-        net_name: 'member_wrap',
-        bits: [1],
-      }],
-      truncated: false,
-    }
-
-    const opened = layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: memberIds,
-    })!
-    const memberGeometry = opened.nodes.filter((entry) => memberIds.includes(entry.id))
-    const wrap = opened.edges.find((edge) => edge.edge.net_name === 'member_wrap')!
-    const memberLeft = Math.min(...memberGeometry.map((entry) => entry.x))
-    const memberTop = Math.min(...memberGeometry.map((entry) => entry.y))
-    const memberRight = Math.max(
-      ...memberGeometry.map((entry) => entry.x + entry.width),
-    )
-    const header = {
-      x: memberLeft - 12,
-      y: memberTop - 20,
-      width: memberRight - memberLeft + 24,
-      height: 20,
-    }
-
-    expect(wrap.points.every((point) =>
-      point.x >= 0 &&
-      point.y >= 0 &&
-      point.x <= opened.width &&
-      point.y <= opened.height
-    )).toBe(true)
-    expect(wrap.points.slice(1).every((point, index) =>
-      !segmentCrossesNodeInterior(wrap.points[index], point, header)
-    )).toBe(true)
-  })
-
-  it('declines local composition when the projection introduces new context', () => {
-    const grouped = node(100, 'FDRE', {
-      members: [1],
-      member_count: 1,
-    })
-    const base = {
-      nodes: [{ id: 100, x: 20, y: 20, width: 100, height: 58, node: grouped }],
-      edges: [],
-      width: 160,
-      height: 100,
-    }
-    const sub: Subgraph = {
-      nodes: [node(1, 'FDRE'), node(9, 'LUT6')],
-      edges: [],
-      truncated: false,
-    }
-
-    expect(layoutExpandedGroupInPlace(sub, base, {
-      id: 100,
-      members: [1],
-    })).toBeNull()
-  })
 })
 
 describe('schematic layout sizing', () => {
@@ -887,7 +537,7 @@ describe('schematic layout sizing', () => {
     expect(compound?.layoutOptions?.['elk.direction']).toBe('RIGHT')
   })
 
-  it('switches an expanded group to a clean grid beyond twice the reference height', () => {
+  it('switches an expanded group to a clean grid beyond 1.5x the reference height', () => {
     const sub: Subgraph = {
       nodes: [
         node(1, 'RAM32M'),
@@ -919,7 +569,7 @@ describe('schematic layout sizing', () => {
     ])
   })
 
-  it('uses a vertical column at the exact 2x limit and a grid just beyond it', () => {
+  it('uses a vertical column at the exact 1.5x limit and a grid just beyond it', () => {
     const sub: Subgraph = {
       nodes: [node(1, 'RAM32M'), node(2, 'RAM32M'), node(3, 'RAM32M')],
       edges: [],
@@ -930,7 +580,7 @@ describe('schematic layout sizing', () => {
       members: [1, 2, 3],
       referenceHeight: 1_000,
     }])).children?.find((child) => child.id === 'group:100')
-    const exactReferenceHeight = (probe?.height ?? 0) / 2
+    const exactReferenceHeight = (probe?.height ?? 0) / 1.5
     const atLimit = toElkGraph(prepareLayoutInput(sub, [{
       id: 100,
       members: [1, 2, 3],
@@ -1390,6 +1040,700 @@ describe('schematic layout sizing', () => {
       { member: 20, net_bits: [100, 101] },
       { member: 22, net_bits: [106, 107] },
     ])
+  })
+
+  it('maps a 32-bit priority output slab to deterministic bundle slots', () => {
+    const outputMembers = Array.from({ length: 32 }, (_, bit) => ({
+      member: 1_000 + bit,
+      bit,
+    }))
+    const sub: Subgraph = {
+      nodes: [
+        ...Array.from({ length: 32 }, (_, bit) =>
+          node(bit, '$_BUF_')),
+        node(100, 'port', {
+          kind: 'port',
+          name: 'one_hot[31:0]',
+          port_direction: 'output',
+          width: 32,
+          member_count: 32,
+          members: outputMembers.map((member) => member.member),
+          boundary_members: outputMembers,
+        }),
+      ],
+      edges: Array.from({ length: 32 }, (_, bit) => ({
+        from: bit,
+        to: 100,
+        from_port: 'Y',
+        to_port: 'one_hot',
+        net_name: `one_hot[${bit}]`,
+        bits: [2_000 + bit],
+        target_boundary_members: [{
+          member: 1_000 + bit,
+          net_bits: [2_000 + bit],
+        }],
+      })),
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.constraints.boundary_bundles).toEqual([{
+      id: 0,
+      endpoint: { node: 100, port: 0 },
+      width: 32,
+      members: Array.from({ length: 32 }, (_, bit) => ({
+        edge: bit,
+        slots: [bit],
+      })),
+    }])
+  })
+
+  it('assigns one electrical net to same-net input fanout cohorts', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request',
+          port_direction: 'input',
+          width: 1,
+          member_count: 1,
+          members: [10],
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [2, 3].map((to) => ({
+        from: 1,
+        to,
+        from_port: 'request',
+        to_port: 'A',
+        net_name: 'request',
+        // Quotient edge payloads can differ even when exact boundary metadata
+        // identifies one electrical net fanout cohort.
+        bits: [100 + to],
+        source_boundary_members: [{ member: 10, net_bits: [55] }],
+      })),
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges.map((edge) => edge.net)).toEqual([0, 0])
+    expect(request.constraints.boundary_bundles).toEqual([{
+      id: 0,
+      endpoint: { node: 1, port: 0 },
+      width: 1,
+      members: [
+        { edge: 0, slots: [0] },
+        { edge: 1, slots: [0] },
+      ],
+    }])
+  })
+
+  it('supports sparse multi-slot direct aliases on both boundaries', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a[7:0]',
+          port_direction: 'input',
+          width: 2,
+          member_count: 8,
+          members: [10, 17],
+          boundary_members: [
+            { member: 10, bit: 0 },
+            { member: 17, bit: 7 },
+          ],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[7:0]',
+          port_direction: 'output',
+          width: 2,
+          member_count: 8,
+          members: [20, 27],
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 27, bit: 7 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'a',
+        bits: [70, 77],
+        source_boundary_members: [
+          { member: 10, net_bits: [70] },
+          { member: 17, net_bits: [77] },
+        ],
+        target_boundary_members: [
+          { member: 20, net_bits: [70] },
+          { member: 27, net_bits: [77] },
+        ],
+      }],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges).toHaveLength(2)
+    expect(request.constraints.boundary_bundles).toEqual([
+      {
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        width: 8,
+        members: [
+          { edge: 0, slots: [0] },
+          { edge: 1, slots: [7] },
+        ],
+      },
+      {
+        id: 1,
+        endpoint: { node: 2, port: 0 },
+        width: 8,
+        members: [
+          { edge: 0, slots: [0] },
+          { edge: 1, slots: [7] },
+        ],
+      },
+    ])
+  })
+
+  it('keeps one SchemWeave route for an identical two-role direct-alias cohort', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y',
+          port_direction: 'output',
+          member_count: 1,
+          boundary_members: [{ member: 20, bit: 0 }],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'alias',
+        bits: [55],
+        source_boundary_members: [{ member: 10, net_bits: [55] }],
+        target_boundary_members: [{ member: 20, net_bits: [55] }],
+      }],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges).toHaveLength(1)
+    expect(request.constraints.boundary_bundles).toEqual([
+      {
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        width: 1,
+        members: [{ edge: 0, slots: [0] }],
+      },
+      {
+        id: 1,
+        endpoint: { node: 2, port: 0 },
+        width: 1,
+        members: [{ edge: 0, slots: [0] }],
+      },
+    ])
+  })
+
+  it('jointly partitions differently ordered direct-alias slot cohorts', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a[1:0]',
+          port_direction: 'input',
+          member_count: 2,
+          boundary_members: [
+            { member: 10, bit: 0 },
+            { member: 11, bit: 1 },
+          ],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[1:0]',
+          port_direction: 'output',
+          member_count: 2,
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'permuted_alias',
+        bits: [70, 77],
+        source_boundary_members: [
+          { member: 10, net_bits: [70] },
+          { member: 11, net_bits: [77] },
+        ],
+        target_boundary_members: [
+          { member: 20, net_bits: [77] },
+          { member: 21, net_bits: [70] },
+        ],
+      }],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges).toHaveLength(2)
+    expect(request.constraints.boundary_bundles).toEqual([
+      {
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        width: 2,
+        members: [
+          { edge: 0, slots: [0] },
+          { edge: 1, slots: [1] },
+        ],
+      },
+      {
+        id: 1,
+        endpoint: { node: 2, port: 0 },
+        width: 2,
+        members: [
+          { edge: 0, slots: [1] },
+          { edge: 1, slots: [0] },
+        ],
+      },
+    ])
+  })
+
+  it('splits staircase slot overlap into deterministic strict electrical cohorts', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request[2:0]',
+          port_direction: 'input',
+          member_count: 3,
+          boundary_members: [
+            { member: 10, bit: 0 },
+            { member: 11, bit: 1 },
+            { member: 12, bit: 2 },
+          ],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_lo',
+          bits: [55],
+          source_boundary_members: [
+            { member: 10, net_bits: [55] },
+            { member: 11, net_bits: [55] },
+          ],
+        },
+        {
+          from: 1,
+          to: 3,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_hi',
+          bits: [55],
+          source_boundary_members: [
+            { member: 11, net_bits: [55] },
+            { member: 12, net_bits: [55] },
+          ],
+        },
+      ],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges.map(({ id, net, source, target }) => ({
+      id,
+      net,
+      source,
+      target,
+    }))).toEqual([
+      {
+        id: 0,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 2, port: 0 },
+      },
+      {
+        id: 1,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 2, port: 0 },
+      },
+      {
+        id: 2,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 3, port: 0 },
+      },
+      {
+        id: 3,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 3, port: 0 },
+      },
+    ])
+    expect(request.constraints.boundary_bundles).toEqual([{
+      id: 0,
+      endpoint: { node: 1, port: 0 },
+      width: 3,
+      members: [
+        { edge: 0, slots: [0] },
+        { edge: 1, slots: [1] },
+        { edge: 2, slots: [1] },
+        { edge: 3, slots: [2] },
+      ],
+    }])
+  })
+
+  it('is deterministic under duplicate and permuted boundary cohort metadata', () => {
+    const makeSubgraph = (permuted: boolean): Subgraph => ({
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request[2:0]',
+          port_direction: 'input',
+          member_count: 3,
+          boundary_members: permuted
+            ? [
+                { member: 12, bit: 2 },
+                { member: 10, bit: 0 },
+                { member: 11, bit: 1 },
+                { member: 10, bit: 0 },
+              ]
+            : [
+                { member: 10, bit: 0 },
+                { member: 11, bit: 1 },
+                { member: 12, bit: 2 },
+              ],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_lo',
+          bits: [55],
+          source_boundary_members: permuted
+            ? [
+                { member: 11, net_bits: [55, 55] },
+                { member: 10, net_bits: [55] },
+                { member: 10, net_bits: [55] },
+              ]
+            : [
+                { member: 10, net_bits: [55] },
+                { member: 11, net_bits: [55] },
+              ],
+        },
+        {
+          from: 1,
+          to: 3,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_hi',
+          bits: [55],
+          source_boundary_members: permuted
+            ? [
+                { member: 12, net_bits: [55] },
+                { member: 11, net_bits: [55] },
+              ]
+            : [
+                { member: 11, net_bits: [55] },
+                { member: 12, net_bits: [55] },
+              ],
+        },
+      ],
+      truncated: false,
+    })
+
+    expect(
+      toSchemWeaveLayoutRequest(prepareLayoutInput(makeSubgraph(true))),
+    ).toEqual(
+      toSchemWeaveLayoutRequest(prepareLayoutInput(makeSubgraph(false))),
+    )
+  })
+
+  it('rejects conflicting electrical metadata for one endpoint slot before WASM', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'first',
+          bits: [55],
+          source_boundary_members: [{ member: 10, net_bits: [55] }],
+        },
+        {
+          from: 1,
+          to: 3,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'second',
+          bits: [56],
+          source_boundary_members: [{ member: 10, net_bits: [56] }],
+        },
+      ],
+      truncated: false,
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(prepareLayoutInput(sub))).toThrow(
+      'input endpoint 1:0 slot 0 has conflicting electrical net bits [55] and [56]',
+    )
+  })
+
+  it('rejects a joint partition that would assign two electrical cohorts to one slot', () => {
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+          boundaryWidth: 1,
+          boundaryMembers: [{ member: 10, bit: 0 }],
+        },
+        {
+          id: 2,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+          boundaryWidth: 2,
+          boundaryMembers: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        },
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        fromPort: 'a',
+        toPort: 'y',
+        control: false,
+        sourceBoundaryMembers: [{
+          member: 10,
+          net_bits: [55, 56],
+        }],
+        targetBoundaryMembers: [
+          { member: 20, net_bits: [55] },
+          { member: 21, net_bits: [56] },
+        ],
+      }],
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(input)).toThrow(
+      'input endpoint 1:0 slot 0 has conflicting electrical net bits [55] and [56]',
+    )
+  })
+
+  it('enforces the edge cap after electrical cohort expansion', () => {
+    const fragmentCount = MAX_GRAPH_EDGES + 1
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+          boundaryWidth: fragmentCount,
+          boundaryMembers: Array.from({ length: fragmentCount }, (_, bit) => ({
+            member: bit + 10,
+            bit,
+          })),
+        },
+        {
+          id: 2,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        },
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        fromPort: 'a',
+        toPort: 'A',
+        control: false,
+        sourceBoundaryMembers: Array.from(
+          { length: fragmentCount },
+          (_, bit) => ({
+            member: bit + 10,
+            net_bits: [bit + 100],
+          }),
+        ),
+      }],
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(input)).toThrow(
+      '10001 electrical layout edges after boundary expansion; limit 10000',
+    )
+  })
+
+  it('does not constrain grouped inout or topology-internal boundary metadata', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_BUF_'),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'bidir[1:0]',
+          port_direction: 'inout',
+          member_count: 2,
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        }),
+        node(3, 'port', {
+          kind: 'port',
+          name: 'declared_input',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 30, bit: 0 }],
+        }),
+        node(4, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'Y',
+          to_port: 'bidir',
+          net_name: 'bidir_in',
+          bits: [100],
+          target_boundary_members: [{ member: 20, net_bits: [100] }],
+        },
+        {
+          from: 2,
+          to: 3,
+          from_port: 'bidir',
+          to_port: 'declared_input',
+          net_name: 'internal_link',
+          bits: [101],
+          source_boundary_members: [{ member: 21, net_bits: [101] }],
+          target_boundary_members: [{ member: 30, net_bits: [101] }],
+        },
+        {
+          from: 3,
+          to: 4,
+          from_port: 'declared_input',
+          to_port: 'A',
+          net_name: 'unexpected_drive',
+          bits: [102],
+          source_boundary_members: [{ member: 30, net_bits: [102] }],
+        },
+      ],
+      truncated: false,
+    }
+
+    const input = prepareLayoutInput(sub)
+    expect(input.nodes.map(({ id, boundary }) => ({ id, boundary }))).toEqual([
+      { id: 1, boundary: 'internal' },
+      { id: 2, boundary: 'internal' },
+      { id: 3, boundary: 'internal' },
+      { id: 4, boundary: 'internal' },
+    ])
+    expect(toSchemWeaveLayoutRequest(input).constraints).toEqual({
+      inputs: [],
+      outputs: [],
+    })
+  })
+
+  it('fails closed when boundary bundle metadata contradicts a true boundary role', () => {
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+          boundaryWidth: 1,
+          boundaryMembers: [{ member: 10, bit: 0 }],
+        },
+        {
+          id: 2,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        },
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        fromPort: 'Y',
+        toPort: 'A',
+        control: false,
+        sourceBoundaryMembers: [{ member: 10, net_bits: [100] }],
+      }],
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(input)).toThrow(
+      'boundary bundle input metadata references output node 1',
+    )
+  })
+
+  it('keeps empty metadata compatible and SchemWeave local-only', () => {
+    const request = toSchemWeaveLayoutRequest({
+      nodes: [],
+      edges: [],
+    })
+    expect(request).toEqual({
+      graph: { nodes: [], edges: [] },
+      constraints: { inputs: [], outputs: [] },
+    })
+    expect(comparisonLayoutEngine('?layout=schemweave', true)).toBe('schemweave')
+    expect(comparisonLayoutEngine('?layout=schemweave', false)).toBe('elk')
+    expect(comparisonLayoutEngine('', true)).toBe('elk')
   })
 
   it('lets ELK pack highly disconnected views instead of building one tall layer', () => {
@@ -1981,13 +2325,17 @@ describe('schematic layout sizing', () => {
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: ((event: ErrorEvent) => void) | null = null
       terminate = vi.fn()
+      url: string
       requests: Array<{
         id: number
         input: ReturnType<typeof prepareLayoutInput>
-        placement: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+        placement?: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
+        request?: ReturnType<typeof toSchemWeaveLayoutRequest>
+        kind?: SchemWeaveWorkerRequest['kind']
       }> = []
 
-      constructor() {
+      constructor(url: URL) {
+        this.url = String(url)
         FakeWorker.instances.push(this)
       }
 
@@ -1995,6 +2343,29 @@ describe('schematic layout sizing', () => {
         this.requests.push(request)
       }
     }
+
+  const schemWeaveWorkerResponse = (
+    request: FakeWorker['requests'][number],
+    layout: SchemWeaveLayout,
+    degraded = false,
+  ): MessageEvent => {
+    const prepared = buildSchemWeaveLayoutRequest(request.input)
+    return {
+      data: {
+        id: request.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: interpretSchemWeaveResult(
+            layout,
+            prepared.catalog,
+            prepared.request,
+          ),
+          degraded,
+        },
+      },
+    } as MessageEvent
+  }
 
   const workerSubgraph = (id = 1): Subgraph => ({
     nodes: [node(id, '$_AND_', { members: [1, 2], params: { secret: 'resident' } })],
@@ -2008,6 +2379,14 @@ describe('schematic layout sizing', () => {
     width: 76,
     height: 66,
   }
+
+  configureLayoutWorkerFactory((engine) =>
+    new Worker(new URL(
+      engine === 'schemweave'
+        ? '../workers/schemweave.worker.ts'
+        : '../workers/elk.worker.ts',
+      import.meta.url,
+    )))
 
   afterEach(() => {
     clearLayoutGeometryCache()
@@ -2025,6 +2404,250 @@ describe('schematic layout sizing', () => {
     expect(FakeWorker.instances).toHaveLength(1)
     expect(FakeWorker.instances[0].requests).toEqual([])
     FakeWorker.instances[0].onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('keeps the local SchemWeave worker and geometry cache isolated from ELK', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+
+    const elkLayout = layoutSubgraph(sub)
+    const elk = FakeWorker.instances[0]
+    expect(elk.url).toContain('elk.worker.ts')
+    elk.onmessage?.({
+      data: { id: elk.requests[0].id, ok: true, result: geometry },
+    } as MessageEvent)
+    await elkLayout
+
+    const schemWeaveLayout = layoutSubgraph(sub, undefined, 'schemweave')
+    const schemweave = FakeWorker.instances[1]
+    expect(schemweave.url).toContain('schemweave.worker.ts')
+    expect(schemweave.requests[0]).toEqual({
+      id: expect.any(Number),
+      kind: 'layout',
+      input: prepareLayoutInput(sub),
+    })
+    schemweave.onmessage?.(
+      schemWeaveWorkerResponse(schemweave.requests[0], geometry),
+    )
+    await schemWeaveLayout
+
+    expect(FakeWorker.instances).toHaveLength(2)
+    elk.onerror?.({ message: 'cleanup' } as ErrorEvent)
+    schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('hydrates electrical fragments to exact UI bit subsets and rendered bundle owners', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_BUF_'),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[1:0]',
+          port_direction: 'output',
+          member_count: 2,
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'y',
+        net_name: 'y',
+        bits: [55, 56],
+        target_boundary_members: [
+          { member: 20, net_bits: [55] },
+          { member: 21, net_bits: [56] },
+        ],
+      }],
+      truncated: false,
+    }
+
+    const pendingLayout = layoutSubgraph(sub, undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+    expect(
+      buildSchemWeaveLayoutRequest(worker.requests[0].input)
+        .request.graph.edges,
+    ).toHaveLength(2)
+    worker.onmessage?.(
+      schemWeaveWorkerResponse(worker.requests[0], {
+          nodes: [
+            { id: 1, x: 0, y: 0, width: 62, height: 46 },
+            { id: 2, x: 140, y: 0, width: 74, height: 34 },
+          ],
+          // Deliberately return a non-id order. Bundle ownership is expressed
+          // in Schem edge ids but the renderer consumes hydrated array indexes.
+          edges: [
+            {
+              id: 1,
+              points: [{ x: 62, y: 24 }, { x: 130, y: 24 }],
+            },
+            {
+              id: 0,
+              points: [{ x: 62, y: 18 }, { x: 130, y: 18 }],
+            },
+          ],
+          boundary_bundles: [{
+            id: 0,
+            endpoint: { node: 2, port: 0 },
+            role: 'output',
+            width: 2,
+            collector: {
+              start: { x: 130, y: 18 },
+              end: { x: 130, y: 24 },
+            },
+            spine: {
+              start: { x: 140, y: 21 },
+              end: { x: 130, y: 21 },
+            },
+            members: [
+              { edge: 0, slots: [0], tap: { x: 130, y: 18 } },
+              { edge: 1, slots: [1], tap: { x: 130, y: 24 } },
+            ],
+          }],
+          width: 214,
+          height: 46,
+      }),
+    )
+
+    const laidOut = await pendingLayout
+    expect(laidOut.edges.map((edge) => edge.edge.bits)).toEqual([[56], [55]])
+    expect(laidOut.edges.every((edge) => edge.edge !== sub.edges[0])).toBe(true)
+    expect(laidOut.boundaryBundles).toEqual([expect.objectContaining({
+      id: 0,
+      role: 'output',
+      ownerIndexes: [0, 1],
+    })])
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('does not cache degraded bundle-free geometry but caches the next strict success', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const bundled = (): Subgraph => ({
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          port_direction: 'output',
+          member_count: 1,
+          boundary_members: [{ member: 20, bit: 0 }],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'a',
+        bits: [100],
+        source_boundary_members: [{ member: 10, net_bits: [100] }],
+        target_boundary_members: [{ member: 20, net_bits: [100] }],
+      }],
+      truncated: false,
+    })
+    const rawGeometry = {
+      nodes: [
+        { id: 1, x: 0, y: 0, width: 74, height: 34 },
+        { id: 2, x: 140, y: 0, width: 74, height: 34 },
+      ],
+      edges: [{
+        id: 0,
+        points: [{ x: 74, y: 17 }, { x: 140, y: 17 }],
+      }],
+      width: 214,
+      height: 34,
+    }
+    const strictGeometry = {
+      ...rawGeometry,
+      boundary_bundles: [{
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        role: 'input' as const,
+        width: 1,
+        collector: {
+          start: { x: 84, y: 17 },
+          end: { x: 84, y: 17 },
+        },
+        spine: {
+          start: { x: 74, y: 17 },
+          end: { x: 84, y: 17 },
+        },
+        members: [{
+          edge: 0,
+          slots: [0],
+          tap: { x: 84, y: 17 },
+        }],
+      }],
+    }
+
+    const degraded = layoutSubgraph(bundled(), undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+    expect(
+      buildSchemWeaveLayoutRequest(worker.requests[0].input)
+        .request.constraints.boundary_bundles,
+    ).toHaveLength(2)
+    worker.onmessage?.(
+      schemWeaveWorkerResponse(worker.requests[0], rawGeometry, true),
+    )
+    await expect(degraded).resolves.toMatchObject({ boundaryBundles: [] })
+
+    const strict = layoutSubgraph(
+      structuredClone(bundled()),
+      undefined,
+      'schemweave',
+    )
+    expect(worker.requests).toHaveLength(2)
+    expect(
+      buildSchemWeaveLayoutRequest(worker.requests[1].input)
+        .request.constraints.boundary_bundles,
+    ).toHaveLength(2)
+    worker.onmessage?.(
+      schemWeaveWorkerResponse(worker.requests[1], strictGeometry),
+    )
+    await expect(strict).resolves.toMatchObject({
+      boundaryBundles: [{ id: 0 }],
+    })
+
+    await expect(layoutSubgraph(
+      structuredClone(bundled()),
+      undefined,
+      'schemweave',
+    )).resolves.toMatchObject({
+      boundaryBundles: [{ id: 0 }],
+    })
+    expect(worker.requests).toHaveLength(2)
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('rejects a full-layout response that requests another full relayout', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pending = layoutSubgraph(workerSubgraph(), undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'geometry',
+        },
+      },
+    } as MessageEvent)
+
+    await expect(pending).rejects.toThrow(
+      'full SchemWeave layout requested another full relayout',
+    )
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('recreates a worker that crashes during otherwise-idle prewarm', async () => {
@@ -2073,6 +2696,161 @@ describe('schematic layout sizing', () => {
     expect(result.nodes[0].node).toBe(sub.nodes[0])
     expect(FakeWorker.instances).toHaveLength(2)
     second.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('does not let a stale SchemWeave response take over the latest request', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const controller = new AbortController()
+    const stale = layoutSubgraph(
+      workerSubgraph(),
+      controller.signal,
+      'schemweave',
+    )
+    const first = FakeWorker.instances[0]
+    const staleHandler = first.onmessage
+
+    controller.abort()
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+
+    const latest = layoutSubgraph(workerSubgraph(2), undefined, 'schemweave')
+    const replacement = FakeWorker.instances[1]
+    staleHandler?.(
+      schemWeaveWorkerResponse(first.requests[0], geometry),
+    )
+    replacement.onmessage?.(
+      schemWeaveWorkerResponse(replacement.requests[0], {
+          ...geometry,
+          nodes: [{ ...geometry.nodes[0], id: 2 }],
+      }),
+    )
+
+    await expect(latest).resolves.toMatchObject({
+      nodes: [{ id: 2 }],
+      width: 76,
+    })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('aborts an expansion without letting its stale response replace a later expansion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 1,
+    }
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+    const controller = new AbortController()
+
+    const stale = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      controller.signal,
+      [group],
+    )
+    const first = FakeWorker.instances[0]
+    const staleHandler = first.onmessage
+    const firstRequest = first.requests[0]
+
+    controller.abort()
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const latest = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const replacement = FakeWorker.instances[1]
+    const replacementRequest = replacement.requests[0]
+    let latestSettled = false
+    void latest.finally(() => {
+      latestSettled = true
+    })
+    staleHandler?.({
+      data: {
+        id: firstRequest.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: { ...baseGeometry, width: 999 },
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+    await Promise.resolve()
+    expect(latestSettled).toBe(false)
+    replacement.onmessage?.({
+      data: {
+        id: replacementRequest.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+
+    await expect(latest).resolves.toMatchObject({ width: 76, height: 66 })
+    expect(FakeWorker.instances).toHaveLength(2)
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('reports an evicted expansion session for grouped recovery', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 41,
+    }
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const pending = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const worker = FakeWorker.instances[0]
+    expect(worker.requests[0]).toMatchObject({
+      kind: 'expand',
+      session: {
+        sessionEpoch: 'test-worker',
+        sessionId: 41,
+      },
+    })
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'geometry',
+        },
+      },
+    } as MessageEvent)
+
+    await expect(pending).resolves.toBeNull()
+    expect(worker.requests).toHaveLength(1)
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('reuses completed geometry for an equivalent fresh subgraph', async () => {
@@ -2520,6 +3298,62 @@ describe('schematic layout sizing', () => {
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
+  it('times out a collapse and lets the next collapse use a fresh worker', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 1,
+    }
+    const expanded = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const timedOut = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      expanded,
+      group,
+      [],
+    )
+    const first = FakeWorker.instances[0]
+    const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
+      name: 'LayoutTimeoutError',
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await timeoutExpectation
+    expect(first.requests).toHaveLength(1)
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const current = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      expanded,
+      group,
+      [],
+    )
+    const replacement = FakeWorker.instances[1]
+    const request = replacement.requests[0]
+    replacement.onmessage?.({
+      data: {
+        id: request.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+
+    await expect(current).resolves.toMatchObject({ width: 76, height: 66 })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
   it('rejects every pending request when the shared worker times out', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('Worker', FakeWorker)
@@ -2605,6 +3439,41 @@ describe('viewport transforms', () => {
     expect(
       preserveViewportAnchor({ x: 10, y: 15, k: 2 }, previous, next, [1]),
     ).toEqual({ x: -190, y: -65, k: 2 })
+  })
+
+  it('anchors expansion and collapse to the grouped node replacement', () => {
+    const grouped = node(100, 'FDRE', { members: [1, 2], member_count: 2 })
+    const output = node(9, '$_BUF_')
+    const compact = {
+      nodes: [
+        { id: 100, x: 100, y: 100, width: 100, height: 60, node: grouped },
+        { id: 9, x: 500, y: 100, width: 80, height: 50, node: output },
+      ],
+      edges: [],
+      width: 580,
+      height: 160,
+    }
+    const expanded = {
+      nodes: [
+        { id: 1, x: 100, y: 100, width: 80, height: 50, node: node(1, 'FDRE') },
+        { id: 2, x: 240, y: 100, width: 80, height: 50, node: node(2, 'FDRE') },
+        { id: 9, x: 700, y: 100, width: 80, height: 50, node: output },
+      ],
+      edges: [],
+      width: 780,
+      height: 160,
+    }
+
+    const opened = preserveViewportAnchor(
+      { x: 20, y: 30, k: 2 },
+      compact,
+      expanded,
+      [9],
+    )
+    expect(opened).toEqual({ x: 40, y: 40, k: 2 })
+    expect(
+      preserveViewportAnchor(opened, expanded, compact, [9]),
+    ).toEqual({ x: 20, y: 30, k: 2 })
   })
 
   it('refits only when a projection has no retained node to anchor', () => {

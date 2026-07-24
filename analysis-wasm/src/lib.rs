@@ -96,22 +96,27 @@ struct GroupExpansionQuery {
     group_memories: Option<bool>,
 }
 
-fn validate_single_group_expansion(
+fn expanded_group_ids(
     expanded_nodes: &[u32],
     base: u32,
     group_count: usize,
     group_id: u32,
-) -> Result<(), &'static str> {
+) -> Result<Vec<u32>, &'static str> {
+    if expanded_nodes.len() > group_count {
+        return Err("too many expanded groups");
+    }
+    let mut expanded_groups = Vec::with_capacity(expanded_nodes.len().saturating_add(1));
     for node in expanded_nodes {
         let id = node
             .checked_sub(base)
             .filter(|id| (*id as usize) < group_count)
             .ok_or("expanded node is not a grouped instance")?;
-        if id != group_id {
-            return Err("only one grouped instance can be expanded at a time");
-        }
+        expanded_groups.push(id);
     }
-    Ok(())
+    expanded_groups.push(group_id);
+    expanded_groups.sort_unstable();
+    expanded_groups.dedup();
+    Ok(expanded_groups)
 }
 
 #[derive(Deserialize)]
@@ -329,14 +334,13 @@ impl AnalysisSession {
             .checked_sub(base)
             .filter(|id| self.design.grouping.groups.get(*id as usize).is_some())
             .ok_or_else(|| js_error("node is not a grouped instance"))?;
-        validate_single_group_expansion(
+        let expanded_groups = expanded_group_ids(
             &query.expanded_nodes,
             base,
             self.design.grouping.groups.len(),
             group_id,
         )
         .map_err(js_error)?;
-        let expanded_groups = [group_id];
         let grouping = GroupingProjection::from_flags_with_expanded(
             &self.design.grouping,
             query.group_vectors.unwrap_or(false),
@@ -1014,14 +1018,15 @@ mod tests {
     }
 
     #[test]
-    fn group_expansion_rejects_a_second_open_group() {
-        assert_eq!(validate_single_group_expansion(&[10], 10, 2, 0), Ok(()));
+    fn group_expansion_resolves_every_open_group_deterministically() {
+        assert_eq!(expanded_group_ids(&[10], 10, 2, 0), Ok(vec![0]));
+        assert_eq!(expanded_group_ids(&[11, 10], 10, 2, 0), Ok(vec![0, 1]),);
         assert_eq!(
-            validate_single_group_expansion(&[10, 11], 10, 2, 0),
-            Err("only one grouped instance can be expanded at a time")
+            expanded_group_ids(&[11, 10, 11], 10, 2, 0),
+            Err("too many expanded groups"),
         );
         assert_eq!(
-            validate_single_group_expansion(&[12], 10, 2, 0),
+            expanded_group_ids(&[12], 10, 2, 0),
             Err("expanded node is not a grouped instance")
         );
     }

@@ -11,6 +11,10 @@ import type {
   Subgraph,
 } from '../types'
 import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
+import type {
+  SchemWeaveWorkerRequest,
+  SchemWeaveWorkerResponse,
+} from '../workers/schemweaveProtocol'
 import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
@@ -50,6 +54,8 @@ export interface LaidOutGraph {
   nodes: LaidOutNode[]
   edges: LaidOutEdge[]
   groups?: LaidOutGroup[]
+  boundaryBundles?: LaidOutBoundaryBundle[]
+  schemWeaveSession?: SchemWeaveSessionHandle
   width: number
   height: number
 }
@@ -60,6 +66,21 @@ export interface LaidOutGroup {
   y: number
   width: number
   height: number
+}
+
+export interface BoundaryBundleSegment {
+  start: Point
+  end: Point
+}
+
+export interface LaidOutBoundaryBundle {
+  id: number
+  endpoint: { node: number; port: number }
+  role: 'input' | 'output'
+  width: number
+  collector: BoundaryBundleSegment
+  spine: BoundaryBundleSegment
+  ownerIndexes: number[]
 }
 
 export function layoutsShareNode(
@@ -95,7 +116,9 @@ export interface LayoutInputNode {
   baseHeight: number
   controlHeight: number
   register: boolean
+  cycleBreaker?: boolean
   boundary: PortBoundaryRole
+  boundaryWidth?: number
   boundaryMembers?: BoundaryMember[]
 }
 
@@ -105,6 +128,9 @@ export interface LayoutInputEdge {
   fromPort: string
   toPort: string
   control: boolean
+  net?: number
+  netBits?: number[]
+  netKey?: string
   sourceBoundaryMembers?: EdgeBoundaryMember[]
   targetBoundaryMembers?: EdgeBoundaryMember[]
 }
@@ -116,7 +142,7 @@ export interface LayoutInput {
 }
 
 export const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
-export const EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER = 2
+export const EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER = 1.5
 const EXPANDED_GROUP_NODE_SPACING = 18
 const EXPANDED_GROUP_VERTICAL_PADDING = 46
 
@@ -143,30 +169,30 @@ function shouldStackExpandedGroup(
 
 function expandedGroupColumnCount(
   group: ExpandedGroupLayout,
-  members: Array<{ height?: number }>,
+  members: Array<{ width?: number; height?: number }>,
 ): number {
   if (shouldStackExpandedGroup(group, members)) return 1
-  const verticalLimit = group.referenceHeight == null
-    ? null
-    : group.referenceHeight * EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER
+  const maxMemberWidth = Math.max(
+    1,
+    ...members.map((member) => member.width ?? 0),
+  )
   const maxMemberHeight = Math.max(
     1,
     ...members.map((member) => member.height ?? 0),
   )
-  const maxGridRows = verticalLimit == null
-    ? Math.max(1, Math.ceil(Math.sqrt(members.length / 0.65)))
-    : Math.max(
-        1,
-        Math.floor(
-          (
-            verticalLimit -
-            EXPANDED_GROUP_VERTICAL_PADDING +
-            EXPANDED_GROUP_NODE_SPACING
-          ) /
-            (maxMemberHeight + EXPANDED_GROUP_NODE_SPACING),
+  return Math.min(
+    members.length,
+    Math.max(
+      2,
+      Math.ceil(
+        Math.sqrt(
+          members.length *
+          (maxMemberHeight + EXPANDED_GROUP_NODE_SPACING) /
+          (maxMemberWidth + EXPANDED_GROUP_NODE_SPACING),
         ),
       )
-  return Math.max(1, Math.ceil(members.length / maxGridRows))
+    ),
+  )
 }
 
 function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
@@ -207,8 +233,19 @@ function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
 
 export interface LayoutGeometry {
   nodes: Array<Omit<LaidOutNode, 'node'>>
-  edges: Array<{ inputIndex: number; points: Point[] }>
+  edges: Array<{ inputIndex: number; points: Point[]; netBits?: number[] }>
   groups?: LaidOutGroup[]
+  boundaryBundles?: Array<{
+    id: number
+    endpoint: { node: number; port: number }
+    role: 'input' | 'output'
+    width: number
+    collector: BoundaryBundleSegment
+    spine: BoundaryBundleSegment
+    ownerIndexes: number[]
+  }>
+  schemWeaveSnapshot?: SchemWeaveSnapshot
+  schemWeaveSession?: SchemWeaveSessionHandle
   width: number
   height: number
 }
@@ -228,13 +265,42 @@ export const LAYOUT_GEOMETRY_CACHE_MAX_BYTES = 16 * 1024 * 1024
 const layoutGeometryCache = new Map<string, CachedLayoutGeometry>()
 let layoutGeometryCacheBytes = 0
 
-function layoutGeometryKey(input: LayoutInput, placement: NodePlacement): string {
-  return `${placement}:${JSON.stringify(input)}`
+export type LayoutEngine = 'elk' | 'schemweave'
+
+function layoutGeometryKey(
+  input: LayoutInput,
+  engine: LayoutEngine,
+  placement?: NodePlacement,
+): string {
+  const layoutInput = engine === 'elk'
+    ? {
+        ...input,
+        edges: input.edges.map(({ netBits: _netBits, netKey: _netKey, ...edge }) =>
+          edge
+        ),
+      }
+    : input
+  return `${engine}:${placement ?? 'max'}:${JSON.stringify(layoutInput)}`
+}
+
+/** SchemWeave is selectable only in local development; ELK remains default. */
+export function comparisonLayoutEngine(
+  search: string,
+  development = import.meta.env.DEV,
+): LayoutEngine {
+  return development &&
+    new URLSearchParams(search).get('layout') === 'schemweave'
+    ? 'schemweave'
+    : 'elk'
 }
 
 function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
   const pointCount = geometry.edges.reduce(
     (total, edge) => total + edge.points.length,
+    0,
+  )
+  const fragmentBitCount = geometry.edges.reduce(
+    (total, edge) => total + (edge.netBits?.length ?? 0),
     0,
   )
   // Conservative object/array allowances plus UTF-16 key storage. This is a
@@ -244,7 +310,15 @@ function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
     geometry.nodes.length * 128 +
     geometry.edges.length * 96 +
     (geometry.groups?.length ?? 0) * 80 +
+    (geometry.boundaryBundles?.length ?? 0) * 320 +
+    (geometry.schemWeaveSnapshot
+      ? geometry.schemWeaveSnapshot.request.graph.nodes.length * 128 +
+        geometry.schemWeaveSnapshot.request.graph.edges.length * 96 +
+        geometry.schemWeaveSnapshot.layout.nodes.length * 64 +
+        geometry.schemWeaveSnapshot.layout.edges.length * 96
+      : 0) +
     pointCount * 48 +
+    fragmentBitCount * 8 +
     256
   )
 }
@@ -342,15 +416,10 @@ export function preserveViewportAnchor(
 ): ViewportTransform {
   const previousById = new Map(previous.nodes.map((node) => [node.id, node]))
   const nextById = new Map(next.nodes.map((node) => [node.id, node]))
-  const candidates = [
-    ...preferredIds,
-    ...previous.nodes.map((node) => node.id),
-  ]
-  for (const id of candidates) {
-    if (id == null) continue
-    const before = previousById.get(id)
-    const after = nextById.get(id)
-    if (!before || !after) continue
+  const translated = (
+    before: LaidOutNode,
+    after: LaidOutNode,
+  ): ViewportTransform => {
     const beforeX = before.x + before.width / 2
     const beforeY = before.y + before.height / 2
     const afterX = after.x + after.width / 2
@@ -360,6 +429,43 @@ export function preserveViewportAnchor(
       x: transform.x + (beforeX - afterX) * transform.k,
       y: transform.y + (beforeY - afterY) * transform.k,
     }
+  }
+  const nearestMember = (
+    group: LaidOutNode,
+    memberGeometry: LaidOutNode[],
+  ) => memberGeometry.reduce((nearest, member) => {
+    const distance =
+      (member.x - group.x) ** 2 +
+      (member.y - group.y) ** 2
+    const nearestDistance =
+      (nearest.x - group.x) ** 2 +
+      (nearest.y - group.y) ** 2
+    return distance < nearestDistance ? member : nearest
+  })
+  for (const group of previous.nodes) {
+    if (nextById.has(group.id) || !group.node.members?.length) continue
+    const members = group.node.members
+      .map((id) => nextById.get(id))
+      .filter((node): node is LaidOutNode => node != null)
+    if (members.length > 0) return translated(group, nearestMember(group, members))
+  }
+  for (const group of next.nodes) {
+    if (previousById.has(group.id) || !group.node.members?.length) continue
+    const members = group.node.members
+      .map((id) => previousById.get(id))
+      .filter((node): node is LaidOutNode => node != null)
+    if (members.length > 0) return translated(nearestMember(group, members), group)
+  }
+  const candidates = [
+    ...preferredIds,
+    ...previous.nodes.map((node) => node.id),
+  ]
+  for (const id of candidates) {
+    if (id == null) continue
+    const before = previousById.get(id)
+    const after = nextById.get(id)
+    if (!before || !after) continue
+    return translated(before, after)
   }
   return transform
 }
@@ -569,6 +675,14 @@ export function canonicalPinNames(pins: Iterable<string>): string[] {
   return [...new Set(pins)].sort()
 }
 
+function compareNumberArrays(left: readonly number[], right: readonly number[]): number {
+  const common = Math.min(left.length, right.length)
+  for (let index = 0; index < common; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index]
+  }
+  return left.length - right.length
+}
+
 interface PinCatalog {
   incoming: Map<number, string[]>
   outgoing: Map<number, string[]>
@@ -720,6 +834,22 @@ export function prepareLayoutInput(
         }]
       : []
   })
+  const netByBits = new Map<string, number>()
+  const netForEdge = (edge: GraphEdge, index: number): number => {
+    const boundaryNetBits = [
+      ...(edge.source_boundary_members ?? []),
+      ...(edge.target_boundary_members ?? []),
+    ].flatMap((mapping) => mapping.net_bits)
+    const bits = [...new Set(
+      boundaryNetBits.length > 0 ? boundaryNetBits : edge.bits,
+    )].sort((left, right) => left - right)
+    const key = bits.length > 0 ? `bits:${bits.join(',')}` : `edge:${index}`
+    const existing = netByBits.get(key)
+    if (existing != null) return existing
+    const net = netByBits.size
+    netByBits.set(key, net)
+    return net
+  }
   return {
     nodes: sub.nodes.map((node) => {
       const { width, height } = nodeDimensions(node)
@@ -730,11 +860,15 @@ export function prepareLayoutInput(
         baseHeight: height,
         controlHeight: controlsFor(node).length * CONTROL_ROW_HEIGHT,
         register: isRegKind(node),
+        cycleBreaker: node.seq === true,
         boundary: boundaryById.get(node.id) ?? 'internal',
+        ...(node.member_count != null
+          ? { boundaryWidth: node.member_count }
+          : {}),
         ...(boundaryMembers != null ? { boundaryMembers } : {}),
       }
     }),
-    edges: sub.edges.map((edge) => {
+    edges: sub.edges.map((edge, index) => {
       const target = nodeById.get(edge.to)
       const sourceBoundaryMembers = normalizeEdgeBoundaryMembers(
         edge.source_boundary_members,
@@ -755,11 +889,1343 @@ export function prepareLayoutInput(
         control:
           edge.control === true ||
           Boolean(target && isRegKind(target) && isRegisterControlPin(edge.to_port)),
+        net: netForEdge(edge, index),
+        netBits: [...new Set(edge.bits)].sort((left, right) => left - right),
+        ...(edge.net_name ? { netKey: `name:${edge.net_name}` } : {}),
         ...(sourceBoundaryMembers != null ? { sourceBoundaryMembers } : {}),
         ...(targetBoundaryMembers != null ? { targetBoundaryMembers } : {}),
       }
     }),
     ...(groups.length > 0 ? { groups } : {}),
+  }
+}
+
+export interface SchemWeavePort {
+  id: number
+  side: 'east' | 'west'
+  offset: number
+}
+
+export interface SchemWeaveGraph {
+  nodes: Array<{
+    id: number
+    width: number
+    height: number
+    cycle_breaker: boolean
+    ports: SchemWeavePort[]
+  }>
+  edges: Array<{
+    id: number
+    source: { node: number; port: number }
+    target: { node: number; port: number }
+    net: number
+    participates_in_ranking: boolean
+  }>
+}
+
+export interface SchemWeaveBoundaryBundleConstraint {
+  id: number
+  endpoint: { node: number; port: number }
+  width: number
+  members: Array<{ edge: number; slots: number[] }>
+}
+
+export interface SchemWeaveLayoutRequest {
+  graph: SchemWeaveGraph
+  constraints: {
+    inputs: number[]
+    outputs: number[]
+    boundary_bundles?: SchemWeaveBoundaryBundleConstraint[]
+  }
+}
+
+export interface SchemWeaveLayout {
+  nodes: LayoutGeometry['nodes']
+  edges: Array<{ id: number; points: Point[] }>
+  boundary_bundles?: Array<{
+    id: number
+    endpoint: { node: number; port: number }
+    role: 'input' | 'output'
+    width: number
+    collector: BoundaryBundleSegment
+    spine: BoundaryBundleSegment
+    members: Array<{ edge: number; slots: number[]; tap: Point }>
+  }>
+  width: number
+  height: number
+}
+
+export interface SchemWeaveSnapshot {
+  request: SchemWeaveLayoutRequest
+  layout: SchemWeaveLayout
+  catalog: SchemWeaveGraphCatalog
+  expandedGroups?: ExpandedGroupLayout[]
+}
+
+/**
+ * Opaque reference to adapter state retained inside the SchemWeave worker.
+ * Keeping the full graph, catalog, and prior geometry worker-side prevents
+ * multi-megabyte snapshots from being cloned across the UI boundary.
+ */
+export interface SchemWeaveSessionHandle {
+  sessionEpoch: string
+  sessionId: number
+  expandedGroups?: ExpandedGroupLayout[]
+}
+
+export interface SchemWeaveExpansionRequest {
+  compact_graph: SchemWeaveGraph
+  compact_layout: SchemWeaveLayout
+  expanded_graph: SchemWeaveGraph
+  reference_height: number
+  expansion: {
+    anchor: number
+    members: number[]
+    boundary_trunks: Array<{
+      expanded_edge: number
+      compact_edge: number
+    }>
+  }
+  constraints: SchemWeaveLayoutRequest['constraints']
+}
+
+export interface SchemWeaveCollapseRequest {
+  expanded_graph: SchemWeaveGraph
+  expanded_layout: SchemWeaveLayout
+  compact_graph: SchemWeaveGraph
+  expansion: SchemWeaveExpansionRequest['expansion']
+  constraints: SchemWeaveLayoutRequest['constraints']
+}
+
+export interface SchemWeaveGraphCatalog {
+  graph: SchemWeaveGraph
+  portIds: Map<string, number>
+  fragments: Array<{
+    inputIndex: number
+    netKey: string
+    netBits?: number[]
+    sourceBundle?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: number[]
+    }
+    targetBundle?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: number[]
+    }
+  }>
+}
+
+/** Map the renderer's fixed-pin contract to SchemWeave's numeric graph ABI. */
+function buildSchemWeaveGraph(input: LayoutInput): SchemWeaveGraphCatalog {
+  const pins = collectPinCatalog(input.edges)
+  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
+  const controlPins = new Map<number, Map<string, ControlRole>>()
+  for (const edge of input.edges) {
+    const node = nodeById.get(edge.to)
+    if (!edge.control || !node?.register) continue
+    let controls = controlPins.get(edge.to)
+    if (!controls) {
+      controls = new Map()
+      controlPins.set(edge.to, controls)
+    }
+    controls.set(edge.toPort, controlRoleForPin(edge.toPort))
+  }
+
+  const portIds = new Map<string, number>()
+  const nodes = [...input.nodes]
+    .sort((left, right) => left.id - right.id)
+    .map((node) => {
+      const incoming = pins.incoming.get(node.id) ?? []
+      const outgoing = pins.outgoing.get(node.id) ?? []
+      const { width, height } = dimensionsForPins(
+        node,
+        incoming.length,
+        outgoing.length,
+      )
+      const ports: SchemWeavePort[] = []
+      const add = (
+        key: string,
+        side: SchemWeavePort['side'],
+        offset: number,
+      ) => {
+        const id = ports.length
+        ports.push({ id, side, offset })
+        portIds.set(`${node.id}:${key}`, id)
+      }
+      if (node.register) {
+        const body = Math.min(height, REG_BODY_HEIGHT)
+        add('in', 'west', body * REG_DATA_IN_Y_FRAC)
+        const controls = [...(controlPins.get(node.id)?.entries() ?? [])].sort(
+          ([pinA, roleA], [pinB, roleB]) =>
+            registerControlYFraction(roleA) -
+              registerControlYFraction(roleB) ||
+            pinA.localeCompare(pinB),
+        )
+        for (const [pin, role] of controls) {
+          add(
+            `control:${pin}`,
+            'west',
+            body * registerControlYFraction(role),
+          )
+        }
+        add('out', 'east', body * REG_DATA_OUT_Y_FRAC)
+      } else {
+        const body = pinBodyHeight(node, height)
+        incoming.forEach((pin, index) =>
+          add(
+            `i:${pin}`,
+            'west',
+            ((index + 1) * body) / (incoming.length + 1),
+          ),
+        )
+        outgoing.forEach((pin, index) =>
+          add(
+            `o:${pin}`,
+            'east',
+            ((index + 1) * body) / (outgoing.length + 1),
+          ),
+        )
+      }
+      return {
+        id: node.id,
+        width,
+        height,
+        cycle_breaker: node.cycleBreaker === true,
+        ports,
+      }
+    })
+
+  const portId = (node: number, key: string): number => {
+    const id = portIds.get(`${node}:${key}`)
+    if (id == null) throw new Error(`missing layout port ${node}:${key}`)
+    return id
+  }
+  const endpoints = input.edges.map((edge) => {
+    const sourceNode = nodeById.get(edge.from)
+    const targetNode = nodeById.get(edge.to)
+    if (!sourceNode || !targetNode) {
+      throw new Error('layout edge references an unknown node')
+    }
+    const sourceKey = sourceNode.register ? 'out' : `o:${edge.fromPort}`
+    const targetKey = targetNode.register
+      ? edge.control
+        ? `control:${edge.toPort}`
+        : 'in'
+      : `i:${edge.toPort}`
+    return {
+      source: { node: edge.from, port: portId(edge.from, sourceKey) },
+      target: { node: edge.to, port: portId(edge.to, targetKey) },
+    }
+  })
+
+  interface BoundarySide {
+    endpoint: { node: number; port: number }
+    width: number
+    entries: Array<{ slot: number; netBits: number[] }>
+  }
+  const boundarySide = (
+    role: 'input' | 'output',
+    nodeId: number,
+    endpoint: { node: number; port: number },
+    mappings: EdgeBoundaryMember[] | undefined,
+  ): BoundarySide | undefined => {
+    if (!mappings || mappings.length === 0) return undefined
+    const node = nodeById.get(nodeId)
+    if (!node) throw new Error(`boundary bundle references unknown node ${nodeId}`)
+    if (node.boundary === 'internal') return undefined
+    if (node.boundary !== role) {
+      throw new Error(
+        `boundary bundle ${role} metadata references ${node.boundary} node ${nodeId}`,
+      )
+    }
+    const slotByMember = new Map(
+      node.boundaryMembers?.map((member) => [member.member, member.bit] as const),
+    )
+    const entries = normalizeEdgeBoundaryMembers(
+      mappings,
+      node.boundaryMembers,
+    )?.map((mapping) => {
+      const slot = slotByMember.get(mapping.member)
+      if (slot == null) {
+        throw new Error(
+          `boundary bundle node ${nodeId} has no declaration slot for member ${mapping.member}`,
+        )
+      }
+      const netBits = [...new Set(mapping.net_bits)]
+        .sort((left, right) => left - right)
+      if (netBits.length === 0) {
+        throw new Error(
+          `${role} endpoint ${endpoint.node}:${endpoint.port} slot ${slot} has no electrical net bits`,
+        )
+      }
+      return { slot, netBits }
+    }) ?? []
+    if (entries.length === 0) return undefined
+    const requiredWidth = Math.max(...entries.map((entry) => entry.slot)) + 1
+    const width = node.boundaryWidth ??
+      Math.max(
+        requiredWidth,
+        ...(node.boundaryMembers?.map((member) => member.bit + 1) ?? [1]),
+      )
+    if (width < requiredWidth) {
+      throw new Error(
+        `boundary bundle node ${nodeId} width ${width} excludes slot ${requiredWidth - 1}`,
+      )
+    }
+    return { endpoint, width, entries }
+  }
+
+  interface ElectricalCandidate {
+    id: number
+    inputIndex: number
+    netKey: string
+    netBits?: number[]
+    source?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: Set<number>
+    }
+    target?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: Set<number>
+    }
+    sourceCohorts: number[][]
+    targetCohorts: number[][]
+  }
+  const candidates: ElectricalCandidate[] = []
+  input.edges.forEach((edge, inputIndex) => {
+    const endpoint = endpoints[inputIndex]
+    const source = boundarySide(
+      'input',
+      edge.from,
+      endpoint.source,
+      edge.sourceBoundaryMembers,
+    )
+    const target = boundarySide(
+      'output',
+      edge.to,
+      endpoint.target,
+      edge.targetBoundaryMembers,
+    )
+    const byNet = new Map<string, ElectricalCandidate>()
+    const membershipsByBit = new Map<number, {
+      sourceSlots: Set<number>
+      targetSlots: Set<number>
+    }>()
+    const addMemberships = (
+      side: 'sourceSlots' | 'targetSlots',
+      entries: readonly { slot: number; netBits: number[] }[],
+    ) => {
+      for (const entry of entries) {
+        for (const bit of entry.netBits) {
+          const memberships = membershipsByBit.get(bit) ?? {
+            sourceSlots: new Set<number>(),
+            targetSlots: new Set<number>(),
+          }
+          memberships[side].add(entry.slot)
+          membershipsByBit.set(bit, memberships)
+        }
+      }
+    }
+    addMemberships('sourceSlots', source?.entries ?? [])
+    addMemberships('targetSlots', target?.entries ?? [])
+    const bitsBySlotSignature = new Map<string, {
+      bits: number[]
+      sourceSlots: number[]
+      targetSlots: number[]
+    }>()
+    for (const [bit, memberships] of [...membershipsByBit].sort(
+      ([left], [right]) => left - right,
+    )) {
+      const sourceSlots = [...memberships.sourceSlots]
+        .sort((left, right) => left - right)
+      const targetSlots = [...memberships.targetSlots]
+        .sort((left, right) => left - right)
+      const signature = `source:${sourceSlots.join(',')};target:${targetSlots.join(',')}`
+      const cohort = bitsBySlotSignature.get(signature) ?? {
+        bits: [],
+        sourceSlots,
+        targetSlots,
+      }
+      cohort.bits.push(bit)
+      bitsBySlotSignature.set(signature, cohort)
+    }
+    for (const cohort of [...bitsBySlotSignature.values()].sort((left, right) =>
+      compareNumberArrays(left.bits, right.bits)
+    )) {
+      const netKey = `bits:${cohort.bits.join(',')}`
+      byNet.set(netKey, {
+        id: -1,
+        inputIndex,
+        netKey,
+        netBits: cohort.bits,
+        ...(cohort.sourceSlots.length > 0 && source
+          ? {
+              source: {
+                endpoint: source.endpoint,
+                width: source.width,
+                slots: new Set(cohort.sourceSlots),
+              },
+            }
+          : {}),
+        ...(cohort.targetSlots.length > 0 && target
+          ? {
+              target: {
+                endpoint: target.endpoint,
+                width: target.width,
+                slots: new Set(cohort.targetSlots),
+              },
+            }
+          : {}),
+        sourceCohorts: [],
+        targetCohorts: [],
+      })
+    }
+    if (byNet.size === 0) {
+      const netBits = [...new Set(edge.netBits ?? [])]
+        .sort((left, right) => left - right)
+      const netKey = edge.netKey ??
+        (netBits.length > 0
+          ? `bits:${netBits.join(',')}`
+          : `logical:${edge.net ?? inputIndex}`)
+      byNet.set(netKey, {
+        id: -1,
+        inputIndex,
+        netKey,
+        ...(netBits.length > 0 ? { netBits } : {}),
+        sourceCohorts: [],
+        targetCohorts: [],
+      })
+    }
+    for (const candidate of [...byNet.values()].sort((left, right) =>
+      left.netKey.localeCompare(right.netKey)
+    )) {
+      candidate.id = candidates.length
+      candidates.push(candidate)
+    }
+  })
+
+  const formatNetKey = (key: string): string =>
+    `[${key.startsWith('bits:') ? key.slice('bits:'.length) : key}]`
+  const slotElectricalKey = new Map<string, string>()
+  const cohortBuilders = new Map<string, {
+    role: 'input' | 'output'
+    endpoint: { node: number; port: number }
+    width: number
+    ownersBySlot: Map<number, Set<number>>
+  }>()
+  const addBoundaryOwner = (
+    role: 'input' | 'output',
+    candidate: ElectricalCandidate,
+    owner: NonNullable<ElectricalCandidate['source']>,
+  ) => {
+    for (const slot of owner.slots) {
+      const slotKey = `${role}:${owner.endpoint.node}:${owner.endpoint.port}:${slot}`
+      const prior = slotElectricalKey.get(slotKey)
+      if (prior != null && prior !== candidate.netKey) {
+        throw new Error(
+          `${role} endpoint ${owner.endpoint.node}:${owner.endpoint.port} slot ${slot} ` +
+          `has conflicting electrical net bits ${formatNetKey(prior)} and ${formatNetKey(candidate.netKey)}`,
+        )
+      }
+      slotElectricalKey.set(slotKey, candidate.netKey)
+    }
+    const builderKey =
+      `${role}:${owner.endpoint.node}:${owner.endpoint.port}:${candidate.netKey}`
+    let builder = cohortBuilders.get(builderKey)
+    if (!builder) {
+      builder = {
+        role,
+        endpoint: owner.endpoint,
+        width: owner.width,
+        ownersBySlot: new Map(),
+      }
+      cohortBuilders.set(builderKey, builder)
+    } else if (builder.width !== owner.width) {
+      throw new Error(
+        `inconsistent boundary bundle width for node ${owner.endpoint.node}`,
+      )
+    }
+    for (const slot of owner.slots) {
+      const owners = builder.ownersBySlot.get(slot) ?? new Set<number>()
+      owners.add(candidate.id)
+      builder.ownersBySlot.set(slot, owners)
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.source) addBoundaryOwner('input', candidate, candidate.source)
+    if (candidate.target) addBoundaryOwner('output', candidate, candidate.target)
+  }
+  for (const builder of [...cohortBuilders.values()].sort((left, right) =>
+    (left.role === right.role ? 0 : left.role === 'input' ? -1 : 1) ||
+    left.endpoint.node - right.endpoint.node ||
+    left.endpoint.port - right.endpoint.port
+  )) {
+    const slotsByOwnerSet = new Map<string, number[]>()
+    for (const [slot, owners] of [...builder.ownersBySlot].sort(
+      ([left], [right]) => left - right,
+    )) {
+      const ownerKey = [...owners].sort((left, right) => left - right).join(',')
+      const slots = slotsByOwnerSet.get(ownerKey) ?? []
+      slots.push(slot)
+      slotsByOwnerSet.set(ownerKey, slots)
+    }
+    for (const [ownerKey, slots] of [...slotsByOwnerSet].sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      for (const ownerId of ownerKey.split(',').map(Number)) {
+        const candidate = candidates[ownerId]
+        const cohorts = builder.role === 'input'
+          ? candidate.sourceCohorts
+          : candidate.targetCohorts
+        cohorts.push(slots)
+      }
+    }
+  }
+
+  const netIds = new Map(
+    [...new Set(candidates.map((candidate) => candidate.netKey))]
+      .sort()
+      .map((key, index) => [key, index] as const),
+  )
+  const fragments: SchemWeaveGraphCatalog['fragments'] = []
+  const edges: SchemWeaveGraph['edges'] = []
+  for (const candidate of candidates) {
+    candidate.sourceCohorts.sort(compareNumberArrays)
+    candidate.targetCohorts.sort(compareNumberArrays)
+    const fragmentCount = Math.max(
+      1,
+      candidate.sourceCohorts.length,
+      candidate.targetCohorts.length,
+    )
+    const endpoint = endpoints[candidate.inputIndex]
+    for (let fragmentIndex = 0; fragmentIndex < fragmentCount; fragmentIndex += 1) {
+      const sourceSlots = candidate.sourceCohorts.length > 0
+        ? candidate.sourceCohorts[fragmentIndex % candidate.sourceCohorts.length]
+        : undefined
+      const targetSlots = candidate.targetCohorts.length > 0
+        ? candidate.targetCohorts[fragmentIndex % candidate.targetCohorts.length]
+        : undefined
+      const id = edges.length
+      edges.push({
+        id,
+        source: endpoint.source,
+        target: endpoint.target,
+        net: netIds.get(candidate.netKey)!,
+        participates_in_ranking: true,
+      })
+      fragments.push({
+        inputIndex: candidate.inputIndex,
+        netKey: candidate.netKey,
+        ...(candidate.netBits ? { netBits: candidate.netBits } : {}),
+        ...(sourceSlots && candidate.source
+          ? {
+              sourceBundle: {
+                endpoint: candidate.source.endpoint,
+                width: candidate.source.width,
+                slots: sourceSlots,
+              },
+            }
+          : {}),
+        ...(targetSlots && candidate.target
+          ? {
+              targetBundle: {
+                endpoint: candidate.target.endpoint,
+                width: candidate.target.width,
+                slots: targetSlots,
+              },
+            }
+          : {}),
+      })
+    }
+  }
+  if (edges.length > MAX_GRAPH_EDGES) {
+    throw new Error(
+      `cone too dense (${edges.length} electrical layout edges after boundary expansion; ` +
+      `limit ${MAX_GRAPH_EDGES}) — reduce depth or pick a narrower signal`,
+    )
+  }
+  return { graph: { nodes, edges }, portIds, fragments }
+}
+
+export function toSchemWeaveGraph(input: LayoutInput): SchemWeaveGraph {
+  return buildSchemWeaveGraph(input).graph
+}
+
+function boundaryBundleConstraints(
+  catalog: SchemWeaveGraphCatalog,
+): SchemWeaveBoundaryBundleConstraint[] {
+  const builders = new Map<string, {
+    role: 'input' | 'output'
+    endpoint: { node: number; port: number }
+    width: number
+    members: Array<{ edge: number; slots: number[] }>
+  }>()
+  const addMember = (
+    role: 'input' | 'output',
+    edgeIndex: number,
+    owner: NonNullable<
+      SchemWeaveGraphCatalog['fragments'][number]['sourceBundle']
+    > | undefined,
+  ) => {
+    if (!owner) return
+    const key = `${role}:${owner.endpoint.node}:${owner.endpoint.port}`
+    const existing = builders.get(key)
+    if (existing && existing.width !== owner.width) {
+      throw new Error(
+        `inconsistent boundary bundle width for node ${owner.endpoint.node}`,
+      )
+    }
+    const builder = existing ?? {
+      role,
+      endpoint: owner.endpoint,
+      width: owner.width,
+      members: [],
+    }
+    builder.members.push({ edge: edgeIndex, slots: owner.slots })
+    builders.set(key, builder)
+  }
+  catalog.fragments.forEach((fragment, edgeIndex) => {
+    addMember('input', edgeIndex, fragment.sourceBundle)
+    addMember('output', edgeIndex, fragment.targetBundle)
+  })
+
+  return [...builders.values()]
+    .sort((left, right) =>
+      (left.role === right.role ? 0 : left.role === 'input' ? -1 : 1) ||
+      left.endpoint.node - right.endpoint.node ||
+      left.endpoint.port - right.endpoint.port,
+    )
+    .map((bundle, id) => ({
+      id,
+      endpoint: bundle.endpoint,
+      width: bundle.width,
+      members: bundle.members.sort((left, right) => left.edge - right.edge),
+    }))
+}
+
+/** Wrap graph geometry and exact grouped-boundary semantics for WASM. */
+export function buildSchemWeaveLayoutRequest(
+  input: LayoutInput,
+): {
+  request: SchemWeaveLayoutRequest
+  catalog: SchemWeaveGraphCatalog
+} {
+  const catalog = buildSchemWeaveGraph(input)
+  const boundaryIds = (boundary: LayoutInputNode['boundary']) =>
+    input.nodes
+      .filter((node) => node.boundary === boundary)
+      .map((node) => node.id)
+      .sort((left, right) => left - right)
+  const boundaryBundles = boundaryBundleConstraints(catalog)
+  return {
+    catalog,
+    request: {
+      graph: catalog.graph,
+      constraints: {
+        inputs: boundaryIds('input'),
+        outputs: boundaryIds('output'),
+        ...(boundaryBundles.length > 0
+          ? { boundary_bundles: boundaryBundles }
+          : {}),
+      },
+    },
+  }
+}
+
+export function toSchemWeaveLayoutRequest(
+  input: LayoutInput,
+): SchemWeaveLayoutRequest {
+  return buildSchemWeaveLayoutRequest(input).request
+}
+
+function fragmentSignature(
+  edge: SchemWeaveGraph['edges'][number],
+  fragment: SchemWeaveGraphCatalog['fragments'][number],
+): string {
+  const sourceSlots = fragment.sourceBundle?.slots.join(',') ?? ''
+  const targetSlots = fragment.targetBundle?.slots.join(',') ?? ''
+  return (
+    `${edge.source.node}:${edge.source.port}->` +
+    `${edge.target.node}:${edge.target.port}|${fragment.netKey}|` +
+    `source:${sourceSlots}|target:${targetSlots}`
+  )
+}
+
+function boundaryFragmentKey(
+  edge: SchemWeaveGraph['edges'][number],
+  fragment: SchemWeaveGraphCatalog['fragments'][number],
+  members: ReadonlySet<number>,
+  anchor?: number,
+): string | null {
+  const sourceInside = anchor == null
+    ? members.has(edge.source.node)
+    : edge.source.node === anchor
+  const targetInside = anchor == null
+    ? members.has(edge.target.node)
+    : edge.target.node === anchor
+  if (sourceInside === targetInside) return null
+  return sourceInside
+    ? `out:${edge.target.node}:${edge.target.port}|${fragment.netKey}`
+    : `in:${edge.source.node}:${edge.source.port}|${fragment.netKey}`
+}
+
+/**
+ * Preserve compact edge ids for retained geometry and assign each replacement
+ * boundary edge to the exact collapsed trunk it supersedes.
+ */
+export function buildSchemWeaveExpansionRequest(
+  compact: SchemWeaveSnapshot,
+  expandedInput: LayoutInput,
+  group: ExpandedGroupLayout,
+): {
+  request: SchemWeaveExpansionRequest
+  expandedRequest: SchemWeaveLayoutRequest
+  catalog: SchemWeaveGraphCatalog
+} {
+  const expanded = buildSchemWeaveLayoutRequest(expandedInput)
+  const compactGraph = compact.request.graph
+  const compactFragments = compact.catalog.fragments
+  const members = new Set(group.members)
+  const compactNodeById = new Map(
+    compactGraph.nodes.map((node) => [node.id, node] as const),
+  )
+  const portEntriesByNode = (
+    catalog: SchemWeaveGraphCatalog,
+  ) => {
+    const byNode = new Map<number, Array<[string, number]>>()
+    for (const [key, port] of catalog.portIds) {
+      const separator = key.indexOf(':')
+      const node = Number(key.slice(0, separator))
+      const entries = byNode.get(node) ?? []
+      entries.push([key, port])
+      byNode.set(node, entries)
+    }
+    for (const entries of byNode.values()) {
+      entries.sort(([left], [right]) => left.localeCompare(right))
+    }
+    return byNode
+  }
+  const compactPortsByNode = portEntriesByNode(compact.catalog)
+  const expandedPortsByNode = portEntriesByNode(expanded.catalog)
+  const portRemapByNode = new Map<number, Map<number, number>>()
+  const normalizedNodes = expanded.request.graph.nodes.map((node) => {
+    if (members.has(node.id)) return node
+    const compactNode = compactNodeById.get(node.id)
+    if (!compactNode) {
+      throw new Error(`expanded projection introduced retained node ${node.id}`)
+    }
+    if (
+      node.width !== compactNode.width ||
+      node.height !== compactNode.height ||
+      node.cycle_breaker !== compactNode.cycle_breaker
+    ) {
+      throw new Error(`expanded projection changed retained node ${node.id}`)
+    }
+    const compactPorts = compactPortsByNode.get(node.id) ?? []
+    const expandedPorts = expandedPortsByNode.get(node.id) ?? []
+    if (
+      compactPorts.length !== expandedPorts.length ||
+      compactPorts.some(([key], index) => key !== expandedPorts[index][0])
+    ) {
+      throw new Error(`expanded projection changed retained pins on node ${node.id}`)
+    }
+    const compactPortById = new Map(
+      compactNode.ports.map((port) => [port.id, port] as const),
+    )
+    const expandedPortById = new Map(
+      node.ports.map((port) => [port.id, port] as const),
+    )
+    const remap = new Map<number, number>()
+    compactPorts.forEach(([key, compactPortId], index) => {
+      const expandedPortId = expandedPorts[index][1]
+      const compactPort = compactPortById.get(compactPortId)
+      const expandedPort = expandedPortById.get(expandedPortId)
+      if (
+        !compactPort ||
+        !expandedPort ||
+        compactPort.side !== expandedPort.side ||
+        compactPort.offset !== expandedPort.offset
+      ) {
+        throw new Error(`expanded projection changed retained pin ${key}`)
+      }
+      remap.set(expandedPortId, compactPortId)
+    })
+    portRemapByNode.set(node.id, remap)
+    return compactNode
+  })
+  const remapEndpoint = (endpoint: { node: number; port: number }) => {
+    const port = portRemapByNode.get(endpoint.node)?.get(endpoint.port)
+    return port == null ? endpoint : { ...endpoint, port }
+  }
+  const expandedGraph: SchemWeaveGraph = {
+    nodes: normalizedNodes,
+    edges: expanded.request.graph.edges.map((edge) => ({
+      ...edge,
+      source: remapEndpoint(edge.source),
+      target: remapEndpoint(edge.target),
+    })),
+  }
+  const compactRetainedBySignature = new Map<string, number[]>()
+  const compactTrunksByKey = new Map<string, number[]>()
+
+  compactGraph.edges.forEach((edge) => {
+    const fragment = compactFragments[edge.id]
+    if (!fragment) {
+      throw new Error(`compact SchemWeave snapshot is missing edge ${edge.id}`)
+    }
+    const boundaryKey = boundaryFragmentKey(
+      edge,
+      fragment,
+      members,
+      group.id,
+    )
+    const catalog = boundaryKey == null
+      ? compactRetainedBySignature
+      : compactTrunksByKey
+    const key = boundaryKey ?? fragmentSignature(edge, fragment)
+    const ids = catalog.get(key) ?? []
+    ids.push(edge.id)
+    catalog.set(key, ids)
+  })
+  for (const ids of [
+    ...compactRetainedBySignature.values(),
+    ...compactTrunksByKey.values(),
+  ]) {
+    ids.sort((left, right) => left - right)
+  }
+
+  const boundaryByKey = new Map<string, number[]>()
+  const retainedAssignments = new Map<number, number>()
+  const internalEdges: number[] = []
+  expandedGraph.edges.forEach((edge) => {
+    const fragment = expanded.catalog.fragments[edge.id]
+    const sourceMember = members.has(edge.source.node)
+    const targetMember = members.has(edge.target.node)
+    if (sourceMember !== targetMember) {
+      const key = boundaryFragmentKey(edge, fragment, members)
+      if (key == null) throw new Error('failed to classify expansion boundary edge')
+      const ids = boundaryByKey.get(key) ?? []
+      ids.push(edge.id)
+      boundaryByKey.set(key, ids)
+      return
+    }
+    if (sourceMember) {
+      internalEdges.push(edge.id)
+      return
+    }
+    const key = fragmentSignature(edge, fragment)
+    const compactIds = compactRetainedBySignature.get(key)
+    const compactId = compactIds?.shift()
+    if (compactId == null) {
+      throw new Error(
+        `expanded projection changed retained electrical edge ${key}`,
+      )
+    }
+    retainedAssignments.set(edge.id, compactId)
+  })
+  const unmatchedRetained = [...compactRetainedBySignature.entries()]
+    .find(([, ids]) => ids.length > 0)
+  if (unmatchedRetained) {
+    throw new Error(
+      `expanded projection omitted retained electrical edge ${unmatchedRetained[0]}`,
+    )
+  }
+
+  const boundaryAssignments = new Map<number, number>()
+  const boundaryTrunks = new Map<number, number>()
+  for (const [key, compactIds] of compactTrunksByKey) {
+    const expandedIds = boundaryByKey.get(key) ?? []
+    if (expandedIds.length < compactIds.length) {
+      throw new Error(`expanded group omitted collapsed boundary trunk ${key}`)
+    }
+    compactIds.forEach((compactId, index) => {
+      const expandedId = expandedIds[index]
+      boundaryAssignments.set(expandedId, compactId)
+      boundaryTrunks.set(expandedId, compactId)
+    })
+    expandedIds.slice(compactIds.length).forEach((expandedId) => {
+      boundaryTrunks.set(expandedId, compactIds[0])
+    })
+    boundaryByKey.delete(key)
+  }
+  const unmatchedBoundary = [...boundaryByKey.keys()][0]
+  if (unmatchedBoundary) {
+    throw new Error(
+      `expanded group introduced an unmapped boundary edge ${unmatchedBoundary}`,
+    )
+  }
+
+  let nextId = compactGraph.edges.length
+  const remappedId = new Map<number, number>([
+    ...retainedAssignments,
+    ...boundaryAssignments,
+  ])
+  for (const oldId of [
+    ...boundaryTrunks.keys(),
+    ...internalEdges,
+  ].sort((left, right) => left - right)) {
+    if (!remappedId.has(oldId)) remappedId.set(oldId, nextId++)
+  }
+  if (nextId !== expandedGraph.edges.length) {
+    throw new Error('expanded electrical edge ids are not contiguous')
+  }
+
+  const compactEdgeById = new Map(
+    compactGraph.edges.map((edge) => [edge.id, edge] as const),
+  )
+  const edges = expandedGraph.edges
+    .map((edge) => {
+      const id = remappedId.get(edge.id)
+      if (id == null) throw new Error(`failed to remap expanded edge ${edge.id}`)
+      const compactId = retainedAssignments.get(edge.id) ??
+        boundaryTrunks.get(edge.id)
+      return {
+        ...edge,
+        id,
+        ...(compactId == null
+          ? {}
+          : { net: compactEdgeById.get(compactId)!.net }),
+      }
+    })
+    .sort((left, right) => left.id - right.id)
+  const fragments = Array.from(
+    { length: expanded.catalog.fragments.length },
+    () => null as SchemWeaveGraphCatalog['fragments'][number] | null,
+  )
+  expanded.catalog.fragments.forEach((fragment, oldId) => {
+    const id = remappedId.get(oldId)
+    if (id == null) throw new Error(`failed to remap fragment ${oldId}`)
+    fragments[id] = fragment
+  })
+  if (fragments.some((fragment) => fragment == null)) {
+    throw new Error('expanded electrical fragment ids are not contiguous')
+  }
+  const remapBundleMembers = (
+    bundle: SchemWeaveBoundaryBundleConstraint,
+  ): SchemWeaveBoundaryBundleConstraint => ({
+    ...bundle,
+    members: bundle.members.map((member) => {
+      const edge = remappedId.get(member.edge)
+      if (edge == null) {
+        throw new Error(`failed to remap boundary bundle edge ${member.edge}`)
+      }
+      return { ...member, edge }
+    }),
+  })
+  const constraints = {
+    ...expanded.request.constraints,
+    ...(expanded.request.constraints.boundary_bundles
+      ? {
+          boundary_bundles:
+            expanded.request.constraints.boundary_bundles.map((bundle) =>
+              remapBundleMembers({
+                ...bundle,
+                endpoint: remapEndpoint(bundle.endpoint),
+              })
+            ),
+        }
+      : {}),
+  }
+  const catalog: SchemWeaveGraphCatalog = {
+    ...expanded.catalog,
+    graph: { nodes: expandedGraph.nodes, edges },
+    fragments: fragments as SchemWeaveGraphCatalog['fragments'],
+  }
+
+  return {
+    catalog,
+    expandedRequest: {
+      ...expanded.request,
+      graph: catalog.graph,
+      constraints,
+    },
+    request: {
+      compact_graph: compactGraph,
+      compact_layout: compact.layout,
+      expanded_graph: catalog.graph,
+      reference_height: group.referenceHeight ?? compact.layout.height,
+      expansion: {
+        anchor: group.id,
+        members: [...group.members].sort((left, right) => left - right),
+        boundary_trunks: [...boundaryTrunks]
+          .map(([oldExpandedId, compactId]) => ({
+            expanded_edge: remappedId.get(oldExpandedId)!,
+            compact_edge: compactId,
+          }))
+          .sort((left, right) =>
+            left.expanded_edge - right.expanded_edge ||
+            left.compact_edge - right.compact_edge
+          ),
+      },
+      constraints,
+    },
+  }
+}
+
+/**
+ * Reconstruct the exact expansion contract in reverse so the engine can
+ * collapse one group without moving any other active group.
+ */
+export function buildSchemWeaveCollapseRequest(
+  expanded: SchemWeaveSnapshot,
+  expandedInput: LayoutInput,
+  compactInput: LayoutInput,
+  group: ExpandedGroupLayout,
+): {
+  request: SchemWeaveCollapseRequest
+  compactRequest: SchemWeaveLayoutRequest
+  catalog: SchemWeaveGraphCatalog
+} {
+  const compact = buildSchemWeaveLayoutRequest(compactInput)
+  const reconstructed = buildSchemWeaveExpansionRequest(
+    {
+      request: compact.request,
+      layout: expanded.layout,
+      catalog: compact.catalog,
+    },
+    expandedInput,
+    group,
+  )
+  const portKeyByEndpoint = (catalog: SchemWeaveGraphCatalog) => {
+    const keys = new Map<string, string>()
+    for (const [key, port] of catalog.portIds) {
+      const separator = key.indexOf(':')
+      const node = key.slice(0, separator)
+      keys.set(`${node}:${port}`, key.slice(separator + 1))
+    }
+    return keys
+  }
+  const currentPortKeys = portKeyByEndpoint(expanded.catalog)
+  const reconstructedPortKeys = portKeyByEndpoint(reconstructed.catalog)
+  const semanticNodes = (
+    graph: SchemWeaveGraph,
+    portKeys: Map<string, string>,
+  ) => graph.nodes.map((node) => ({
+    id: node.id,
+    width: node.width,
+    height: node.height,
+    cycle_breaker: node.cycle_breaker,
+    ports: node.ports.map((port) => ({
+      key: portKeys.get(`${node.id}:${port.id}`),
+      side: port.side,
+      offset: port.offset,
+    })).sort((left, right) => (left.key ?? '').localeCompare(right.key ?? '')),
+  })).sort((left, right) => left.id - right.id)
+  if (
+    JSON.stringify(semanticNodes(expanded.request.graph, currentPortKeys)) !==
+    JSON.stringify(
+      semanticNodes(
+        reconstructed.expandedRequest.graph,
+        reconstructedPortKeys,
+      ),
+    )
+  ) {
+    throw new Error('current SchemWeave snapshot changed collapse nodes')
+  }
+  const edgeSignature = (
+    edge: SchemWeaveGraph['edges'][number],
+    fragment: SchemWeaveGraphCatalog['fragments'][number],
+    portKeys: Map<string, string>,
+  ) => [
+    `${edge.source.node}:${portKeys.get(`${edge.source.node}:${edge.source.port}`)}`,
+    `${edge.target.node}:${portKeys.get(`${edge.target.node}:${edge.target.port}`)}`,
+    fragment.netKey,
+    fragment.sourceBundle?.slots.join(',') ?? '',
+    fragment.targetBundle?.slots.join(',') ?? '',
+    edge.participates_in_ranking,
+  ].join('|')
+  const reconstructedIdsBySignature = new Map<string, number[]>()
+  for (const edge of reconstructed.expandedRequest.graph.edges) {
+    const fragment = reconstructed.catalog.fragments[edge.id]
+    if (!fragment) {
+      throw new Error(`reconstructed collapse graph omitted edge ${edge.id}`)
+    }
+    const signature = edgeSignature(
+      edge,
+      fragment,
+      reconstructedPortKeys,
+    )
+    const ids = reconstructedIdsBySignature.get(signature) ?? []
+    ids.push(edge.id)
+    reconstructedIdsBySignature.set(signature, ids)
+  }
+  const remappedEdgeId = new Map<number, number>()
+  for (const edge of [...expanded.request.graph.edges].sort(
+    (left, right) => left.id - right.id,
+  )) {
+    const fragment = expanded.catalog.fragments[edge.id]
+    if (!fragment) {
+      throw new Error(`current SchemWeave snapshot omitted edge ${edge.id}`)
+    }
+    const signature = edgeSignature(edge, fragment, currentPortKeys)
+    const ids = reconstructedIdsBySignature.get(signature)
+    const id = ids?.shift()
+    if (id == null) {
+      throw new Error('current SchemWeave snapshot changed collapse edges')
+    }
+    remappedEdgeId.set(edge.id, id)
+  }
+  if ([...reconstructedIdsBySignature.values()].some((ids) => ids.length > 0)) {
+    throw new Error('current SchemWeave snapshot omitted collapse edges')
+  }
+  const remapEndpoint = (endpoint: { node: number; port: number }) => {
+    const key = currentPortKeys.get(`${endpoint.node}:${endpoint.port}`)
+    const port = key == null
+      ? undefined
+      : reconstructed.catalog.portIds.get(`${endpoint.node}:${key}`)
+    if (port == null) {
+      throw new Error('current SchemWeave snapshot changed collapse ports')
+    }
+    return { node: endpoint.node, port }
+  }
+  const remappedLayout: SchemWeaveLayout = {
+    ...expanded.layout,
+    edges: expanded.layout.edges.map((edge) => {
+      const id = remappedEdgeId.get(edge.id)
+      if (id == null) {
+        throw new Error(`current SchemWeave layout omitted edge ${edge.id}`)
+      }
+      return { ...edge, id }
+    }).sort((left, right) => left.id - right.id),
+    ...(expanded.layout.boundary_bundles
+      ? {
+          boundary_bundles: expanded.layout.boundary_bundles.map((bundle) => ({
+            ...bundle,
+            endpoint: remapEndpoint(bundle.endpoint),
+            members: bundle.members.map((member) => {
+              const edge = remappedEdgeId.get(member.edge)
+              if (edge == null) {
+                throw new Error(
+                  `current SchemWeave bundle omitted edge ${member.edge}`,
+                )
+              }
+              return { ...member, edge }
+            }),
+          })),
+        }
+      : {}),
+  }
+  return {
+    catalog: compact.catalog,
+    compactRequest: compact.request,
+    request: {
+      expanded_graph: reconstructed.expandedRequest.graph,
+      expanded_layout: remappedLayout,
+      compact_graph: compact.request.graph,
+      expansion: reconstructed.request.expansion,
+      constraints: compact.request.constraints,
+    },
+  }
+}
+
+export function interpretSchemWeaveResult(
+  layout: SchemWeaveLayout,
+  catalog?: SchemWeaveGraphCatalog,
+  request?: SchemWeaveLayoutRequest,
+): LayoutGeometry {
+  const raw = layout as unknown as Record<string, unknown> | null
+  if (!raw || typeof raw !== 'object') {
+    throw new Error('layout result must be an object')
+  }
+  if (!Array.isArray(raw.nodes)) {
+    throw new Error('layout nodes must be an array')
+  }
+  if (!Array.isArray(raw.edges)) {
+    throw new Error('layout edges must be an array')
+  }
+  const finite = (value: unknown, label: string, nonnegative = false) => {
+    if (
+      typeof value !== 'number' ||
+      !Number.isFinite(value) ||
+      (nonnegative && value < 0)
+    ) {
+      throw new Error(
+        `${label} must be a finite${nonnegative ? ' nonnegative' : ''} number`,
+      )
+    }
+  }
+  const integer = (value: unknown, label: string, nonnegative = false) => {
+    if (
+      typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      (nonnegative && value < 0)
+    ) {
+      throw new Error(
+        `${label} must be a safe${nonnegative ? ' nonnegative' : ''} integer`,
+      )
+    }
+  }
+  const record = (value: unknown, label: string): Record<string, unknown> => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`${label} must be an object`)
+    }
+    return value as Record<string, unknown>
+  }
+  const point = (value: unknown, label: string) => {
+    const candidate = record(value, label)
+    finite(candidate.x, `${label}.x`)
+    finite(candidate.y, `${label}.y`)
+  }
+  const segment = (value: unknown, label: string) => {
+    const candidate = record(value, label)
+    point(candidate.start, `${label}.start`)
+    point(candidate.end, `${label}.end`)
+  }
+
+  finite(raw.width, 'layout width', true)
+  finite(raw.height, 'layout height', true)
+  const nodeIds = new Set<number>()
+  raw.nodes.forEach((value, index) => {
+    const node = record(value, `layout node ${index}`)
+    integer(node.id, `layout node ${index} id`, true)
+    const id = node.id as number
+    if (nodeIds.has(id)) throw new Error(`layout returned duplicate node ${id}`)
+    nodeIds.add(id)
+    finite(node.x, `layout node ${id} x`)
+    finite(node.y, `layout node ${id} y`)
+    finite(node.width, `layout node ${id} width`, true)
+    finite(node.height, `layout node ${id} height`, true)
+  })
+
+  const edgeIds = new Set<number>()
+  raw.edges.forEach((value, index) => {
+    const edge = record(value, `layout edge ${index}`)
+    integer(edge.id, `layout edge ${index} id`, true)
+    const id = edge.id as number
+    if (edgeIds.has(id)) throw new Error(`layout returned duplicate edge ${id}`)
+    if (catalog && !catalog.fragments[id]) {
+      throw new Error(`layout returned unknown electrical edge ${id}`)
+    }
+    edgeIds.add(id)
+    if (!Array.isArray(edge.points)) {
+      throw new Error(`layout edge ${id} points must be an array`)
+    }
+    edge.points.forEach((value, pointIndex) =>
+      point(value, `layout edge ${id} point ${pointIndex}`))
+  })
+  if (catalog && edgeIds.size !== catalog.fragments.length) {
+    const missing = catalog.fragments.findIndex((_, id) => !edgeIds.has(id))
+    throw new Error(`layout omitted electrical edge ${missing}`)
+  }
+
+  if (raw.boundary_bundles != null) {
+    if (!Array.isArray(raw.boundary_bundles)) {
+      throw new Error('layout boundary bundles must be an array')
+    }
+    const bundleIds = new Set<number>()
+    raw.boundary_bundles.forEach((value, index) => {
+      const bundle = record(value, `boundary bundle ${index}`)
+      integer(bundle.id, `boundary bundle ${index} id`, true)
+      const id = bundle.id as number
+      if (bundleIds.has(id)) {
+        throw new Error(`layout returned duplicate boundary bundle ${id}`)
+      }
+      bundleIds.add(id)
+      const endpoint = record(
+        bundle.endpoint,
+        `boundary bundle ${id} endpoint`,
+      )
+      integer(endpoint.node, `boundary bundle ${id} endpoint node`, true)
+      integer(endpoint.port, `boundary bundle ${id} endpoint port`, true)
+      if (!nodeIds.has(endpoint.node as number)) {
+        throw new Error(
+          `boundary bundle ${id} references unknown node ${endpoint.node}`,
+        )
+      }
+      if (bundle.role !== 'input' && bundle.role !== 'output') {
+        throw new Error(`boundary bundle ${id} has invalid role`)
+      }
+      integer(bundle.width, `boundary bundle ${id} width`, true)
+      if (bundle.width === 0) {
+        throw new Error(`boundary bundle ${id} width must be positive`)
+      }
+      segment(bundle.collector, `boundary bundle ${id} collector`)
+      segment(bundle.spine, `boundary bundle ${id} spine`)
+      if (!Array.isArray(bundle.members)) {
+        throw new Error(`boundary bundle ${id} members must be an array`)
+      }
+      bundle.members.forEach((value, memberIndex) => {
+        const member = record(
+          value,
+          `boundary bundle ${id} member ${memberIndex}`,
+        )
+        integer(
+          member.edge,
+          `boundary bundle ${id} member ${memberIndex} edge`,
+          true,
+        )
+        if (!edgeIds.has(member.edge as number)) {
+          throw new Error(
+            `boundary bundle ${id} references unknown edge ${member.edge}`,
+          )
+        }
+        if (!Array.isArray(member.slots)) {
+          throw new Error(
+            `boundary bundle ${id} member ${memberIndex} slots must be an array`,
+          )
+        }
+        member.slots.forEach((slot, slotIndex) => {
+          integer(
+            slot,
+            `boundary bundle ${id} member ${memberIndex} slot ${slotIndex}`,
+            true,
+          )
+          if ((slot as number) >= (bundle.width as number)) {
+            throw new Error(
+              `boundary bundle ${id} slot ${slot} exceeds width ${bundle.width}`,
+            )
+          }
+        })
+        point(member.tap, `boundary bundle ${id} member ${memberIndex} tap`)
+      })
+    })
+  }
+
+  const renderedIndexByEdgeId = new Map(
+    layout.edges.map((edge, index) => [edge.id, index] as const),
+  )
+  return {
+    nodes: layout.nodes,
+    edges: layout.edges.map((edge) => {
+      const fragment = catalog?.fragments[edge.id]
+      return {
+        inputIndex: fragment?.inputIndex ?? edge.id,
+        points: edge.points,
+        ...(fragment?.netBits ? { netBits: fragment.netBits } : {}),
+      }
+    }),
+    ...(layout.boundary_bundles && layout.boundary_bundles.length > 0
+      ? {
+          boundaryBundles: layout.boundary_bundles.map((bundle) => ({
+            id: bundle.id,
+            endpoint: bundle.endpoint,
+            role: bundle.role,
+            width: bundle.width,
+            collector: bundle.collector,
+            spine: bundle.spine,
+            ownerIndexes: [...new Set(
+              bundle.members.map((member) => {
+                const renderedIndex = renderedIndexByEdgeId.get(member.edge)
+                if (renderedIndex == null) {
+                  throw new Error(
+                    `boundary bundle ${bundle.id} references unrouted edge ${member.edge}`,
+                  )
+                }
+                return renderedIndex
+              }),
+            )].sort((left, right) => left - right),
+          })),
+        }
+      : {}),
+    ...(catalog && request
+      ? { schemWeaveSnapshot: { request, layout, catalog } }
+      : {}),
+    width: layout.width,
+    height: layout.height,
   }
 }
 
@@ -888,9 +2354,9 @@ export function toElkGraph(
     })
     if (members.length === 0) return []
 
-    // Prefer one aligned vertical stack. If that stack would exceed twice the
-    // height of the schematic the user expanded from, form the fewest clean
-    // grid columns needed to stay within that vertical budget. Cross-boundary
+    // Prefer one aligned vertical stack. If that stack would exceed 1.5x the
+    // height of the schematic the user expanded from, form a balanced clean
+    // grid. Cross-boundary
     // nets terminate at compound proxy ports during ELK placement, then regain
     // their exact member-pin endpoints through collision-free frame corridors.
     const singleColumnHeight = expandedGroupSingleColumnHeight(members)
@@ -1436,26 +2902,25 @@ export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): La
       if (!node) throw new Error(`layout returned unknown node ${laidOut.id}`)
       return { ...laidOut, node }
     }),
-    edges: geometry.edges.map(({ inputIndex, points }) => {
+    edges: geometry.edges.map(({ inputIndex, points, netBits }) => {
       const edge = sub.edges[inputIndex]
       if (!edge) throw new Error(`layout returned unknown edge ${inputIndex}`)
-      return { from: edge.from, to: edge.to, points, edge }
+      return {
+        from: edge.from,
+        to: edge.to,
+        points,
+        edge: netBits ? { ...edge, bits: netBits } : edge,
+      }
     }),
     ...(geometry.groups ? { groups: geometry.groups } : {}),
+    boundaryBundles: geometry.boundaryBundles ?? [],
+    ...(geometry.schemWeaveSession
+      ? { schemWeaveSession: geometry.schemWeaveSession }
+      : {}),
     width: geometry.width,
     height: geometry.height,
   }
 }
-
-const LOCAL_GROUP_COLUMN_GAP = 20
-const LOCAL_GROUP_ROW_GAP = 16
-const LOCAL_GROUP_MARGIN_X = 14
-const LOCAL_GROUP_MARGIN_TOP = 28
-const LOCAL_GROUP_COLLISION_GAP = 12
-const LOCAL_GROUP_EDGE_RAIL_GAP = 8
-const LOCAL_GROUP_ROUTE_MARGIN_X = 20
-const LOCAL_GROUP_ROUTE_MARGIN_TOP = 28
-const LOCAL_GROUP_ROUTE_MARGIN_BOTTOM = 20
 
 function localEdgePoints(
   start: Point,
@@ -1485,642 +2950,28 @@ function compactRoute(points: Point[]): Point[] {
   })
 }
 
-function segmentIntersectsRectangle(
-  start: Point,
-  end: Point,
-  left: number,
-  top: number,
-  right: number,
-  bottom: number,
-): boolean {
-  return Math.max(start.x, end.x) > left &&
-    Math.min(start.x, end.x) < right &&
-    Math.max(start.y, end.y) > top &&
-    Math.min(start.y, end.y) < bottom
-}
-
-interface LocalRouteGrid {
-  gridX: number
-  gridY: number
-  maxMemberWidth: number
-  maxMemberHeight: number
-  columns: number
-  rows: number
-  cells: Array<LaidOutNode | undefined>
-  leftRail: number
-  rightRail: number
-  topRail: number
-  bottomRail: number
-  headerLeft: number
-  headerTop: number
-  headerRight: number
-  headerBottom: number
-}
-
-function segmentCrossesRouteGrid(
-  start: Point,
-  end: Point,
-  grid: LocalRouteGrid,
-): boolean {
-  if (start.x !== end.x && start.y !== end.y) return true
-  if (start.x === end.x && start.y === end.y) return false
-  if (segmentIntersectsRectangle(
-    start,
-    end,
-    grid.headerLeft,
-    grid.headerTop,
-    grid.headerRight,
-    grid.headerBottom,
-  )) return true
-  const stepX = grid.maxMemberWidth + LOCAL_GROUP_COLUMN_GAP
-  const stepY = grid.maxMemberHeight + LOCAL_GROUP_ROW_GAP
-  if (start.y === end.y) {
-    const relativeY = start.y - grid.gridY
-    const row = Math.floor(relativeY / stepY)
-    if (
-      row < 0 ||
-      row >= grid.rows ||
-      relativeY - row * stepY > grid.maxMemberHeight
-    ) return false
-    const minX = Math.min(start.x, end.x)
-    const maxX = Math.max(start.x, end.x)
-    const firstColumn = Math.max(0, Math.floor((minX - grid.gridX) / stepX))
-    const lastColumn = Math.min(
-      grid.columns - 1,
-      Math.floor((maxX - grid.gridX) / stepX),
-    )
-    for (let column = firstColumn; column <= lastColumn; column += 1) {
-      const node = grid.cells[row * grid.columns + column]
-      if (node && segmentIntersectsRectangle(
-        start,
-        end,
-        node.x,
-        node.y,
-        node.x + node.width,
-        node.y + node.height,
-      )) return true
-    }
-    return false
-  }
-  const relativeX = start.x - grid.gridX
-  const column = Math.floor(relativeX / stepX)
-  if (
-    column < 0 ||
-    column >= grid.columns ||
-    relativeX - column * stepX > grid.maxMemberWidth
-  ) return false
-  const minY = Math.min(start.y, end.y)
-  const maxY = Math.max(start.y, end.y)
-  const firstRow = Math.max(0, Math.floor((minY - grid.gridY) / stepY))
-  const lastRow = Math.min(
-    grid.rows - 1,
-    Math.floor((maxY - grid.gridY) / stepY),
-  )
-  for (let row = firstRow; row <= lastRow; row += 1) {
-    const node = grid.cells[row * grid.columns + column]
-    if (node && segmentIntersectsRectangle(
-      start,
-      end,
-      node.x,
-      node.y,
-      node.x + node.width,
-      node.y + node.height,
-    )) return true
-  }
-  return false
-}
-
-function memberAccessX(
-  column: number,
-  side: 'incoming' | 'outgoing',
-  grid: LocalRouteGrid,
-): number {
-  if (side === 'incoming') {
-    if (column === 0) return grid.leftRail
-    return grid.gridX +
-      column * (grid.maxMemberWidth + LOCAL_GROUP_COLUMN_GAP) -
-      LOCAL_GROUP_COLUMN_GAP / 2
-  }
-  if (column === grid.columns - 1) return grid.rightRail
-  return grid.gridX +
-    (column + 1) * grid.maxMemberWidth +
-    column * LOCAL_GROUP_COLUMN_GAP +
-    LOCAL_GROUP_COLUMN_GAP / 2
-}
-
-function perimeterAccess(point: Point, grid: LocalRouteGrid): Point {
-  if (point.x <= grid.leftRail || point.x >= grid.rightRail) return point
-  if (point.y <= grid.topRail || point.y >= grid.bottomRail) {
-    return {
-      x: point.x - grid.leftRail <= grid.rightRail - point.x
-        ? grid.leftRail
-        : grid.rightRail,
-      y: point.y,
-    }
-  }
-  return point
-}
-
-function routeAroundMemberGrid(
-  start: Point,
-  end: Point,
-  grid: LocalRouteGrid,
-  startColumn?: number,
-  endColumn?: number,
-): Point[] | null {
-  const startAccess = startColumn == null
-    ? perimeterAccess(start, grid)
-    : { x: memberAccessX(startColumn, 'outgoing', grid), y: start.y }
-  const endAccess = endColumn == null
-    ? perimeterAccess(end, grid)
-    : { x: memberAccessX(endColumn, 'incoming', grid), y: end.y }
-  const candidates: Point[][] = [
-    [start, end],
-    localEdgePoints(start, end),
-    [start, { x: end.x, y: start.y }, end],
-    [start, { x: start.x, y: end.y }, end],
-    ...[grid.topRail, grid.bottomRail].map((y) => [
-      start,
-      startAccess,
-      { x: startAccess.x, y },
-      { x: endAccess.x, y },
-      endAccess,
-      end,
-    ]),
-  ].map(compactRoute)
-  const clearCandidates = candidates.filter((points) =>
-    points.slice(1).every((point, index) =>
-      !segmentCrossesRouteGrid(points[index], point, grid)
-    )
-  )
-  const routeScore = (points: Point[]) =>
-    points.slice(1).reduce((score, point, index) => {
-      const previous = points[index]
-      return score +
-        Math.abs(point.x - previous.x) +
-        Math.abs(point.y - previous.y)
-    }, 0) +
-    Math.max(0, points.length - 2) * LOCAL_GROUP_EDGE_RAIL_GAP
-  clearCandidates.sort((a, b) => routeScore(a) - routeScore(b))
-  return clearCandidates[0] ?? null
-}
-
-function pointInsideRouteFrame(point: Point, grid: LocalRouteGrid): boolean {
-  return point.x > grid.leftRail &&
-    point.x < grid.rightRail &&
-    point.y > grid.topRail &&
-    point.y < grid.bottomRail
-}
-
-function segmentEntryToRouteFrame(
-  start: Point,
-  end: Point,
-  grid: LocalRouteGrid,
-): Point | null {
-  if (start.x === end.x) {
-    if (start.x < grid.leftRail || start.x > grid.rightRail) return null
-    if (start.y < grid.topRail && end.y >= grid.topRail) {
-      return { x: start.x, y: grid.topRail }
-    }
-    if (start.y > grid.bottomRail && end.y <= grid.bottomRail) {
-      return { x: start.x, y: grid.bottomRail }
-    }
-    return null
-  }
-  if (start.y !== end.y) return null
-  if (start.y < grid.topRail || start.y > grid.bottomRail) return null
-  if (start.x < grid.leftRail && end.x >= grid.leftRail) {
-    return { x: grid.leftRail, y: start.y }
-  }
-  if (start.x > grid.rightRail && end.x <= grid.rightRail) {
-    return { x: grid.rightRail, y: start.y }
-  }
-  return null
-}
-
-function trunkPrefixToRouteFrame(
-  points: Point[],
-  grid: LocalRouteGrid,
-): Point[] {
-  if (points.length === 0) return []
-  const retained = [points[0]]
-  if (pointInsideRouteFrame(points[0], grid)) return retained
-  for (let index = 1; index < points.length; index += 1) {
-    const entry = segmentEntryToRouteFrame(points[index - 1], points[index], grid)
-    if (entry) return compactRoute([...retained, entry])
-    if (pointInsideRouteFrame(points[index], grid)) return compactRoute(retained)
-    retained.push(points[index])
-  }
-  return compactRoute(retained)
-}
-
-function trunkSuffixFromRouteFrame(
-  points: Point[],
-  grid: LocalRouteGrid,
-): Point[] {
-  return trunkPrefixToRouteFrame([...points].reverse(), grid).reverse()
-}
-
-/**
- * Open one quotient group without asking ELK to redraw the whole projection.
- * Existing nodes and routes keep their exact geometry. Members form a compact
- * grid centered on the quotient node's former position, while new boundary
- * wiring reuses the quotient edge trunks where possible.
- */
-export function layoutExpandedGroupInPlace(
-  sub: Subgraph,
-  base: LaidOutGraph,
-  group: ExpandedGroupLayout,
-): LaidOutGraph | null {
-  const anchor = base.nodes.find((node) => node.id === group.id)
-  if (!anchor) return null
-
-  const memberIds = new Set(group.members)
-  const subNodeById = new Map(sub.nodes.map((node) => [node.id, node]))
-  const memberNodes = group.members
-    .map((id) => subNodeById.get(id))
-    .filter((node): node is GraphNode => node != null)
-  if (memberNodes.length === 0) return null
-
-  const input = prepareLayoutInput(sub)
-  const pins = collectPinCatalog(input.edges)
-  const inputNodeById = new Map(input.nodes.map((node) => [node.id, node]))
-  const dimensions = new Map(input.nodes.map((node) => [
-    node.id,
-    dimensionsForPins(
-      node,
-      pins.incoming.get(node.id)?.length ?? 0,
-      pins.outgoing.get(node.id)?.length ?? 0,
-    ),
-  ]))
-  const maxMemberWidth = Math.max(
-    ...memberNodes.map((node) => dimensions.get(node.id)?.width ?? anchor.width),
-  )
-  const maxMemberHeight = Math.max(
-    ...memberNodes.map((node) => dimensions.get(node.id)?.height ?? anchor.height),
-  )
-  const columns = Math.max(
-    1,
-    Math.ceil(Math.sqrt(
-      memberNodes.length *
-      (maxMemberHeight + LOCAL_GROUP_ROW_GAP) /
-      (maxMemberWidth + LOCAL_GROUP_COLUMN_GAP),
-    )),
-  )
-  const rows = Math.ceil(memberNodes.length / columns)
-  const gridWidth =
-    columns * maxMemberWidth + Math.max(0, columns - 1) * LOCAL_GROUP_COLUMN_GAP
-  const gridHeight =
-    rows * maxMemberHeight + Math.max(0, rows - 1) * LOCAL_GROUP_ROW_GAP
-  const centeredX = anchor.x + anchor.width / 2 - gridWidth / 2
-  const centeredY = anchor.y + anchor.height / 2 - gridHeight / 2
-  const stepX = gridWidth + LOCAL_GROUP_COLUMN_GAP * 2
-  const stepY = gridHeight + LOCAL_GROUP_ROW_GAP * 2
-  const candidateOffsets = [
-    [0, 0],
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-    [1, 1],
-    [1, -1],
-    [-1, 1],
-    [-1, -1],
-    [2, 0],
-    [-2, 0],
-    [0, 2],
-    [0, -2],
-  ] as const
-  const blockers = base.nodes.filter((node) => node.id !== group.id)
-  const routeBlockers = base.edges
-    .filter((edge) => edge.from !== group.id && edge.to !== group.id)
-    .flatMap((edge) => edge.points.slice(1).map((point, index) => ({
-      start: edge.points[index],
-      end: point,
-    })))
-  const rightmostBlocker = Math.max(
-    LOCAL_GROUP_MARGIN_X,
-    ...blockers.map((node) => node.x + node.width),
-  )
-  const bottommostBlocker = Math.max(
-    LOCAL_GROUP_MARGIN_TOP,
-    ...blockers.map((node) => node.y + node.height),
-  )
-  const candidatePositions = [
-    ...candidateOffsets.map(([column, row]) => ({
-      x: centeredX + column * stepX,
-      y: centeredY + row * stepY,
-    })),
-    // These two positions are guaranteed to clear every existing node, so a
-    // dense graph never forces unrelated logic inside the expanded frame.
-    {
-      x: rightmostBlocker +
-        LOCAL_GROUP_COLLISION_GAP +
-        LOCAL_GROUP_ROUTE_MARGIN_X,
-      y: centeredY,
-    },
-    {
-      x: centeredX,
-      y: bottommostBlocker + LOCAL_GROUP_COLLISION_GAP + LOCAL_GROUP_MARGIN_TOP,
-    },
-  ]
-  const candidates = candidatePositions.map((position) => {
-    const x = Math.max(LOCAL_GROUP_ROUTE_MARGIN_X, position.x)
-    const y = Math.max(LOCAL_GROUP_MARGIN_TOP, position.y)
-    const left = x - LOCAL_GROUP_ROUTE_MARGIN_X
-    const top = y - LOCAL_GROUP_MARGIN_TOP
-    const right = x + gridWidth + LOCAL_GROUP_ROUTE_MARGIN_X
-    const bottom = y + gridHeight + LOCAL_GROUP_ROUTE_MARGIN_BOTTOM
-    const overlap = blockers.reduce((area, node) => {
-      const overlapWidth = Math.max(
-        0,
-        Math.min(right, node.x + node.width + LOCAL_GROUP_COLLISION_GAP) -
-          Math.max(left, node.x - LOCAL_GROUP_COLLISION_GAP),
-      )
-      const overlapHeight = Math.max(
-        0,
-        Math.min(bottom, node.y + node.height + LOCAL_GROUP_COLLISION_GAP) -
-          Math.max(top, node.y - LOCAL_GROUP_COLLISION_GAP),
-      )
-      return area + overlapWidth * overlapHeight
-    }, 0)
-    const routeIntersections = routeBlockers.reduce(
-      (count, segment) =>
-        count +
-        Number(segmentIntersectsRectangle(
-          segment.start,
-          segment.end,
-          left,
-          top,
-          right,
-          bottom,
-        )),
-      0,
-    )
-    const distance =
-      (x + gridWidth / 2 - (anchor.x + anchor.width / 2)) ** 2 +
-      (y + gridHeight / 2 - (anchor.y + anchor.height / 2)) ** 2
-    return { x, y, overlap, routeIntersections, distance }
-  })
-  candidates.sort((a, b) =>
-    a.overlap - b.overlap ||
-    a.routeIntersections - b.routeIntersections ||
-    a.distance - b.distance
-  )
-  const gridX = candidates[0].x
-  const gridY = candidates[0].y
-
-  const memberGeometry = new Map<number, LaidOutNode>()
-  memberNodes.forEach((node, index) => {
-    const size = dimensions.get(node.id) ?? {
-      width: anchor.width,
-      height: anchor.height,
-    }
-    const column = index % columns
-    const row = Math.floor(index / columns)
-    memberGeometry.set(node.id, {
-      id: node.id,
-      x: gridX + column * (maxMemberWidth + LOCAL_GROUP_COLUMN_GAP) +
-        (maxMemberWidth - size.width) / 2,
-      y: gridY + row * (maxMemberHeight + LOCAL_GROUP_ROW_GAP) +
-        (maxMemberHeight - size.height) / 2,
-      width: size.width,
-      height: size.height,
-      node,
-    })
-  })
-
-  const baseNodeById = new Map(base.nodes.map((node) => [node.id, node]))
-  if (sub.nodes.some((node) =>
-    !memberIds.has(node.id) && !baseNodeById.has(node.id)
-  )) {
-    // This local composer only replaces one existing quotient node. Fall back
-    // to ELK if a future caller introduces additional context nodes.
-    return null
-  }
-  const nodes = sub.nodes.flatMap((node) => {
-    const member = memberGeometry.get(node.id)
-    if (member) return [member]
-    const existing = baseNodeById.get(node.id)
-    return existing ? [{ ...existing, node }] : []
-  })
-  const laidOutById = new Map(nodes.map((node) => [node.id, node]))
-  const memberLeft = Math.min(
-    ...[...memberGeometry.values()].map((node) => node.x),
-  )
-  const memberRight = Math.max(
-    ...[...memberGeometry.values()].map((node) => node.x + node.width),
-  )
-  const memberTop = Math.min(
-    ...[...memberGeometry.values()].map((node) => node.y),
-  )
-  const memberBottom = Math.max(
-    ...[...memberGeometry.values()].map((node) => node.y + node.height),
-  )
-  const memberColumnById = new Map(
-    memberNodes.map((node, index) => [node.id, index % columns]),
-  )
-  const routeGrid: LocalRouteGrid = {
-    gridX,
-    gridY,
-    maxMemberWidth,
-    maxMemberHeight,
-    columns,
-    rows,
-    cells: memberNodes.map((node) => memberGeometry.get(node.id)),
-    leftRail: memberLeft - LOCAL_GROUP_ROUTE_MARGIN_X,
-    rightRail: memberRight + LOCAL_GROUP_ROUTE_MARGIN_X,
-    topRail: memberTop - LOCAL_GROUP_ROUTE_MARGIN_TOP,
-    bottomRail: memberBottom + LOCAL_GROUP_ROUTE_MARGIN_BOTTOM,
-    headerLeft: memberLeft - 12,
-    headerTop: memberTop - 20,
-    headerRight: memberRight + 12,
-    headerBottom: memberTop,
-  }
-  const baseEdgeKey = (edge: GraphEdge) =>
-    `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}|${edge.net_name}|${edge.bits.join(',')}`
-  const baseEdgesByKey = new Map(
-    base.edges.map((edge) => [baseEdgeKey(edge.edge), edge]),
-  )
-  const outgoingTrunks = base.edges.filter((edge) => edge.from === group.id)
-  const incomingTrunks = base.edges.filter((edge) => edge.to === group.id)
-  const outgoingTrunkByTarget = new Map<number, (typeof base.edges)[number]>()
-  const outgoingTrunkByTargetPort = new Map<string, (typeof base.edges)[number]>()
-  const outgoingTrunkByPorts = new Map<string, (typeof base.edges)[number]>()
-  const incomingTrunkBySource = new Map<number, (typeof base.edges)[number]>()
-  const incomingTrunkBySourcePort = new Map<string, (typeof base.edges)[number]>()
-  const incomingTrunkByPorts = new Map<string, (typeof base.edges)[number]>()
-  for (const trunk of outgoingTrunks) {
-    if (!outgoingTrunkByTarget.has(trunk.to)) {
-      outgoingTrunkByTarget.set(trunk.to, trunk)
-    }
-    const key = `${trunk.to}|${trunk.edge.to_port}`
-    if (!outgoingTrunkByTargetPort.has(key)) {
-      outgoingTrunkByTargetPort.set(key, trunk)
-    }
-    const portKey = `${trunk.edge.from_port}|${key}`
-    if (!outgoingTrunkByPorts.has(portKey)) {
-      outgoingTrunkByPorts.set(portKey, trunk)
-    }
-  }
-  for (const trunk of incomingTrunks) {
-    if (!incomingTrunkBySource.has(trunk.from)) {
-      incomingTrunkBySource.set(trunk.from, trunk)
-    }
-    const key = `${trunk.from}|${trunk.edge.from_port}`
-    if (!incomingTrunkBySourcePort.has(key)) {
-      incomingTrunkBySourcePort.set(key, trunk)
-    }
-    const portKey = `${key}|${trunk.edge.to_port}`
-    if (!incomingTrunkByPorts.has(portKey)) {
-      incomingTrunkByPorts.set(portKey, trunk)
-    }
-  }
-
-  const pinPoint = (
-    laidOut: LaidOutNode,
-    edge: GraphEdge,
-    side: 'incoming' | 'outgoing',
-  ): Point => {
-    const layoutNode = inputNodeById.get(laidOut.id)
-    if (!layoutNode) {
-      return {
-        x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
-        y: laidOut.y + laidOut.height / 2,
-      }
-    }
-    if (layoutNode.register) {
-      const body = Math.min(laidOut.height, REG_BODY_HEIGHT)
-      const fraction = side === 'outgoing'
-        ? REG_DATA_OUT_Y_FRAC
-        : edge.control
-          ? registerControlYFraction(controlRoleForPin(edge.to_port))
-          : REG_DATA_IN_Y_FRAC
-      return {
-        x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
-        y: laidOut.y + body * fraction,
-      }
-    }
-    const catalog = side === 'outgoing'
-      ? pins.outgoing.get(laidOut.id) ?? []
-      : pins.incoming.get(laidOut.id) ?? []
-    const index = side === 'outgoing'
-      ? pins.outgoingIndex.get(laidOut.id)?.get(edge.from_port)
-      : pins.incomingIndex.get(laidOut.id)?.get(edge.to_port)
-    return {
-      x: side === 'outgoing' ? laidOut.x + laidOut.width : laidOut.x,
-      y: index == null
-        ? laidOut.y + laidOut.height / 2
-        : laidOut.y +
-          ((index + 1) * pinBodyHeight(layoutNode, laidOut.height)) /
-            (catalog.length + 1),
-    }
-  }
-
-  let routeFailed = false
-  const edges = sub.edges.flatMap((edge) => {
-    const existing = baseEdgesByKey.get(baseEdgeKey(edge))
-    if (existing) return [{ ...existing, edge }]
-
-    const from = laidOutById.get(edge.from)
-    const to = laidOutById.get(edge.to)
-    if (!from || !to) return []
-    const memberFrom = memberIds.has(edge.from)
-    const memberTo = memberIds.has(edge.to)
-    if (memberFrom && !memberTo) {
-      const trunk =
-        outgoingTrunkByPorts.get(`${edge.from_port}|${edge.to}|${edge.to_port}`) ??
-        outgoingTrunkByTargetPort.get(`${edge.to}|${edge.to_port}`) ??
-        outgoingTrunkByTarget.get(edge.to)
-      if (trunk) {
-        const memberPin = pinPoint(from, edge, 'outgoing')
-        const retainedTrunk = trunkSuffixFromRouteFrame(trunk.points, routeGrid)
-        const trunkStart = retainedTrunk[0]
-        const route = routeAroundMemberGrid(
-          memberPin,
-          trunkStart,
-          routeGrid,
-          memberColumnById.get(edge.from),
-        )
-        if (!route) {
-          routeFailed = true
-          return []
-        }
-        return [{
-          from: edge.from,
-          to: edge.to,
-          points: compactRoute([
-            ...route,
-            ...retainedTrunk.slice(1),
-          ]),
-          edge,
-        }]
-      }
-    }
-    if (!memberFrom && memberTo) {
-      const trunk =
-        incomingTrunkByPorts.get(`${edge.from}|${edge.from_port}|${edge.to_port}`) ??
-        incomingTrunkBySourcePort.get(`${edge.from}|${edge.from_port}`) ??
-        incomingTrunkBySource.get(edge.from)
-      if (trunk) {
-        const retainedTrunk = trunkPrefixToRouteFrame(trunk.points, routeGrid)
-        const trunkEnd = retainedTrunk.at(-1)!
-        const memberPin = pinPoint(to, edge, 'incoming')
-        const route = routeAroundMemberGrid(
-          trunkEnd,
-          memberPin,
-          routeGrid,
-          undefined,
-          memberColumnById.get(edge.to),
-        )
-        if (!route) {
-          routeFailed = true
-          return []
-        }
-        return [{
-          from: edge.from,
-          to: edge.to,
-          points: compactRoute([
-            ...retainedTrunk,
-            ...route.slice(1),
-          ]),
-          edge,
-        }]
-      }
-    }
-    const route = routeAroundMemberGrid(
-      pinPoint(from, edge, 'outgoing'),
-      pinPoint(to, edge, 'incoming'),
-      routeGrid,
-      memberFrom ? memberColumnById.get(edge.from) : undefined,
-      memberTo ? memberColumnById.get(edge.to) : undefined,
-    )
-    if (!route) {
-      routeFailed = true
-      return []
-    }
-    return [{
-      from: edge.from,
-      to: edge.to,
-      points: route,
-      edge,
-    }]
-  })
-  if (routeFailed) return null
-
-  return {
-    nodes,
-    edges,
-    width: Math.max(base.width, memberRight + LOCAL_GROUP_ROUTE_MARGIN_X),
-    height: Math.max(base.height, memberBottom + LOCAL_GROUP_ROUTE_MARGIN_BOTTOM),
-  }
-}
-
-let worker: Worker | null = null
+const workers: Partial<Record<LayoutEngine, Worker>> = {}
+let workerFactory: ((engine: LayoutEngine) => Worker) | null = null
 let seq = 0
+interface LayoutRunResult {
+  geometry: LayoutGeometry
+  degraded: boolean
+}
+
 const pending = new Map<
   number,
-  { resolve: (g: LayoutGeometry) => void; reject: (e: Error) => void }
+  {
+    engine: LayoutEngine
+    resolve: (result: LayoutRunResult) => void
+    reject: (e: Error) => void
+  }
+>()
+const expansionPending = new Map<
+  number,
+  {
+    resolve: (geometry: LayoutGeometry | null) => void
+    reject: (error: Error) => void
+  }
 >()
 export const LAYOUT_DEADLINE_MS = 10_000
 
@@ -2136,52 +2987,147 @@ function layoutTimeoutError(): Error {
   return error
 }
 
-function terminateWorker(instance: Worker, reason: Error) {
-  if (worker !== instance) return
+function terminateWorker(
+  engine: LayoutEngine,
+  instance: Worker,
+  reason: Error,
+) {
+  if (workers[engine] !== instance) return
   instance.onmessage = null
   instance.onerror = null
   instance.terminate()
-  worker = null
-  for (const entry of pending.values()) entry.reject(reason)
-  pending.clear()
+  delete workers[engine]
+  for (const [id, entry] of pending) {
+    if (entry.engine !== engine) continue
+    entry.reject(reason)
+    pending.delete(id)
+  }
+  for (const [id, entry] of expansionPending) {
+    entry.reject(reason)
+    expansionPending.delete(id)
+  }
 }
 
-function getWorker(): Worker {
-  if (worker) return worker
-  const w = new Worker(new URL('../workers/elk.worker.ts', import.meta.url), {
-    type: 'module',
-  })
-  w.onmessage = (ev: MessageEvent<ElkResponse>) => {
+function getWorker(engine: LayoutEngine): Worker {
+  const existing = workers[engine]
+  if (existing) return existing
+  if (engine === 'schemweave' && !import.meta.env.DEV) {
+    throw new Error('SchemWeave comparison is available only in local development')
+  }
+  if (!workerFactory) {
+    throw new Error('layout worker factory is not configured')
+  }
+  const w = workerFactory(engine)
+  w.onmessage = (
+    ev: MessageEvent<ElkResponse | SchemWeaveWorkerResponse>,
+  ) => {
     const msg = ev.data
+    const expansionEntry = expansionPending.get(msg.id)
+    if (engine === 'schemweave' && expansionEntry) {
+      expansionPending.delete(msg.id)
+      if (!msg.ok) {
+        expansionEntry.reject(new Error(msg.error))
+        return
+      }
+      try {
+        const result = (
+          msg as Extract<SchemWeaveWorkerResponse, { ok: true }>
+        ).result
+        if (result.status === 'needs_full_relayout') {
+          expansionEntry.resolve(null)
+          return
+        }
+        if (result.status !== 'layout') {
+          throw new Error('invalid SchemWeave expansion response')
+        }
+        expansionEntry.resolve(result.geometry)
+      } catch (error) {
+        expansionEntry.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        )
+      }
+      return
+    }
     const entry = pending.get(msg.id)
     if (!entry) return
     pending.delete(msg.id)
-    if (msg.ok) entry.resolve(msg.result)
+    if (msg.ok) {
+      try {
+        if (engine === 'schemweave') {
+          const schemResponse = msg as Extract<
+            SchemWeaveWorkerResponse,
+            { ok: true }
+          >
+          if (schemResponse.result.status !== 'layout') {
+            throw new Error(
+              'full SchemWeave layout requested another full relayout',
+            )
+          }
+          entry.resolve({
+            geometry: schemResponse.result.geometry,
+            degraded: schemResponse.result.degraded,
+          })
+        } else {
+          entry.resolve({
+            geometry: (msg as Extract<ElkResponse, { ok: true }>).result,
+            degraded: false,
+          })
+        }
+      } catch (error) {
+        entry.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        )
+      }
+    }
     else entry.reject(new Error(msg.error))
   }
   w.onerror = (ev) => {
     // The worker is dead — drop the singleton so the next layout spawns a
     // fresh one instead of posting into a void forever.
-    terminateWorker(w, new Error(ev.message || 'elk worker error'))
+    terminateWorker(
+      engine,
+      w,
+      new Error(ev.message || `${engine} worker error`),
+    )
   }
-  worker = w
+  workers[engine] = w
   return w
 }
 
-/** Load and initialize the reusable ELK worker before the first schematic opens. */
-export function prewarmLayoutWorker(): void {
-  getWorker()
+/** Configure browser-owned worker entrypoints before rendering the application. */
+export function configureLayoutWorkerFactory(
+  factory: (engine: LayoutEngine) => Worker,
+): void {
+  workerFactory = factory
+}
+
+/** Load and initialize the selected reusable worker before the first schematic opens. */
+export function prewarmLayoutWorker(engine: LayoutEngine = 'elk'): void {
+  getWorker(engine)
 }
 
 /** Lay out and adapt a Subgraph in the worker. */
 function runLayout(
   input: LayoutInput,
-  placement: NodePlacement,
+  engine: LayoutEngine,
+  placement?: NodePlacement,
   signal?: AbortSignal,
-): Promise<LayoutGeometry> {
-  const w = getWorker()
-  const id = ++seq
-  return new Promise<LayoutGeometry>((resolve, reject) => {
+): Promise<LayoutRunResult> {
+  const req: ElkRequest | SchemWeaveWorkerRequest =
+    engine === 'schemweave'
+      ? {
+          id: ++seq,
+          kind: 'layout',
+          input,
+        }
+      : {
+        id: ++seq,
+        input,
+        placement: placement ?? 'NETWORK_SIMPLEX',
+      }
+  const id = req.id
+  const w = getWorker(engine)
+  return new Promise<LayoutRunResult>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
@@ -2189,15 +3135,16 @@ function runLayout(
     let timeout: ReturnType<typeof setTimeout> | undefined
     const onAbort = () => {
       if (!pending.has(id)) return
-      // ELK cannot cancel an in-flight layout. Terminating prevents a stale,
+      // Layout engines cannot cancel an in-flight layout. Terminating prevents a stale,
       // superseded job from monopolising the singleton ahead of its replacement.
-      terminateWorker(w, abortError())
+      terminateWorker(engine, w, abortError())
     }
     const cleanup = () => {
       signal?.removeEventListener('abort', onAbort)
       if (timeout) clearTimeout(timeout)
     }
     pending.set(id, {
+      engine,
       resolve: (value) => {
         cleanup()
         resolve(value)
@@ -2209,12 +3156,137 @@ function runLayout(
     })
     signal?.addEventListener('abort', onAbort, { once: true })
     timeout = setTimeout(
-      () => terminateWorker(w, layoutTimeoutError()),
+      () => terminateWorker(engine, w, layoutTimeoutError()),
       LAYOUT_DEADLINE_MS,
     )
-    const req: ElkRequest = { id, input, placement }
     w.postMessage(req)
   })
+}
+
+export async function refreshSchemWeaveLayout(
+  sub: Subgraph,
+  activeGroups: ExpandedGroupLayout[],
+  signal?: AbortSignal,
+): Promise<LaidOutGraph> {
+  const input = prepareLayoutInput(sub, activeGroups)
+  const result = await runLayout(input, 'schemweave', undefined, signal)
+  if (!result.degraded) {
+    cacheLayoutGeometry(layoutGeometryKey(input, 'schemweave'), result.geometry)
+  }
+  return hydrateLayoutResult(sub, result.geometry)
+}
+
+/** Expand one quotient group through SchemWeave's retained-geometry API. */
+export async function layoutExpandedGroupWithSchemWeave(
+  sub: Subgraph,
+  base: LaidOutGraph,
+  group: ExpandedGroupLayout,
+  signal?: AbortSignal,
+  activeGroups: ExpandedGroupLayout[] = [group],
+): Promise<LaidOutGraph | null> {
+  if (signal?.aborted) throw abortError()
+  const session = base.schemWeaveSession
+  if (!session) return null
+  const id = ++seq
+  const request: SchemWeaveWorkerRequest = {
+    id,
+    kind: 'expand',
+    session,
+    input: prepareLayoutInput(sub),
+    group,
+    activeGroups,
+  }
+  const worker = getWorker('schemweave')
+  const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (timeout) clearTimeout(timeout)
+    }
+    const onAbort = () => {
+      if (!expansionPending.has(id)) return
+      terminateWorker('schemweave', worker, abortError())
+    }
+    expansionPending.set(id, {
+      resolve: (value) => {
+        cleanup()
+        resolve(value)
+      },
+      reject: (error) => {
+        cleanup()
+        reject(error)
+      },
+    })
+    signal?.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(
+      () => terminateWorker('schemweave', worker, layoutTimeoutError()),
+      LAYOUT_DEADLINE_MS,
+    )
+    worker.postMessage(request)
+  })
+  return geometry ? hydrateLayoutResult(sub, geometry) : null
+}
+
+/**
+ * Collapse one quotient group while preserving every unrelated expanded
+ * group. A null result explicitly asks the caller to use a full layout.
+ */
+export async function layoutCollapsedGroupWithSchemWeave(
+  compactSub: Subgraph,
+  expandedLayout: LaidOutGraph,
+  group: ExpandedGroupLayout,
+  activeGroups: ExpandedGroupLayout[],
+  signal?: AbortSignal,
+): Promise<LaidOutGraph | null> {
+  if (signal?.aborted) throw abortError()
+  const session = expandedLayout.schemWeaveSession
+  if (!session) return null
+  const id = ++seq
+  const request: SchemWeaveWorkerRequest = {
+    id,
+    kind: 'collapse',
+    session,
+    compactInput: prepareLayoutInput(compactSub),
+    group,
+    activeGroups,
+  }
+  const worker = getWorker('schemweave')
+  const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (timeout) clearTimeout(timeout)
+    }
+    const onAbort = () => {
+      if (!expansionPending.has(id)) return
+      terminateWorker('schemweave', worker, abortError())
+    }
+    expansionPending.set(id, {
+      resolve: (value) => {
+        cleanup()
+        resolve(value)
+      },
+      reject: (error) => {
+        cleanup()
+        reject(error)
+      },
+    })
+    signal?.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(
+      () => terminateWorker('schemweave', worker, layoutTimeoutError()),
+      LAYOUT_DEADLINE_MS,
+    )
+    worker.postMessage(request)
+  })
+  return geometry ? hydrateLayoutResult(compactSub, geometry) : null
 }
 
 // Above this size NETWORK_SIMPLEX becomes unsafe in elkjs: on deep datapath
@@ -2236,24 +3308,49 @@ export function placementForLayout(sub: Subgraph): NodePlacement {
 export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
-  expandedGroups: ExpandedGroupLayout[] = [],
+  engineOrExpandedGroups: LayoutEngine | ExpandedGroupLayout[] = 'elk',
+  expandedGroupsArgument: ExpandedGroupLayout[] = [],
 ): Promise<LaidOutGraph> {
   assertRenderableSubgraph(sub)
   if (signal?.aborted) throw abortError()
+  const engine = Array.isArray(engineOrExpandedGroups)
+    ? 'elk'
+    : engineOrExpandedGroups
+  const expandedGroups = Array.isArray(engineOrExpandedGroups)
+    ? engineOrExpandedGroups
+    : expandedGroupsArgument
   const input = prepareLayoutInput(sub, expandedGroups)
+  if (engine === 'schemweave') {
+    const cacheKey = layoutGeometryKey(input, engine)
+    const cached = cachedLayoutGeometry(cacheKey)
+    if (cached) return hydrateLayoutResult(sub, cached)
+    const result = await runLayout(input, engine, undefined, signal)
+    if (!result.degraded) cacheLayoutGeometry(cacheKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
+  }
   const placement = placementForLayout(sub)
-  const cacheKey = layoutGeometryKey(input, placement)
+  const cacheKey = layoutGeometryKey(input, engine, placement)
   const cached = cachedLayoutGeometry(cacheKey)
   if (cached) return hydrateLayoutResult(sub, cached)
   if (placement === 'BRANDES_KOEPF') {
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    cacheLayoutGeometry(cacheKey, geometry)
-    return hydrateLayoutResult(sub, geometry)
+    const result = await runLayout(
+      input,
+      engine,
+      'BRANDES_KOEPF',
+      signal,
+    )
+    cacheLayoutGeometry(cacheKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
   }
   try {
-    const geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
-    cacheLayoutGeometry(cacheKey, geometry)
-    return hydrateLayoutResult(sub, geometry)
+    const result = await runLayout(
+      input,
+      engine,
+      'NETWORK_SIMPLEX',
+      signal,
+    )
+    cacheLayoutGeometry(cacheKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
   } catch (error) {
     // Never retry an aborted (superseded) request.
     if (signal?.aborted || (error instanceof Error && error.name === 'LayoutTimeoutError')) {
@@ -2263,11 +3360,16 @@ export async function layoutSubgraph(
     // worker infrastructure. Keep robust fallback geometry under its actual
     // placement so the next equivalent request still retries the preferred
     // tight placement, while a repeat topology failure can reuse the fallback.
-    const fallbackKey = layoutGeometryKey(input, 'BRANDES_KOEPF')
+    const fallbackKey = layoutGeometryKey(input, engine, 'BRANDES_KOEPF')
     const cachedFallback = cachedLayoutGeometry(fallbackKey)
     if (cachedFallback) return hydrateLayoutResult(sub, cachedFallback)
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    cacheLayoutGeometry(fallbackKey, geometry)
-    return hydrateLayoutResult(sub, geometry)
+    const result = await runLayout(
+      input,
+      engine,
+      'BRANDES_KOEPF',
+      signal,
+    )
+    cacheLayoutGeometry(fallbackKey, result.geometry)
+    return hydrateLayoutResult(sub, result.geometry)
   }
 }

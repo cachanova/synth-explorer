@@ -774,6 +774,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemweave"
+version = "0.1.0"
+source = "git+https://github.com/cachanova/schemweave.git?rev=405c87c93c25085135423e25ee9525b650fc1b80#405c87c93c25085135423e25ee9525b650fc1b80"
+dependencies = [
+ "serde",
+ "thiserror",
+]
+
+[[package]]
 name = "serde"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -952,6 +961,17 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
+]
+
+[[package]]
+name = "synth-explorer-layout-wasm"
+version = "0.1.0"
+dependencies = [
+ "js-sys",
+ "schemweave",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
 ]
 
 [[package]]

@@ -1172,7 +1172,9 @@ test('group toggles reveal on component hover and re-render through ELK', async 
   )
   await expect(collapseToggles).toHaveCount(1)
 
-  await expect(collapseToggles.first()).toHaveCSS('opacity', '0')
+  // Expansion preserves the clicked group's screen anchor, so the pointer
+  // remains over the replacement and its collapse control stays revealed.
+  await expect(collapseToggles.first()).toHaveCSS('opacity', '1')
   const emptyFramePoint = await page.evaluate((expandedGroupId) => {
     const boundary = document.querySelector<SVGRectElement>(
       `[data-expanded-group-id="${expandedGroupId}"] .g-expanded-group-boundary`,

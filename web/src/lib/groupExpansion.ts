@@ -4,7 +4,125 @@ import { MAX_GRAPH_EDGES } from './graphLimits'
 export interface ExpandedGroup extends GroupExpansion {
   id: number
   label: string
+  /** Projection policy used to produce this expansion payload. */
+  requestKey: string
 }
+
+export interface ExpandedGroupSpec {
+  id: number
+  label: string
+  referenceHeight: number
+}
+
+export interface GroupExpansionState {
+  ownerKey: string | null
+  specs: ExpandedGroupSpec[]
+  expansions: ExpandedGroup[]
+}
+
+export const GROUP_EXPANSION_CACHE_MAX_ENTRIES = 8
+export const GROUP_EXPANSION_CACHE_MAX_BYTES = 16 * 1024 * 1024
+
+interface GroupExpansionCacheEntry {
+  expansion: ExpandedGroup
+  retainedBytes: number
+}
+
+export interface GroupExpansionCache {
+  context: string | null
+  entries: Map<string, GroupExpansionCacheEntry>
+  retainedBytes: number
+}
+
+export function createGroupExpansionCache(): GroupExpansionCache {
+  return {
+    context: null,
+    entries: new Map(),
+    retainedBytes: 0,
+  }
+}
+
+export function resetGroupExpansionCache(
+  cache: GroupExpansionCache,
+  context: string | null,
+): void {
+  if (cache.context === context) return
+  cache.context = context
+  cache.entries.clear()
+  cache.retainedBytes = 0
+}
+
+function estimatedExpansionBytes(expansion: ExpandedGroup): number {
+  const edgeBits = expansion.graph.edges.reduce(
+    (total, edge) => total + edge.bits.length,
+    0,
+  )
+  const boundaryEdges = expansion.boundary_trunks.reduce(
+    (total, trunk) => total + trunk.expanded_edges.length,
+    0,
+  )
+  // Deliberately conservative: node metadata contains variable strings,
+  // controls, source ranges, and member arrays not represented by fixed fields.
+  return (
+    expansion.requestKey.length * 2 +
+    expansion.label.length * 2 +
+    expansion.graph.nodes.length * 1_024 +
+    expansion.graph.edges.length * 512 +
+    expansion.members.length * 8 +
+    expansion.boundary_trunks.length * 128 +
+    boundaryEdges * 48 +
+    edgeBits * 8 +
+    512
+  )
+}
+
+export function cachedGroupExpansion(
+  cache: GroupExpansionCache,
+  context: string,
+  requestKey: string,
+): ExpandedGroup | null {
+  resetGroupExpansionCache(cache, context)
+  const entry = cache.entries.get(requestKey)
+  if (!entry) return null
+  cache.entries.delete(requestKey)
+  cache.entries.set(requestKey, entry)
+  return entry.expansion
+}
+
+export function cacheGroupExpansion(
+  cache: GroupExpansionCache,
+  context: string,
+  expansion: ExpandedGroup,
+): void {
+  resetGroupExpansionCache(cache, context)
+  const retainedBytes = estimatedExpansionBytes(expansion)
+  if (retainedBytes > GROUP_EXPANSION_CACHE_MAX_BYTES) return
+  const prior = cache.entries.get(expansion.requestKey)
+  if (prior) {
+    cache.retainedBytes -= prior.retainedBytes
+    cache.entries.delete(expansion.requestKey)
+  }
+  cache.entries.set(expansion.requestKey, { expansion, retainedBytes })
+  cache.retainedBytes += retainedBytes
+  while (
+    cache.entries.size > GROUP_EXPANSION_CACHE_MAX_ENTRIES ||
+    cache.retainedBytes > GROUP_EXPANSION_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = cache.entries.keys().next().value
+    if (oldestKey == null) break
+    const oldest = cache.entries.get(oldestKey)
+    cache.entries.delete(oldestKey)
+    cache.retainedBytes -= oldest?.retainedBytes ?? 0
+  }
+}
+
+export type GroupExpansionAction =
+  | { type: 'reset'; ownerKey: string | null }
+  | { type: 'invalidate'; ownerKey: string }
+  | { type: 'open'; ownerKey: string; spec: ExpandedGroupSpec }
+  | { type: 'close'; ownerKey: string; id: number }
+  | { type: 'loaded'; ownerKey: string; expansion: ExpandedGroup }
+  | { type: 'failed'; ownerKey: string; id: number }
 
 export interface AppliedGroupExpansions {
   graph: Subgraph
@@ -13,6 +131,82 @@ export interface AppliedGroupExpansions {
 
 const edgeKey = (edge: GraphEdge) =>
   `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}`
+
+export function initialGroupExpansionState(): GroupExpansionState {
+  return {
+    ownerKey: null,
+    specs: [],
+    expansions: [],
+  }
+}
+
+function replaceById<T extends { id: number }>(entries: T[], entry: T): T[] {
+  return [
+    ...entries.filter((candidate) => candidate.id !== entry.id),
+    entry,
+  ].sort((left, right) => left.id - right.id)
+}
+
+function removeById<T extends { id: number }>(entries: T[], id: number): T[] {
+  return entries.filter((entry) => entry.id !== id)
+}
+
+/**
+ * Keep group presentation state isolated by synthesized projection owner.
+ * Actions for stale owners and late loads for closed groups are ignored.
+ */
+export function groupExpansionReducer(
+  state: GroupExpansionState,
+  action: GroupExpansionAction,
+): GroupExpansionState {
+  if (action.type === 'reset') {
+    if (
+      state.ownerKey === action.ownerKey &&
+      state.specs.length === 0 &&
+      state.expansions.length === 0
+    ) {
+      return state
+    }
+    return {
+      ownerKey: action.ownerKey,
+      specs: [],
+      expansions: [],
+    }
+  }
+  if (action.type === 'open') {
+    const current = state.ownerKey === action.ownerKey
+      ? state
+      : {
+          ownerKey: action.ownerKey,
+          specs: [],
+          expansions: [],
+        }
+    return {
+      ...current,
+      specs: replaceById(current.specs, action.spec),
+    }
+  }
+  if (state.ownerKey !== action.ownerKey) return state
+  if (action.type === 'invalidate') {
+    if (state.expansions.length === 0) return state
+    return { ...state, expansions: [] }
+  }
+  if (action.type === 'loaded') {
+    if (!state.specs.some((spec) => spec.id === action.expansion.id)) {
+      return state
+    }
+    return {
+      ...state,
+      expansions: replaceById(state.expansions, action.expansion),
+    }
+  }
+  const id = action.id
+  return {
+    ...state,
+    specs: removeById(state.specs, id),
+    expansions: removeById(state.expansions, id),
+  }
+}
 
 /**
  * Replace synthetic quotient nodes with raw expansion projections. Physical
@@ -27,7 +221,9 @@ export function applyGroupExpansions(
   if (expansions.length === 0) return { graph: base, groups: [] }
 
   const baseIds = new Set(base.nodes.map((node) => node.id))
-  const applicable = expansions.filter((entry) => baseIds.has(entry.id))
+  const applicable = expansions
+    .filter((entry) => baseIds.has(entry.id))
+    .sort((left, right) => left.id - right.id)
   if (applicable.length === 0) return { graph: base, groups: [] }
 
   const expandedIds = new Set(applicable.map((entry) => entry.id))
@@ -41,7 +237,11 @@ export function applyGroupExpansions(
     // admitting those would silently turn a local open-group action into a
     // second full-netlist render.
     ...applicable.flatMap((entry) =>
-      entry.graph.nodes.filter((node) => !memberIds.has(node.id) && baseIds.has(node.id)),
+      entry.graph.nodes.filter((node) =>
+        !memberIds.has(node.id) &&
+        !expandedIds.has(node.id) &&
+        baseIds.has(node.id)
+      ),
     ),
     ...base.nodes.filter((node) => !expandedIds.has(node.id)),
   ]
@@ -61,7 +261,11 @@ export function applyGroupExpansions(
   const edges: GraphEdge[] = []
   const seenEdges = new Set<string>()
   for (const edge of [
-    ...applicable.flatMap((entry) => entry.graph.edges),
+    ...applicable.flatMap((entry) =>
+      entry.graph.edges.filter(
+        (edge) => memberIds.has(edge.from) || memberIds.has(edge.to),
+      ),
+    ),
     ...base.edges,
   ]) {
     if (expandedIds.has(edge.from) || expandedIds.has(edge.to)) continue

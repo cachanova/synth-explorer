@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
-import { applyGroupExpansions } from './groupExpansion'
+import {
+  applyGroupExpansions,
+  cachedGroupExpansion,
+  cacheGroupExpansion,
+  createGroupExpansionCache,
+  GROUP_EXPANSION_CACHE_MAX_ENTRIES,
+  groupExpansionReducer,
+  initialGroupExpansionState,
+  type ExpandedGroup,
+} from './groupExpansion'
 
 const node = (id: number, members?: number[]): GraphNode => ({
   id,
@@ -14,6 +23,116 @@ const graph = (nodes: GraphNode[], edges: Subgraph['edges'] = []): Subgraph => (
   nodes,
   edges,
   truncated: false,
+})
+
+const expansion = (id: number): ExpandedGroup => ({
+  id,
+  label: `g${id}`,
+  requestKey: `${id}`,
+  members: [id + 1],
+  graph: graph([node(id + 1)]),
+  boundary_trunks: [],
+})
+
+describe('group expansion response cache', () => {
+  it('retains multiple prefix variants and clears them with their context', () => {
+    const cache = createGroupExpansionCache()
+    const first = { ...expansion(100), requestKey: 'context|100' }
+    const second = { ...expansion(200), requestKey: 'context|100,200' }
+    cacheGroupExpansion(cache, 'context', first)
+    cacheGroupExpansion(cache, 'context', second)
+
+    expect(cachedGroupExpansion(cache, 'context', first.requestKey)).toBe(first)
+    expect(cachedGroupExpansion(cache, 'context', second.requestKey)).toBe(second)
+    expect(cachedGroupExpansion(cache, 'other', first.requestKey)).toBeNull()
+    expect(cache.entries).toHaveLength(0)
+  })
+
+  it('evicts the least recently used prefix at the hard entry bound', () => {
+    const cache = createGroupExpansionCache()
+    for (let index = 0; index < GROUP_EXPANSION_CACHE_MAX_ENTRIES; index++) {
+      cacheGroupExpansion(cache, 'context', expansion(index))
+    }
+    expect(cachedGroupExpansion(cache, 'context', '0')).not.toBeNull()
+    cacheGroupExpansion(
+      cache,
+      'context',
+      expansion(GROUP_EXPANSION_CACHE_MAX_ENTRIES),
+    )
+
+    expect(cachedGroupExpansion(cache, 'context', '1')).toBeNull()
+    expect(cachedGroupExpansion(cache, 'context', '0')).not.toBeNull()
+    expect(cache.entries.size).toBe(GROUP_EXPANSION_CACHE_MAX_ENTRIES)
+  })
+})
+
+describe('groupExpansionReducer', () => {
+  it('preserves every unrelated group across arbitrary open and close actions', () => {
+    const ownerKey = 'design|vectors|memories'
+    let state = groupExpansionReducer(initialGroupExpansionState(), {
+      type: 'open',
+      ownerKey,
+      spec: { id: 200, label: 'g200', referenceHeight: 500 },
+    })
+    state = groupExpansionReducer(state, {
+      type: 'open',
+      ownerKey,
+      spec: { id: 100, label: 'g100', referenceHeight: 500 },
+    })
+    state = groupExpansionReducer(state, {
+      type: 'loaded',
+      ownerKey,
+      expansion: expansion(200),
+    })
+    state = groupExpansionReducer(state, {
+      type: 'loaded',
+      ownerKey,
+      expansion: expansion(100),
+    })
+
+    expect(state.specs.map(({ id }) => id)).toEqual([100, 200])
+    expect(state.expansions.map(({ id }) => id)).toEqual([100, 200])
+
+    state = groupExpansionReducer(state, {
+      type: 'close',
+      ownerKey,
+      id: 100,
+    })
+    expect(state.specs.map(({ id }) => id)).toEqual([200])
+    expect(state.expansions.map(({ id }) => id)).toEqual([200])
+
+    state = groupExpansionReducer(state, {
+      type: 'open',
+      ownerKey,
+      spec: { id: 100, label: 'g100', referenceHeight: 500 },
+    })
+    expect(state.specs.map(({ id }) => id)).toEqual([100, 200])
+    expect(state.expansions.map(({ id }) => id)).toEqual([200])
+  })
+
+  it('ignores late responses for collapsed groups and stale owners', () => {
+    const ownerKey = 'current'
+    let state = groupExpansionReducer(initialGroupExpansionState(), {
+      type: 'open',
+      ownerKey,
+      spec: { id: 100, label: 'g100', referenceHeight: 500 },
+    })
+    state = groupExpansionReducer(state, {
+      type: 'close',
+      ownerKey,
+      id: 100,
+    })
+    expect(groupExpansionReducer(state, {
+      type: 'loaded',
+      ownerKey,
+      expansion: expansion(100),
+    })).toBe(state)
+    expect(groupExpansionReducer(state, {
+      type: 'loaded',
+      ownerKey: 'stale',
+      expansion: expansion(100),
+    })).toBe(state)
+  })
 })
 
 describe('applyGroupExpansions', () => {
@@ -34,6 +153,7 @@ describe('applyGroupExpansions', () => {
     const result = applyGroupExpansions(base, [{
       id: 100,
       label: 'q[1:0]',
+      requestKey: '100',
       members: [1, 2],
       graph: expansion,
       boundary_trunks: [],
@@ -51,11 +171,28 @@ describe('applyGroupExpansions', () => {
     const result = applyGroupExpansions(focused, [{
       id: 100,
       label: 'q[1:0]',
+      requestKey: '100',
       members: [1, 2],
       graph: graph([node(1), node(2), node(9)]),
       boundary_trunks: [],
     }], 3)
 
     expect(result).toEqual({ graph: focused, groups: [] })
+  })
+
+  it('produces the same combined graph regardless of expansion arrival order', () => {
+    const base = graph([node(100, [101]), node(200, [201]), node(9)])
+    const first = {
+      ...expansion(100),
+      graph: graph([node(101), node(200, [201]), node(9)]),
+    }
+    const second = {
+      ...expansion(200),
+      graph: graph([node(201), node(100, [101]), node(9)]),
+    }
+
+    const result = applyGroupExpansions(base, [first, second], 10)
+    expect(result).toEqual(applyGroupExpansions(base, [second, first], 10))
+    expect(result.graph.nodes.map(({ id }) => id)).toEqual([101, 201, 9])
   })
 })

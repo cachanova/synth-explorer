@@ -6535,6 +6535,47 @@ mod tests {
             vec![(0, 5, vec![10]), (1, 5, vec![11])]
         );
         assert!(!expanded.graph.truncated);
+
+        let both_groups = [0, 1];
+        let expanded_after_first = analysis
+            .expand_group(
+                &graph,
+                &grouping,
+                1,
+                GroupExpansionOptions {
+                    max_nodes: MAX_SUBGRAPH_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                GroupingProjection::from_flags_with_expanded(&grouping, true, true, &both_groups),
+            )
+            .expect("second known group");
+        assert_eq!(expanded_after_first.members, vec![2, 3]);
+        assert_eq!(
+            expanded_after_first
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+        );
+        assert_eq!(
+            expanded_after_first
+                .boundary_trunks
+                .iter()
+                .map(|trunk| (
+                    trunk.compact_edge.from,
+                    trunk.compact_edge.to,
+                    trunk
+                        .expanded_edges
+                        .iter()
+                        .map(|edge| (edge.from, edge.to))
+                        .collect::<Vec<_>>(),
+                ))
+                .collect::<Vec<_>>(),
+            vec![(0, 5, vec![(0, 2)]), (1, 5, vec![(1, 3)])],
+        );
     }
 
     #[test]

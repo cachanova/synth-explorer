@@ -25,6 +25,7 @@ import {
   viewportTransformAttribute,
   zoomViewportAt,
   type LaidOutGraph,
+  type LaidOutBoundaryBundle,
   type LaidOutEdge,
   type LaidOutNode,
   type Point,
@@ -1544,6 +1545,7 @@ interface PreparedSchematicEdge {
   relevant: boolean
   control: boolean
   highlighted: boolean
+  suppressArrow: boolean
   batchKey: string
   mid: Point | null
 }
@@ -1573,6 +1575,22 @@ interface PreparedSchematicEdges {
   batches: SchematicEdgeBatch[]
   arrows: SchematicArrowBatch[]
   incidentByNode: Map<number, PreparedSchematicEdge[]>
+}
+
+interface PreparedBoundaryBundle {
+  id: number
+  ownerIndexes: number[]
+  collector: Point[]
+  spine: Point[]
+  arrow: string
+  title: string
+  bits: number
+  netBits: number[]
+  isBus: boolean
+  relevant: boolean
+  control: boolean
+  highlighted: boolean
+  hitEdges: PreparedSchematicEdge[]
 }
 
 const EMPTY_PREPARED_SCHEMATIC_EDGES: PreparedSchematicEdge[] = []
@@ -1663,6 +1681,7 @@ function prepareSchematicEdges({
   overlayIds,
   highlightedBits,
   extendOverlayToBoundaryNets,
+  suppressArrowIndexes,
 }: {
   edges: LaidOutEdge[]
   nodeById: Map<number, LaidOutNode>
@@ -1670,6 +1689,7 @@ function prepareSchematicEdges({
   overlayIds: Set<number>
   highlightedBits: Set<number>
   extendOverlayToBoundaryNets: boolean
+  suppressArrowIndexes: Set<number>
 }): PreparedSchematicEdges {
   const prepared: PreparedSchematicEdge[] = []
   const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
@@ -1733,6 +1753,7 @@ function prepareSchematicEdges({
       relevant,
       control,
       highlighted,
+      suppressArrow: suppressArrowIndexes.has(index),
       batchKey,
       mid,
     }
@@ -1764,7 +1785,9 @@ function prepareSchematicEdges({
     const line = pathD(points)
     if (line) batch.paths.push(line)
 
-    const arrow = edgeArrowD(points, edgeStrokeWidth(edge))
+    const arrow = edge.suppressArrow
+      ? ''
+      : edgeArrowD(points, edgeStrokeWidth(edge))
     if (arrow) {
       const arrowKey = `${relevant ? 1 : 0}${control ? 1 : 0}${highlighted ? 1 : 0}`
       let arrowBatch = arrowBuilders.get(arrowKey)
@@ -1793,6 +1816,146 @@ function prepareSchematicEdges({
     .sort((a, b) => edgePaintOrder(a) - edgePaintOrder(b))
   return { edges: prepared, batches, arrows, incidentByNode }
 }
+
+function prepareBoundaryBundles(
+  bundles: readonly LaidOutBoundaryBundle[],
+  edges: readonly PreparedSchematicEdge[],
+): PreparedBoundaryBundle[] {
+  const edgeByIndex = new Map(edges.map((edge) => [edge.index, edge]))
+  return bundles.map((bundle) => {
+    const owners = bundle.ownerIndexes.map((index) => {
+      const owner = edgeByIndex.get(index)
+      if (!owner) {
+        throw new Error(
+          `boundary bundle ${bundle.id} references unknown edge ${index}`,
+        )
+      }
+      return owner
+    })
+    const netBits = [...new Set(owners.flatMap((owner) => owner.netBits))]
+      .sort((left, right) => left - right)
+    const relevant = owners.some((owner) => owner.relevant)
+    const highlighted = owners.some((owner) => owner.highlighted)
+    const control = owners.some((owner) => owner.control)
+    const isBus = bundle.width > 1
+    const collector = [bundle.collector.start, bundle.collector.end]
+    const spine = bundle.role === 'input'
+      ? [bundle.spine.start, bundle.spine.end]
+      : [bundle.spine.end, bundle.spine.start]
+    const title =
+      `${bundle.width}-bit ${bundle.role} boundary bus (${owners.length} routed connection${owners.length === 1 ? '' : 's'})`
+    const aggregate = (
+      points: Point[],
+      segment: number,
+    ): PreparedSchematicEdge => ({
+      index: edges.length + bundle.id * 2 + segment,
+      from: bundle.endpoint.node,
+      to: bundle.endpoint.node,
+      points,
+      title,
+      bits: bundle.width,
+      netBits,
+      isBus,
+      relevant,
+      control,
+      highlighted,
+      suppressArrow: true,
+      batchKey: `bundle:${bundle.id}`,
+      mid: points[0] ?? null,
+    })
+    return {
+      id: bundle.id,
+      ownerIndexes: bundle.ownerIndexes,
+      collector,
+      spine,
+      arrow: edgeArrowD(
+        spine,
+        edgeStrokeWidth({ isBus, highlighted }),
+      ),
+      title,
+      bits: bundle.width,
+      netBits,
+      isBus,
+      relevant,
+      control,
+      highlighted,
+      hitEdges: [
+        aggregate(collector, 0),
+        aggregate(spine, 1),
+      ],
+    }
+  })
+}
+
+const SchematicBoundaryBundles = memo(function SchematicBoundaryBundles({
+  bundles,
+  selectedOwnerIndexes,
+}: {
+  bundles: PreparedBoundaryBundle[]
+  selectedOwnerIndexes: Set<number>
+}) {
+  if (bundles.length === 0) return null
+  return (
+    <g
+      className="g-boundary-bundle-layer"
+      role="img"
+      aria-label={`${bundles.length} grouped boundary bus${bundles.length === 1 ? '' : 'es'}`}
+    >
+      {bundles.map((bundle) => {
+        const selected = bundle.ownerIndexes.some((index) =>
+          selectedOwnerIndexes.has(index),
+        )
+        const highlighted = bundle.highlighted || selected
+        const lineClass = edgeClassName(
+          bundle.control,
+          bundle.isBus,
+          highlighted,
+        )
+        const d = `${pathD(bundle.collector)} ${pathD(bundle.spine)}`
+        const middle = bundle.spine[0] && bundle.spine[1]
+          ? {
+              x: (bundle.spine[0].x + bundle.spine[1].x) / 2,
+              y: (bundle.spine[0].y + bundle.spine[1].y) / 2,
+            }
+          : null
+        return (
+          <g
+            key={bundle.id}
+            data-boundary-bundle-id={bundle.id}
+            data-boundary-bundle-owners={bundle.ownerIndexes.join(',')}
+            data-relevant={bundle.relevant ? 1 : 0}
+          >
+            <title>{bundle.title}</title>
+            <path
+              className={lineClass}
+              d={d}
+              data-boundary-bundle-segment-count={2}
+              aria-hidden="true"
+            />
+            {bundle.arrow && (
+              <path
+                className={`g-edge-arrows${bundle.control ? ' control' : ''}${highlighted ? ' hl' : ''}`}
+                d={bundle.arrow}
+                aria-hidden="true"
+              />
+            )}
+            {bundle.isBus && middle && (
+              <text
+                className="g-bus-label"
+                x={middle.x}
+                y={middle.y - 3}
+                textAnchor="middle"
+                aria-hidden="true"
+              >
+                {bundle.bits}
+              </text>
+            )}
+          </g>
+        )
+      })}
+    </g>
+  )
+})
 
 // Selection changes affect node state far more often than edge state. Keep the
 // complete edge layer outside those reconciliations, and batch equal semantic
@@ -1876,7 +2039,9 @@ function prepareSelectedSchematicEdges(
       batchBuilders.set(key, batch)
     }
 
-    const arrow = edgeArrowD(edge.points, edge.isBus ? 2.4 : 2.2)
+    const arrow = edge.suppressArrow
+      ? ''
+      : edgeArrowD(edge.points, edge.isBus ? 2.4 : 2.2)
     if (arrow) {
       const key =
         `${edge.relevant ? 1 : 0}${edge.control ? 1 : 0}${edge.isBus ? 1 : 0}`
@@ -2413,6 +2578,14 @@ export const GraphView = memo(function GraphView({
       group.members.map((member) => [member, group.id] as const),
     ),
   ), [expandedGroups])
+  const outputBundleOwnerIndexes = useMemo(
+    () => new Set(
+      (graph.boundaryBundles ?? [])
+        .filter((bundle) => bundle.role === 'output')
+        .flatMap((bundle) => bundle.ownerIndexes),
+    ),
+    [graph.boundaryBundles],
+  )
   const preparedEdges = useMemo(
     () => prepareSchematicEdges({
       edges: graph.edges,
@@ -2421,6 +2594,7 @@ export const GraphView = memo(function GraphView({
       overlayIds,
       highlightedBits,
       extendOverlayToBoundaryNets,
+      suppressArrowIndexes: outputBundleOwnerIndexes,
     }),
     [
       extendOverlayToBoundaryNets,
@@ -2428,6 +2602,7 @@ export const GraphView = memo(function GraphView({
       highlightedBits,
       metadata.nodeById,
       overlayIds,
+      outputBundleOwnerIndexes,
       relevantIds,
     ],
   )
@@ -2446,6 +2621,24 @@ export const GraphView = memo(function GraphView({
     }
     return edges
   }, [metadata.nodeById, preparedEdges.incidentByNode, selectedId])
+  const preparedBoundaryBundles = useMemo(
+    () => prepareBoundaryBundles(
+      graph.boundaryBundles ?? [],
+      preparedEdges.edges,
+    ),
+    [graph.boundaryBundles, preparedEdges.edges],
+  )
+  const selectedOwnerIndexes = useMemo(
+    () => new Set(selectedEdges.map((edge) => edge.index)),
+    [selectedEdges],
+  )
+  const interactiveEdges = useMemo(
+    () => [
+      ...preparedEdges.edges,
+      ...preparedBoundaryBundles.flatMap((bundle) => bundle.hitEdges),
+    ],
+    [preparedBoundaryBundles, preparedEdges.edges],
+  )
 
   const clearDetailRestore = useCallback(() => {
     if (detailRestoreTimer.current == null) return
@@ -3131,6 +3324,10 @@ export const GraphView = memo(function GraphView({
           data-detail-level="overview"
         >
           <SchematicEdges prepared={preparedEdges} />
+          <SchematicBoundaryBundles
+            bundles={preparedBoundaryBundles}
+            selectedOwnerIndexes={selectedOwnerIndexes}
+          />
           <SelectedSchematicEdges edges={selectedEdges} />
 
           <SchematicNodeDetailOverlays
@@ -3183,8 +3380,8 @@ export const GraphView = memo(function GraphView({
 
       <SchematicEdgeTooltip
         active={active}
-        edges={preparedEdges.edges}
-        geometryKey={graph.edges}
+        edges={interactiveEdges}
+        geometryKey={graph}
         stageRef={stageRef}
         svgRef={svgRef}
         viewportRef={viewportRef}

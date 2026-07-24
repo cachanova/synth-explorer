@@ -2,6 +2,323 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
 
+describe('GraphView SchemWeave boundary bundles', () => {
+  it('renders unrelated coincident bundles once each with aggregate ownership', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 1,
+                kind: 'port',
+                name: 'a[7:0]',
+                port_direction: 'input',
+              },
+            },
+            {
+              id: 2,
+              x: 0,
+              y: 60,
+              width: 74,
+              height: 34,
+              node: {
+                id: 2,
+                kind: 'port',
+                name: 'b[3:0]',
+                port_direction: 'input',
+              },
+            },
+            {
+              id: 3,
+              x: 180,
+              y: 30,
+              width: 74,
+              height: 34,
+              node: {
+                id: 3,
+                kind: 'cell',
+                name: 'logic',
+                cell_type: '$_AND_',
+              },
+            },
+          ],
+          edges: [
+            {
+              from: 1,
+              to: 3,
+              points: [{ x: 84, y: 20 }, { x: 180, y: 40 }],
+              edge: {
+                from: 1,
+                to: 3,
+                from_port: 'a',
+                to_port: 'A',
+                net_name: 'a',
+                bits: [10, 11, 12, 13, 14, 15, 16, 17],
+              },
+            },
+            {
+              from: 2,
+              to: 3,
+              points: [{ x: 84, y: 20 }, { x: 180, y: 54 }],
+              edge: {
+                from: 2,
+                to: 3,
+                from_port: 'b',
+                to_port: 'B',
+                net_name: 'b',
+                bits: [20, 21, 22, 23],
+              },
+            },
+          ],
+          boundaryBundles: [
+            {
+              id: 7,
+              endpoint: { node: 1, port: 0 },
+              role: 'input',
+              width: 8,
+              collector: {
+                start: { x: 84, y: 12 },
+                end: { x: 84, y: 28 },
+              },
+              spine: {
+                start: { x: 74, y: 20 },
+                end: { x: 84, y: 20 },
+              },
+              ownerIndexes: [0],
+            },
+            {
+              id: 8,
+              endpoint: { node: 2, port: 0 },
+              role: 'input',
+              width: 4,
+              collector: {
+                start: { x: 84, y: 12 },
+                end: { x: 84, y: 28 },
+              },
+              spine: {
+                start: { x: 74, y: 20 },
+                end: { x: 84, y: 20 },
+              },
+              ownerIndexes: [1],
+            },
+          ],
+          width: 254,
+          height: 94,
+        }}
+        rootId={3}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={1}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup.match(/data-boundary-bundle-id="/g)).toHaveLength(2)
+    expect(markup.match(/data-boundary-bundle-segment-count="2"/g)).toHaveLength(2)
+    expect(markup).toContain('data-boundary-bundle-id="7"')
+    expect(markup).toContain('data-boundary-bundle-id="8"')
+    expect(markup).toContain('data-boundary-bundle-owners="0"')
+    expect(markup).toContain('data-boundary-bundle-owners="1"')
+    expect(markup).toMatch(
+      /data-boundary-bundle-id="7"[^]*?<path class="g-edge bus hl"/,
+    )
+    expect(markup).toMatch(
+      /data-boundary-bundle-id="8"[^]*?<path class="g-edge bus"/,
+    )
+  })
+
+  it('puts one output arrow at the aggregate endpoint instead of every tap', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 1,
+                kind: 'cell',
+                name: 'logic',
+                cell_type: '$_BUF_',
+              },
+            },
+            {
+              id: 2,
+              x: 180,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 2,
+                kind: 'port',
+                name: 'y[7:0]',
+                port_direction: 'output',
+              },
+            },
+          ],
+          edges: [{
+            from: 1,
+            to: 2,
+            points: [{ x: 74, y: 17 }, { x: 170, y: 17 }],
+            edge: {
+              from: 1,
+              to: 2,
+              from_port: 'Y',
+              to_port: 'y',
+              net_name: 'y',
+              bits: [10, 11, 12, 13, 14, 15, 16, 17],
+            },
+          }],
+          boundaryBundles: [{
+            id: 0,
+            endpoint: { node: 2, port: 0 },
+            role: 'output',
+            width: 8,
+            collector: {
+              start: { x: 170, y: 17 },
+              end: { x: 170, y: 17 },
+            },
+            spine: {
+              start: { x: 180, y: 17 },
+              end: { x: 170, y: 17 },
+            },
+            ownerIndexes: [0],
+          }],
+          width: 254,
+          height: 34,
+        }}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        selectedId={null}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup.match(/class="g-edge-arrows/g)).toHaveLength(1)
+    expect(markup).not.toContain('data-arrow-count=')
+    expect(markup).toMatch(
+      /data-boundary-bundle-id="0"[^]*?<path class="g-edge-arrows"/,
+    )
+  })
+
+  it('keeps fragment bit highlighting and suppresses every owned output arrow', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 1,
+                kind: 'cell',
+                name: 'logic',
+                cell_type: '$_BUF_',
+              },
+            },
+            {
+              id: 2,
+              x: 180,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 2,
+                kind: 'port',
+                name: 'y[1:0]',
+                port_direction: 'output',
+              },
+            },
+          ],
+          edges: [
+            {
+              from: 1,
+              to: 2,
+              points: [{ x: 74, y: 14 }, { x: 170, y: 14 }],
+              edge: {
+                from: 1,
+                to: 2,
+                from_port: 'Y',
+                to_port: 'y',
+                net_name: 'y[0]',
+                bits: [55],
+              },
+            },
+            {
+              from: 1,
+              to: 2,
+              points: [{ x: 74, y: 22 }, { x: 170, y: 22 }],
+              edge: {
+                from: 1,
+                to: 2,
+                from_port: 'Y',
+                to_port: 'y',
+                net_name: 'y[1]',
+                bits: [56],
+              },
+            },
+          ],
+          boundaryBundles: [{
+            id: 0,
+            endpoint: { node: 2, port: 0 },
+            role: 'output',
+            width: 2,
+            collector: {
+              start: { x: 170, y: 14 },
+              end: { x: 170, y: 22 },
+            },
+            spine: {
+              start: { x: 180, y: 18 },
+              end: { x: 170, y: 18 },
+            },
+            ownerIndexes: [0, 1],
+          }],
+          width: 254,
+          height: 34,
+        }}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        highlightedBits={new Set([56])}
+        selectedId={2}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('data-first-edge-title="y[0] (1 bit): Y→y"')
+    expect(markup).toContain('data-first-edge-title="y[1] (1 bit): Y→y"')
+    expect(markup).toContain('data-boundary-bundle-owners="0,1"')
+    expect(markup).toMatch(
+      /data-boundary-bundle-id="0"[^]*?<path class="g-edge hl"/,
+    )
+    // Both routed fragments are output-bundle owners, so only the aggregate
+    // bundle endpoint contributes an arrow.
+    expect(markup.match(/class="g-edge-arrows/g)).toHaveLength(1)
+  })
+})
+
 describe('GraphView LUT labels', () => {
   it('renders canonical input direction when visible topology is incomplete', () => {
     const markup = renderToStaticMarkup(
