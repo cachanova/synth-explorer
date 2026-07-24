@@ -966,6 +966,7 @@ export interface SchemWeaveExpansionRequest {
   compact_graph: SchemWeaveGraph
   compact_layout: SchemWeaveLayout
   expanded_graph: SchemWeaveGraph
+  reference_height: number
   expansion: {
     anchor: number
     members: number[]
@@ -1809,6 +1810,7 @@ export function buildSchemWeaveExpansionRequest(
       compact_graph: compactGraph,
       compact_layout: compact.layout,
       expanded_graph: catalog.graph,
+      reference_height: group.referenceHeight ?? compact.layout.height,
       expansion: {
         anchor: group.id,
         members: [...group.members].sort((left, right) => left - right),

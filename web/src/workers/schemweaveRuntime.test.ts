@@ -58,6 +58,7 @@ it('dispatches incremental group expansion through the dedicated WASM API', () =
     compact_graph: { nodes: [], edges: [] },
     compact_layout: { nodes: [], edges: [], width: 0, height: 0 },
     expanded_graph: { nodes: [], edges: [] },
+    reference_height: 100,
     expansion: {
       anchor: 10,
       members: [1, 2],

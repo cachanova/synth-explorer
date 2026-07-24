@@ -3,6 +3,7 @@
 use schemweave::{
     ConstrainedLayoutError, Graph, GroupExpansion, GroupExpansionError, GroupExpansionOptions,
     Layout, LayoutConfig, LayoutConstraints, LayoutError,
+    expand_group_in_place_with_reference_height,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -42,6 +43,7 @@ struct ExpansionRequest {
     compact_layout: Layout,
     expanded_graph: Graph,
     expansion: GroupExpansion,
+    reference_height: f64,
     #[serde(default)]
     constraints: LayoutConstraints,
 }
@@ -68,11 +70,12 @@ pub fn expand_group_json(request_json: &str) -> Result<String, JsValue> {
         .map_err(|error| js_error(format!("invalid group expansion request: {error}")))?;
     let mut config = LayoutConfig::highest_quality();
     config.constraints = request.constraints;
-    let result = match schemweave::expand_group_in_place(
+    let result = match expand_group_in_place_with_reference_height(
         &request.compact_graph,
         &request.compact_layout,
         &request.expanded_graph,
         &request.expansion,
+        request.reference_height,
         &GroupExpansionOptions {
             layout: config.layout,
             quality_effort: config.quality_effort,
@@ -202,6 +205,7 @@ mod tests {
                     "width":80,
                     "height":200
                 },
+                "reference_height":200,
                 "expanded_graph":{
                     "nodes":[
                         {"id":1,"width":80,"height":50,"ports":[]},

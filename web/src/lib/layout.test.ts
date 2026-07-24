@@ -122,7 +122,17 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
     { expanded_edge: 2, compact_edge: 0 },
     { expanded_edge: 3, compact_edge: 1 },
   ])
+  expect(expanded.request.reference_height).toBe(50)
   expect(expanded.catalog.fragments).toHaveLength(4)
+
+  const legacyExpanded = buildSchemWeaveExpansionRequest(
+    compactSnapshot,
+    expandedInput,
+    { id: 100, members: [10, 11] },
+  )
+  expect(legacyExpanded.request.reference_height).toBe(
+    compactSnapshot.layout.height,
+  )
 })
 
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({

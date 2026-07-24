@@ -390,3 +390,148 @@ test('group expansion uses Rust in place and collapse restores without layout', 
       .__schemExpansionRequests.length
   )).toBe(requestCount)
 })
+
+test('focused register expansion keeps its grid shape and keepout', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    Object.defineProperty(window, '__focusedExpansionRequests', {
+      value: requests,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private readonly comparisonWorker: boolean
+
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.comparisonWorker = String(url).includes('schemweave')
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        if (this.comparisonWorker) requests.push(structuredClone(message))
+        if (transfer) super.postMessage(message, transfer)
+        else super.postMessage(message)
+      }
+    }
+  })
+
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('reg_mux')
+  await page.getByLabel('Platform').selectOption('gates')
+  await expect(page.locator('.pane-right')).toHaveAttribute(
+    'data-analysis-state',
+    'current',
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const grouped = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="8"]',
+  )
+  await expect(grouped).toHaveCount(1)
+  const groupId = await grouped.getAttribute('data-graph-node-id')
+  expect(groupId).not.toBeNull()
+  await grouped.hover()
+  await page.locator(
+    `[data-group-action="expand"][data-group-id="${groupId}"]`,
+  ).click()
+
+  const members = page.locator(`[data-expanded-group-member="${groupId}"]`)
+  await expect(members).toHaveCount(8)
+  const gridShape = () => page.evaluate((expandedGroupId) => {
+    const positions = [
+      ...document.querySelectorAll<SVGGElement>(
+        `[data-expanded-group-member="${expandedGroupId}"]`,
+      ),
+    ].map((node) => {
+      const matrix = node.transform.baseVal.consolidate()?.matrix
+      if (!matrix) throw new Error('expanded member has no transform')
+      return {
+        x: Math.round(matrix.e * 1_000) / 1_000,
+        y: Math.round(matrix.f * 1_000) / 1_000,
+      }
+    })
+    return {
+      columns: new Set(positions.map(({ x }) => x)).size,
+      rows: new Set(positions.map(({ y }) => y)).size,
+    }
+  }, groupId)
+  const originalShape = await gridShape()
+  expect(originalShape.columns).toBeGreaterThan(1)
+  expect(originalShape.rows).toBeGreaterThan(1)
+
+  const output = page.locator(
+    '.g-node-body.g-symbol-port-out[data-node-tooltip="q[7:0]"]',
+  )
+  await expect(output).toHaveCount(1)
+  await output.focus()
+  await output.press('Enter')
+  await page.getByRole('button', { name: 'Fanin cone' }).click()
+
+  await expect(members).toHaveCount(8)
+  await expect.poll(gridShape).toEqual(originalShape)
+  await expect(page.locator('.graph-error')).toHaveCount(0)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+
+  const containment = await page.evaluate((expandedGroupId) => {
+    const boundary = document.querySelector<SVGRectElement>(
+      '.g-expanded-group-boundary',
+    )?.getBoundingClientRect()
+    if (!boundary) {
+      return { membersInside: false, overlappingOutsiders: ['missing frame'] }
+    }
+    const epsilon = 1
+    const membersInside = [
+      ...document.querySelectorAll<SVGGElement>(
+        `[data-expanded-group-member="${expandedGroupId}"]`,
+      ),
+    ].every((member) => {
+      const box = member.getBoundingClientRect()
+      return (
+        box.left >= boundary.left - epsilon &&
+        box.right <= boundary.right + epsilon &&
+        box.top >= boundary.top - epsilon &&
+        box.bottom <= boundary.bottom + epsilon
+      )
+    })
+    const overlappingOutsiders = [
+      ...document.querySelectorAll<SVGGElement>(
+        `.g-node-body:not([data-expanded-group-member="${expandedGroupId}"])`,
+      ),
+    ].flatMap((node) => {
+      const box = node.getBoundingClientRect()
+      const overlaps = (
+        box.left < boundary.right &&
+        box.right > boundary.left &&
+        box.top < boundary.bottom &&
+        box.bottom > boundary.top
+      )
+      return overlaps
+        ? [node.dataset.nodeTooltip ?? node.dataset.graphNodeId ?? '?']
+        : []
+    })
+    return { membersInside, overlappingOutsiders }
+  }, groupId)
+  expect(containment).toEqual({
+    membersInside: true,
+    overlappingOutsiders: [],
+  })
+
+  const expansionReferences = await page.evaluate(() =>
+    (
+      window as unknown as {
+        __focusedExpansionRequests: Array<{
+          kind?: string
+          request?: { reference_height?: number }
+        }>
+      }
+    ).__focusedExpansionRequests
+      .filter((message) => message.kind === 'expand')
+      .map((message) => message.request?.reference_height),
+  )
+  expect(expansionReferences.length).toBeGreaterThanOrEqual(2)
+  expect(new Set(expansionReferences).size).toBe(1)
+})

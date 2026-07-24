@@ -28,6 +28,7 @@ import {
   layoutSubgraph,
   prewarmLayoutWorker,
   shouldRefitProjection,
+  type ExpandedGroupLayout,
   type LaidOutGraph,
 } from '../../lib/layout'
 import {
@@ -671,7 +672,7 @@ export function Graph({ active }: { active: boolean }) {
       if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
       return
     }
-    const expandedGroup = visibleExpandedGroups[0]
+    const expandedGroup = expandedGroupsForLayout[0]
     const groupedBaseLayout = groupedBaseSubgraph
       ? layoutCache.current.get(groupedBaseSubgraph)
       : null
@@ -685,22 +686,42 @@ export function Graph({ active }: { active: boolean }) {
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
+    const expandWithSchemWeave = async (group: ExpandedGroupLayout) => {
+      let baseLayout = localBaseLayout
+      if (!baseLayout && groupedBaseSubgraph) {
+        baseLayout = await layoutSubgraph(
+          groupedBaseSubgraph,
+          controller.signal,
+          'schemweave',
+        )
+        layoutCache.current.set(groupedBaseSubgraph, baseLayout)
+      }
+      if (!baseLayout) {
+        return layoutSubgraph(
+          toLayout,
+          controller.signal,
+          layoutEngine,
+          expandedGroupsForLayout,
+        )
+      }
+      const expanded = await layoutExpandedGroupWithSchemWeave(
+        toLayout,
+        baseLayout,
+        group,
+        controller.signal,
+      )
+      if (!expanded) {
+        setGroupExpansions([])
+        setExpandedGroupSpecs([])
+        throw new Error(
+          'SchemWeave could not preserve the expanded group in this projection',
+        )
+      }
+      return expanded
+    }
     const layoutPromise =
-      layoutEngine === 'schemweave' && expandedGroup && localBaseLayout
-        ? layoutExpandedGroupWithSchemWeave(
-            toLayout,
-            localBaseLayout,
-            expandedGroup,
-            controller.signal,
-          ).then((layout) =>
-            layout ??
-            layoutSubgraph(
-              toLayout,
-              controller.signal,
-              layoutEngine,
-              expandedGroupsForLayout,
-            )
-          )
+      layoutEngine === 'schemweave' && expandedGroup
+        ? expandWithSchemWeave(expandedGroup)
         : layoutSubgraph(
             toLayout,
             controller.signal,
