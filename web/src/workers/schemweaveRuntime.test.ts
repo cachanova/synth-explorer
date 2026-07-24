@@ -58,7 +58,10 @@ it('serializes exact boundary constraints and returns raw bundle geometry', () =
       { id: 1, x: 0, y: 0, width: 62, height: 46 },
       { id: 2, x: 128, y: 0, width: 62, height: 46 },
     ],
-    edges: [{ id: 0, points: [{ x: 72, y: 23 }, { x: 128, y: 23 }] }],
+    edges: [
+      { id: 0, points: [{ x: 72, y: 20 }, { x: 128, y: 20 }] },
+      { id: 1, points: [{ x: 72, y: 26 }, { x: 128, y: 26 }] },
+    ],
     boundary_bundles: [{
       id: 0,
       endpoint: { node: 1, port: 0 },
@@ -72,7 +75,10 @@ it('serializes exact boundary constraints and returns raw bundle geometry', () =
         start: { x: 62, y: 23 },
         end: { x: 72, y: 23 },
       },
-      members: [{ edge: 0, slots: [0, 7], tap: { x: 72, y: 23 } }],
+      members: [
+        { edge: 0, slots: [0], tap: { x: 72, y: 20 } },
+        { edge: 1, slots: [7], tap: { x: 72, y: 26 } },
+      ],
     }],
     width: 190,
     height: 46,
@@ -87,7 +93,10 @@ it('serializes exact boundary constraints and returns raw bundle geometry', () =
         { id: 1, x: 0, y: 0, width: 62, height: 46 },
         { id: 2, x: 128, y: 0, width: 62, height: 46 },
       ],
-      edges: [{ id: 0, points: [{ x: 72, y: 23 }, { x: 128, y: 23 }] }],
+      edges: [
+        { id: 0, points: [{ x: 72, y: 20 }, { x: 128, y: 20 }] },
+        { id: 1, points: [{ x: 72, y: 26 }, { x: 128, y: 26 }] },
+      ],
       boundary_bundles: [{
         id: 0,
         endpoint: { node: 1, port: 0 },
@@ -101,7 +110,10 @@ it('serializes exact boundary constraints and returns raw bundle geometry', () =
           start: { x: 62, y: 23 },
           end: { x: 72, y: 23 },
         },
-        members: [{ edge: 0, slots: [0, 7], tap: { x: 72, y: 23 } }],
+        members: [
+          { edge: 0, slots: [0], tap: { x: 72, y: 20 } },
+          { edge: 1, slots: [7], tap: { x: 72, y: 26 } },
+        ],
       }],
       width: 190,
       height: 46,
@@ -113,7 +125,10 @@ it('serializes exact boundary constraints and returns raw bundle geometry', () =
     id: 0,
     endpoint: { node: 1, port: 0 },
     width: 8,
-    members: [{ edge: 0, slots: [0, 7] }],
+    members: [
+      { edge: 0, slots: [0] },
+      { edge: 1, slots: [7] },
+    ],
   }])
 })
 

@@ -1572,20 +1572,442 @@ describe('schematic layout sizing', () => {
     }
 
     const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges).toHaveLength(2)
     expect(request.constraints.boundary_bundles).toEqual([
       {
         id: 0,
         endpoint: { node: 1, port: 0 },
         width: 8,
-        members: [{ edge: 0, slots: [0, 7] }],
+        members: [
+          { edge: 0, slots: [0] },
+          { edge: 1, slots: [7] },
+        ],
       },
       {
         id: 1,
         endpoint: { node: 2, port: 0 },
         width: 8,
-        members: [{ edge: 0, slots: [0, 7] }],
+        members: [
+          { edge: 0, slots: [0] },
+          { edge: 1, slots: [7] },
+        ],
       },
     ])
+  })
+
+  it('keeps one SchemWeave route for an identical two-role direct-alias cohort', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y',
+          port_direction: 'output',
+          member_count: 1,
+          boundary_members: [{ member: 20, bit: 0 }],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'alias',
+        bits: [55],
+        source_boundary_members: [{ member: 10, net_bits: [55] }],
+        target_boundary_members: [{ member: 20, net_bits: [55] }],
+      }],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges).toHaveLength(1)
+    expect(request.constraints.boundary_bundles).toEqual([
+      {
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        width: 1,
+        members: [{ edge: 0, slots: [0] }],
+      },
+      {
+        id: 1,
+        endpoint: { node: 2, port: 0 },
+        width: 1,
+        members: [{ edge: 0, slots: [0] }],
+      },
+    ])
+  })
+
+  it('jointly partitions differently ordered direct-alias slot cohorts', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'a[1:0]',
+          port_direction: 'input',
+          member_count: 2,
+          boundary_members: [
+            { member: 10, bit: 0 },
+            { member: 11, bit: 1 },
+          ],
+        }),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[1:0]',
+          port_direction: 'output',
+          member_count: 2,
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'a',
+        to_port: 'y',
+        net_name: 'permuted_alias',
+        bits: [70, 77],
+        source_boundary_members: [
+          { member: 10, net_bits: [70] },
+          { member: 11, net_bits: [77] },
+        ],
+        target_boundary_members: [
+          { member: 20, net_bits: [77] },
+          { member: 21, net_bits: [70] },
+        ],
+      }],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges).toHaveLength(2)
+    expect(request.constraints.boundary_bundles).toEqual([
+      {
+        id: 0,
+        endpoint: { node: 1, port: 0 },
+        width: 2,
+        members: [
+          { edge: 0, slots: [0] },
+          { edge: 1, slots: [1] },
+        ],
+      },
+      {
+        id: 1,
+        endpoint: { node: 2, port: 0 },
+        width: 2,
+        members: [
+          { edge: 0, slots: [1] },
+          { edge: 1, slots: [0] },
+        ],
+      },
+    ])
+  })
+
+  it('splits staircase slot overlap into deterministic strict electrical cohorts', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request[2:0]',
+          port_direction: 'input',
+          member_count: 3,
+          boundary_members: [
+            { member: 10, bit: 0 },
+            { member: 11, bit: 1 },
+            { member: 12, bit: 2 },
+          ],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_lo',
+          bits: [55],
+          source_boundary_members: [
+            { member: 10, net_bits: [55] },
+            { member: 11, net_bits: [55] },
+          ],
+        },
+        {
+          from: 1,
+          to: 3,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_hi',
+          bits: [55],
+          source_boundary_members: [
+            { member: 11, net_bits: [55] },
+            { member: 12, net_bits: [55] },
+          ],
+        },
+      ],
+      truncated: false,
+    }
+
+    const request = toSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    expect(request.graph.edges.map(({ id, net, source, target }) => ({
+      id,
+      net,
+      source,
+      target,
+    }))).toEqual([
+      {
+        id: 0,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 2, port: 0 },
+      },
+      {
+        id: 1,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 2, port: 0 },
+      },
+      {
+        id: 2,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 3, port: 0 },
+      },
+      {
+        id: 3,
+        net: 0,
+        source: { node: 1, port: 0 },
+        target: { node: 3, port: 0 },
+      },
+    ])
+    expect(request.constraints.boundary_bundles).toEqual([{
+      id: 0,
+      endpoint: { node: 1, port: 0 },
+      width: 3,
+      members: [
+        { edge: 0, slots: [0] },
+        { edge: 1, slots: [1] },
+        { edge: 2, slots: [1] },
+        { edge: 3, slots: [2] },
+      ],
+    }])
+  })
+
+  it('is deterministic under duplicate and permuted boundary cohort metadata', () => {
+    const makeSubgraph = (permuted: boolean): Subgraph => ({
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request[2:0]',
+          port_direction: 'input',
+          member_count: 3,
+          boundary_members: permuted
+            ? [
+                { member: 12, bit: 2 },
+                { member: 10, bit: 0 },
+                { member: 11, bit: 1 },
+                { member: 10, bit: 0 },
+              ]
+            : [
+                { member: 10, bit: 0 },
+                { member: 11, bit: 1 },
+                { member: 12, bit: 2 },
+              ],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_lo',
+          bits: [55],
+          source_boundary_members: permuted
+            ? [
+                { member: 11, net_bits: [55, 55] },
+                { member: 10, net_bits: [55] },
+                { member: 10, net_bits: [55] },
+              ]
+            : [
+                { member: 10, net_bits: [55] },
+                { member: 11, net_bits: [55] },
+              ],
+        },
+        {
+          from: 1,
+          to: 3,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'request_hi',
+          bits: [55],
+          source_boundary_members: permuted
+            ? [
+                { member: 12, net_bits: [55] },
+                { member: 11, net_bits: [55] },
+              ]
+            : [
+                { member: 11, net_bits: [55] },
+                { member: 12, net_bits: [55] },
+              ],
+        },
+      ],
+      truncated: false,
+    })
+
+    expect(
+      toSchemWeaveLayoutRequest(prepareLayoutInput(makeSubgraph(true))),
+    ).toEqual(
+      toSchemWeaveLayoutRequest(prepareLayoutInput(makeSubgraph(false))),
+    )
+  })
+
+  it('rejects conflicting electrical metadata for one endpoint slot before WASM', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(1, 'port', {
+          kind: 'port',
+          name: 'request',
+          port_direction: 'input',
+          member_count: 1,
+          boundary_members: [{ member: 10, bit: 0 }],
+        }),
+        node(2, '$_BUF_'),
+        node(3, '$_BUF_'),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'first',
+          bits: [55],
+          source_boundary_members: [{ member: 10, net_bits: [55] }],
+        },
+        {
+          from: 1,
+          to: 3,
+          from_port: 'request',
+          to_port: 'A',
+          net_name: 'second',
+          bits: [56],
+          source_boundary_members: [{ member: 10, net_bits: [56] }],
+        },
+      ],
+      truncated: false,
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(prepareLayoutInput(sub))).toThrow(
+      'input endpoint 1:0 slot 0 has conflicting electrical net bits [55] and [56]',
+    )
+  })
+
+  it('rejects a joint partition that would assign two electrical cohorts to one slot', () => {
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+          boundaryWidth: 1,
+          boundaryMembers: [{ member: 10, bit: 0 }],
+        },
+        {
+          id: 2,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+          boundaryWidth: 2,
+          boundaryMembers: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        },
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        fromPort: 'a',
+        toPort: 'y',
+        control: false,
+        sourceBoundaryMembers: [{
+          member: 10,
+          net_bits: [55, 56],
+        }],
+        targetBoundaryMembers: [
+          { member: 20, net_bits: [55] },
+          { member: 21, net_bits: [56] },
+        ],
+      }],
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(input)).toThrow(
+      'input endpoint 1:0 slot 0 has conflicting electrical net bits [55] and [56]',
+    )
+  })
+
+  it('enforces the edge cap after electrical cohort expansion', () => {
+    const fragmentCount = MAX_GRAPH_EDGES + 1
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+          boundaryWidth: fragmentCount,
+          boundaryMembers: Array.from({ length: fragmentCount }, (_, bit) => ({
+            member: bit + 10,
+            bit,
+          })),
+        },
+        {
+          id: 2,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        },
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        fromPort: 'a',
+        toPort: 'A',
+        control: false,
+        sourceBoundaryMembers: Array.from(
+          { length: fragmentCount },
+          (_, bit) => ({
+            member: bit + 10,
+            net_bits: [bit + 100],
+          }),
+        ),
+      }],
+    }
+
+    expect(() => toSchemWeaveLayoutRequest(input)).toThrow(
+      '10001 electrical layout edges after boundary expansion; limit 10000',
+    )
   })
 
   it('does not constrain grouped inout or topology-internal boundary metadata', () => {
@@ -2373,6 +2795,96 @@ describe('schematic layout sizing', () => {
     expect(FakeWorker.instances).toHaveLength(2)
     elk.onerror?.({ message: 'cleanup' } as ErrorEvent)
     schemweave.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('hydrates electrical fragments to exact UI bit subsets and rendered bundle owners', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub: Subgraph = {
+      nodes: [
+        node(1, '$_BUF_'),
+        node(2, 'port', {
+          kind: 'port',
+          name: 'y[1:0]',
+          port_direction: 'output',
+          member_count: 2,
+          boundary_members: [
+            { member: 20, bit: 0 },
+            { member: 21, bit: 1 },
+          ],
+        }),
+      ],
+      edges: [{
+        from: 1,
+        to: 2,
+        from_port: 'Y',
+        to_port: 'y',
+        net_name: 'y',
+        bits: [55, 56],
+        target_boundary_members: [
+          { member: 20, net_bits: [55] },
+          { member: 21, net_bits: [56] },
+        ],
+      }],
+      truncated: false,
+    }
+
+    const pendingLayout = layoutSubgraph(sub, undefined, 'schemweave')
+    const worker = FakeWorker.instances[0]
+    expect(worker.requests[0].request?.graph.edges).toHaveLength(2)
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: {
+          nodes: [
+            { id: 1, x: 0, y: 0, width: 62, height: 46 },
+            { id: 2, x: 140, y: 0, width: 74, height: 34 },
+          ],
+          // Deliberately return a non-id order. Bundle ownership is expressed
+          // in Schem edge ids but the renderer consumes hydrated array indexes.
+          edges: [
+            {
+              id: 1,
+              points: [{ x: 62, y: 24 }, { x: 130, y: 24 }],
+            },
+            {
+              id: 0,
+              points: [{ x: 62, y: 18 }, { x: 130, y: 18 }],
+            },
+          ],
+          boundary_bundles: [{
+            id: 0,
+            endpoint: { node: 2, port: 0 },
+            role: 'output',
+            width: 2,
+            collector: {
+              start: { x: 130, y: 18 },
+              end: { x: 130, y: 24 },
+            },
+            spine: {
+              start: { x: 140, y: 21 },
+              end: { x: 130, y: 21 },
+            },
+            members: [
+              { edge: 0, slots: [0], tap: { x: 130, y: 18 } },
+              { edge: 1, slots: [1], tap: { x: 130, y: 24 } },
+            ],
+          }],
+          width: 214,
+          height: 46,
+        },
+      },
+    } as MessageEvent)
+
+    const laidOut = await pendingLayout
+    expect(laidOut.edges.map((edge) => edge.edge.bits)).toEqual([[56], [55]])
+    expect(laidOut.edges.every((edge) => edge.edge !== sub.edges[0])).toBe(true)
+    expect(laidOut.boundaryBundles).toEqual([expect.objectContaining({
+      id: 0,
+      role: 'output',
+      ownerIndexes: [0, 1],
+    })])
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('does not cache degraded bundle-free geometry but caches the next strict success', async () => {

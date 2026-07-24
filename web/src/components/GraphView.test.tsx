@@ -216,6 +216,107 @@ describe('GraphView SchemWeave boundary bundles', () => {
       /data-boundary-bundle-id="0"[^]*?<path class="g-edge-arrows"/,
     )
   })
+
+  it('keeps fragment bit highlighting and suppresses every owned output arrow', () => {
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={{
+          nodes: [
+            {
+              id: 1,
+              x: 0,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 1,
+                kind: 'cell',
+                name: 'logic',
+                cell_type: '$_BUF_',
+              },
+            },
+            {
+              id: 2,
+              x: 180,
+              y: 0,
+              width: 74,
+              height: 34,
+              node: {
+                id: 2,
+                kind: 'port',
+                name: 'y[1:0]',
+                port_direction: 'output',
+              },
+            },
+          ],
+          edges: [
+            {
+              from: 1,
+              to: 2,
+              points: [{ x: 74, y: 14 }, { x: 170, y: 14 }],
+              edge: {
+                from: 1,
+                to: 2,
+                from_port: 'Y',
+                to_port: 'y',
+                net_name: 'y[0]',
+                bits: [55],
+              },
+            },
+            {
+              from: 1,
+              to: 2,
+              points: [{ x: 74, y: 22 }, { x: 170, y: 22 }],
+              edge: {
+                from: 1,
+                to: 2,
+                from_port: 'Y',
+                to_port: 'y',
+                net_name: 'y[1]',
+                bits: [56],
+              },
+            },
+          ],
+          boundaryBundles: [{
+            id: 0,
+            endpoint: { node: 2, port: 0 },
+            role: 'output',
+            width: 2,
+            collector: {
+              start: { x: 170, y: 14 },
+              end: { x: 170, y: 22 },
+            },
+            spine: {
+              start: { x: 180, y: 18 },
+              end: { x: 170, y: 18 },
+            },
+            ownerIndexes: [0, 1],
+          }],
+          width: 254,
+          height: 34,
+        }}
+        rootId={1}
+        relevantIds={new Set()}
+        overlayIds={new Set()}
+        highlightedBits={new Set([56])}
+        selectedId={2}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(markup).toContain('data-first-edge-title="y[0] (1 bit): Y→y"')
+    expect(markup).toContain('data-first-edge-title="y[1] (1 bit): Y→y"')
+    expect(markup).toContain('data-boundary-bundle-owners="0,1"')
+    expect(markup).toMatch(
+      /data-boundary-bundle-id="0"[^]*?<path class="g-edge hl"/,
+    )
+    // Both routed fragments are output-bundle owners, so only the aggregate
+    // bundle endpoint contributes an arrow.
+    expect(markup.match(/class="g-edge-arrows/g)).toHaveLength(1)
+  })
 })
 
 describe('GraphView LUT labels', () => {

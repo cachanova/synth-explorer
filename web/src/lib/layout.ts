@@ -231,7 +231,7 @@ function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
 
 export interface LayoutGeometry {
   nodes: Array<Omit<LaidOutNode, 'node'>>
-  edges: Array<{ inputIndex: number; points: Point[] }>
+  edges: Array<{ inputIndex: number; points: Point[]; netBits?: number[] }>
   groups?: LaidOutGroup[]
   boundaryBundles?: Array<{
     id: number
@@ -287,6 +287,10 @@ function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
     (total, edge) => total + edge.points.length,
     0,
   )
+  const fragmentBitCount = geometry.edges.reduce(
+    (total, edge) => total + (edge.netBits?.length ?? 0),
+    0,
+  )
   // Conservative object/array allowances plus UTF-16 key storage. This is a
   // retained-memory budget, not a wire-size estimate.
   return (
@@ -296,6 +300,7 @@ function estimatedRetainedBytes(key: string, geometry: LayoutGeometry): number {
     (geometry.groups?.length ?? 0) * 80 +
     (geometry.boundaryBundles?.length ?? 0) * 320 +
     pointCount * 48 +
+    fragmentBitCount * 8 +
     256
   )
 }
@@ -620,6 +625,14 @@ export function canonicalPinNames(pins: Iterable<string>): string[] {
   return [...new Set(pins)].sort()
 }
 
+function compareNumberArrays(left: readonly number[], right: readonly number[]): number {
+  const common = Math.min(left.length, right.length)
+  for (let index = 0; index < common; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index]
+  }
+  return left.length - right.length
+}
+
 interface PinCatalog {
   incoming: Map<number, string[]>
   outgoing: Map<number, string[]>
@@ -893,6 +906,20 @@ export interface SchemWeaveLayout {
 interface SchemWeaveGraphCatalog {
   graph: SchemWeaveGraph
   portIds: Map<string, number>
+  fragments: Array<{
+    inputIndex: number
+    netBits?: number[]
+    sourceBundle?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: number[]
+    }
+    targetBundle?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: number[]
+    }
+  }>
 }
 
 /** Map the renderer's fixed-pin contract to SchemWeave's numeric graph ABI. */
@@ -980,7 +1007,7 @@ function buildSchemWeaveGraph(input: LayoutInput): SchemWeaveGraphCatalog {
     if (id == null) throw new Error(`missing layout port ${node}:${key}`)
     return id
   }
-  const edges = input.edges.map((edge, id) => {
+  const endpoints = input.edges.map((edge) => {
     const sourceNode = nodeById.get(edge.from)
     const targetNode = nodeById.get(edge.to)
     if (!sourceNode || !targetNode) {
@@ -993,47 +1020,26 @@ function buildSchemWeaveGraph(input: LayoutInput): SchemWeaveGraphCatalog {
         : 'in'
       : `i:${edge.toPort}`
     return {
-      id,
       source: { node: edge.from, port: portId(edge.from, sourceKey) },
       target: { node: edge.to, port: portId(edge.to, targetKey) },
-      net: edge.net ?? id,
-      participates_in_ranking: true,
     }
   })
-  return { graph: { nodes, edges }, portIds }
-}
 
-export function toSchemWeaveGraph(input: LayoutInput): SchemWeaveGraph {
-  return buildSchemWeaveGraph(input).graph
-}
-
-function boundaryBundleConstraints(
-  input: LayoutInput,
-  graph: SchemWeaveGraph,
-): SchemWeaveBoundaryBundleConstraint[] {
-  const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
-  const builders = new Map<string, {
-    role: 'input' | 'output'
+  interface BoundarySide {
     endpoint: { node: number; port: number }
     width: number
-    members: Array<{ edge: number; slots: number[] }>
-  }>()
-
-  const addMember = (
+    entries: Array<{ slot: number; netBits: number[] }>
+  }
+  const boundarySide = (
     role: 'input' | 'output',
-    edgeIndex: number,
     nodeId: number,
-    portId: number,
+    endpoint: { node: number; port: number },
     mappings: EdgeBoundaryMember[] | undefined,
-  ) => {
-    if (!mappings || mappings.length === 0) return
+  ): BoundarySide | undefined => {
+    if (!mappings || mappings.length === 0) return undefined
     const node = nodeById.get(nodeId)
     if (!node) throw new Error(`boundary bundle references unknown node ${nodeId}`)
-    // Quotient metadata describes the grouped declaration even when the
-    // visible topology proves that declaration is not a primary boundary
-    // (notably inouts and direction-conflicting partial projections). Keep
-    // those nodes internal and omit an impossible boundary constraint.
-    if (node.boundary === 'internal') return
+    if (node.boundary === 'internal') return undefined
     if (node.boundary !== role) {
       throw new Error(
         `boundary bundle ${role} metadata references ${node.boundary} node ${nodeId}`,
@@ -1042,17 +1048,27 @@ function boundaryBundleConstraints(
     const slotByMember = new Map(
       node.boundaryMembers?.map((member) => [member.member, member.bit] as const),
     )
-    const slots = [...new Set(mappings.map((mapping) => {
+    const entries = normalizeEdgeBoundaryMembers(
+      mappings,
+      node.boundaryMembers,
+    )?.map((mapping) => {
       const slot = slotByMember.get(mapping.member)
       if (slot == null) {
         throw new Error(
           `boundary bundle node ${nodeId} has no declaration slot for member ${mapping.member}`,
         )
       }
-      return slot
-    }))].sort((left, right) => left - right)
-    if (slots.length === 0) return
-    const requiredWidth = slots[slots.length - 1] + 1
+      const netBits = [...new Set(mapping.net_bits)]
+        .sort((left, right) => left - right)
+      if (netBits.length === 0) {
+        throw new Error(
+          `${role} endpoint ${endpoint.node}:${endpoint.port} slot ${slot} has no electrical net bits`,
+        )
+      }
+      return { slot, netBits }
+    }) ?? []
+    if (entries.length === 0) return undefined
+    const requiredWidth = Math.max(...entries.map((entry) => entry.slot)) + 1
     const width = node.boundaryWidth ??
       Math.max(
         requiredWidth,
@@ -1063,37 +1079,316 @@ function boundaryBundleConstraints(
         `boundary bundle node ${nodeId} width ${width} excludes slot ${requiredWidth - 1}`,
       )
     }
-    const key = `${role}:${nodeId}:${portId}`
+    return { endpoint, width, entries }
+  }
+
+  interface ElectricalCandidate {
+    id: number
+    inputIndex: number
+    netKey: string
+    netBits?: number[]
+    source?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: Set<number>
+    }
+    target?: {
+      endpoint: { node: number; port: number }
+      width: number
+      slots: Set<number>
+    }
+    sourceCohorts: number[][]
+    targetCohorts: number[][]
+  }
+  const candidates: ElectricalCandidate[] = []
+  input.edges.forEach((edge, inputIndex) => {
+    const endpoint = endpoints[inputIndex]
+    const source = boundarySide(
+      'input',
+      edge.from,
+      endpoint.source,
+      edge.sourceBoundaryMembers,
+    )
+    const target = boundarySide(
+      'output',
+      edge.to,
+      endpoint.target,
+      edge.targetBoundaryMembers,
+    )
+    const byNet = new Map<string, ElectricalCandidate>()
+    const membershipsByBit = new Map<number, {
+      sourceSlots: Set<number>
+      targetSlots: Set<number>
+    }>()
+    const addMemberships = (
+      side: 'sourceSlots' | 'targetSlots',
+      entries: readonly { slot: number; netBits: number[] }[],
+    ) => {
+      for (const entry of entries) {
+        for (const bit of entry.netBits) {
+          const memberships = membershipsByBit.get(bit) ?? {
+            sourceSlots: new Set<number>(),
+            targetSlots: new Set<number>(),
+          }
+          memberships[side].add(entry.slot)
+          membershipsByBit.set(bit, memberships)
+        }
+      }
+    }
+    addMemberships('sourceSlots', source?.entries ?? [])
+    addMemberships('targetSlots', target?.entries ?? [])
+    const bitsBySlotSignature = new Map<string, {
+      bits: number[]
+      sourceSlots: number[]
+      targetSlots: number[]
+    }>()
+    for (const [bit, memberships] of [...membershipsByBit].sort(
+      ([left], [right]) => left - right,
+    )) {
+      const sourceSlots = [...memberships.sourceSlots]
+        .sort((left, right) => left - right)
+      const targetSlots = [...memberships.targetSlots]
+        .sort((left, right) => left - right)
+      const signature = `source:${sourceSlots.join(',')};target:${targetSlots.join(',')}`
+      const cohort = bitsBySlotSignature.get(signature) ?? {
+        bits: [],
+        sourceSlots,
+        targetSlots,
+      }
+      cohort.bits.push(bit)
+      bitsBySlotSignature.set(signature, cohort)
+    }
+    for (const cohort of [...bitsBySlotSignature.values()].sort((left, right) =>
+      compareNumberArrays(left.bits, right.bits)
+    )) {
+      const netKey = `bits:${cohort.bits.join(',')}`
+      byNet.set(netKey, {
+        id: -1,
+        inputIndex,
+        netKey,
+        netBits: cohort.bits,
+        ...(cohort.sourceSlots.length > 0 && source
+          ? {
+              source: {
+                endpoint: source.endpoint,
+                width: source.width,
+                slots: new Set(cohort.sourceSlots),
+              },
+            }
+          : {}),
+        ...(cohort.targetSlots.length > 0 && target
+          ? {
+              target: {
+                endpoint: target.endpoint,
+                width: target.width,
+                slots: new Set(cohort.targetSlots),
+              },
+            }
+          : {}),
+        sourceCohorts: [],
+        targetCohorts: [],
+      })
+    }
+    if (byNet.size === 0) {
+      const netKey = `logical:${edge.net ?? inputIndex}`
+      byNet.set(netKey, {
+        id: -1,
+        inputIndex,
+        netKey,
+        sourceCohorts: [],
+        targetCohorts: [],
+      })
+    }
+    for (const candidate of [...byNet.values()].sort((left, right) =>
+      left.netKey.localeCompare(right.netKey)
+    )) {
+      candidate.id = candidates.length
+      candidates.push(candidate)
+    }
+  })
+
+  const formatNetKey = (key: string): string =>
+    `[${key.startsWith('bits:') ? key.slice('bits:'.length) : key}]`
+  const slotElectricalKey = new Map<string, string>()
+  const cohortBuilders = new Map<string, {
+    role: 'input' | 'output'
+    endpoint: { node: number; port: number }
+    width: number
+    ownersBySlot: Map<number, Set<number>>
+  }>()
+  const addBoundaryOwner = (
+    role: 'input' | 'output',
+    candidate: ElectricalCandidate,
+    owner: NonNullable<ElectricalCandidate['source']>,
+  ) => {
+    for (const slot of owner.slots) {
+      const slotKey = `${role}:${owner.endpoint.node}:${owner.endpoint.port}:${slot}`
+      const prior = slotElectricalKey.get(slotKey)
+      if (prior != null && prior !== candidate.netKey) {
+        throw new Error(
+          `${role} endpoint ${owner.endpoint.node}:${owner.endpoint.port} slot ${slot} ` +
+          `has conflicting electrical net bits ${formatNetKey(prior)} and ${formatNetKey(candidate.netKey)}`,
+        )
+      }
+      slotElectricalKey.set(slotKey, candidate.netKey)
+    }
+    const builderKey =
+      `${role}:${owner.endpoint.node}:${owner.endpoint.port}:${candidate.netKey}`
+    let builder = cohortBuilders.get(builderKey)
+    if (!builder) {
+      builder = {
+        role,
+        endpoint: owner.endpoint,
+        width: owner.width,
+        ownersBySlot: new Map(),
+      }
+      cohortBuilders.set(builderKey, builder)
+    } else if (builder.width !== owner.width) {
+      throw new Error(
+        `inconsistent boundary bundle width for node ${owner.endpoint.node}`,
+      )
+    }
+    for (const slot of owner.slots) {
+      const owners = builder.ownersBySlot.get(slot) ?? new Set<number>()
+      owners.add(candidate.id)
+      builder.ownersBySlot.set(slot, owners)
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.source) addBoundaryOwner('input', candidate, candidate.source)
+    if (candidate.target) addBoundaryOwner('output', candidate, candidate.target)
+  }
+  for (const builder of [...cohortBuilders.values()].sort((left, right) =>
+    (left.role === right.role ? 0 : left.role === 'input' ? -1 : 1) ||
+    left.endpoint.node - right.endpoint.node ||
+    left.endpoint.port - right.endpoint.port
+  )) {
+    const slotsByOwnerSet = new Map<string, number[]>()
+    for (const [slot, owners] of [...builder.ownersBySlot].sort(
+      ([left], [right]) => left - right,
+    )) {
+      const ownerKey = [...owners].sort((left, right) => left - right).join(',')
+      const slots = slotsByOwnerSet.get(ownerKey) ?? []
+      slots.push(slot)
+      slotsByOwnerSet.set(ownerKey, slots)
+    }
+    for (const [ownerKey, slots] of [...slotsByOwnerSet].sort(
+      ([left], [right]) => left.localeCompare(right),
+    )) {
+      for (const ownerId of ownerKey.split(',').map(Number)) {
+        const candidate = candidates[ownerId]
+        const cohorts = builder.role === 'input'
+          ? candidate.sourceCohorts
+          : candidate.targetCohorts
+        cohorts.push(slots)
+      }
+    }
+  }
+
+  const netIds = new Map(
+    [...new Set(candidates.map((candidate) => candidate.netKey))]
+      .sort()
+      .map((key, index) => [key, index] as const),
+  )
+  const fragments: SchemWeaveGraphCatalog['fragments'] = []
+  const edges: SchemWeaveGraph['edges'] = []
+  for (const candidate of candidates) {
+    candidate.sourceCohorts.sort(compareNumberArrays)
+    candidate.targetCohorts.sort(compareNumberArrays)
+    const fragmentCount = Math.max(
+      1,
+      candidate.sourceCohorts.length,
+      candidate.targetCohorts.length,
+    )
+    const endpoint = endpoints[candidate.inputIndex]
+    for (let fragmentIndex = 0; fragmentIndex < fragmentCount; fragmentIndex += 1) {
+      const sourceSlots = candidate.sourceCohorts.length > 0
+        ? candidate.sourceCohorts[fragmentIndex % candidate.sourceCohorts.length]
+        : undefined
+      const targetSlots = candidate.targetCohorts.length > 0
+        ? candidate.targetCohorts[fragmentIndex % candidate.targetCohorts.length]
+        : undefined
+      const id = edges.length
+      edges.push({
+        id,
+        source: endpoint.source,
+        target: endpoint.target,
+        net: netIds.get(candidate.netKey)!,
+        participates_in_ranking: true,
+      })
+      fragments.push({
+        inputIndex: candidate.inputIndex,
+        ...(candidate.netBits ? { netBits: candidate.netBits } : {}),
+        ...(sourceSlots && candidate.source
+          ? {
+              sourceBundle: {
+                endpoint: candidate.source.endpoint,
+                width: candidate.source.width,
+                slots: sourceSlots,
+              },
+            }
+          : {}),
+        ...(targetSlots && candidate.target
+          ? {
+              targetBundle: {
+                endpoint: candidate.target.endpoint,
+                width: candidate.target.width,
+                slots: targetSlots,
+              },
+            }
+          : {}),
+      })
+    }
+  }
+  if (edges.length > MAX_GRAPH_EDGES) {
+    throw new Error(
+      `cone too dense (${edges.length} electrical layout edges after boundary expansion; ` +
+      `limit ${MAX_GRAPH_EDGES}) — reduce depth or pick a narrower signal`,
+    )
+  }
+  return { graph: { nodes, edges }, portIds, fragments }
+}
+
+export function toSchemWeaveGraph(input: LayoutInput): SchemWeaveGraph {
+  return buildSchemWeaveGraph(input).graph
+}
+
+function boundaryBundleConstraints(
+  catalog: SchemWeaveGraphCatalog,
+): SchemWeaveBoundaryBundleConstraint[] {
+  const builders = new Map<string, {
+    role: 'input' | 'output'
+    endpoint: { node: number; port: number }
+    width: number
+    members: Array<{ edge: number; slots: number[] }>
+  }>()
+  const addMember = (
+    role: 'input' | 'output',
+    edgeIndex: number,
+    owner: NonNullable<
+      SchemWeaveGraphCatalog['fragments'][number]['sourceBundle']
+    > | undefined,
+  ) => {
+    if (!owner) return
+    const key = `${role}:${owner.endpoint.node}:${owner.endpoint.port}`
     const existing = builders.get(key)
-    if (existing && existing.width !== width) {
-      throw new Error(`inconsistent boundary bundle width for node ${nodeId}`)
+    if (existing && existing.width !== owner.width) {
+      throw new Error(
+        `inconsistent boundary bundle width for node ${owner.endpoint.node}`,
+      )
     }
     const builder = existing ?? {
       role,
-      endpoint: { node: nodeId, port: portId },
-      width,
+      endpoint: owner.endpoint,
+      width: owner.width,
       members: [],
     }
-    builder.members.push({ edge: edgeIndex, slots })
+    builder.members.push({ edge: edgeIndex, slots: owner.slots })
     builders.set(key, builder)
   }
-
-  input.edges.forEach((edge, edgeIndex) => {
-    const schemEdge = graph.edges[edgeIndex]
-    addMember(
-      'input',
-      edgeIndex,
-      edge.from,
-      schemEdge.source.port,
-      edge.sourceBoundaryMembers,
-    )
-    addMember(
-      'output',
-      edgeIndex,
-      edge.to,
-      schemEdge.target.port,
-      edge.targetBoundaryMembers,
-    )
+  catalog.fragments.forEach((fragment, edgeIndex) => {
+    addMember('input', edgeIndex, fragment.sourceBundle)
+    addMember('output', edgeIndex, fragment.targetBundle)
   })
 
   return [...builders.values()]
@@ -1111,30 +1406,43 @@ function boundaryBundleConstraints(
 }
 
 /** Wrap graph geometry and exact grouped-boundary semantics for WASM. */
-export function toSchemWeaveLayoutRequest(
+function buildSchemWeaveLayoutRequest(
   input: LayoutInput,
-): SchemWeaveLayoutRequest {
-  const { graph } = buildSchemWeaveGraph(input)
+): {
+  request: SchemWeaveLayoutRequest
+  catalog: SchemWeaveGraphCatalog
+} {
+  const catalog = buildSchemWeaveGraph(input)
   const boundaryIds = (boundary: LayoutInputNode['boundary']) =>
     input.nodes
       .filter((node) => node.boundary === boundary)
       .map((node) => node.id)
       .sort((left, right) => left - right)
-  const boundaryBundles = boundaryBundleConstraints(input, graph)
+  const boundaryBundles = boundaryBundleConstraints(catalog)
   return {
-    graph,
-    constraints: {
-      inputs: boundaryIds('input'),
-      outputs: boundaryIds('output'),
-      ...(boundaryBundles.length > 0
-        ? { boundary_bundles: boundaryBundles }
-        : {}),
+    catalog,
+    request: {
+      graph: catalog.graph,
+      constraints: {
+        inputs: boundaryIds('input'),
+        outputs: boundaryIds('output'),
+        ...(boundaryBundles.length > 0
+          ? { boundary_bundles: boundaryBundles }
+          : {}),
+      },
     },
   }
 }
 
+export function toSchemWeaveLayoutRequest(
+  input: LayoutInput,
+): SchemWeaveLayoutRequest {
+  return buildSchemWeaveLayoutRequest(input).request
+}
+
 export function interpretSchemWeaveResult(
   layout: SchemWeaveLayout,
+  catalog?: SchemWeaveGraphCatalog,
 ): LayoutGeometry {
   const raw = layout as unknown as Record<string, unknown> | null
   if (!raw || typeof raw !== 'object') {
@@ -1206,6 +1514,9 @@ export function interpretSchemWeaveResult(
     integer(edge.id, `layout edge ${index} id`, true)
     const id = edge.id as number
     if (edgeIds.has(id)) throw new Error(`layout returned duplicate edge ${id}`)
+    if (catalog && !catalog.fragments[id]) {
+      throw new Error(`layout returned unknown electrical edge ${id}`)
+    }
     edgeIds.add(id)
     if (!Array.isArray(edge.points)) {
       throw new Error(`layout edge ${id} points must be an array`)
@@ -1213,6 +1524,10 @@ export function interpretSchemWeaveResult(
     edge.points.forEach((value, pointIndex) =>
       point(value, `layout edge ${id} point ${pointIndex}`))
   })
+  if (catalog && edgeIds.size !== catalog.fragments.length) {
+    const missing = catalog.fragments.findIndex((_, id) => !edgeIds.has(id))
+    throw new Error(`layout omitted electrical edge ${missing}`)
+  }
 
   if (raw.boundary_bundles != null) {
     if (!Array.isArray(raw.boundary_bundles)) {
@@ -1287,12 +1602,19 @@ export function interpretSchemWeaveResult(
     })
   }
 
+  const renderedIndexByEdgeId = new Map(
+    layout.edges.map((edge, index) => [edge.id, index] as const),
+  )
   return {
     nodes: layout.nodes,
-    edges: layout.edges.map((edge) => ({
-      inputIndex: edge.id,
-      points: edge.points,
-    })),
+    edges: layout.edges.map((edge) => {
+      const fragment = catalog?.fragments[edge.id]
+      return {
+        inputIndex: fragment?.inputIndex ?? edge.id,
+        points: edge.points,
+        ...(fragment?.netBits ? { netBits: fragment.netBits } : {}),
+      }
+    }),
     ...(layout.boundary_bundles && layout.boundary_bundles.length > 0
       ? {
           boundaryBundles: layout.boundary_bundles.map((bundle) => ({
@@ -1303,7 +1625,15 @@ export function interpretSchemWeaveResult(
             collector: bundle.collector,
             spine: bundle.spine,
             ownerIndexes: [...new Set(
-              bundle.members.map((member) => member.edge),
+              bundle.members.map((member) => {
+                const renderedIndex = renderedIndexByEdgeId.get(member.edge)
+                if (renderedIndex == null) {
+                  throw new Error(
+                    `boundary bundle ${bundle.id} references unrouted edge ${member.edge}`,
+                  )
+                }
+                return renderedIndex
+              }),
             )].sort((left, right) => left - right),
           })),
         }
@@ -1986,10 +2316,15 @@ export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): La
       if (!node) throw new Error(`layout returned unknown node ${laidOut.id}`)
       return { ...laidOut, node }
     }),
-    edges: geometry.edges.map(({ inputIndex, points }) => {
+    edges: geometry.edges.map(({ inputIndex, points, netBits }) => {
       const edge = sub.edges[inputIndex]
       if (!edge) throw new Error(`layout returned unknown edge ${inputIndex}`)
-      return { from: edge.from, to: edge.to, points, edge }
+      return {
+        from: edge.from,
+        to: edge.to,
+        points,
+        edge: netBits ? { ...edge, bits: netBits } : edge,
+      }
     }),
     ...(geometry.groups ? { groups: geometry.groups } : {}),
     boundaryBundles: geometry.boundaryBundles ?? [],
@@ -2683,6 +3018,7 @@ const pending = new Map<
   {
     engine: LayoutEngine
     allowsBoundaryBundleFallback: boolean
+    schemCatalog?: SchemWeaveGraphCatalog
     resolve: (result: LayoutRunResult) => void
     reject: (e: Error) => void
   }
@@ -2765,7 +3101,10 @@ function getWorker(engine: LayoutEngine): Worker {
               'SchemWeave fallback marker requires boundary bundle constraints',
             )
           }
-          const geometry = interpretSchemWeaveResult(schemResponse.result)
+          const geometry = interpretSchemWeaveResult(
+            schemResponse.result,
+            entry.schemCatalog,
+          )
           if (
             rawFallback === SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK &&
             (geometry.boundaryBundles?.length ?? 0) > 0
@@ -2818,9 +3157,10 @@ function runLayout(
   placement?: NodePlacement,
   signal?: AbortSignal,
 ): Promise<LayoutRunResult> {
-  const schemRequest = engine === 'schemweave'
-    ? toSchemWeaveLayoutRequest(input)
+  const preparedSchemRequest = engine === 'schemweave'
+    ? buildSchemWeaveLayoutRequest(input)
     : undefined
+  const schemRequest = preparedSchemRequest?.request
   const req: ElkRequest | SchemWeaveRequest = schemRequest
     ? { id: ++seq, request: schemRequest }
     : {
@@ -2850,6 +3190,9 @@ function runLayout(
       engine,
       allowsBoundaryBundleFallback:
         (schemRequest?.constraints.boundary_bundles?.length ?? 0) > 0,
+      ...(preparedSchemRequest
+        ? { schemCatalog: preparedSchemRequest.catalog }
+        : {}),
       resolve: (value) => {
         cleanup()
         resolve(value)
