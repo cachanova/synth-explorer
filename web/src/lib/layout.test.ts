@@ -45,6 +45,55 @@ import {
   zoomViewportAt,
 } from './layout'
 
+const expansionBoundaryNode = (
+  id: number,
+): LayoutInput['nodes'][number] => ({
+  id,
+  baseWidth: 80,
+  baseHeight: 50,
+  controlHeight: 0,
+  register: false,
+  boundary: 'internal',
+})
+
+const expansionBoundaryEdge = (
+  from: number,
+  to: number,
+  netKey: string,
+  netBits: number[],
+  toPort = 'D',
+): LayoutInput['edges'][number] => ({
+  from,
+  to,
+  fromPort: 'Q',
+  toPort,
+  control: false,
+  netKey,
+  netBits,
+})
+
+const expansionSnapshot = (
+  built: ReturnType<typeof buildSchemWeaveLayoutRequest>,
+): SchemWeaveSnapshot => ({
+  request: built.request,
+  catalog: built.catalog,
+  layout: {
+    nodes: built.request.graph.nodes.map((node, index) => ({
+      id: node.id,
+      x: index * 100,
+      y: 0,
+      width: node.width,
+      height: node.height,
+    })),
+    edges: built.request.graph.edges.map((edge) => ({
+      id: edge.id,
+      points: [],
+    })),
+    width: built.request.graph.nodes.length * 100,
+    height: 50,
+  },
+})
+
 it('preserves compact trunk ids while expanding electrical boundary edges', () => {
   const layoutNode = (
     id: number,
@@ -197,6 +246,216 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
   expect(collapsed.request.expansion).toEqual(expanded.request.expansion)
   expect(collapsed.compactRequest).toEqual(compact.request)
 })
+
+it('maps renamed per-bit expansion edges to one aggregate compact trunk', () => {
+  const bits = Array.from({ length: 8 }, (_, index) => 29 + index)
+  const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+    nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+    edges: [
+      expansionBoundaryEdge(1, 100, 'name:q_SB_DFFSR_Q_1_D', bits),
+    ],
+  }))
+  const expanded = buildSchemWeaveExpansionRequest(
+    compact,
+    {
+      nodes: [
+        expansionBoundaryNode(1),
+        ...bits.map((_, index) => expansionBoundaryNode(10 + index)),
+      ],
+      edges: bits.map((bit, index) =>
+        expansionBoundaryEdge(
+          1,
+          10 + index,
+          `name:q_SB_DFFSR_Q_${index || ''}_D`,
+          [bit],
+        )
+      ),
+    },
+    { id: 100, members: bits.map((_, index) => 10 + index) },
+  )
+
+  expect(expanded.request.expansion.boundary_trunks).toHaveLength(8)
+  expect(
+    new Set(
+      expanded.request.expansion.boundary_trunks.map(
+        (trunk) => trunk.compact_edge,
+      ),
+    ),
+  ).toEqual(new Set([0]))
+})
+
+it('fails closed when bit containment matches multiple compact trunks', () => {
+  const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+    nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+    edges: [
+      expansionBoundaryEdge(1, 100, 'first', [1, 2], 'D0'),
+      expansionBoundaryEdge(1, 100, 'second', [2, 3], 'D1'),
+    ],
+  }))
+
+  expect(() =>
+    buildSchemWeaveExpansionRequest(
+      compact,
+      {
+        nodes: [expansionBoundaryNode(1), expansionBoundaryNode(10)],
+        edges: [expansionBoundaryEdge(1, 10, 'renamed', [2])],
+      },
+      { id: 100, members: [10] },
+    )
+  ).toThrow('matches multiple collapsed boundary trunks')
+})
+
+it('fails closed when expanded bit coverage omits part of a compact trunk', () => {
+  const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+    nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+    edges: [expansionBoundaryEdge(1, 100, 'aggregate', [1, 2])],
+  }))
+
+  expect(() =>
+    buildSchemWeaveExpansionRequest(
+      compact,
+      {
+        nodes: [expansionBoundaryNode(1), expansionBoundaryNode(10)],
+        edges: [expansionBoundaryEdge(1, 10, 'renamed', [1])],
+      },
+      { id: 100, members: [10] },
+    )
+  ).toThrow('omitted collapsed boundary bits')
+})
+
+it('maps disjoint compact trunks sharing one outside endpoint by bit set', () => {
+  const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+    nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+    edges: [
+      expansionBoundaryEdge(1, 100, 'low', [1, 2], 'D0'),
+      expansionBoundaryEdge(1, 100, 'high', [3, 4], 'D1'),
+    ],
+  }))
+  const expanded = buildSchemWeaveExpansionRequest(
+    compact,
+    {
+      nodes: [
+        expansionBoundaryNode(1),
+        ...[10, 11, 12, 13].map(expansionBoundaryNode),
+      ],
+      edges: [
+        expansionBoundaryEdge(1, 10, 'bit-four', [4]),
+        expansionBoundaryEdge(1, 11, 'bit-one', [1]),
+        expansionBoundaryEdge(1, 12, 'bit-three', [3]),
+        expansionBoundaryEdge(1, 13, 'bit-two', [2]),
+      ],
+    },
+    { id: 100, members: [10, 11, 12, 13] },
+  )
+  const compactBits = new Map(
+    compact.catalog.fragments.map((fragment, id) => [
+      id,
+      fragment.netBits?.join(','),
+    ]),
+  )
+  const assignments = expanded.request.expansion.boundary_trunks.map(
+    (trunk) => ({
+      expanded: expanded.catalog.fragments[trunk.expanded_edge].netBits,
+      compact: compactBits.get(trunk.compact_edge),
+    }),
+  ).sort((left, right) =>
+    (left.expanded?.[0] ?? -1) - (right.expanded?.[0] ?? -1)
+  )
+
+  expect(assignments).toEqual([
+    { expanded: [1], compact: '1,2' },
+    { expanded: [2], compact: '1,2' },
+    { expanded: [3], compact: '3,4' },
+    { expanded: [4], compact: '3,4' },
+  ])
+})
+
+it('keeps boundary bit containment assignments stable across edge permutations', () => {
+  const run = (
+    compactEdges: LayoutInput['edges'],
+    expandedEdges: LayoutInput['edges'],
+  ) => {
+    const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+      nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+      edges: compactEdges,
+    }))
+    const expanded = buildSchemWeaveExpansionRequest(
+      compact,
+      {
+        nodes: [
+          expansionBoundaryNode(1),
+          ...[10, 11, 12, 13].map(expansionBoundaryNode),
+        ],
+        edges: expandedEdges,
+      },
+      { id: 100, members: [10, 11, 12, 13] },
+    )
+    return expanded.request.expansion.boundary_trunks
+      .map((trunk) => {
+        const expandedBits =
+          expanded.catalog.fragments[trunk.expanded_edge].netBits ?? []
+        const compactBits =
+          compact.catalog.fragments[trunk.compact_edge].netBits ?? []
+        return `${expandedBits.join(',')}=>${compactBits.join(',')}`
+      })
+      .sort()
+  }
+  const compactEdges = [
+    expansionBoundaryEdge(1, 100, 'low', [1, 2], 'D0'),
+    expansionBoundaryEdge(1, 100, 'high', [3, 4], 'D1'),
+  ]
+  const expandedEdges = [
+    expansionBoundaryEdge(1, 10, 'bit-one', [1]),
+    expansionBoundaryEdge(1, 11, 'bit-two', [2]),
+    expansionBoundaryEdge(1, 12, 'bit-three', [3]),
+    expansionBoundaryEdge(1, 13, 'bit-four', [4]),
+  ]
+
+  expect(run(compactEdges, expandedEdges)).toEqual(
+    run([...compactEdges].reverse(), [...expandedEdges].reverse()),
+  )
+})
+
+it('matches max-cap shared-bit fanout without quadratic candidate scans', () => {
+  const memberCount = 1_000
+  const members = Array.from(
+    { length: memberCount },
+    (_, index) => 10 + index,
+  )
+  const compactEdges = Array.from({ length: MAX_GRAPH_EDGES }, (_, index) =>
+    expansionBoundaryEdge(
+      1,
+      100,
+      `compact-${index}`,
+      [0, index + 1],
+      `D${index}`,
+    )
+  )
+  const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+    nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+    edges: compactEdges,
+  }))
+  const expanded = buildSchemWeaveExpansionRequest(
+    compact,
+    {
+      nodes: [expansionBoundaryNode(1), ...members.map(expansionBoundaryNode)],
+      edges: Array.from({ length: MAX_GRAPH_EDGES }, (_, index) =>
+        expansionBoundaryEdge(
+          1,
+          members[index % memberCount],
+          `expanded-${index}`,
+          [0, index + 1],
+          `D${Math.floor(index / memberCount)}`,
+        )
+      ),
+    },
+    { id: 100, members },
+  )
+
+  expect(expanded.request.expansion.boundary_trunks).toHaveLength(
+    MAX_GRAPH_EDGES,
+  )
+}, 5_000)
 
 it('reconstructs inverse collapse after another group remains expanded', () => {
   const makeNode = (
@@ -2869,6 +3128,64 @@ describe('schematic layout sizing', () => {
 
     await expect(pending).resolves.toBeNull()
     expect(worker.requests).toHaveLength(1)
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('full-layouts the expanded projection after incremental work exhaustion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 42,
+    }
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const pending = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const worker = FakeWorker.instances[0]
+    const incrementalRequest = worker.requests[0]
+    worker.onmessage?.({
+      data: {
+        id: incrementalRequest.id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'work_limit',
+        },
+      },
+    } as MessageEvent)
+
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(2))
+    const fullRequest = worker.requests[1]
+    expect(fullRequest).toMatchObject({
+      kind: 'layout',
+      input: {
+        groups: [group],
+      },
+    })
+    worker.onmessage?.(schemWeaveWorkerResponse(fullRequest, geometry))
+
+    await expect(pending).resolves.toMatchObject({
+      nodes: [{ id: 1 }],
+      width: 76,
+      height: 66,
+    })
+    expect(worker.requests.map((request) => request.kind)).toEqual([
+      'expand',
+      'layout',
+    ])
     worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
