@@ -1,9 +1,9 @@
 use std::collections::HashSet;
+use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions,
 };
 use synth_explorer_analysis::delay_model::DelayProfile;
-use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
 use synth_explorer_analysis::grouping::{

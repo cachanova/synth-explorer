@@ -1942,8 +1942,8 @@ mod tests {
     use crate::delay_model::DelayProfile;
     use crate::design::AnalysisDesign;
     use crate::netlist::{parse_str, parse_value, select_top};
-    use rtl_correlate::NetlistDialect;
     use crate::source::types::SourceSelectionRange;
+    use rtl_correlate::NetlistDialect;
     use serde_json::json;
 
     fn statement_start_column(source: &str, line: usize, token: &str) -> usize {

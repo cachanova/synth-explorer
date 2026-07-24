@@ -78,11 +78,7 @@ pub(crate) fn source_tiers_for_nodes(
 
 /// A register's cut: its Q nets as outputs. The RTL D-cone supplies
 /// statements and conditions, so no mapped-side input walk is needed.
-fn register_cut(
-    graph: &Graph,
-    id: NodeId,
-    response: &mut SourceNodeTiersResponse,
-) -> MappedCut {
+fn register_cut(graph: &Graph, id: NodeId, response: &mut SourceNodeTiersResponse) -> MappedCut {
     let node = &graph.nodes[id as usize];
     // Findings rule: with `abc -dff`, flops are rebuilt under $abc$ names
     // and flop-net boundary matching is unreliable.

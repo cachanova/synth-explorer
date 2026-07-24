@@ -8,12 +8,11 @@
 
 pub mod correlate;
 pub mod dialect;
-pub mod src_attr;
 pub mod netlist;
+pub mod src_attr;
 
 pub use correlate::{
-    Attribution, CorrelateError, CorrelationIndex, CorrelationLimits, MappedCut,
-    normalize_net_name,
+    Attribution, CorrelateError, CorrelationIndex, CorrelationLimits, MappedCut, normalize_net_name,
 };
 pub use dialect::NetlistDialect;
 pub use src_attr::SrcSpan;

@@ -79,15 +79,9 @@ fn lines(spans: &[rtl_correlate::SrcSpan]) -> Vec<usize> {
 #[test]
 fn abc_alias_names_normalize_to_their_embedded_original() {
     assert_eq!(normalize_net_name("$abc$42$sum"), "sum");
-    assert_eq!(
-        normalize_net_name("$abc$42$\\sum"),
-        "sum"
-    );
+    assert_eq!(normalize_net_name("$abc$42$\\sum"), "sum");
     // Not an abc alias: digits segment malformed.
-    assert_eq!(
-        normalize_net_name("$abc$x$sum"),
-        "$abc$x$sum"
-    );
+    assert_eq!(normalize_net_name("$abc$x$sum"), "$abc$x$sum");
     assert_eq!(normalize_net_name("\\sum"), "sum");
 }
 

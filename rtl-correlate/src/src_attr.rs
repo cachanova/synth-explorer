@@ -33,9 +33,7 @@ impl From<ParsedSourceSpan> for SrcSpan {
 
 /// Parse every valid location in a `src` attribute pool.
 pub fn parse_src_pool(src: &str) -> impl Iterator<Item = SrcSpan> + '_ {
-    src.split('|')
-        .filter_map(parse_src_span)
-        .map(SrcSpan::from)
+    src.split('|').filter_map(parse_src_span).map(SrcSpan::from)
 }
 
 /// Call `insert` for every `(file, line)` a `src` attribute pool covers,

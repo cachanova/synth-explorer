@@ -5,13 +5,13 @@ use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
-use rtl_correlate::NetlistDialect;
 use crate::source::node_attribution::source_tiers_for_nodes;
 use crate::source::{
     SourceNodeTiersResponse, SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance,
 };
-use rtl_correlate::correlate::CorrelationIndex;
 use deepsize::DeepSizeOf;
+use rtl_correlate::NetlistDialect;
+use rtl_correlate::correlate::CorrelationIndex;
 use std::collections::HashMap;
 use thiserror::Error;
 
