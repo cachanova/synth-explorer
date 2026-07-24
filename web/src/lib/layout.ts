@@ -1564,6 +1564,7 @@ export function buildSchemWeaveExpansionRequest(
   group: ExpandedGroupLayout,
 ): {
   request: SchemWeaveExpansionRequest
+  expandedRequest: SchemWeaveLayoutRequest
   catalog: SchemWeaveGraphCatalog
 } {
   const expanded = buildSchemWeaveLayoutRequest(expandedInput)
@@ -1806,6 +1807,11 @@ export function buildSchemWeaveExpansionRequest(
 
   return {
     catalog,
+    expandedRequest: {
+      ...expanded.request,
+      graph: catalog.graph,
+      constraints,
+    },
     request: {
       compact_graph: compactGraph,
       compact_layout: compact.layout,
@@ -2779,7 +2785,8 @@ const expansionPending = new Map<
   number,
   {
     catalog: SchemWeaveGraphCatalog
-    group: ExpandedGroupLayout
+    request: SchemWeaveLayoutRequest
+    groups: ExpandedGroupLayout[]
     resolve: (geometry: LayoutGeometry | null) => void
     reject: (error: Error) => void
   }
@@ -2860,23 +2867,26 @@ function getWorker(engine: LayoutEngine): Worker {
         const geometry = interpretSchemWeaveResult(
           result.layout,
           expansionEntry.catalog,
+          expansionEntry.request,
         )
-        const memberIds = new Set(expansionEntry.group.members)
-        const members = geometry.nodes.filter((node) => memberIds.has(node.id))
-        if (members.length !== memberIds.size) {
-          throw new Error('SchemWeave expansion omitted a grouped member')
-        }
-        const left = Math.min(...members.map((node) => node.x))
-        const top = Math.min(...members.map((node) => node.y))
-        const right = Math.max(...members.map((node) => node.x + node.width))
-        const bottom = Math.max(...members.map((node) => node.y + node.height))
-        geometry.groups = [{
-          id: expansionEntry.group.id,
-          x: left - 16,
-          y: top - 30,
-          width: right - left + 32,
-          height: bottom - top + 46,
-        }]
+        geometry.groups = expansionEntry.groups.map((group) => {
+          const memberIds = new Set(group.members)
+          const members = geometry.nodes.filter((node) => memberIds.has(node.id))
+          if (members.length !== memberIds.size) {
+            throw new Error('SchemWeave expansion omitted a grouped member')
+          }
+          const left = Math.min(...members.map((node) => node.x))
+          const top = Math.min(...members.map((node) => node.y))
+          const right = Math.max(...members.map((node) => node.x + node.width))
+          const bottom = Math.max(...members.map((node) => node.y + node.height))
+          return {
+            id: group.id,
+            x: left - 16,
+            y: top - 30,
+            width: right - left + 32,
+            height: bottom - top + 46,
+          }
+        }).sort((first, second) => first.id - second.id)
         expansionEntry.resolve(geometry)
       } catch (error) {
         expansionEntry.reject(
@@ -3031,6 +3041,7 @@ export async function layoutExpandedGroupWithSchemWeave(
   base: LaidOutGraph,
   group: ExpandedGroupLayout,
   signal?: AbortSignal,
+  activeGroups: ExpandedGroupLayout[] = [group],
 ): Promise<LaidOutGraph | null> {
   if (signal?.aborted) throw abortError()
   const snapshot = base.schemWeaveSnapshot
@@ -3063,7 +3074,8 @@ export async function layoutExpandedGroupWithSchemWeave(
     }
     expansionPending.set(id, {
       catalog: prepared.catalog,
-      group,
+      request: prepared.expandedRequest,
+      groups: activeGroups,
       resolve: (value) => {
         cleanup()
         resolve(value)
