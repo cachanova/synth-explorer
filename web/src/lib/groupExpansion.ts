@@ -221,6 +221,7 @@ export function applyGroupExpansions(
   if (expansions.length === 0) return { graph: base, groups: [] }
 
   const baseIds = new Set(base.nodes.map((node) => node.id))
+  const baseNodeById = new Map(base.nodes.map((node) => [node.id, node]))
   const applicable = expansions
     .filter((entry) => baseIds.has(entry.id))
     .sort((left, right) => left.id - right.id)
@@ -241,7 +242,7 @@ export function applyGroupExpansions(
         !memberIds.has(node.id) &&
         !expandedIds.has(node.id) &&
         baseIds.has(node.id)
-      ),
+      ).map((node) => baseNodeById.get(node.id)!),
     ),
     ...base.nodes.filter((node) => !expandedIds.has(node.id)),
   ]

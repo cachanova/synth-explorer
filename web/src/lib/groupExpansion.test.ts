@@ -166,6 +166,35 @@ describe('applyGroupExpansions', () => {
     expect(result.groups).toEqual([{ id: 100, label: 'q[1:0]', members: [1, 2] }])
   })
 
+  it('preserves base metadata for retained nodes', () => {
+    const baseBoundary = {
+      ...node(9),
+      boundary_members: [
+        { member: 10, bit: 0 },
+        { member: 11, bit: 1 },
+      ],
+    }
+    const narrowedBoundary = {
+      ...node(9),
+      boundary_members: [{ member: 11, bit: 1 }],
+    }
+    const member = { ...node(1), source: { file: 'expanded.v', line: 7 } }
+    const result = applyGroupExpansions(
+      graph([node(100, [1]), baseBoundary]),
+      [{
+        id: 100,
+        label: 'q[0]',
+        requestKey: '100',
+        members: [1],
+        graph: graph([member, narrowedBoundary]),
+        boundary_trunks: [],
+      }],
+      10,
+    )
+
+    expect(result.graph.nodes).toEqual([member, baseBoundary])
+  })
+
   it('does not leak an expansion into a projection without its synthetic group', () => {
     const focused = graph([node(9)])
     const result = applyGroupExpansions(focused, [{
