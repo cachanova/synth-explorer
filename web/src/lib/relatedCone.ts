@@ -32,10 +32,14 @@ export function relatedCone(
   edges: readonly RelatedConeEdge[],
   selection: RelatedConeSelection,
 ): RelatedCone {
+  const renderedIds = new Set(nodes.map((node) => node.id))
   const renderedIdByAlias = new Map<number, number>()
   for (const node of nodes) {
     renderedIdByAlias.set(node.id, node.id)
+  }
+  for (const node of nodes) {
     for (const member of node.members ?? []) {
+      if (renderedIds.has(member)) continue
       renderedIdByAlias.set(member, node.id)
     }
   }
@@ -59,9 +63,15 @@ export function relatedCone(
 
   const nodeIds = new Set<number>()
   const edgeKeys = new Set<number>()
+  const incomingSeeds = new Set<number>()
+  const outgoingSeeds = new Set<number>()
   if (selection.kind === 'node') {
     const nodeId = renderedIdByAlias.get(selection.nodeId)
-    if (nodeId != null) nodeIds.add(nodeId)
+    if (nodeId != null) {
+      nodeIds.add(nodeId)
+      incomingSeeds.add(nodeId)
+      outgoingSeeds.add(nodeId)
+    }
   } else {
     const selectedKeys = new Set(selection.edgeKeys)
     for (const key of selectedKeys) {
@@ -70,22 +80,22 @@ export function relatedCone(
       edgeKeys.add(key)
       nodeIds.add(edge.from)
       nodeIds.add(edge.to)
+      incomingSeeds.add(edge.from)
+      outgoingSeeds.add(edge.to)
     }
   }
 
-  const seeds = [...nodeIds]
   const traverse = (
+    seeds: ReadonlySet<number>,
     adjacency: ReadonlyMap<number, readonly IndexedEdge[]>,
     adjacentNode: (edge: IndexedEdge) => number,
   ) => {
     const visited = new Set(seeds)
     const queue = [...seeds]
     let cursor = 0
-    let iterations = 0
-    while (cursor < queue.length && iterations < nodes.length) {
+    while (cursor < queue.length) {
       const current = queue[cursor]
       cursor += 1
-      iterations += 1
       for (const edge of adjacency.get(current) ?? []) {
         edgeKeys.add(edge.key)
         const next = adjacentNode(edge)
@@ -97,7 +107,7 @@ export function relatedCone(
     }
   }
 
-  traverse(incoming, (edge) => edge.from)
-  traverse(outgoing, (edge) => edge.to)
+  traverse(incomingSeeds, incoming, (edge) => edge.from)
+  traverse(outgoingSeeds, outgoing, (edge) => edge.to)
   return { nodeIds, edgeKeys }
 }

@@ -34,6 +34,8 @@ import { BubbleLoader } from '../BubbleLoader'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
+const EMPTY_SELECTED_NET_NAMES: string[] = []
+
 interface FullSubgraph {
   designId: string
   key: string
@@ -859,12 +861,12 @@ export function Graph({ active }: { active: boolean }) {
     [graphInteractive, selectGraphNode],
   )
   const onEdgeSelect = useCallback(
-    (names: string[]) => {
-      if (names.length === 0) return
+    (selection: { names: string[]; bits: number[] }) => {
+      if (selection.bits.length === 0) return
       setError(null)
       setSelected(null)
-      setSelectedNetNames(names)
-      selectSchematicNets(names)
+      setSelectedNetNames(selection.names)
+      selectSchematicNets(selection)
     },
     [selectSchematicNets],
   )
@@ -872,7 +874,7 @@ export function Graph({ active }: { active: boolean }) {
     (control: NonNullable<GraphNode['controls']>[number]) => {
       if (!graphInteractive) return
       setSelectedNetNames([])
-      selectSchematicNets([])
+      selectSchematicNets({ names: [], bits: [] })
       openControlCone({
         nodes: controlDriverIds(control),
         label: controlLabel(control),
@@ -915,7 +917,9 @@ export function Graph({ active }: { active: boolean }) {
             highlightedBits={highlightedBits}
             extendOverlayToBoundaryNets={coneReq?.kind === 'source'}
             selectedId={graphInteractive ? (selected?.id ?? null) : null}
-            selectedNetNames={graphInteractive ? selectedNetNames : []}
+            selectedNetNames={
+              graphInteractive ? selectedNetNames : EMPTY_SELECTED_NET_NAMES
+            }
             interactive={graphInteractive}
             onSelect={onGraphSelect}
             onEdgeSelect={onEdgeSelect}

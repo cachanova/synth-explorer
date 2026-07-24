@@ -1,12 +1,13 @@
 import {
   fetchSourceTiers,
   fetchSourceTiersForNets,
+  type SourceNetSelection,
   type SourceTiersResponse,
 } from './sourceTiers'
 
 export type SourceTierSelectionTarget =
   | { kind: 'nodes'; nodeIds: number[] }
-  | { kind: 'nets'; names: string[] }
+  | ({ kind: 'nets' } & SourceNetSelection)
 
 export interface SourceTierSelection {
   target: SourceTierSelectionTarget
@@ -22,7 +23,7 @@ function fetchSelectionSourceTiers(
 ): Promise<SourceTiersResponse> {
   return target.kind === 'nodes'
     ? fetchSourceTiers(target.nodeIds)
-    : fetchSourceTiersForNets(target.names)
+    : fetchSourceTiersForNets({ names: target.names, bits: target.bits })
 }
 
 /**
@@ -38,12 +39,16 @@ export function createSourceTierSelectionController(
   return (target) => {
     const requestSequence = ++sequence
     commit(null)
-    const values = target.kind === 'nodes' ? target.nodeIds : target.names
+    const values = target.kind === 'nodes' ? target.nodeIds : target.bits
     if (values.length === 0) return
 
     const requestedTarget = target.kind === 'nodes'
       ? { kind: 'nodes' as const, nodeIds: [...target.nodeIds] }
-      : { kind: 'nets' as const, names: [...target.names] }
+      : {
+          kind: 'nets' as const,
+          names: [...target.names],
+          bits: [...target.bits],
+        }
     void fetch(requestedTarget)
       .then((response) => {
         if (requestSequence !== sequence) return

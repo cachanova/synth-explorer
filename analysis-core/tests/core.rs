@@ -1720,10 +1720,21 @@ fn schematic_selection_attributes_tiered_source_spans() {
     assert_eq!(lines(&tiers.contributing), vec![2]);
     assert!(!tiers.approximate);
 
-    let net_tiers = design.source_tiers_for_nets(&["gated".to_owned()]);
+    let named_only = design.source_tiers_for_nets(&["gated".to_owned()], &[]);
+    let net_tiers = design.source_tiers_for_nets(&["gated".to_owned()], &[10]);
     assert_eq!(lines(&net_tiers.exact), vec![3, 3]);
     assert_eq!(lines(&net_tiers.contributing), vec![2]);
     assert!(!net_tiers.approximate);
+    assert_eq!(net_tiers.exact, named_only.exact);
+    assert_eq!(net_tiers.contributing, named_only.contributing);
+    assert_eq!(net_tiers.approximate, named_only.approximate);
+    assert_eq!(net_tiers.truncated, named_only.truncated);
+
+    let duplicate_names = vec!["gated".to_owned(); 300];
+    let duplicate_tiers = design.source_tiers_for_nets(&duplicate_names, &[10]);
+    assert_eq!(duplicate_tiers.exact, net_tiers.exact);
+    assert_eq!(duplicate_tiers.contributing, net_tiers.contributing);
+    assert!(!duplicate_tiers.truncated);
 
     let dff = design
         .graph

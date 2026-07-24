@@ -354,7 +354,11 @@ impl CorrelationIndex {
             budget -= 1;
             let entry = &self.cells[cell as usize];
             exact.extend(&entry.spans);
-            upstream.extend(entry.input_bits.iter().copied());
+            if entry.seq {
+                upstream.extend(entry.data_bits.iter().copied());
+            } else {
+                upstream.extend(entry.input_bits.iter().copied());
+            }
         }
 
         let mut contributing = SpanCollector::new(limits.span_cap);

@@ -13,7 +13,6 @@ export const analysissession_paths_json: (a: number, b: number, c: number) => [n
 export const analysissession_source_for_nets_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_source_for_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_source_map_json: (a: number) => [number, number, number, number];
-export const analysissession_source_ranges_for_bits_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_source_selection_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_summary_json: (a: number) => [number, number, number, number];
 export const analysissession_timing_json: (a: number, b: number, c: number) => [number, number, number, number];

@@ -9,7 +9,7 @@
 use crate::graph::{Graph, NodeId, NodeKind};
 use crate::netlist::PortDirection;
 use crate::source::coordinates::source_columns_are_authoritative;
-use crate::source::types::{SourceNodeTiersResponse, SourceTierSpan};
+use crate::source::types::{SourceBitRangesResponse, SourceNodeTiersResponse, SourceTierSpan};
 use rtl_correlate::correlate::{CorrelationIndex, CorrelationLimits, MappedCut};
 use rtl_correlate::src_attr::SrcSpan;
 use std::collections::{BTreeSet, HashSet, VecDeque};
@@ -91,17 +91,22 @@ pub(crate) fn source_tiers_for_nodes(
 pub(crate) fn source_tiers_for_nets(
     index: &CorrelationIndex,
     names: &[String],
+    bit_ranges: Option<SourceBitRangesResponse>,
 ) -> SourceNodeTiersResponse {
+    let mut unique_names = BTreeSet::new();
+    for name in names {
+        unique_names.insert(name.clone());
+        if unique_names.len() > SELECTION_CAP {
+            break;
+        }
+    }
     let mut response = SourceNodeTiersResponse {
-        truncated: names.len() > SELECTION_CAP,
+        truncated: unique_names.len() > SELECTION_CAP,
         ..SourceNodeTiersResponse::default()
     };
-    let names = names
-        .iter()
-        .take(SELECTION_CAP)
-        .cloned()
-        .collect::<BTreeSet<_>>()
+    let names = unique_names
         .into_iter()
+        .take(SELECTION_CAP)
         .collect::<Vec<_>>();
 
     let cut = MappedCut {
@@ -114,12 +119,35 @@ pub(crate) fn source_tiers_for_nets(
     };
     let mut exact = BTreeSet::new();
     let mut contributing = BTreeSet::new();
-    merge(
-        index.attribute_net(&cut, &CorrelationLimits::default()),
-        &mut exact,
-        &mut contributing,
-        &mut response,
-    );
+    let limits = CorrelationLimits::default();
+    let attribution = index.attribute_net(&cut, &limits);
+    let names_yielded_spans = !attribution.exact.is_empty()
+        || !attribution.conditions.is_empty()
+        || !attribution.contributing.is_empty();
+    merge(attribution, &mut exact, &mut contributing, &mut response);
+    if let Some(bit_ranges) = bit_ranges {
+        let bits_yielded_spans = !bit_ranges.ranges.is_empty();
+        if !names_yielded_spans && bits_yielded_spans {
+            // Exact bit provenance replaces the name resolver's "missing"
+            // approximation for anonymous mapped nets. Approximation now
+            // reflects the canonical bit path itself.
+            response.approximate = bit_ranges.approximate;
+        } else {
+            response.approximate |= bit_ranges.approximate;
+        }
+        response.truncated |= bit_ranges.truncated;
+        exact.extend(bit_ranges.ranges.into_iter().map(|range| SrcSpan {
+            file: range.file,
+            start_line: range.start_line,
+            start_column: range.start_column,
+            end_line: range.end_line,
+            end_column: range.end_column,
+        }));
+    }
+    if exact.len() > limits.span_cap {
+        exact = exact.into_iter().take(limits.span_cap).collect();
+        response.truncated = true;
+    }
 
     let contributing = contributing.difference(&exact).cloned().collect();
     response.exact = render_spans(exact);
@@ -352,4 +380,63 @@ fn render_spans(spans: BTreeSet<SrcSpan>) -> Vec<SourceTierSpan> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::netlist::parse_str;
+    use crate::source::SourceRangeMapping;
+    use rtl_correlate::NetlistDialect;
+
+    #[test]
+    fn anonymous_net_selection_uses_exact_bit_provenance() {
+        let netlist = parse_str(
+            r#"{
+              "modules": {
+                "top": {
+                  "attributes": {"top": "1"},
+                  "ports": {},
+                  "cells": {},
+                  "netnames": {}
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let index = CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).unwrap();
+        let response = source_tiers_for_nets(
+            &index,
+            &["$abc$8$anonymous".to_owned()],
+            Some(SourceBitRangesResponse {
+                ranges: vec![SourceRangeMapping {
+                    file: "top.sv".to_owned(),
+                    start_line: 7,
+                    end_line: 7,
+                    start_column: Some(12),
+                    end_column: Some(19),
+                    node_ids: Vec::new(),
+                    signal_bits: Vec::new(),
+                    approximate_signal_bits: Vec::new(),
+                    mapping_incomplete: false,
+                }],
+                truncated: false,
+                approximate: false,
+            }),
+        );
+
+        assert_eq!(
+            response.exact,
+            vec![SourceTierSpan {
+                file: "top.sv".to_owned(),
+                start_line: 7,
+                end_line: 7,
+                start_column: Some(12),
+                end_column: Some(19),
+            }],
+        );
+        assert!(response.contributing.is_empty());
+        assert!(!response.approximate);
+        assert!(!response.truncated);
+    }
 }

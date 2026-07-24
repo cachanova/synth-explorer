@@ -25,7 +25,6 @@ import {
   viewportTransformAttribute,
   zoomViewportAt,
   type LaidOutGraph,
-  type LaidOutEdge,
   type LaidOutNode,
   type Point,
   type ViewportTransform,
@@ -55,6 +54,7 @@ import {
   edgeHitCellKeys,
 } from '../lib/edgeHitGrid'
 import { relatedCone, type RelatedCone } from '../lib/relatedCone'
+import type { SourceNetSelection } from '../lib/sourceTiers'
 
 interface RegisterControlPin {
   pin: string
@@ -75,8 +75,8 @@ interface Props {
   selectedNetNames?: string[]
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
-  /** Cross-probes the best client-visible names carried by a clicked edge. */
-  onEdgeSelect?: (names: string[]) => void
+  /** Cross-probes the names and exact final-net bits carried by a clicked edge. */
+  onEdgeSelect?: (selection: SourceNetSelection) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlRef, node: GraphNode) => void
   /** Double-click a node to additively render its fanin/fanout connections. */
@@ -1557,7 +1557,12 @@ interface PreparedSelectedSchematicEdges {
   arrows: SelectedSchematicArrowBatch[]
 }
 
-interface PreparedSchematicEdge {
+interface SchematicEdgeStyleKeys {
+  batch: string
+  arrow: string
+}
+
+interface SchematicEdgeGeometry {
   index: number
   from: number
   to: number
@@ -1565,13 +1570,22 @@ interface PreparedSchematicEdge {
   title: string
   bits: number
   netName: string
+  netBits: number[]
   isBus: boolean
-  relevant: boolean
   control: boolean
-  highlighted: boolean
-  dimmed: boolean
-  batchKey: string
+  fromKind: GraphNode['kind'] | undefined
+  toKind: GraphNode['kind'] | undefined
+  lineD: string
+  arrowDs: readonly [string, string]
+  selectedArrowD: string
+  styleKeys: readonly SchematicEdgeStyleKeys[]
   mid: Point | null
+}
+
+interface PreparedSchematicEdge extends SchematicEdgeGeometry {
+  relevant: boolean
+  highlighted: boolean
+  arrowD: string
 }
 
 interface SchematicEdgeBatch {
@@ -1601,6 +1615,11 @@ interface PreparedSchematicEdges {
   batches: SchematicEdgeBatch[]
   arrows: SchematicArrowBatch[]
   incidentByNode: Map<number, PreparedSchematicEdge[]>
+  dimmedEdgeKeys: Set<number>
+}
+
+interface SchematicEdgeGeometryFacts {
+  edges: SchematicEdgeGeometry[]
 }
 
 const EMPTY_PREPARED_SCHEMATIC_EDGES: PreparedSchematicEdge[] = []
@@ -1688,58 +1707,13 @@ function edgeArrowD(points: Point[], strokeWidth: number): string {
   ].join(' ')
 }
 
-function prepareSchematicEdges({
-  edges,
-  nodeById,
-  relevantIds,
-  overlayIds,
-  highlightedBits,
-  extendOverlayToBoundaryNets,
-  relatedEdgeKeys,
-  selectionActive,
-}: {
-  edges: LaidOutEdge[]
-  nodeById: Map<number, LaidOutNode>
-  relevantIds: Set<number>
-  overlayIds: Set<number>
-  highlightedBits: Set<number>
-  extendOverlayToBoundaryNets: boolean
-  relatedEdgeKeys: Set<number>
-  selectionActive: boolean
-}): PreparedSchematicEdges {
-  const prepared: PreparedSchematicEdge[] = []
-  const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
-  const arrowBuilders = new Map<string, SchematicArrowBatch & { paths: string[] }>()
-  const incidentByNode = new Map<number, PreparedSchematicEdge[]>()
+function prepareSchematicEdgeGeometry(
+  graph: LaidOutGraph,
+): SchematicEdgeGeometryFacts {
+  const prepared: SchematicEdgeGeometry[] = []
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]))
 
-  edges.forEach((laidOutEdge, index) => {
-    const relevant =
-      relevantIds.size === 0 ||
-      (relevantIds.has(laidOutEdge.from) && relevantIds.has(laidOutEdge.to))
-    const fromHighlighted = overlayIds.has(laidOutEdge.from)
-    const toHighlighted = overlayIds.has(laidOutEdge.to)
-    const fromKind =
-      extendOverlayToBoundaryNets && toHighlighted
-        ? nodeById.get(laidOutEdge.from)?.node.kind
-        : undefined
-    const toKind =
-      extendOverlayToBoundaryNets && fromHighlighted
-        ? nodeById.get(laidOutEdge.to)?.node.kind
-        : undefined
-    // Source overlays name logic cells, not their port/constant boundary
-    // nodes. Keep those terminal nets continuous without lighting up branches
-    // from the selected logic into unrelated context cells.
-    const exactBitHighlighted = laidOutEdge.edge.bits.some((bit) =>
-      highlightedBits.has(bit),
-    )
-    const highlighted =
-      exactBitHighlighted ||
-      (highlightedBits.size === 0 &&
-        ((fromHighlighted && toHighlighted) ||
-          (extendOverlayToBoundaryNets &&
-            relevant &&
-            ((fromHighlighted && toKind != null && toKind !== 'cell') ||
-              (toHighlighted && fromKind != null && fromKind !== 'cell')))))
+  graph.edges.forEach((laidOutEdge, index) => {
     let points = laidOutEdge.points
     if (points.length < 2) {
       const from = nodeById.get(laidOutEdge.from)
@@ -1754,11 +1728,21 @@ function prepareSchematicEdges({
     const bits = laidOutEdge.edge.bits.length
     const isBus = bits > 1
     const control = Boolean(laidOutEdge.edge.control)
-    const dimmed = selectionActive && !relatedEdgeKeys.has(index)
-    const batchKey = edgeBatchKey(relevant, control, isBus, highlighted, dimmed)
     const mid = points.length > 0 ? points[Math.floor(points.length / 2)] : null
     const title = `${shortNetName(laidOutEdge.edge.net_name)} (${bits} bit${isBus ? 's' : ''}): ${laidOutEdge.edge.from_port}→${laidOutEdge.edge.to_port}`
-    const edge: PreparedSchematicEdge = {
+    const lineD = pathD(points)
+    const selectedArrowD = edgeArrowD(points, isBus ? 2.4 : 2.2)
+    const styleKeys = Array.from({ length: 8 }, (_, variant) => {
+      const relevant = (variant & 4) !== 0
+      const highlighted = (variant & 2) !== 0
+      const dimmed = (variant & 1) !== 0
+      return {
+        batch: edgeBatchKey(relevant, control, isBus, highlighted, dimmed),
+        arrow:
+          `${relevant ? 1 : 0}${control ? 1 : 0}${highlighted ? 1 : 0}${dimmed ? 1 : 0}`,
+      }
+    })
+    prepared.push({
       index,
       from: laidOutEdge.from,
       to: laidOutEdge.to,
@@ -1766,64 +1750,122 @@ function prepareSchematicEdges({
       title,
       bits,
       netName: laidOutEdge.edge.net_name,
+      netBits: laidOutEdge.edge.bits,
       isBus,
-      relevant,
       control,
-      highlighted,
-      dimmed,
-      batchKey,
+      fromKind: nodeById.get(laidOutEdge.from)?.node.kind,
+      toKind: nodeById.get(laidOutEdge.to)?.node.kind,
+      lineD,
+      arrowDs: [
+        edgeArrowD(points, edgeStrokeWidth({ isBus, highlighted: false })),
+        edgeArrowD(points, edgeStrokeWidth({ isBus, highlighted: true })),
+      ],
+      selectedArrowD,
+      styleKeys,
       mid,
+    })
+  })
+
+  return { edges: prepared }
+}
+
+function bucketSchematicEdges(
+  facts: SchematicEdgeGeometryFacts,
+  relevantIds: Set<number>,
+  overlayIds: Set<number>,
+  highlightedBits: Set<number>,
+  extendOverlayToBoundaryNets: boolean,
+  relatedEdgeKeys: Set<number>,
+  selectionActive: boolean,
+): PreparedSchematicEdges {
+  const edges: PreparedSchematicEdge[] = []
+  const batchBuilders = new Map<string, SchematicEdgeBatch & { paths: string[] }>()
+  const arrowBuilders = new Map<string, SchematicArrowBatch & { paths: string[] }>()
+  const incidentByNode = new Map<number, PreparedSchematicEdge[]>()
+  const dimmedEdgeKeys = new Set<number>()
+
+  for (const geometry of facts.edges) {
+    const relevant =
+      relevantIds.size === 0 ||
+      (relevantIds.has(geometry.from) && relevantIds.has(geometry.to))
+    const fromHighlighted = overlayIds.has(geometry.from)
+    const toHighlighted = overlayIds.has(geometry.to)
+    // Source overlays name logic cells, not their port/constant boundary
+    // nodes. Keep those terminal nets continuous without lighting up branches
+    // from the selected logic into unrelated context cells.
+    const exactBitHighlighted = geometry.netBits.some((bit) =>
+      highlightedBits.has(bit),
+    )
+    const highlighted =
+      exactBitHighlighted ||
+      (highlightedBits.size === 0 &&
+        ((fromHighlighted && toHighlighted) ||
+          (extendOverlayToBoundaryNets &&
+            relevant &&
+            ((fromHighlighted &&
+              geometry.toKind != null &&
+              geometry.toKind !== 'cell') ||
+              (toHighlighted &&
+                geometry.fromKind != null &&
+                geometry.fromKind !== 'cell')))))
+    const dimmed = selectionActive && !relatedEdgeKeys.has(geometry.index)
+    if (dimmed) dimmedEdgeKeys.add(geometry.index)
+    const styleVariant =
+      (relevant ? 4 : 0) | (highlighted ? 2 : 0) | (dimmed ? 1 : 0)
+    const styleKeys = geometry.styleKeys[styleVariant]
+    const edge: PreparedSchematicEdge = {
+      ...geometry,
+      relevant,
+      highlighted,
+      arrowD: geometry.arrowDs[highlighted ? 1 : 0],
     }
-    prepared.push(edge)
-    for (const nodeId of laidOutEdge.from === laidOutEdge.to
-      ? [laidOutEdge.from]
-      : [laidOutEdge.from, laidOutEdge.to]) {
+    edges.push(edge)
+    for (const nodeId of edge.from === edge.to
+      ? [edge.from]
+      : [edge.from, edge.to]) {
       const incident = incidentByNode.get(nodeId)
       if (incident) incident.push(edge)
       else incidentByNode.set(nodeId, [edge])
     }
 
-    let batch = batchBuilders.get(batchKey)
+    let batch = batchBuilders.get(styleKeys.batch)
     if (!batch) {
       batch = {
-        key: batchKey,
+        key: styleKeys.batch,
         d: '',
         count: 0,
-        firstTitle: title,
-        relevant,
-        control,
-        isBus,
-        highlighted,
+        firstTitle: edge.title,
+        relevant: edge.relevant,
+        control: edge.control,
+        isBus: edge.isBus,
+        highlighted: edge.highlighted,
         dimmed,
         paths: [],
       }
-      batchBuilders.set(batchKey, batch)
+      batchBuilders.set(styleKeys.batch, batch)
     }
     batch.count += 1
-    const line = pathD(points)
-    if (line) batch.paths.push(line)
+    if (edge.lineD) batch.paths.push(edge.lineD)
 
-    const arrow = edgeArrowD(points, edgeStrokeWidth(edge))
-    if (arrow) {
-      const arrowKey = `${relevant ? 1 : 0}${control ? 1 : 0}${highlighted ? 1 : 0}${dimmed ? 1 : 0}`
-      let arrowBatch = arrowBuilders.get(arrowKey)
+    if (edge.arrowD) {
+      let arrowBatch = arrowBuilders.get(styleKeys.arrow)
       if (!arrowBatch) {
         arrowBatch = {
-          key: arrowKey,
+          key: styleKeys.arrow,
           d: '',
           count: 0,
-          relevant,
-          control,
-          highlighted,
+          relevant: edge.relevant,
+          control: edge.control,
+          highlighted: edge.highlighted,
           dimmed,
           paths: [],
         }
-        arrowBuilders.set(arrowKey, arrowBatch)
+        arrowBuilders.set(styleKeys.arrow, arrowBatch)
       }
       arrowBatch.count += 1
-      arrowBatch.paths.push(arrow)
+      arrowBatch.paths.push(edge.arrowD)
     }
-  })
+  }
 
   const batches = [...batchBuilders.values()]
     .map(({ paths, ...batch }) => ({ ...batch, d: paths.join(' ') }))
@@ -1831,7 +1873,13 @@ function prepareSchematicEdges({
   const arrows = [...arrowBuilders.values()]
     .map(({ paths, ...batch }) => ({ ...batch, d: paths.join(' ') }))
     .sort((a, b) => edgePaintOrder(a) - edgePaintOrder(b))
-  return { edges: prepared, batches, arrows, incidentByNode }
+  return {
+    edges,
+    batches,
+    arrows,
+    incidentByNode,
+    dimmedEdgeKeys,
+  }
 }
 
 // Selection changes affect node state far more often than edge state. Keep the
@@ -1876,7 +1924,7 @@ const SchematicEdges = memo(function SchematicEdges({ prepared }: SchematicEdges
       {prepared.edges.map((edge) => edge.isBus && edge.mid ? (
         <text
           key={edge.index}
-          className={`g-bus-label${edge.dimmed ? ' g-dimmed' : ''}`}
+          className={`g-bus-label${prepared.dimmedEdgeKeys.has(edge.index) ? ' g-dimmed' : ''}`}
           x={edge.mid.x}
           y={edge.mid.y - 3}
           textAnchor="middle"
@@ -1903,8 +1951,7 @@ function prepareSelectedSchematicEdges(
   >()
 
   for (const edge of edges) {
-    const line = pathD(edge.points)
-    if (line) {
+    if (edge.lineD) {
       const key = edgeBatchKey(edge.relevant, edge.control, edge.isBus, true)
       const batch = batchBuilders.get(key) ?? {
         key,
@@ -1917,12 +1964,11 @@ function prepareSelectedSchematicEdges(
       }
       batch.count += 1
       batch.indexes.push(edge.index)
-      batch.paths.push(line)
+      batch.paths.push(edge.lineD)
       batchBuilders.set(key, batch)
     }
 
-    const arrow = edgeArrowD(edge.points, edge.isBus ? 2.4 : 2.2)
-    if (arrow) {
+    if (edge.selectedArrowD) {
       const key =
         `${edge.relevant ? 1 : 0}${edge.control ? 1 : 0}${edge.isBus ? 1 : 0}`
       const batch = arrowBuilders.get(key) ?? {
@@ -1933,7 +1979,7 @@ function prepareSelectedSchematicEdges(
         paths: [],
       }
       batch.count += 1
-      batch.paths.push(arrow)
+      batch.paths.push(edge.selectedArrowD)
       arrowBuilders.set(key, batch)
     }
   }
@@ -2183,7 +2229,7 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
   viewportRef: RefObject<SVGGElement | null>
   hideRef: MutableRefObject<(() => void) | null>
   suppressClickRef: MutableRefObject<boolean>
-  onSelect?: (names: string[]) => void
+  onSelect?: (selection: SourceNetSelection) => void
 }) {
   const hitIndexRef = useRef<{
     geometryKey: object
@@ -2292,8 +2338,12 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
       if (target?.closest('.g-node-body')) return
       const edge = edgeAt(event.clientX, event.clientY)
       if (!edge) return
+      if (edge.netBits.length === 0) return
       event.stopPropagation()
-      onSelect([edge.netName])
+      onSelect({
+        names: edge.netName ? [edge.netName] : [],
+        bits: edge.netBits,
+      })
     }
 
     svg.addEventListener('pointermove', onPointerMove)
@@ -2460,6 +2510,9 @@ export const GraphView = memo(function GraphView({
     ),
   ), [expandedGroups])
   const selectedRelatedCone = useMemo<RelatedCone | null>(() => {
+    if (selectedId == null && selectedNetNames.length === 0) {
+      return null
+    }
     let cone: RelatedCone
     const nodes = graph.nodes.map((laidOutNode) => ({
       id: laidOutNode.id,
@@ -2480,22 +2533,24 @@ export const GraphView = memo(function GraphView({
   }, [graph.edges, graph.nodes, selectedId, selectedNetNames])
   const selectionActive = selectedRelatedCone != null
   const related = selectedRelatedCone ?? EMPTY_RELATED_CONE
+  const edgeGeometry = useMemo(
+    () => prepareSchematicEdgeGeometry(graph),
+    [graph],
+  )
   const preparedEdges = useMemo(
-    () => prepareSchematicEdges({
-      edges: graph.edges,
-      nodeById: metadata.nodeById,
+    () => bucketSchematicEdges(
+      edgeGeometry,
       relevantIds,
       overlayIds,
       highlightedBits,
       extendOverlayToBoundaryNets,
-      relatedEdgeKeys: related.edgeKeys,
+      related.edgeKeys,
       selectionActive,
-    }),
+    ),
     [
+      edgeGeometry,
       extendOverlayToBoundaryNets,
-      graph.edges,
       highlightedBits,
-      metadata.nodeById,
       overlayIds,
       relevantIds,
       related.edgeKeys,

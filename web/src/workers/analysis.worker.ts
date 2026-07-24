@@ -22,7 +22,6 @@ export type AnalysisMethod =
   | 'expandGroup'
   | 'fanout'
   | 'sourceMap'
-  | 'sourceBits'
   | 'nodes'
   | 'source'
   | 'sourceForNodes'
@@ -91,8 +90,6 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
       return parse(active.fanout_json(typeof payload === 'number' ? payload : undefined))
     case 'sourceMap':
       return parse(active.source_map_json())
-    case 'sourceBits':
-      return parse(active.source_ranges_for_bits_json(JSON.stringify(payload ?? [])))
     case 'nodes':
       return parse(active.nodes_json(JSON.stringify(payload ?? [])))
     case 'source':
@@ -100,7 +97,7 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
     case 'sourceForNodes':
       return parse(active.source_for_nodes_json(JSON.stringify(payload ?? [])))
     case 'sourceForNets':
-      return parse(active.source_for_nets_json(JSON.stringify(payload ?? [])))
+      return parse(active.source_for_nets_json(JSON.stringify(payload ?? {})))
   }
 }
 

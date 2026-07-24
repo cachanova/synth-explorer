@@ -15,13 +15,20 @@ export interface SourceTiersResponse {
   truncated: boolean
 }
 
+export interface SourceNetSelection {
+  names: string[]
+  bits: number[]
+}
+
 /** Backend query lands with the wasm rebuild; the method name is final. */
 export function fetchSourceTiers(nodeIds: number[]): Promise<SourceTiersResponse> {
   return queryAnalysis('sourceForNodes', nodeIds)
 }
 
-export function fetchSourceTiersForNets(names: string[]): Promise<SourceTiersResponse> {
-  return queryAnalysis('sourceForNets', names)
+export function fetchSourceTiersForNets(
+  selection: SourceNetSelection,
+): Promise<SourceTiersResponse> {
+  return queryAnalysis('sourceForNets', selection)
 }
 
 export function sourceTierMessage(

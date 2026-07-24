@@ -31,6 +31,7 @@ import {
   type SourceTierSelection,
 } from './lib/sourceTierSelection'
 import type { SourceTierSpan } from './lib/sourceTiers'
+import type { SourceNetSelection } from './lib/sourceTiers'
 import {
   firstYosysSourceError,
   type SynthesisDiagnostic,
@@ -130,7 +131,6 @@ export interface EditorHighlight {
   nonce: number
   sourceTiers?: {
     nodeIds: number[]
-    netNames?: string[]
     exact: SrcSpan[]
     contributing: SrcSpan[]
     approximate: boolean
@@ -299,7 +299,7 @@ export interface Store {
   editorHighlight: EditorHighlight | null
   highlightSources: (spans: SrcSpan[]) => void
   selectSchematicNodes: (nodeIds: number[]) => void
-  selectSchematicNets: (names: string[]) => void
+  selectSchematicNets: (selection: SourceNetSelection) => void
 
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
@@ -465,8 +465,8 @@ export function StoreProvider({
   const selectSchematicNodes = useCallback((nodeIds: number[]) => {
     sourceTierControllerRef.current!({ kind: 'nodes', nodeIds })
   }, [])
-  const selectSchematicNets = useCallback((names: string[]) => {
-    sourceTierControllerRef.current!({ kind: 'nets', names })
+  const selectSchematicNets = useCallback((selection: SourceNetSelection) => {
+    sourceTierControllerRef.current!({ kind: 'nets', ...selection })
   }, [])
   sourceTierCommitRef.current = (selection) => {
     if (!selection) {
@@ -491,9 +491,6 @@ export function StoreProvider({
         nodeIds: selection.target.kind === 'nodes'
           ? selection.target.nodeIds
           : [],
-        netNames: selection.target.kind === 'nets'
-          ? selection.target.names
-          : undefined,
         exact,
         contributing,
         approximate: selection.response.approximate,

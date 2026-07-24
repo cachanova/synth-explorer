@@ -100,8 +100,9 @@ impl AnalysisDesign {
     }
 
     /// Tiered source attribution for selected schematic nets.
-    pub fn source_tiers_for_nets(&self, names: &[String]) -> SourceNodeTiersResponse {
-        source_tiers_for_nets(&self.correlation, names)
+    pub fn source_tiers_for_nets(&self, names: &[String], bits: &[u32]) -> SourceNodeTiersResponse {
+        let bit_ranges = (!bits.is_empty()).then(|| self.analysis.source_ranges_for_bits(bits));
+        source_tiers_for_nets(&self.correlation, names, bit_ranges)
     }
 
     pub fn stats(&self) -> Stats {

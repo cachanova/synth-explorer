@@ -5,7 +5,6 @@ import type {
   NodesResponse,
   PathsResponse,
   SourceMapResponse,
-  SourceBitRangesResponse,
   Subgraph,
   SynthesizeRequest,
   SynthesizeResponse,
@@ -231,13 +230,6 @@ export function localExpandGroup(
 
 export function localSourceMap(_id: string): Promise<SourceMapResponse> {
   return queryAnalysis('sourceMap')
-}
-
-export function localSourceRangesForBits(
-  _id: string,
-  bits: number[],
-): Promise<SourceBitRangesResponse> {
-  return queryAnalysis('sourceBits', bits)
 }
 
 export function localNodes(_id: string, ids: number[]): Promise<NodesResponse> {

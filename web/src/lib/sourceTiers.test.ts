@@ -17,10 +17,13 @@ describe('source tier queries', () => {
     }
     queryAnalysis.mockResolvedValueOnce(response)
 
-    await expect(fetchSourceTiersForNets(['sum', 'sum_alias'])).resolves.toBe(response)
+    await expect(fetchSourceTiersForNets({
+      names: ['sum', 'sum_alias'],
+      bits: [8, 9],
+    })).resolves.toBe(response)
     expect(queryAnalysis).toHaveBeenCalledWith(
       'sourceForNets',
-      ['sum', 'sum_alias'],
+      { names: ['sum', 'sum_alias'], bits: [8, 9] },
     )
   })
 })

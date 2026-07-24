@@ -549,3 +549,64 @@ fn net_cuts_attribute_the_declaration_and_driver_before_the_upstream_cone() {
     assert_eq!(lines(&attribution.contributing), vec![2]);
     assert!(!attribution.approximate);
 }
+
+#[test]
+fn flop_driven_net_contributing_tier_follows_only_the_data_input() {
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "clk_seed": {"direction": "input", "bits": [2]},
+                "data_seed": {"direction": "input", "bits": [3]},
+                "q": {"direction": "output", "bits": [12]}
+              },
+              "cells": {
+                "$not$clock": {
+                  "type": "$not",
+                  "attributes": {"src": "top.sv:2.10-2.20"},
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [2], "Y": [4]}
+                },
+                "$not$data": {
+                  "type": "$not",
+                  "attributes": {"src": "top.sv:3.10-3.20"},
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [3], "Y": [5]}
+                },
+                "$procdff$q": {
+                  "type": "$dff",
+                  "attributes": {"src": "top.sv:4.3-4.18"},
+                  "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                  "connections": {"CLK": [4], "D": [5], "Q": [12]}
+                }
+              },
+              "netnames": {
+                "q": {"bits": [12]},
+                "clk_seed": {"bits": [2]},
+                "data_seed": {"bits": [3]}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute_net(
+        &MappedCut {
+            outputs: vec!["q".to_owned()],
+            inputs: Vec::new(),
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+
+    assert_eq!(lines(&attribution.exact), vec![4]);
+    assert_eq!(lines(&attribution.contributing), vec![3]);
+    assert!(!lines(&attribution.contributing).contains(&2));
+}
