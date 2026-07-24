@@ -4,6 +4,7 @@ import type {
   SchemWeaveGraph,
 } from '../lib/layout'
 import type { SchemWeaveWorkerResult } from './schemweaveProtocol'
+import { SCHEMWEAVE_BOUNDARY_BUNDLE_ERROR_NAME } from './schemweaveRuntime'
 import { runSchemWeaveWorkerRequest } from './schemweaveWorkerRuntime'
 
 const input: LayoutInput = {
@@ -182,6 +183,74 @@ it('rejects geometry that attributes a bundle to an unknown edge', () => {
     ok: false,
     error: 'boundary bundle 0 references unknown edge 99',
   })
+})
+
+it('returns validated degraded geometry for the bounded bundle-free retry', () => {
+  const bundledInput: LayoutInput = {
+    nodes: [
+      {
+        ...input.nodes[0],
+        boundaryWidth: 1,
+        boundaryMembers: [{ member: 10, bit: 0 }],
+      },
+      input.nodes[1],
+    ],
+    edges: [{
+      ...input.edges[0],
+      sourceBoundaryMembers: [{ member: 10, net_bits: [17] }],
+    }],
+  }
+  const boundaryFailure = new Error(
+    'boundary bundle geometry does not satisfy the hard readability contract',
+  )
+  boundaryFailure.name = SCHEMWEAVE_BOUNDARY_BUNDLE_ERROR_NAME
+  const fallback = {
+    nodes: [
+      { id: 1, x: 0, y: 0, width: 62, height: 46 },
+      { id: 2, x: 128, y: 0, width: 62, height: 46 },
+    ],
+    edges: [{
+      id: 0,
+      points: [{ x: 62, y: 23 }, { x: 128, y: 23 }],
+    }],
+    width: 190,
+    height: 46,
+  }
+  const layout_json = vi.fn()
+    .mockImplementationOnce(() => {
+      throw boundaryFailure
+    })
+    .mockReturnValueOnce(JSON.stringify(fallback))
+
+  const response = runSchemWeaveWorkerRequest(
+    { layout_json },
+    { id: 75, kind: 'layout', input: bundledInput },
+  )
+  expect(response).toMatchObject({
+    id: 75,
+    ok: true,
+    result: {
+      status: 'layout',
+      degraded: true,
+      geometry: {
+        schemWeaveSnapshot: {
+          request: {
+            constraints: {
+              boundary_bundles: [{ id: 0 }],
+            },
+          },
+        },
+      },
+    },
+  })
+  expect(
+    response.ok && response.result.status === 'layout'
+      ? response.result.geometry.boundaryBundles
+      : null,
+  ).toBeUndefined()
+  expect(layout_json).toHaveBeenCalledTimes(2)
+  const retry = JSON.parse(layout_json.mock.calls[1][0])
+  expect(retry.constraints).not.toHaveProperty('boundary_bundles')
 })
 
 it('prepares expansion and collapse contracts without returning to the UI thread', () => {
