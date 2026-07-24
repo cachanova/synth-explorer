@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
-use schemweave::{ConstrainedLayoutError, Graph, LayoutConfig, LayoutConstraints, LayoutError};
-use serde::Deserialize;
+use schemweave::{
+    ConstrainedLayoutError, Graph, GroupExpansion, GroupExpansionError, GroupExpansionOptions,
+    Layout, LayoutConfig, LayoutConstraints, LayoutError,
+};
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 const BOUNDARY_BUNDLE_GEOMETRY_ERROR_NAME: &str = "BoundaryBundleGeometryUnsatisfied";
@@ -33,6 +36,69 @@ pub fn layout_json(graph_json: &str) -> Result<String, JsValue> {
         .map_err(|error| js_error(format!("failed to encode layout: {error}")))
 }
 
+#[derive(Deserialize)]
+struct ExpansionRequest {
+    compact_graph: Graph,
+    compact_layout: Layout,
+    expanded_graph: Graph,
+    expansion: GroupExpansion,
+    #[serde(default)]
+    constraints: LayoutConstraints,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ExpansionResponse {
+    Layout { layout: Layout },
+    NeedsFullRelayout { reason: FullRelayoutReason },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FullRelayoutReason {
+    Geometry,
+    WorkLimit,
+    PreservedGeometryTooLarge,
+}
+
+/// Expand one quotient group while retaining unrelated compact geometry.
+#[wasm_bindgen]
+pub fn expand_group_json(request_json: &str) -> Result<String, JsValue> {
+    let request: ExpansionRequest = serde_json::from_str(request_json)
+        .map_err(|error| js_error(format!("invalid group expansion request: {error}")))?;
+    let mut config = LayoutConfig::highest_quality();
+    config.constraints = request.constraints;
+    let result = match schemweave::expand_group_in_place(
+        &request.compact_graph,
+        &request.compact_layout,
+        &request.expanded_graph,
+        &request.expansion,
+        &GroupExpansionOptions {
+            layout: config.layout,
+            quality_effort: config.quality_effort,
+            constraints: config.constraints,
+        },
+    ) {
+        Ok(layout) => ExpansionResponse::Layout { layout },
+        Err(GroupExpansionError::NeedsFullRelayout) => ExpansionResponse::NeedsFullRelayout {
+            reason: FullRelayoutReason::Geometry,
+        },
+        Err(GroupExpansionError::ExpansionWorkLimitExceeded { .. }) => {
+            ExpansionResponse::NeedsFullRelayout {
+                reason: FullRelayoutReason::WorkLimit,
+            }
+        }
+        Err(GroupExpansionError::PreservedGeometryTooLarge { .. }) => {
+            ExpansionResponse::NeedsFullRelayout {
+                reason: FullRelayoutReason::PreservedGeometryTooLarge,
+            }
+        }
+        Err(error) => return Err(js_error(error.to_string())),
+    };
+    serde_json::to_string(&result)
+        .map_err(|error| js_error(format!("failed to encode group expansion: {error}")))
+}
+
 fn layout_error_name(error: &ConstrainedLayoutError) -> Option<&'static str> {
     matches!(
         error,
@@ -57,7 +123,9 @@ fn js_error(message: impl AsRef<str>) -> JsValue {
 mod tests {
     use schemweave::{ConstrainedLayoutError, LayoutError};
 
-    use super::{BOUNDARY_BUNDLE_GEOMETRY_ERROR_NAME, layout_error_name, layout_json};
+    use super::{
+        BOUNDARY_BUNDLE_GEOMETRY_ERROR_NAME, expand_group_json, layout_error_name, layout_json,
+    };
 
     #[test]
     fn lays_out_an_empty_graph_for_compatibility() {
@@ -117,6 +185,45 @@ mod tests {
                 LayoutError::UnrelatedRouteContactUnsatisfied,
             )),
             None,
+        );
+    }
+
+    #[test]
+    fn expands_a_group_through_the_consumer_wrapper() {
+        let response = expand_group_json(
+            r#"{
+                "compact_graph":{
+                    "nodes":[{"id":10,"width":80,"height":50,"ports":[]}],
+                    "edges":[]
+                },
+                "compact_layout":{
+                    "nodes":[{"id":10,"x":0,"y":0,"width":80,"height":50}],
+                    "edges":[],
+                    "width":80,
+                    "height":200
+                },
+                "expanded_graph":{
+                    "nodes":[
+                        {"id":1,"width":80,"height":50,"ports":[]},
+                        {"id":2,"width":80,"height":50,"ports":[]}
+                    ],
+                    "edges":[]
+                },
+                "expansion":{
+                    "anchor":10,
+                    "members":[1,2],
+                    "boundary_trunks":[]
+                }
+            }"#,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(value["status"], "layout");
+        assert_eq!(value["layout"]["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            value["layout"]["nodes"][0]["x"],
+            value["layout"]["nodes"][1]["x"]
         );
     }
 }

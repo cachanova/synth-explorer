@@ -61,7 +61,11 @@ export function applyGroupExpansions(
   const edges: GraphEdge[] = []
   const seenEdges = new Set<string>()
   for (const edge of [
-    ...applicable.flatMap((entry) => entry.graph.edges),
+    ...applicable.flatMap((entry) =>
+      entry.graph.edges.filter(
+        (edge) => memberIds.has(edge.from) || memberIds.has(edge.to),
+      ),
+    ),
     ...base.edges,
   ]) {
     if (expandedIds.has(edge.from) || expandedIds.has(edge.to)) continue

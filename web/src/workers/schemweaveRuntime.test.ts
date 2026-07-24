@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest'
 import {
   toSchemWeaveLayoutRequest,
   type LayoutInput,
+  type SchemWeaveExpansionRequest,
   type SchemWeaveLayoutRequest,
 } from '../lib/layout'
 import {
@@ -51,6 +52,40 @@ const input: LayoutInput = {
     ],
   }],
 }
+
+it('dispatches incremental group expansion through the dedicated WASM API', () => {
+  const expansion: SchemWeaveExpansionRequest = {
+    compact_graph: { nodes: [], edges: [] },
+    compact_layout: { nodes: [], edges: [], width: 0, height: 0 },
+    expanded_graph: { nodes: [], edges: [] },
+    expansion: {
+      anchor: 10,
+      members: [1, 2],
+      boundary_trunks: [],
+    },
+    constraints: { inputs: [], outputs: [] },
+  }
+  const expand_group_json = vi.fn().mockReturnValue(JSON.stringify({
+    status: 'needs_full_relayout',
+    reason: 'geometry',
+  }))
+
+  expect(runSchemWeaveRequest(
+    {
+      layout_json: vi.fn(),
+      expand_group_json,
+    },
+    { id: 51, kind: 'expand', request: expansion },
+  )).toEqual({
+    id: 51,
+    ok: true,
+    result: {
+      status: 'needs_full_relayout',
+      reason: 'geometry',
+    },
+  })
+  expect(JSON.parse(expand_group_json.mock.calls[0][0])).toEqual(expansion)
+})
 
 it('serializes exact boundary constraints and returns raw bundle geometry', () => {
   const layout_json = vi.fn().mockReturnValue(JSON.stringify({

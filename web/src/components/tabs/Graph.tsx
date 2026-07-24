@@ -24,7 +24,7 @@ import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
   comparisonLayoutEngine,
-  layoutExpandedGroupInPlace,
+  layoutExpandedGroupWithSchemWeave,
   layoutSubgraph,
   prewarmLayoutWorker,
   shouldRefitProjection,
@@ -682,34 +682,32 @@ export function Graph({ active }: { active: boolean }) {
         ? previousDisplay.graph
         : null
     const localBaseLayout = displayedBaseLayout ?? groupedBaseLayout
-    const inPlaceLayout =
-      layoutEngine === 'schemweave' && expandedGroup && localBaseLayout
-        ? layoutExpandedGroupInPlace(toLayout, localBaseLayout, expandedGroup)
-        : null
-    if (inPlaceLayout) {
-      const nextDisplay = {
-        designId: ownerDesignId,
-        projectionKey,
-        subgraph: toLayout,
-        graph: inPlaceLayout,
-      }
-      layoutCache.current.set(toLayout, inPlaceLayout)
-      displayedGraphRef.current = nextDisplay
-      setDisplayedGraph(nextDisplay)
-      laidOutSubgraph.current = toLayout
-      setLayingOut(false)
-      if (shouldRefit(inPlaceLayout)) setFitNonce((n) => n + 1)
-      return
-    }
     let cancelled = false
     const controller = new AbortController()
     setLayingOut(true)
-    layoutSubgraph(
-      toLayout,
-      controller.signal,
-      layoutEngine,
-      expandedGroupsForLayout,
-    )
+    const layoutPromise =
+      layoutEngine === 'schemweave' && expandedGroup && localBaseLayout
+        ? layoutExpandedGroupWithSchemWeave(
+            toLayout,
+            localBaseLayout,
+            expandedGroup,
+            controller.signal,
+          ).then((layout) =>
+            layout ??
+            layoutSubgraph(
+              toLayout,
+              controller.signal,
+              layoutEngine,
+              expandedGroupsForLayout,
+            )
+          )
+        : layoutSubgraph(
+            toLayout,
+            controller.signal,
+            layoutEngine,
+            expandedGroupsForLayout,
+          )
+    layoutPromise
       .then((g) => {
         if (cancelled) return
         const nextDisplay = {

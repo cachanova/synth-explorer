@@ -1,12 +1,27 @@
 import type {
+  SchemWeaveExpansionRequest,
   SchemWeaveLayout,
   SchemWeaveLayoutRequest,
 } from '../lib/layout'
 
-export interface SchemWeaveRequest {
-  id: number
-  request: SchemWeaveLayoutRequest
-}
+export type SchemWeaveRequest =
+  | {
+      id: number
+      kind?: 'layout'
+      request: SchemWeaveLayoutRequest
+    }
+  | {
+      id: number
+      kind: 'expand'
+      request: SchemWeaveExpansionRequest
+    }
+
+export type SchemWeaveExpansionResponse =
+  | { status: 'layout'; layout: SchemWeaveLayout }
+  | {
+      status: 'needs_full_relayout'
+      reason: 'geometry' | 'work_limit' | 'preserved_geometry_too_large'
+    }
 
 export const SCHEMWEAVE_BOUNDARY_BUNDLE_ERROR_NAME =
   'BoundaryBundleGeometryUnsatisfied'
@@ -21,13 +36,14 @@ export type SchemWeaveResponse =
   | {
       id: number
       ok: true
-      result: SchemWeaveLayout
+      result: SchemWeaveLayout | SchemWeaveExpansionResponse
       fallback?: typeof SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK
     }
   | { id: number; ok: false; error: string; kind?: SchemWeaveErrorKind }
 
 interface LayoutModule {
   layout_json(graph: string): string
+  expand_group_json?(request: string): string
 }
 
 function errorMessage(error: unknown): string {
@@ -54,6 +70,26 @@ export function runSchemWeaveRequest(
   engine: LayoutModule,
   request: SchemWeaveRequest,
 ): SchemWeaveResponse {
+  if (request.kind === 'expand') {
+    try {
+      if (!engine.expand_group_json) {
+        throw new Error('SchemWeave expansion API is unavailable')
+      }
+      return {
+        id: request.id,
+        ok: true,
+        result: JSON.parse(
+          engine.expand_group_json(JSON.stringify(request.request)),
+        ) as SchemWeaveExpansionResponse,
+      }
+    } catch (error) {
+      return {
+        id: request.id,
+        ok: false,
+        error: errorMessage(error),
+      }
+    }
+  }
   try {
     const result = runLayoutJson(engine, request.request)
     return {

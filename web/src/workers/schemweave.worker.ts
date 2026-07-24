@@ -1,6 +1,9 @@
 /// <reference lib="webworker" />
 
-import init, { layout_json } from '../wasm/layout/schemweave'
+import init, {
+  expand_group_json,
+  layout_json,
+} from '../wasm/layout/schemweave'
 import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
 import {
   runSchemWeaveRequest,
@@ -23,7 +26,10 @@ async function handle(request: SchemWeaveRequest) {
   let response: SchemWeaveResponse
   try {
     await ensureEngine()
-    response = runSchemWeaveRequest({ layout_json }, request)
+    response = runSchemWeaveRequest(
+      { layout_json, expand_group_json },
+      request,
+    )
   } catch (error) {
     response = {
       id: request.id,

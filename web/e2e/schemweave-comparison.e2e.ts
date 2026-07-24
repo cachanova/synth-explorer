@@ -261,3 +261,132 @@ for (const example of [
     await expect(page.locator('.graph-error')).toHaveCount(0)
   })
 }
+
+test('group expansion uses Rust in place and collapse restores without layout', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const responses: unknown[] = []
+    Object.defineProperty(window, '__schemExpansionRequests', {
+      value: requests,
+    })
+    Object.defineProperty(window, '__schemExpansionResponses', {
+      value: responses,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private readonly comparisonWorker: boolean
+
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.comparisonWorker = String(url).includes('schemweave')
+        if (this.comparisonWorker) {
+          this.addEventListener('message', (event) => {
+            responses.push(structuredClone(event.data))
+          })
+        }
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        if (this.comparisonWorker) requests.push(structuredClone(message))
+        if (transfer) super.postMessage(message, transfer)
+        else super.postMessage(message)
+      }
+    }
+  })
+
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('fifo_pipe')
+  await page.getByLabel('Platform').selectOption('gates')
+  await expect(page.locator('.pane-right')).toHaveAttribute(
+    'data-analysis-state',
+    'current',
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const grouped = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="3"]' +
+      '[data-node-tooltip*="with_stages.valid"]',
+  )
+  await expect(grouped).toHaveCount(1)
+  const groupId = await grouped.getAttribute('data-graph-node-id')
+  expect(groupId).not.toBeNull()
+  const compactTransform = await grouped.getAttribute('transform')
+  const toggle = page.locator(
+    `[data-group-action="expand"][data-group-id="${groupId}"]`,
+  )
+
+  await toggle.click()
+  const members = page.locator(`[data-expanded-group-member="${groupId}"]`)
+  await expect(members).toHaveCount(3)
+  await expect.poll(() => page.evaluate(() => {
+    const state = window as unknown as {
+      __schemExpansionRequests: Array<{ id: number; kind?: string }>
+      __schemExpansionResponses: Array<{
+        id: number
+        ok: boolean
+        result?: { status?: string; reason?: string }
+      }>
+    }
+    const request = state.__schemExpansionRequests
+      .findLast((entry) => entry.kind === 'expand')
+    const response = request
+      ? state.__schemExpansionResponses.findLast(
+          (entry) => entry.id === request.id,
+        )
+      : undefined
+    return {
+      requested: request != null,
+      ok: response?.ok,
+      status: response?.result?.status,
+      reason: response?.result?.reason ?? null,
+    }
+  })).toEqual({
+    requested: true,
+    ok: true,
+    status: 'layout',
+    reason: null,
+  })
+  await expect.poll(async () => {
+    return members.evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const box = node.getBoundingClientRect()
+        return {
+          id: Number(node.getAttribute('data-graph-node-id')),
+          center: box.left + box.width / 2,
+        }
+      })
+        .sort((left, right) => left.center - right.center)
+        .map(({ id }) => id),
+    )
+  }).toEqual([83, 82, 81])
+  const groupBoundary = page.locator('.g-expanded-group-boundary')
+  await expect(groupBoundary).toHaveCount(1)
+  const [paneBox, groupBox] = await Promise.all([
+    page.locator('.pane-right').boundingBox(),
+    groupBoundary.boundingBox(),
+  ])
+  expect(paneBox).not.toBeNull()
+  expect(groupBox).not.toBeNull()
+  expect(groupBox!.x).toBeGreaterThanOrEqual(paneBox!.x)
+  expect(groupBox!.x + groupBox!.width)
+    .toBeLessThanOrEqual(paneBox!.x + paneBox!.width)
+  await expect(page.locator('.graph-error')).toHaveCount(0)
+
+  const requestCount = await page.evaluate(() =>
+    (window as unknown as { __schemExpansionRequests: unknown[] })
+      .__schemExpansionRequests.length
+  )
+  await page.locator(
+    `[data-group-action="collapse"][data-group-id="${groupId}"]`,
+  ).first().click()
+  await expect(grouped).toHaveAttribute('transform', compactTransform ?? '')
+  await expect.poll(() => page.evaluate(() =>
+    (window as unknown as { __schemExpansionRequests: unknown[] })
+      .__schemExpansionRequests.length
+  )).toBe(requestCount)
+})

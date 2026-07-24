@@ -2,6 +2,11 @@
 /* eslint-disable */
 
 /**
+ * Expand one quotient group while retaining unrelated compact geometry.
+ */
+export function expand_group_json(request_json: string): string;
+
+/**
  * Lay out one compact circuit graph inside the dedicated comparison worker.
  */
 export function layout_json(graph_json: string): string;
@@ -10,6 +15,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly expand_group_json: (a: number, b: number, c: number) => void;
     readonly layout_json: (a: number, b: number, c: number) => void;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
     readonly __wbindgen_export: (a: number, b: number) => number;
