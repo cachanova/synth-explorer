@@ -864,6 +864,10 @@ test('middle collapse stays incremental and preserves peer group state', async (
           window.setTimeout(send, 150)
           return
         }
+        if (this.comparisonWorker && request.kind === 'collapse') {
+          window.setTimeout(send, 150)
+          return
+        }
         send()
       }
     }
