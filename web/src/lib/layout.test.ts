@@ -2740,6 +2740,7 @@ describe('schematic layout sizing', () => {
       prepared.catalog,
       prepared.request,
     )
+    baseGeometry.schemWeaveSession = { sessionId: 1 }
     const base = hydrateLayoutResult(sub, baseGeometry)
     const group = { id: 90, members: [1], referenceHeight: 66 }
     const controller = new AbortController()
@@ -2800,6 +2801,47 @@ describe('schematic layout sizing', () => {
     await expect(latest).resolves.toMatchObject({ width: 76, height: 66 })
     expect(FakeWorker.instances).toHaveLength(2)
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('reports an evicted expansion session for grouped recovery', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    baseGeometry.schemWeaveSession = { sessionId: 41 }
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const pending = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const worker = FakeWorker.instances[0]
+    expect(worker.requests[0]).toMatchObject({
+      kind: 'expand',
+      sessionId: 41,
+    })
+    worker.onmessage?.({
+      data: {
+        id: worker.requests[0].id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'geometry',
+        },
+      },
+    } as MessageEvent)
+
+    await expect(pending).resolves.toBeNull()
+    expect(worker.requests).toHaveLength(1)
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
   it('reuses completed geometry for an equivalent fresh subgraph', async () => {
@@ -3257,11 +3299,11 @@ describe('schematic layout sizing', () => {
       prepared.catalog,
       prepared.request,
     )
+    baseGeometry.schemWeaveSession = { sessionId: 1 }
     const expanded = hydrateLayoutResult(sub, baseGeometry)
     const group = { id: 90, members: [1], referenceHeight: 66 }
 
     const timedOut = layoutCollapsedGroupWithSchemWeave(
-      sub,
       sub,
       expanded,
       group,
@@ -3277,7 +3319,6 @@ describe('schematic layout sizing', () => {
     expect(first.terminate).toHaveBeenCalledOnce()
 
     const current = layoutCollapsedGroupWithSchemWeave(
-      sub,
       sub,
       expanded,
       group,

@@ -2,7 +2,6 @@ import type {
   ExpandedGroupLayout,
   LayoutGeometry,
   LayoutInput,
-  SchemWeaveSnapshot,
 } from '../lib/layout'
 import type {
   SchemWeaveErrorKind,
@@ -18,7 +17,7 @@ export type SchemWeaveWorkerRequest =
   | {
       id: number
       kind: 'expand'
-      snapshot: SchemWeaveSnapshot
+      sessionId: number
       input: LayoutInput
       group: ExpandedGroupLayout
       activeGroups: ExpandedGroupLayout[]
@@ -26,8 +25,7 @@ export type SchemWeaveWorkerRequest =
   | {
       id: number
       kind: 'collapse'
-      snapshot: SchemWeaveSnapshot
-      expandedInput: LayoutInput
+      sessionId: number
       compactInput: LayoutInput
       group: ExpandedGroupLayout
       activeGroups: ExpandedGroupLayout[]

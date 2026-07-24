@@ -113,28 +113,21 @@ test('priority encoder carries and renders every live boundary bundle', async ({
         __schemWeaveLayoutResponses: Array<{
           result?: {
             geometry?: {
-              schemWeaveSnapshot?: {
-                request?: {
-                  constraints?: {
-                    boundary_bundles?: Array<{
-                      id: number
-                      width: number
-                      members: unknown[]
-                    }>
-                  }
-                }
-              }
+              boundaryBundles?: Array<{
+                id: number
+                width: number
+                ownerIndexes: unknown[]
+              }>
             }
           }
         }>
       }
     ).__schemWeaveLayoutResponses
-    return messages.at(-1)?.result?.geometry?.schemWeaveSnapshot
-      ?.request?.constraints?.boundary_bundles?.map(
+    return messages.at(-1)?.result?.geometry?.boundaryBundles?.map(
       (bundle) => ({
         id: bundle.id,
         width: bundle.width,
-        members: bundle.members.length,
+        members: bundle.ownerIndexes.length,
       }),
     )
   })).toEqual([
@@ -222,7 +215,13 @@ for (const example of [
       const state = window as unknown as {
         __strictSchemRequests: Array<{
           id: number
-          input?: { edges?: unknown[] }
+          input?: {
+            nodes?: Array<{
+              boundaryWidth?: number
+              boundaryMembers?: unknown[]
+            }>
+            edges?: unknown[]
+          }
         }>
         __strictSchemResponses: Array<{
           id: number
@@ -231,57 +230,44 @@ for (const example of [
             status?: string
             degraded?: boolean
             geometry?: {
-              schemWeaveSnapshot?: {
-                request?: {
-                  constraints?: {
-                    boundary_bundles?: Array<{
-                      id: number
-                      width: number
-                      members: unknown[]
-                    }>
-                  }
-                }
-                layout?: {
-                  boundary_bundles?: Array<{
-                    id: number
-                    width: number
-                    members: unknown[]
-                  }>
-                }
-              }
+              boundaryBundles?: Array<{
+                id: number
+                width: number
+                ownerIndexes: unknown[]
+              }>
             }
           }
         }>
       }
       const request = state.__strictSchemRequests.at(-1)!
       const response = state.__strictSchemResponses.at(-1)!
-      const snapshot = response.result?.geometry?.schemWeaveSnapshot
       return {
         sameRequest: request.id === response.id,
         requestEdges: request.input?.edges?.length ?? 0,
-        requested: snapshot?.request?.constraints?.boundary_bundles?.map(
-          (bundle) => ({
-            id: bundle.id,
-            width: bundle.width,
-            members: bundle.members.length,
-          }),
-        ),
+        requestedWidths: request.input?.nodes
+          ?.filter((node) => node.boundaryMembers?.length)
+          .map((node) => node.boundaryWidth)
+          .sort((left, right) => (left ?? 0) - (right ?? 0)),
         responseOk: response.ok,
         fallback: response.result?.degraded ? 'boundary-bundles-omitted' : null,
-        returned: snapshot?.layout?.boundary_bundles?.map((bundle) => ({
+        returned: response.result?.geometry?.boundaryBundles?.map((bundle) => ({
           id: bundle.id,
           width: bundle.width,
-          members: bundle.members.length,
+          members: bundle.ownerIndexes.length,
         })),
       }
     })
 
     expect(strict.sameRequest).toBe(true)
     expect(strict.requestEdges).toBeGreaterThan(0)
-    expect(strict.requested).toHaveLength(3)
+    expect(strict.requestedWidths).toHaveLength(3)
     expect(strict.responseOk).toBe(true)
     expect(strict.fallback).toBeNull()
-    expect(strict.returned).toEqual(strict.requested)
+    expect(strict.returned).toHaveLength(3)
+    expect(strict.returned?.every((bundle) => bundle.members > 0)).toBe(true)
+    expect(strict.returned?.map((bundle) => bundle.width).sort(
+      (left, right) => left - right,
+    )).toEqual(strict.requestedWidths)
     await expect(page.locator('.graph-error')).toHaveCount(0)
   })
 }
@@ -413,6 +399,107 @@ test('group expansion uses Rust in place and collapse restores without layout', 
     (window as unknown as { __schemExpansionRequests: unknown[] })
       .__schemExpansionRequests.length
   )).toBe(requestCount)
+})
+
+test('an evicted worker session rebuilds the compact base and preserves expansion', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const responses: unknown[] = []
+    Object.defineProperty(window, '__evictedSessionRequests', {
+      value: requests,
+    })
+    Object.defineProperty(window, '__evictedSessionResponses', {
+      value: responses,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private readonly comparisonWorker: boolean
+      private invalidated = false
+
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.comparisonWorker = String(url).includes('schemweave')
+        if (this.comparisonWorker) {
+          this.addEventListener('message', (event) => {
+            responses.push(structuredClone(event.data))
+          })
+        }
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        const request = message as { kind?: string; sessionId?: number }
+        const outgoing =
+          this.comparisonWorker &&
+            request.kind === 'expand' &&
+            !this.invalidated
+            ? { ...request, sessionId: Number.MAX_SAFE_INTEGER }
+            : message
+        if (outgoing !== message) this.invalidated = true
+        if (this.comparisonWorker) requests.push(structuredClone(outgoing))
+        if (transfer) super.postMessage(outgoing, transfer)
+        else super.postMessage(outgoing)
+      }
+    }
+  })
+
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('fifo_pipe')
+  await page.getByLabel('Platform').selectOption('gates')
+  await expect(page.locator('.pane-right')).toHaveAttribute(
+    'data-analysis-state',
+    'current',
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const grouped = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="3"]' +
+      '[data-node-tooltip*="with_stages.valid"]',
+  )
+  await expect(grouped).toHaveCount(1)
+  const groupId = await grouped.getAttribute('data-graph-node-id')
+  expect(groupId).not.toBeNull()
+  await page.locator(
+    `[data-group-action="expand"][data-group-id="${groupId}"]`,
+  ).click()
+
+  await expect(
+    page.locator(`[data-expanded-group-member="${groupId}"]`),
+  ).toHaveCount(3)
+  await expect.poll(() => page.evaluate(() => {
+    const state = window as unknown as {
+      __evictedSessionRequests: Array<{ id: number; kind?: string }>
+      __evictedSessionResponses: Array<{
+        id: number
+        result?: { status?: string; reason?: string }
+      }>
+    }
+    const requests = state.__evictedSessionRequests
+    const expansionResponses = requests
+      .filter((request) => request.kind === 'expand')
+      .map((request) => state.__evictedSessionResponses.find(
+        (response) => response.id === request.id,
+      ))
+    return {
+      layouts: requests.filter((request) => request.kind === 'layout').length,
+      expansions: expansionResponses.map((response) => ({
+        status: response?.result?.status,
+        reason: response?.result?.reason ?? null,
+      })),
+    }
+  })).toEqual({
+    layouts: 2,
+    expansions: [
+      { status: 'needs_full_relayout', reason: 'geometry' },
+      { status: 'layout', reason: null },
+    ],
+  })
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  await expect(page.locator('.graph-error')).toHaveCount(0)
 })
 
 test('multiple groups preserve independent expansion state in any toggle order', async ({
@@ -734,6 +821,7 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
       (response) => response.id === collapse?.id,
     )
     return {
+      layout: requests.filter((request) => request.kind === 'layout').length,
       expand: requests.filter((request) => request.kind === 'expand').length,
       collapse: requests.filter((request) => request.kind === 'collapse').length,
       collapseStatus: collapseResponse?.result?.status ?? null,
@@ -742,6 +830,7 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
   })
 
   expect(await requestCounts()).toEqual({
+    layout: 1,
     expand: 3,
     collapse: 0,
     collapseStatus: null,
@@ -762,6 +851,7 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
     page.locator(`[data-expanded-group-member="${targets[1].id}"]`),
   ).toHaveCount(0)
   expect(await requestCounts()).toEqual({
+    layout: 1,
     expand: 4,
     collapse: 1,
     collapseStatus: 'needs_full_relayout',
@@ -782,6 +872,7 @@ test('middle collapse waits for delayed prefixes and preserves peer group state'
     page.locator(`[data-expanded-group-member="${targets[0].id}"]`),
   ).toHaveCount(0)
   expect(await requestCounts()).toEqual({
+    layout: 1,
     expand: 5,
     collapse: 2,
     collapseStatus: 'needs_full_relayout',

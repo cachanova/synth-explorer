@@ -10,13 +10,17 @@ import {
   type SchemWeaveWorkerRequest,
   type SchemWeaveWorkerResponse,
 } from './schemweaveProtocol'
-import { runSchemWeaveWorkerRequest } from './schemweaveWorkerRuntime'
+import {
+  createSchemWeaveWorkerSessionStore,
+  runSchemWeaveWorkerRequest,
+} from './schemweaveWorkerRuntime'
 export type {
   SchemWeaveWorkerRequest,
   SchemWeaveWorkerResponse,
 } from './schemweaveProtocol'
 
 const ensureEngine = lazyLoad('failed to load the comparison layout engine', () => init())
+const sessions = createSchemWeaveWorkerSessionStore()
 void ensureEngine().catch(() => undefined)
 
 self.onmessage = (event: MessageEvent<SchemWeaveWorkerRequest>) => {
@@ -30,6 +34,7 @@ async function handle(request: SchemWeaveWorkerRequest) {
     response = runSchemWeaveWorkerRequest(
       { layout_json, expand_group_json, collapse_group_json },
       request,
+      sessions,
     )
   } catch (error) {
     response = {

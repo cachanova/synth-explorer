@@ -5,6 +5,9 @@ import {
   interpretSchemWeaveResult,
   type ExpandedGroupLayout,
   type LayoutGeometry,
+  type LayoutInput,
+  type SchemWeaveSessionHandle,
+  type SchemWeaveSnapshot,
 } from '../lib/layout'
 import {
   SCHEMWEAVE_BOUNDARY_BUNDLE_FALLBACK,
@@ -18,6 +21,146 @@ import type {
   SchemWeaveWorkerResponse,
 } from './schemweaveProtocol'
 
+export const SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES = 8
+export const SCHEMWEAVE_WORKER_SESSION_MAX_BYTES = 32 * 1024 * 1024
+
+export interface SchemWeaveWorkerSession {
+  snapshot: SchemWeaveSnapshot
+  input: LayoutInput
+  retainedBytes: number
+}
+
+export interface SchemWeaveWorkerSessionStore {
+  nextId: number
+  entries: Map<number, SchemWeaveWorkerSession>
+  retainedBytes: number
+}
+
+export function createSchemWeaveWorkerSessionStore():
+  SchemWeaveWorkerSessionStore {
+  return {
+    nextId: 0,
+    entries: new Map(),
+    retainedBytes: 0,
+  }
+}
+
+function estimatedSessionBytes(
+  snapshot: SchemWeaveSnapshot,
+  input: LayoutInput,
+): number {
+  const graphPortCount = snapshot.request.graph.nodes.reduce(
+    (total, node) => total + node.ports.length,
+    0,
+  )
+  const layoutPointCount = snapshot.layout.edges.reduce(
+    (total, edge) => total + edge.points.length,
+    0,
+  )
+  const fragmentBitCount = snapshot.catalog.fragments.reduce(
+    (total, fragment) =>
+      total +
+      (fragment.netBits?.length ?? 0) +
+      (fragment.sourceBundle?.slots.length ?? 0) +
+      (fragment.targetBundle?.slots.length ?? 0),
+    0,
+  )
+  const inputBitCount = input.edges.reduce(
+    (total, edge) =>
+      total +
+      (edge.netBits?.length ?? 0) +
+      (edge.sourceBoundaryMembers?.reduce(
+        (count, member) => count + member.net_bits.length,
+        0,
+      ) ?? 0) +
+      (edge.targetBoundaryMembers?.reduce(
+        (count, member) => count + member.net_bits.length,
+        0,
+      ) ?? 0),
+    0,
+  )
+  return (
+    snapshot.request.graph.nodes.length * 160 +
+    graphPortCount * 48 +
+    snapshot.request.graph.edges.length * 128 +
+    snapshot.layout.nodes.length * 64 +
+    snapshot.layout.edges.length * 96 +
+    layoutPointCount * 32 +
+    snapshot.catalog.portIds.size * 80 +
+    snapshot.catalog.fragments.length * 112 +
+    fragmentBitCount * 8 +
+    input.nodes.length * 96 +
+    input.edges.length * 128 +
+    inputBitCount * 8 +
+    (input.groups?.reduce(
+      (total, group) => total + 64 + group.members.length * 8,
+      0,
+    ) ?? 0) +
+    512
+  )
+}
+
+function session(
+  store: SchemWeaveWorkerSessionStore,
+  id: number,
+): SchemWeaveWorkerSession | null {
+  const entry = store.entries.get(id)
+  if (!entry) return null
+  store.entries.delete(id)
+  store.entries.set(id, entry)
+  return entry
+}
+
+function retainSession(
+  store: SchemWeaveWorkerSessionStore,
+  geometry: LayoutGeometry,
+  input: LayoutInput,
+): void {
+  const snapshot = geometry.schemWeaveSnapshot
+  if (!snapshot) {
+    throw new Error('SchemWeave geometry omitted its worker snapshot')
+  }
+  const retainedBytes = estimatedSessionBytes(snapshot, input)
+  if (retainedBytes > SCHEMWEAVE_WORKER_SESSION_MAX_BYTES) {
+    delete geometry.schemWeaveSnapshot
+    return
+  }
+  const sessionId = ++store.nextId
+  store.entries.set(sessionId, { snapshot, input, retainedBytes })
+  store.retainedBytes += retainedBytes
+  while (
+    store.entries.size > SCHEMWEAVE_WORKER_SESSION_MAX_ENTRIES ||
+    store.retainedBytes > SCHEMWEAVE_WORKER_SESSION_MAX_BYTES
+  ) {
+    const oldestId = store.entries.keys().next().value
+    if (oldestId == null) break
+    const oldest = store.entries.get(oldestId)
+    store.entries.delete(oldestId)
+    store.retainedBytes -= oldest?.retainedBytes ?? 0
+  }
+  const handle: SchemWeaveSessionHandle = {
+    sessionId,
+    ...(snapshot.expandedGroups
+      ? { expandedGroups: snapshot.expandedGroups }
+      : {}),
+  }
+  delete geometry.schemWeaveSnapshot
+  geometry.schemWeaveSession = handle
+}
+
+function missingSession(
+  id: number,
+): SchemWeaveWorkerResponse {
+  return {
+    id,
+    ok: true,
+    result: {
+      status: 'needs_full_relayout',
+      reason: 'geometry',
+    },
+  }
+}
+
 function failure(
   response: Extract<SchemWeaveResponse, { ok: false }>,
 ): SchemWeaveWorkerResponse {
@@ -28,12 +171,19 @@ function groupGeometry(
   geometry: LayoutGeometry,
   groups: ExpandedGroupLayout[],
 ): void {
+  const activeGroups = [...groups].sort(
+    (first, second) => first.id - second.id,
+  )
+  const nodeById = new Map(geometry.nodes.map((node) => [node.id, node]))
   if (geometry.schemWeaveSnapshot) {
-    geometry.schemWeaveSnapshot.expandedGroups = groups
+    geometry.schemWeaveSnapshot.expandedGroups = activeGroups
   }
-  geometry.groups = groups.map((group) => {
+  geometry.groups = activeGroups.map((group) => {
     const memberIds = new Set(group.members)
-    const members = geometry.nodes.filter((node) => memberIds.has(node.id))
+    const members = [...memberIds].flatMap((id) => {
+      const member = nodeById.get(id)
+      return member ? [member] : []
+    })
     if (members.length !== memberIds.size) {
       throw new Error('SchemWeave expansion omitted a grouped member')
     }
@@ -48,13 +198,14 @@ function groupGeometry(
       width: right - left + 32,
       height: bottom - top + 46,
     }
-  }).sort((first, second) => first.id - second.id)
+  })
 }
 
 function layoutResult(
   request: SchemWeaveWorkerRequest,
   response: Extract<SchemWeaveResponse, { ok: true }>,
   prepared: ReturnType<typeof buildSchemWeaveLayoutRequest>,
+  sessions: SchemWeaveWorkerSessionStore,
 ): SchemWeaveWorkerResponse {
   if (request.kind !== 'layout') {
     throw new Error('full-layout response used for a group change')
@@ -89,6 +240,8 @@ function layoutResult(
       'SchemWeave fallback geometry cannot contain boundary bundles',
     )
   }
+  groupGeometry(geometry, request.input.groups ?? [])
+  retainSession(sessions, geometry, request.input)
   return {
     id: request.id,
     ok: true,
@@ -108,6 +261,8 @@ function groupChangeResult(
     typeof buildSchemWeaveExpansionRequest |
     typeof buildSchemWeaveCollapseRequest
   >,
+  input: LayoutInput,
+  sessions: SchemWeaveWorkerSessionStore,
 ): SchemWeaveWorkerResponse {
   const result = response.result as SchemWeaveExpansionResponse
   if (result.status === 'needs_full_relayout') {
@@ -127,6 +282,7 @@ function groupChangeResult(
     layoutRequest,
   )
   groupGeometry(geometry, request.activeGroups)
+  retainSession(sessions, geometry, input)
   return {
     id: request.id,
     ok: true,
@@ -141,6 +297,7 @@ function groupChangeResult(
 export function runSchemWeaveWorkerRequest(
   engine: SchemWeaveEngine,
   request: SchemWeaveWorkerRequest,
+  sessions = createSchemWeaveWorkerSessionStore(),
 ): SchemWeaveWorkerResponse {
   try {
     if (request.kind === 'layout') {
@@ -150,11 +307,13 @@ export function runSchemWeaveWorkerRequest(
         request: prepared.request,
       })
       if (!response.ok) return failure(response)
-      return layoutResult(request, response, prepared)
+      return layoutResult(request, response, prepared, sessions)
     }
     if (request.kind === 'expand') {
+      const base = session(sessions, request.sessionId)
+      if (!base) return missingSession(request.id)
       const prepared = buildSchemWeaveExpansionRequest(
-        request.snapshot,
+        base.snapshot,
         request.input,
         request.group,
       )
@@ -164,11 +323,19 @@ export function runSchemWeaveWorkerRequest(
         request: prepared.request,
       })
       if (!response.ok) return failure(response)
-      return groupChangeResult(request, response, prepared)
+      return groupChangeResult(
+        request,
+        response,
+        prepared,
+        request.input,
+        sessions,
+      )
     }
+    const base = session(sessions, request.sessionId)
+    if (!base) return missingSession(request.id)
     const prepared = buildSchemWeaveCollapseRequest(
-      request.snapshot,
-      request.expandedInput,
+      base.snapshot,
+      base.input,
       request.compactInput,
       request.group,
     )
@@ -178,7 +345,13 @@ export function runSchemWeaveWorkerRequest(
       request: prepared.request,
     })
     if (!response.ok) return failure(response)
-    return groupChangeResult(request, response, prepared)
+    return groupChangeResult(
+      request,
+      response,
+      prepared,
+      request.compactInput,
+      sessions,
+    )
   } catch (error) {
     return {
       id: request.id,

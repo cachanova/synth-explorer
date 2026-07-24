@@ -55,7 +55,7 @@ export interface LaidOutGraph {
   edges: LaidOutEdge[]
   groups?: LaidOutGroup[]
   boundaryBundles?: LaidOutBoundaryBundle[]
-  schemWeaveSnapshot?: SchemWeaveSnapshot
+  schemWeaveSession?: SchemWeaveSessionHandle
   width: number
   height: number
 }
@@ -245,6 +245,7 @@ export interface LayoutGeometry {
     ownerIndexes: number[]
   }>
   schemWeaveSnapshot?: SchemWeaveSnapshot
+  schemWeaveSession?: SchemWeaveSessionHandle
   width: number
   height: number
 }
@@ -958,6 +959,16 @@ export interface SchemWeaveSnapshot {
   request: SchemWeaveLayoutRequest
   layout: SchemWeaveLayout
   catalog: SchemWeaveGraphCatalog
+  expandedGroups?: ExpandedGroupLayout[]
+}
+
+/**
+ * Opaque reference to adapter state retained inside the SchemWeave worker.
+ * Keeping the full graph, catalog, and prior geometry worker-side prevents
+ * multi-megabyte snapshots from being cloned across the UI boundary.
+ */
+export interface SchemWeaveSessionHandle {
+  sessionId: number
   expandedGroups?: ExpandedGroupLayout[]
 }
 
@@ -2902,8 +2913,8 @@ export function hydrateLayoutResult(sub: Subgraph, geometry: LayoutGeometry): La
     }),
     ...(geometry.groups ? { groups: geometry.groups } : {}),
     boundaryBundles: geometry.boundaryBundles ?? [],
-    ...(geometry.schemWeaveSnapshot
-      ? { schemWeaveSnapshot: geometry.schemWeaveSnapshot }
+    ...(geometry.schemWeaveSession
+      ? { schemWeaveSession: geometry.schemWeaveSession }
       : {}),
     width: geometry.width,
     height: geometry.height,
@@ -3151,6 +3162,19 @@ function runLayout(
   })
 }
 
+export async function refreshSchemWeaveLayout(
+  sub: Subgraph,
+  activeGroups: ExpandedGroupLayout[],
+  signal?: AbortSignal,
+): Promise<LaidOutGraph> {
+  const input = prepareLayoutInput(sub, activeGroups)
+  const result = await runLayout(input, 'schemweave', undefined, signal)
+  if (!result.degraded) {
+    cacheLayoutGeometry(layoutGeometryKey(input, 'schemweave'), result.geometry)
+  }
+  return hydrateLayoutResult(sub, result.geometry)
+}
+
 /** Expand one quotient group through SchemWeave's retained-geometry API. */
 export async function layoutExpandedGroupWithSchemWeave(
   sub: Subgraph,
@@ -3160,13 +3184,13 @@ export async function layoutExpandedGroupWithSchemWeave(
   activeGroups: ExpandedGroupLayout[] = [group],
 ): Promise<LaidOutGraph | null> {
   if (signal?.aborted) throw abortError()
-  const snapshot = base.schemWeaveSnapshot
-  if (!snapshot) return null
+  const session = base.schemWeaveSession
+  if (!session) return null
   const id = ++seq
   const request: SchemWeaveWorkerRequest = {
     id,
     kind: 'expand',
-    snapshot,
+    sessionId: session.sessionId,
     input: prepareLayoutInput(sub),
     group,
     activeGroups,
@@ -3212,21 +3236,19 @@ export async function layoutExpandedGroupWithSchemWeave(
  */
 export async function layoutCollapsedGroupWithSchemWeave(
   compactSub: Subgraph,
-  expandedSub: Subgraph,
   expandedLayout: LaidOutGraph,
   group: ExpandedGroupLayout,
   activeGroups: ExpandedGroupLayout[],
   signal?: AbortSignal,
 ): Promise<LaidOutGraph | null> {
   if (signal?.aborted) throw abortError()
-  const snapshot = expandedLayout.schemWeaveSnapshot
-  if (!snapshot) return null
+  const session = expandedLayout.schemWeaveSession
+  if (!session) return null
   const id = ++seq
   const request: SchemWeaveWorkerRequest = {
     id,
     kind: 'collapse',
-    snapshot,
-    expandedInput: prepareLayoutInput(expandedSub),
+    sessionId: session.sessionId,
     compactInput: prepareLayoutInput(compactSub),
     group,
     activeGroups,
