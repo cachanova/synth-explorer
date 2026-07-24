@@ -47,7 +47,7 @@ export type SchemWeaveResponse =
     }
   | { id: number; ok: false; error: string; kind?: SchemWeaveErrorKind }
 
-interface LayoutModule {
+export interface SchemWeaveEngine {
   layout_json(graph: string): string
   expand_group_json?(request: string): string
   collapse_group_json?(request: string): string
@@ -65,7 +65,7 @@ function errorKind(error: unknown): SchemWeaveErrorKind | undefined {
 }
 
 function runLayoutJson(
-  engine: LayoutModule,
+  engine: SchemWeaveEngine,
   request: SchemWeaveLayoutRequest,
 ): SchemWeaveLayout {
   return JSON.parse(
@@ -74,7 +74,7 @@ function runLayoutJson(
 }
 
 export function runSchemWeaveRequest(
-  engine: LayoutModule,
+  engine: SchemWeaveEngine,
   request: SchemWeaveRequest,
 ): SchemWeaveResponse {
   if (request.kind === 'expand' || request.kind === 'collapse') {

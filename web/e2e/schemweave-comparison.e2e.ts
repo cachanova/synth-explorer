@@ -11,9 +11,13 @@ test('priority encoder carries and renders every live boundary bundle', async ({
 }) => {
   await page.addInitScript(() => {
     const layoutRequests: unknown[] = []
+    const layoutResponses: unknown[] = []
     const analysisResponses: unknown[] = []
     Object.defineProperty(window, '__schemWeaveLayoutRequests', {
       value: layoutRequests,
+    })
+    Object.defineProperty(window, '__schemWeaveLayoutResponses', {
+      value: layoutResponses,
     })
     Object.defineProperty(window, '__analysisResponses', {
       value: analysisResponses,
@@ -25,6 +29,11 @@ test('priority encoder carries and renders every live boundary bundle', async ({
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options)
         this.comparisonWorker = String(url).includes('schemweave')
+        if (this.comparisonWorker) {
+          this.addEventListener('message', (event) => {
+            layoutResponses.push(structuredClone(event.data))
+          })
+        }
         if (String(url).includes('analysis.worker')) {
           this.addEventListener('message', (event) => {
             analysisResponses.push(structuredClone(event.data))
@@ -101,20 +110,27 @@ test('priority encoder carries and renders every live boundary bundle', async ({
   await expect.poll(() => page.evaluate(() => {
     const messages = (
       window as unknown as {
-        __schemWeaveLayoutRequests: Array<{
-          request?: {
-            constraints?: {
-              boundary_bundles?: Array<{
-                id: number
-                width: number
-                members: unknown[]
-              }>
+        __schemWeaveLayoutResponses: Array<{
+          result?: {
+            geometry?: {
+              schemWeaveSnapshot?: {
+                request?: {
+                  constraints?: {
+                    boundary_bundles?: Array<{
+                      id: number
+                      width: number
+                      members: unknown[]
+                    }>
+                  }
+                }
+              }
             }
           }
         }>
       }
-    ).__schemWeaveLayoutRequests
-    return messages.at(-1)?.request?.constraints?.boundary_bundles?.map(
+    ).__schemWeaveLayoutResponses
+    return messages.at(-1)?.result?.geometry?.schemWeaveSnapshot
+      ?.request?.constraints?.boundary_bundles?.map(
       (bundle) => ({
         id: bundle.id,
         width: bundle.width,
@@ -206,36 +222,44 @@ for (const example of [
       const state = window as unknown as {
         __strictSchemRequests: Array<{
           id: number
-          request?: {
-            graph?: { edges?: unknown[] }
-            constraints?: {
-              boundary_bundles?: Array<{
-                id: number
-                width: number
-                members: unknown[]
-              }>
-            }
-          }
+          input?: { edges?: unknown[] }
         }>
         __strictSchemResponses: Array<{
           id: number
           ok: boolean
-          fallback?: string
           result?: {
-            boundary_bundles?: Array<{
-              id: number
-              width: number
-              members: unknown[]
-            }>
+            status?: string
+            degraded?: boolean
+            geometry?: {
+              schemWeaveSnapshot?: {
+                request?: {
+                  constraints?: {
+                    boundary_bundles?: Array<{
+                      id: number
+                      width: number
+                      members: unknown[]
+                    }>
+                  }
+                }
+                layout?: {
+                  boundary_bundles?: Array<{
+                    id: number
+                    width: number
+                    members: unknown[]
+                  }>
+                }
+              }
+            }
           }
         }>
       }
       const request = state.__strictSchemRequests.at(-1)!
       const response = state.__strictSchemResponses.at(-1)!
+      const snapshot = response.result?.geometry?.schemWeaveSnapshot
       return {
         sameRequest: request.id === response.id,
-        requestEdges: request.request?.graph?.edges?.length ?? 0,
-        requested: request.request?.constraints?.boundary_bundles?.map(
+        requestEdges: request.input?.edges?.length ?? 0,
+        requested: snapshot?.request?.constraints?.boundary_bundles?.map(
           (bundle) => ({
             id: bundle.id,
             width: bundle.width,
@@ -243,8 +267,8 @@ for (const example of [
           }),
         ),
         responseOk: response.ok,
-        fallback: response.fallback ?? null,
-        returned: response.result?.boundary_bundles?.map((bundle) => ({
+        fallback: response.result?.degraded ? 'boundary-bundles-omitted' : null,
+        returned: snapshot?.layout?.boundary_bundles?.map((bundle) => ({
           id: bundle.id,
           width: bundle.width,
           members: bundle.members.length,
