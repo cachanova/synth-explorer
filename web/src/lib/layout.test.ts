@@ -3131,6 +3131,64 @@ describe('schematic layout sizing', () => {
     worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
+  it('full-layouts the expanded projection after incremental work exhaustion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    baseGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 42,
+    }
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const pending = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const worker = FakeWorker.instances[0]
+    const incrementalRequest = worker.requests[0]
+    worker.onmessage?.({
+      data: {
+        id: incrementalRequest.id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'work_limit',
+        },
+      },
+    } as MessageEvent)
+
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(2))
+    const fullRequest = worker.requests[1]
+    expect(fullRequest).toMatchObject({
+      kind: 'layout',
+      input: {
+        groups: [group],
+      },
+    })
+    worker.onmessage?.(schemWeaveWorkerResponse(fullRequest, geometry))
+
+    await expect(pending).resolves.toMatchObject({
+      nodes: [{ id: 1 }],
+      width: 76,
+      height: 66,
+    })
+    expect(worker.requests.map((request) => request.kind)).toEqual([
+      'expand',
+      'layout',
+    ])
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
   it('reuses completed geometry for an equivalent fresh subgraph', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const firstSubgraph: Subgraph = {

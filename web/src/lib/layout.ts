@@ -14,6 +14,7 @@ import type { ElkRequest, ElkResponse } from '../workers/elk.worker'
 import type {
   SchemWeaveWorkerRequest,
   SchemWeaveWorkerResponse,
+  SchemWeaveWorkerResult,
 } from '../workers/schemweaveProtocol'
 import {
   MAX_GRAPH_EDGES,
@@ -3238,7 +3239,7 @@ const pending = new Map<
 const expansionPending = new Map<
   number,
   {
-    resolve: (geometry: LayoutGeometry | null) => void
+    resolve: (result: SchemWeaveWorkerResult) => void
     reject: (error: Error) => void
   }
 >()
@@ -3302,14 +3303,7 @@ function getWorker(engine: LayoutEngine): Worker {
         const result = (
           msg as Extract<SchemWeaveWorkerResponse, { ok: true }>
         ).result
-        if (result.status === 'needs_full_relayout') {
-          expansionEntry.resolve(null)
-          return
-        }
-        if (result.status !== 'layout') {
-          throw new Error('invalid SchemWeave expansion response')
-        }
-        expansionEntry.resolve(result.geometry)
+        expansionEntry.resolve(result)
       } catch (error) {
         expansionEntry.reject(
           error instanceof Error ? error : new Error(String(error)),
@@ -3466,7 +3460,7 @@ export async function layoutExpandedGroupWithSchemWeave(
     activeGroups,
   }
   const worker = getWorker('schemweave')
-  const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
+  const result = await new Promise<SchemWeaveWorkerResult>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
@@ -3497,7 +3491,12 @@ export async function layoutExpandedGroupWithSchemWeave(
     )
     worker.postMessage(request)
   })
-  return geometry ? hydrateLayoutResult(sub, geometry) : null
+  if (result.status === 'needs_full_relayout') {
+    return result.reason === 'work_limit'
+      ? refreshSchemWeaveLayout(sub, activeGroups, signal)
+      : null
+  }
+  return hydrateLayoutResult(sub, result.geometry)
 }
 
 /**
@@ -3524,7 +3523,7 @@ export async function layoutCollapsedGroupWithSchemWeave(
     activeGroups,
   }
   const worker = getWorker('schemweave')
-  const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
+  const result = await new Promise<SchemWeaveWorkerResult>((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError())
       return
@@ -3555,7 +3554,12 @@ export async function layoutCollapsedGroupWithSchemWeave(
     )
     worker.postMessage(request)
   })
-  return geometry ? hydrateLayoutResult(compactSub, geometry) : null
+  if (result.status === 'needs_full_relayout') {
+    return result.reason === 'work_limit'
+      ? refreshSchemWeaveLayout(compactSub, activeGroups, signal)
+      : null
+  }
+  return hydrateLayoutResult(compactSub, result.geometry)
 }
 
 // Above this size NETWORK_SIMPLEX becomes unsafe in elkjs: on deep datapath
