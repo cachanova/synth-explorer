@@ -12,6 +12,7 @@ use crate::graph::{
 };
 use crate::netlist::YosysNetlist;
 use deepsize::DeepSizeOf;
+use rtl_correlate::NetlistDialect;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -251,22 +252,6 @@ pub fn memory_arrays_from_source(
         name.trim_start_matches('\\').replace('\\', "")
     }
 
-    fn generated_reg_suffix(mut suffix: &str) -> bool {
-        let mut stripped_reg = false;
-        while let Some(rest) = suffix.strip_prefix("_reg") {
-            stripped_reg = true;
-            suffix = rest;
-        }
-        while let Some(rest) = suffix.strip_prefix('_') {
-            let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
-            if digits == 0 {
-                return false;
-            }
-            suffix = &rest[digits..];
-        }
-        stripped_reg && suffix.is_empty()
-    }
-
     let mut logical = Vec::new();
     let mut source_memory_cell_paths = HashSet::new();
     let mut pending = vec![(source_top.to_owned(), String::new())];
@@ -366,13 +351,12 @@ pub fn memory_arrays_from_source(
             }
         }
         if matched.is_none() && !ambiguous {
-            // Vivado commonly maps `foo` to `foo_reg...`. Search from the
-            // right so a logical `foo_regbank` wins over the shorter `foo`.
-            for (offset, _) in raw_name.rmatch_indices("_reg") {
-                if !generated_reg_suffix(&raw_name[offset..]) {
-                    continue;
-                }
-                match logical_by_name.get(&raw_name[..offset]).copied() {
+            // Vivado commonly maps `foo` to `foo_reg...`. Candidates run
+            // rightmost-first so a logical `foo_regbank` wins over the
+            // shorter `foo`. The Vivado rules apply regardless of the
+            // active tool, preserving the historic cross-dialect leniency.
+            for base in NetlistDialect::Vivado.register_base_candidates(&raw_name) {
+                match logical_by_name.get(base).copied() {
                     Some(Some(index)) => {
                         matched = Some(index);
                         break;

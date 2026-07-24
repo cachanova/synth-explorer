@@ -25,7 +25,12 @@ import {
 import { displayNodeName } from './lib/prettyType'
 import { createLatestGuard } from './lib/latest'
 import { mergeComputerFiles } from './lib/computerFiles'
-import { designSrcSpans, type SrcSpan } from './lib/src'
+import type { SrcSpan } from './lib/src'
+import {
+  createSourceTierSelectionController,
+  type SourceTierSelection,
+} from './lib/sourceTierSelection'
+import type { SourceTierSpan } from './lib/sourceTiers'
 import {
   firstYosysSourceError,
   type SynthesisDiagnostic,
@@ -123,6 +128,13 @@ export interface EditorHighlight {
   spans: SrcSpan[]
   primary: number
   nonce: number
+  sourceTiers?: {
+    nodeIds: number[]
+    exact: SrcSpan[]
+    contributing: SrcSpan[]
+    approximate: boolean
+    truncated: boolean
+  }
 }
 
 export type AnalysisState =
@@ -179,6 +191,19 @@ function sourceGraphRequest(
     label: `${selection.file}:${lineLabel}`,
     highlight: [],
     nonce,
+  }
+}
+
+function sourceTierEditorSpan(span: SourceTierSpan): SrcSpan {
+  return {
+    file: span.file,
+    startLine: span.start_line,
+    startCol: span.start_column ?? 1,
+    endLine: span.end_line,
+    endCol: span.end_column ?? span.start_column ?? 1,
+    exact: span.start_column != null && span.end_column != null
+      ? true
+      : undefined,
   }
 }
 
@@ -272,7 +297,7 @@ export interface Store {
   // cross-probe: graph node src -> editor highlight
   editorHighlight: EditorHighlight | null
   highlightSources: (spans: SrcSpan[]) => void
-  highlightNodeSources: (src?: string | null) => void
+  selectSchematicNodes: (nodeIds: number[]) => void
 
   // cross-probe: editor -> graph nodes
   sourceSelection: SourceSelection
@@ -424,6 +449,48 @@ export function StoreProvider({
   const synthesisAbortRef = useRef<AbortController | null>(null)
   const workspaceSaveTimerRef = useRef<number | null>(null)
   const workspaceSnapshotRef = useRef<WorkspaceState>(initial)
+  const sourceTierCommitRef = useRef<
+    (selection: SourceTierSelection | null) => void
+  >(() => {})
+  const sourceTierControllerRef = useRef<
+    ReturnType<typeof createSourceTierSelectionController> | null
+  >(null)
+  if (!sourceTierControllerRef.current) {
+    sourceTierControllerRef.current = createSourceTierSelectionController(
+      (selection) => sourceTierCommitRef.current(selection),
+    )
+  }
+  const selectSchematicNodes = useCallback((nodeIds: number[]) => {
+    sourceTierControllerRef.current!(nodeIds)
+  }, [])
+  sourceTierCommitRef.current = (selection) => {
+    if (!selection) {
+      setEditorHighlight(null)
+      return
+    }
+
+    const submittedNames = new Set(filesRef.current.map((file) => file.name))
+    const exact = selection.response.exact
+      .filter((span) => submittedNames.has(span.file))
+      .map(sourceTierEditorSpan)
+    const contributing = selection.response.contributing
+      .filter((span) => submittedNames.has(span.file))
+      .map(sourceTierEditorSpan)
+    const primarySpan = exact[0]
+    if (primarySpan) setActiveFileNameState(primarySpan.file)
+    setEditorHighlight({
+      spans: [...exact, ...contributing],
+      primary: 0,
+      nonce: nextNonce(),
+      sourceTiers: {
+        nodeIds: selection.nodeIds,
+        exact,
+        contributing,
+        approximate: selection.response.approximate,
+        truncated: selection.response.truncated,
+      },
+    })
+  }
   const materializeCurrentInput = useCallback((): SynthesisInput => {
     const revision = inputRevisionRef.current
     const cached = resolvedInputRef.current
@@ -556,14 +623,14 @@ export function StoreProvider({
 
   useEffect(() => {
     if (analysisState !== 'current') {
-      setEditorHighlight(null)
+      selectSchematicNodes([])
     } else {
       // A failure report is obsolete once the current input has a live
       // analysis (e.g. the failing edit was undone, restoring the last good
       // input).
       setError(null)
     }
-  }, [analysisState])
+  }, [analysisState, selectSchematicNodes])
 
   // Load examples once.
   const loadedExamples = useRef(false)
@@ -730,9 +797,14 @@ export function StoreProvider({
     setResolvedInputIdentity(null)
     setError(null)
     setConeReq(null)
-    setEditorHighlight(null)
+    selectSchematicNodes([])
     void saveWorkspace(next, true)
-  }, [cancelScheduledWorkspaceSave, cancelSourceProbe, markInputChanged])
+  }, [
+    cancelScheduledWorkspaceSave,
+    cancelSourceProbe,
+    markInputChanged,
+    selectSchematicNodes,
+  ])
 
   const setConfirmWorkspaceReset = useCallback((enabled: boolean) => {
     setConfirmWorkspaceResetState(enabled)
@@ -1105,16 +1177,16 @@ export function StoreProvider({
     cancelSourceProbe()
     sourceSelectionActiveRef.current = false
     setConeReq(null)
-    setEditorHighlight(null)
-  }, [cancelSourceProbe])
+    selectSchematicNodes([])
+  }, [cancelSourceProbe, selectSchematicNodes])
 
   const registerGraphProbeReset = useCallback((reset: (() => void) | null) => {
     graphProbeResetRef.current = reset
   }, [])
 
   const highlightSources = useCallback((spans: SrcSpan[]) => {
+    sourceTierControllerRef.current!([])
     if (spans.length === 0) {
-      setEditorHighlight(null)
       return
     }
     if (analysisStateRef.current !== 'current') return
@@ -1125,11 +1197,6 @@ export function StoreProvider({
     setActiveFileNameState((cur) => (primarySpan.file ? primarySpan.file : cur))
     setEditorHighlight({ spans, primary: primaryIndex, nonce: nextNonce() })
   }, [nextNonce])
-
-  const highlightNodeSources = useCallback(
-    (src?: string | null) => highlightSources(designSrcSpans(src, filesRef.current)),
-    [highlightSources],
-  )
 
   const setSourceSelection = useCallback(
     (
@@ -1261,7 +1328,7 @@ export function StoreProvider({
       registerGraphProbeReset,
       editorHighlight,
       highlightSources,
-      highlightNodeSources,
+      selectSchematicNodes,
       sourceSelection,
       setSourceSelection,
     }),
@@ -1319,7 +1386,7 @@ export function StoreProvider({
       registerGraphProbeReset,
       editorHighlight,
       highlightSources,
-      highlightNodeSources,
+      selectSchematicNodes,
       sourceSelection,
       setSourceSelection,
     ],

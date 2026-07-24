@@ -34,11 +34,19 @@ port to the released connector on a Linux or Windows Vivado host.
 6. `analysis.worker.ts` loads those netlists into the canonical Rust
    `analysis-core` compiled to WebAssembly.
 7. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
-   projections, source maps, source selections, and node details are worker
-   messages. Source selections carry inclusive one-based line and column spans;
-   declaration mappings retain final synthesized net-bit identities so exact
-   visible wires can be highlighted and clicked back to source even when nodes
-   are grouped. Results are bounded before crossing the worker boundary.
+   projections, source maps, source selections, node details, and node source
+   tiers are worker messages. Source selections carry inclusive one-based line
+   and column spans; declaration mappings retain final synthesized net-bit
+   identities so exact visible wires can be highlighted and clicked back to
+   source even when nodes are grouped. Selecting a schematic node runs the
+   reverse direction: the `rtl-correlate` crate resolves the selection's
+   boundary nets against the pre-mapping RTL snapshot and returns exact spans
+   (the statements the node implements; for registers, the per-branch
+   assignments and gating conditions from the post-`proc` mux tree) plus a
+   dimmer contributing tier (fan-in statements up to the previous
+   register/port shell), with approximate/truncated flags whenever
+   attribution is a superset or hit caps. Results are bounded before crossing
+   the worker boundary.
 8. elkjs lays out bounded subgraphs in its own worker.
 
 Local Vivado is a manual branch after validation. The user starts
@@ -65,8 +73,16 @@ only a display prefix of the full local cache digest.
   Vivado-netlist normalization script.
 - `vivado-bridge/` is the only runtime Vivado executor and Tcl builder.
 - `web/src/lib/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
+- `web/src/lib/engines/` holds the one `SynthEngine` seam: the Yosys engine
+  (script run plus abstract-memory retry) and the Vivado engine (bridge call,
+  RTL snapshot, normalization) behind one interface; `localEngine.ts` keeps
+  the tool-independent caching, GHDL translation, and analysis handoff.
 - `analysis-core/` is the only netlist/graph and source-selection analysis
   implementation.
+- `rtl-correlate/` is the only RTL↔netlist correlation implementation: the
+  Yosys JSON netlist model, per-tool `NetlistDialect` name rules, `src`
+  attribute parsing, and boundary-cut attribution. `analysis-core` re-exports
+  its netlist module and builds the mapped-side cuts.
 - IndexedDB stores the current editor workspace and is the only mutable
   completed-design cache. Those records live in separate databases and have
   separate reset controls. Immutable precomputed example artifacts only seed

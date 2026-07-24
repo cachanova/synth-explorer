@@ -9,6 +9,7 @@ export interface AnalysisInitialization {
   sourceNetlistJson: string
   filesJson: string
   mode: string
+  tool: string
   profile: string
 }
 
@@ -24,6 +25,7 @@ export type AnalysisMethod =
   | 'sourceBits'
   | 'nodes'
   | 'source'
+  | 'sourceForNodes'
 
 export type AnalysisWorkerRequest =
   | { id: number; kind: 'initialize'; payload: AnalysisInitialization }
@@ -52,6 +54,7 @@ async function handle(request: AnalysisWorkerRequest) {
         payload.sourceNetlistJson,
         payload.filesJson,
         payload.mode,
+        payload.tool,
         payload.profile,
       )
       respond({ id: request.id, ok: true, result: parse(session.summary_json()) })
@@ -93,6 +96,8 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
       return parse(active.nodes_json(JSON.stringify(payload ?? [])))
     case 'source':
       return parse(active.source_selection_json(JSON.stringify(payload ?? {})))
+    case 'sourceForNodes':
+      return parse(active.source_for_nodes_json(JSON.stringify(payload ?? [])))
   }
 }
 

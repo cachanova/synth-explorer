@@ -33,6 +33,10 @@ import {
 } from '@codemirror/language'
 import { selectedSourceRange } from '../lib/editorSourceSelection'
 import {
+  editorHighlightDecorations,
+  type HighlightDecorationKind,
+} from '../lib/editorHighlight'
+import {
   closeBrackets,
   closeBracketsKeymap,
 } from '@codemirror/autocomplete'
@@ -151,20 +155,23 @@ function lineNumberExtension(relative: boolean, activeLine = 1): Extension {
 
 // --- src highlight state ---
 const setHighlight = StateEffect.define<
-  { from: number; to?: number; primary: boolean }[] | null
+  { from: number; to?: number; kind: HighlightDecorationKind }[] | null
 >()
 const programmaticUpdate = Annotation.define<boolean>()
 const secondaryLine = Decoration.line({
-  attributes: {
-    class: 'cm-src-hl-secondary',
-    style: 'background-color: color-mix(in srgb, var(--accent) 10%, transparent)',
-  },
+  attributes: { class: 'cm-src-hl-secondary' },
 })
 const primaryLine = Decoration.line({
   attributes: { class: 'cm-src-hl' },
 })
+const contributingLine = Decoration.line({
+  attributes: { class: 'cm-src-hl-contributing' },
+})
 const primaryRange = Decoration.mark({ class: 'cm-src-range-hl' })
 const secondaryRange = Decoration.mark({ class: 'cm-src-range-hl-secondary' })
+const contributingRange = Decoration.mark({
+  class: 'cm-src-range-hl-contributing',
+})
 
 const highlightField = StateField.define<DecorationSet>({
   create() {
@@ -177,10 +184,20 @@ const highlightField = StateField.define<DecorationSet>({
         if (e.value == null) next = Decoration.none
         else {
           next = Decoration.set(
-            e.value.map(({ from, to, primary }) =>
+            e.value.map(({ from, to, kind }) =>
               to == null
-                ? (primary ? primaryLine : secondaryLine).range(from)
-                : (primary ? primaryRange : secondaryRange).range(from, to),
+                ? (kind === 'primary'
+                    ? primaryLine
+                    : kind === 'contributing'
+                      ? contributingLine
+                      : secondaryLine
+                  ).range(from)
+                : (kind === 'primary'
+                    ? primaryRange
+                    : kind === 'contributing'
+                      ? contributingRange
+                      : secondaryRange
+                  ).range(from, to),
             ),
             true,
           )
@@ -193,55 +210,22 @@ const highlightField = StateField.define<DecorationSet>({
 })
 
 function applyHighlight(view: EditorView, hl: EditorHighlight, activeFile: string) {
-  const doc = view.state.doc
-  const primarySpan = hl.spans[hl.primary]
-  const linePriority = new Map<number, boolean>()
-  hl.spans.forEach((span, index) => {
-    if (span.file !== activeFile) return
-    const start = Math.min(Math.max(span.startLine, 1), doc.lines)
-    const end = Math.min(Math.max(span.endLine, start), doc.lines)
-    for (let line = start; line <= end; line += 1) {
-      const primary = index === hl.primary
-      linePriority.set(line, primary || linePriority.get(line) === true)
-    }
-  })
-  const decorations: { from: number; to?: number; primary: boolean }[] = [
-    ...linePriority.entries(),
-  ]
-    .sort(([a], [b]) => a - b)
-    .map(([line, primary]) => ({ from: doc.line(line).from, primary }))
-
-  hl.spans.forEach((span, index) => {
-    if (span.file !== activeFile || !span.exact) return
-    const startLine = doc.line(Math.min(Math.max(span.startLine, 1), doc.lines))
-    const endLine = doc.line(Math.min(Math.max(span.endLine, startLine.number), doc.lines))
-    const from = startLine.from + Math.min(Math.max(span.startCol - 1, 0), startLine.length)
-    const to = endLine.from + Math.min(Math.max(span.endCol, 1), endLine.length)
-    if (to > from) decorations.push({ from, to, primary: index === hl.primary })
-  })
-  decorations.sort(
-    (left, right) =>
-      left.from - right.from || Number(left.to != null) - Number(right.to != null),
+  const { decorations, primaryPosition } = editorHighlightDecorations(
+    view.state.doc,
+    hl,
+    activeFile,
   )
-
-  const primaryLineNumber =
-    primarySpan?.file === activeFile
-      ? Math.min(Math.max(primarySpan.startLine, 1), doc.lines)
-      : decorations.length > 0
-        ? doc.lineAt(decorations[0].from).number
-        : 1
-  const primaryLine = doc.line(primaryLineNumber)
-  const primaryPosition =
-    primarySpan?.file === activeFile
-      ? primaryLine.from +
-        Math.min(Math.max(primarySpan.startCol - 1, 0), primaryLine.length)
-      : primaryLine.from
+  const effects = [
+    setHighlight.of(decorations),
+    ...(primaryPosition == null
+      ? []
+      : [EditorView.scrollIntoView(primaryPosition, { y: 'center' })]),
+  ]
   view.dispatch({
-    selection: { anchor: primaryPosition },
-    effects: [
-      setHighlight.of(decorations),
-      EditorView.scrollIntoView(primaryPosition, { y: 'center' }),
-    ],
+    ...(primaryPosition == null
+      ? {}
+      : { selection: { anchor: primaryPosition } }),
+    effects,
     annotations: programmaticUpdate.of(true),
   })
 }

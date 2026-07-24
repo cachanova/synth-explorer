@@ -5,8 +5,13 @@ use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
-use crate::source::{SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance};
+use crate::source::node_attribution::source_tiers_for_nodes;
+use crate::source::{
+    SourceNodeTiersResponse, SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance,
+};
 use deepsize::DeepSizeOf;
+use rtl_correlate::NetlistDialect;
+use rtl_correlate::correlate::CorrelationIndex;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -27,6 +32,8 @@ pub struct AnalysisDesign {
     pub grouping: GroupPartition,
     pub delay_model: DelayModel,
     pub delay_profile: DelayProfile,
+    /// RTL-snapshot correlation index for schematic→source attribution.
+    correlation: CorrelationIndex,
     mode: String,
 }
 
@@ -37,7 +44,7 @@ impl AnalysisDesign {
         files: Vec<(String, String)>,
         mode: impl Into<String>,
         delay_profile: DelayProfile,
-        include_vivado_procedural_ranges: bool,
+        dialect: NetlistDialect,
     ) -> Result<Self, DesignBuildError> {
         let (top, module) =
             select_top(netlist, None).map_err(|error| DesignBuildError::Top(error.to_string()))?;
@@ -47,7 +54,7 @@ impl AnalysisDesign {
             .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
         let mut source_provenance =
             recover_source_provenance(&graph, source_netlist, files.clone());
-        if include_vivado_procedural_ranges {
+        if dialect.includes_procedural_ranges() {
             source_provenance
                 .ranges
                 .extend(procedural_ranges(&source_provenance.procedural_targets));
@@ -72,6 +79,9 @@ impl AnalysisDesign {
         let memory_arrays =
             memory_arrays_from_source(&graph, source_netlist, source_top, registers);
         let grouping = GroupPartition::build(&graph, registers, memory_arrays);
+        // Infallible in practice: select_top already resolved this module.
+        let correlation = CorrelationIndex::build(source_netlist, source_top, dialect)
+            .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
 
         Ok(Self {
             graph,
@@ -79,8 +89,14 @@ impl AnalysisDesign {
             grouping,
             delay_model,
             delay_profile,
+            correlation,
             mode: mode.into(),
         })
+    }
+
+    /// Tiered source attribution for selected schematic nodes.
+    pub fn source_tiers_for_nodes(&self, ids: &[u32]) -> SourceNodeTiersResponse {
+        source_tiers_for_nodes(&self.graph, &self.correlation, ids)
     }
 
     pub fn stats(&self) -> Stats {

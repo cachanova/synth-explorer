@@ -1,5 +1,6 @@
 import { EditorSelection, EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
+import { editorHighlightDecorations } from '../lib/editorHighlight'
 import { selectedSourceRange } from '../lib/editorSourceSelection'
 
 const document = 'logic first; logic second;\nlogic third;\n'
@@ -115,5 +116,140 @@ describe('editor source coordinates', () => {
       endLine: 1,
       endColumn: 26,
     })
+  })
+})
+
+describe('editor source tier decorations', () => {
+  it('preserves primary and secondary styling for existing highlight callers', () => {
+    const state = EditorState.create({ doc: 'one\ntwo\n' })
+    const mapping = editorHighlightDecorations(
+      state.doc,
+      {
+        spans: [
+          {
+            file: 'top.sv',
+            startLine: 1,
+            startCol: 1,
+            endLine: 1,
+            endCol: 3,
+            exact: true,
+          },
+          {
+            file: 'top.sv',
+            startLine: 2,
+            startCol: 1,
+            endLine: 2,
+            endCol: 3,
+            exact: true,
+          },
+        ],
+        primary: 1,
+        nonce: 1,
+      },
+      'top.sv',
+    )
+
+    expect(mapping.primaryPosition).toBe(state.doc.line(2).from)
+    expect(mapping.decorations.map(({ kind }) => kind)).toEqual([
+      'secondary',
+      'secondary',
+      'primary',
+      'primary',
+    ])
+  })
+
+  it('maps every exact span strongly and contributing spans dimly', () => {
+    const state = EditorState.create({ doc: 'one\ntwo\nthree\nfour\n' })
+    const mapping = editorHighlightDecorations(
+      state.doc,
+      {
+        spans: [],
+        primary: 0,
+        nonce: 1,
+        sourceTiers: {
+          nodeIds: [7],
+          exact: [
+            {
+              file: 'top.sv',
+              startLine: 2,
+              startCol: 1,
+              endLine: 2,
+              endCol: 3,
+              exact: true,
+            },
+            {
+              file: 'top.sv',
+              startLine: 3,
+              startCol: 1,
+              endLine: 3,
+              endCol: 1,
+            },
+          ],
+          contributing: [
+            {
+              file: 'top.sv',
+              startLine: 1,
+              startCol: 1,
+              endLine: 1,
+              endCol: 3,
+              exact: true,
+            },
+          ],
+          approximate: false,
+          truncated: false,
+        },
+      },
+      'top.sv',
+    )
+
+    expect(mapping.primaryPosition).toBe(state.doc.line(2).from)
+    expect(mapping.decorations).toEqual([
+      { from: state.doc.line(1).from, kind: 'contributing' },
+      {
+        from: state.doc.line(1).from,
+        to: state.doc.line(1).to,
+        kind: 'contributing',
+      },
+      { from: state.doc.line(2).from, kind: 'primary' },
+      {
+        from: state.doc.line(2).from,
+        to: state.doc.line(2).to,
+        kind: 'primary',
+      },
+      { from: state.doc.line(3).from, kind: 'primary' },
+    ])
+  })
+
+  it('does not choose a contributing span as the scroll target', () => {
+    const state = EditorState.create({ doc: 'one\ntwo\n' })
+    const mapping = editorHighlightDecorations(
+      state.doc,
+      {
+        spans: [],
+        primary: 0,
+        nonce: 1,
+        sourceTiers: {
+          nodeIds: [8],
+          exact: [],
+          contributing: [
+            {
+              file: 'top.sv',
+              startLine: 2,
+              startCol: 1,
+              endLine: 2,
+              endCol: 1,
+            },
+          ],
+          approximate: false,
+          truncated: false,
+        },
+      },
+      'top.sv',
+    )
+
+    expect(mapping.primaryPosition).toBeNull()
+    expect(mapping.decorations).toEqual([
+      { from: state.doc.line(2).from, kind: 'contributing' },
+    ])
   })
 })

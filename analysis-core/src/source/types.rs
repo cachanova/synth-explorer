@@ -13,6 +13,27 @@ pub struct SourceSelectionRange<'a> {
     pub end_column: Option<usize>,
 }
 
+/// One span in a tiered node-attribution response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, DeepSizeOf)]
+pub struct SourceTierSpan {
+    pub file: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<usize>,
+}
+
+/// Tiered source attribution for a schematic selection.
+#[derive(Debug, Clone, Default, Serialize, DeepSizeOf)]
+pub struct SourceNodeTiersResponse {
+    pub exact: Vec<SourceTierSpan>,
+    pub contributing: Vec<SourceTierSpan>,
+    pub approximate: bool,
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Serialize, DeepSizeOf)]
 pub struct SourceMapResponse {
     pub files: Vec<String>,

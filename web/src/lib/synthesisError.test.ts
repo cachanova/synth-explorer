@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { LocalSynthesisError, isResourceFailure } from './localEngine'
+import { LocalSynthesisError, isResourceFailure } from './synthesisError'
 
 describe('isResourceFailure', () => {
   it('treats synthesis timeouts and resource exhaustion as resource failures', () => {

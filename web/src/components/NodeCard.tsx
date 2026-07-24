@@ -18,9 +18,17 @@ export function NodeCard({
   onExpand?: () => void
 }) {
   const store = useStore(
-    ({ design, files, highlightSources, openCone, openControlCone }) => ({
+    ({
       design,
       files,
+      editorHighlight,
+      highlightSources,
+      openCone,
+      openControlCone,
+    }) => ({
+      design,
+      files,
+      editorHighlight,
       highlightSources,
       openCone,
       openControlCone,
@@ -28,7 +36,14 @@ export function NodeCard({
     shallowEqual,
   )
   const params = node.params ? Object.entries(node.params) : []
-  const spans = designSrcSpans(node.src, store.files)
+  const tieredExact =
+    store.editorHighlight?.sourceTiers?.nodeIds.includes(node.id)
+      ? store.editorHighlight.sourceTiers.exact
+      : []
+  const spans =
+    tieredExact.length > 0
+      ? tieredExact
+      : designSrcSpans(node.src, store.files)
   const name = displayNodeName(node, drivingNet)
   const controls = controlsFor(node)
   const groupedMemory = node.members != null && symbolKind(node) === 'memory'
@@ -94,7 +109,13 @@ export function NodeCard({
                   ])
                 }
               >
-                <span className="t">{index === 0 ? 'primary' : 'contributor'}</span>
+                <span className="t">
+                  {index === 0
+                    ? 'primary'
+                    : tieredExact.length > 0
+                      ? 'exact'
+                      : 'contributor'}
+                </span>
                 <span className="n">{srcLabel(span)}</span>
               </button>
             ))}

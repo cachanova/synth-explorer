@@ -1943,6 +1943,7 @@ mod tests {
     use crate::design::AnalysisDesign;
     use crate::netlist::{parse_str, parse_value, select_top};
     use crate::source::types::SourceSelectionRange;
+    use rtl_correlate::NetlistDialect;
     use serde_json::json;
 
     fn statement_start_column(source: &str, line: usize, token: &str) -> usize {
@@ -2113,7 +2114,7 @@ endmodule
             vec![("top.sv".to_owned(), source.to_owned())],
             "gates",
             DelayProfile::Generic,
-            false,
+            NetlistDialect::Yosys,
         )
         .unwrap();
         let selection = design
@@ -2236,7 +2237,7 @@ endmodule
             vec![("top.sv".to_owned(), source.to_owned())],
             "gates",
             DelayProfile::Generic,
-            false,
+            NetlistDialect::Yosys,
         )
         .unwrap();
         let select = |line, column| {
@@ -2331,7 +2332,7 @@ endmodule
             vec![("top.sv".to_owned(), procedural_source.to_owned())],
             "gates",
             DelayProfile::Generic,
-            false,
+            NetlistDialect::Yosys,
         )
         .unwrap();
         let select_procedural = |token| {
@@ -2446,7 +2447,7 @@ endmodule
             vec![("top.vhdl".to_owned(), source.to_owned())],
             "gates",
             DelayProfile::Generic,
-            false,
+            NetlistDialect::Yosys,
         )
         .unwrap();
         let reverse = design.analysis.source_ranges_for_bits(&[5]);

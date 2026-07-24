@@ -15,20 +15,11 @@ const engine = vi.hoisted(() => ({
 
 vi.mock('./lib/localEngine', () => ({
   ...engine,
-  LocalSynthesisError: class LocalSynthesisError extends Error {
-    log: string
-    kind?: 'load' | 'timeout'
-    constructor(message: string, log = '', kind?: 'load' | 'timeout') {
-      super(message)
-      this.log = log
-      this.kind = kind
-    }
-  },
 }))
 
 import { getNetlist, synthesize } from './api'
 import { EngineLoadError } from './lib/engineLoad'
-import { LocalSynthesisError } from './lib/localEngine'
+import { LocalSynthesisError } from './lib/synthesisError'
 
 beforeEach(() => vi.clearAllMocks())
 

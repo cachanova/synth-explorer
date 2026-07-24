@@ -27,14 +27,17 @@ import {
 import {
   defaultDelayProfile,
   validateSynthesisRequest,
-  type MemoryHandling,
   type ValidatedSynthesis,
 } from './yosysScript'
 import { translatedYosysInput } from './vhdl'
+import type { SynthEngine } from './engines/types'
+import { vivadoEngine } from './engines/vivadoEngine'
+import { yosysEngine } from './engines/yosysEngine'
 import {
-  VivadoBridgeError,
-  synthesizeWithVivadoBridge,
-} from './vivadoBridge'
+  LocalSynthesisError,
+  abortError,
+  isAbortError,
+} from './synthesisError'
 
 interface AnalysisSummary {
   design_id: string
@@ -44,15 +47,6 @@ interface AnalysisSummary {
   warnings: string[]
 }
 
-interface YosysWorkerResponse {
-  ok: boolean
-  result?: YosysWorkerResult
-  error?: string
-  kind?: 'load'
-  log?: string
-}
-
-let idleYosysWorker: Worker | null = null
 let idleGhdlWorker: Worker | null = null
 
 export async function synthesizeLocally(
@@ -110,64 +104,10 @@ async function synthesizeLocallyWithFallback(
         yosysInput = translatedYosysInput(input, translation)
         ghdlLog = translation.log
       }
-      if (input.tool === 'vivado') {
-        const source = await runYosys(
-          { ...yosysInput, tool: undefined, mode: 'rtl', extraArgs: [] },
-          'map',
-          signal,
-        )
-        try {
-          const vivado = await synthesizeWithVivadoBridge(
-            {
-              files: input.files,
-              top: input.top!,
-              target: input.target!,
-              extraArgs: input.extraArgs,
-            },
-            signal,
-          )
-          generatedOutput = await runVivadoNormalizer(
-            vivado.netlist,
-            vivado.top,
-            source.sourceNetlistJson,
-            signal,
-          )
-          generatedOutput = {
-            ...generatedOutput,
-            vivadoTiming: vivado.timing,
-            log: joinLogs(
-              ghdlLog ? `GHDL:\n${ghdlLog}` : '',
-              `Vivado:\n${vivado.log}`,
-              `Yosys normalizer:\n${generatedOutput.log}`,
-            ),
-          }
-          ghdlLog = ''
-        } catch (error) {
-          if (error instanceof VivadoBridgeError) {
-            throw new LocalSynthesisError(
-              error.message,
-              error.log ?? '',
-              error.status === 0 ? 'bridge' : undefined,
-            )
-          }
-          throw error
-        }
-      } else {
-        try {
-          generatedOutput = await runYosys(yosysInput, 'map', signal)
-        } catch (error) {
-          if (isAbortError(error)) throw error
-          if (!isResourceFailure(error) || !isGeneric(input.mode)) throw error
-          generatedOutput = await runYosys(yosysInput, 'abstract', signal)
-          generatedMemoriesAbstracted = true
-        }
-      }
-      if (ghdlLog) {
-        generatedOutput = {
-          ...generatedOutput,
-          log: `GHDL:\n${ghdlLog}\n\nYosys:\n${generatedOutput.log}`,
-        }
-      }
+      const engine: SynthEngine = input.tool === 'vivado' ? vivadoEngine : yosysEngine
+      const produced = await engine.produce({ input, yosysInput, ghdlLog }, signal)
+      generatedOutput = produced.output
+      generatedMemoriesAbstracted = produced.memoriesAbstracted
       signal?.throwIfAborted()
       await putCachedSynthesis({
         key,
@@ -198,6 +138,7 @@ async function synthesizeLocallyWithFallback(
       sourceNetlistJson: output.sourceNetlistJson,
       filesJson: JSON.stringify(input.files),
       mode: input.mode,
+      tool: input.tool ?? 'yosys',
       profile,
     })
     signal?.throwIfAborted()
@@ -303,92 +244,6 @@ export function localNodes(_id: string, ids: number[]): Promise<NodesResponse> {
   return queryAnalysis('nodes', ids.slice(0, 200))
 }
 
-function runYosys(
-  input: ValidatedSynthesis,
-  memory: MemoryHandling,
-  signal?: AbortSignal,
-): Promise<YosysWorkerResult> {
-  return runYosysWorker({ input, memory }, signal)
-}
-
-function runVivadoNormalizer(
-  netlist: string,
-  top: string,
-  sourceNetlistJson: string,
-  signal?: AbortSignal,
-): Promise<YosysWorkerResult> {
-  return runYosysWorker(
-    { kind: 'vivado-normalize', netlist, top, sourceNetlistJson },
-    signal,
-  )
-}
-
-type YosysWorkerRequest =
-  | { input: ValidatedSynthesis; memory: MemoryHandling }
-  | { kind: 'vivado-normalize'; netlist: string; top: string; sourceNetlistJson: string }
-
-function runYosysWorker(
-  request: YosysWorkerRequest,
-  signal?: AbortSignal,
-): Promise<YosysWorkerResult> {
-  const worker = acquireYosysWorker()
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const finish = (action: () => void, reusable: boolean) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      signal?.removeEventListener('abort', onAbort)
-      if (reusable) releaseYosysWorker(worker)
-      else discardYosysWorker(worker)
-      action()
-    }
-    const onAbort = () => finish(() => reject(abortError()), false)
-    const timeout = setTimeout(() => {
-      finish(() => reject(new LocalSynthesisError('yosys timed out', '', 'timeout')), false)
-    }, 60_000)
-    worker.onmessage = (event: MessageEvent<YosysWorkerResponse>) => {
-      const response = event.data
-      finish(() => {
-        if (response.ok && response.result) resolve(response.result)
-        else {
-          reject(
-            new LocalSynthesisError(response.error ?? 'yosys failed', response.log ?? '', response.kind),
-          )
-        }
-      }, true)
-    }
-    // run() catches everything inside the worker, so an 'error' event here
-    // means the worker script itself failed to load or parse.
-    worker.onerror = (event) => {
-      finish(
-        () =>
-          reject(
-            new LocalSynthesisError(event.message || 'failed to load the Yosys worker', '', 'load'),
-          ),
-        false,
-      )
-    }
-    if (signal?.aborted) return onAbort()
-    signal?.addEventListener('abort', onAbort, { once: true })
-    try {
-      worker.postMessage(request)
-    } catch (error) {
-      finish(() => reject(error), false)
-    }
-  })
-}
-
-function joinLogs(...logs: string[]): string {
-  return logs.filter(Boolean).join('\n\n')
-}
-
-function createYosysWorker(): Worker {
-  return new Worker(new URL('../workers/yosys.worker.ts', import.meta.url), {
-    type: 'module',
-  })
-}
-
 function runGhdl(
   input: ValidatedSynthesis,
   signal?: AbortSignal,
@@ -468,57 +323,6 @@ function discardGhdlWorker(worker: Worker): void {
   if (!idleGhdlWorker) idleGhdlWorker = createGhdlWorker()
 }
 
-function acquireYosysWorker(): Worker {
-  const worker = idleYosysWorker ?? createYosysWorker()
-  idleYosysWorker = null
-  return worker
-}
-
-function releaseYosysWorker(worker: Worker): void {
-  idleYosysWorker?.terminate()
-  worker.onmessage = null
-  worker.onerror = null
-  idleYosysWorker = worker
-}
-
-function discardYosysWorker(worker: Worker): void {
-  worker.terminate()
-  if (!idleYosysWorker) idleYosysWorker = createYosysWorker()
-}
-
-function isGeneric(mode: ValidatedSynthesis['mode']): boolean {
-  return mode === 'gates' || mode === 'lut4' || mode === 'lut6'
-}
-
-export function isResourceFailure(error: unknown): boolean {
-  if (!(error instanceof LocalSynthesisError)) return false
-  // A load failure is a network problem, not a resource limit: retrying with
-  // abstracted memories could cache a degraded synthesis for a design that
-  // never exceeded anything.
-  if (error.kind === 'load') return false
-  if (error.kind === 'timeout') return true
-  const detail = `${error.message}\n${error.log}`
-  return /bad_alloc|out of memory|memory access out of bounds/i.test(detail)
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
-}
-
-export type SynthesisFailureKind = 'load' | 'timeout' | 'bridge'
-
-export class LocalSynthesisError extends Error {
-  readonly log: string
-  readonly kind?: SynthesisFailureKind
-
-  constructor(message: string, log: string, kind?: SynthesisFailureKind) {
-    super(message)
-    this.name = 'LocalSynthesisError'
-    this.log = log
-    this.kind = kind
-  }
-}
-
 function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise
   if (signal.aborted) return Promise.reject(abortError())
@@ -527,8 +331,4 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
     signal.addEventListener('abort', abort, { once: true })
     promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
   })
-}
-
-function abortError(): Error {
-  return new DOMException('The operation was aborted', 'AbortError')
 }

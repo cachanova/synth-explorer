@@ -1804,9 +1804,14 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await page
     .locator(`.g-node-body[data-graph-node-id="${declarationDirectNodeIds[0]}"]`)
     .click()
+  // Selecting a register highlights the statements that assign it (the
+  // exact tier), not its declaration line.
+  await expect(
+    page.locator('.cm-line.cm-src-hl', { hasText: 'state <= next_state;' }),
+  ).toBeVisible()
   await expect(
     page.locator('.cm-line.cm-src-hl', { hasText: 'state_t state;' }),
-  ).toBeVisible()
+  ).toHaveCount(0)
   await expect.poll(async () => (await workerCounts()).source).toBe(sourceQueriesBeforeReverse)
   await focus.uncheck()
   await expect(page.locator('.g-node-body')).toHaveCount(fullNodeIds.length)

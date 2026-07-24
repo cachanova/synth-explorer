@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::analysis::{
     ConeDir, ConeOptions, FullNetlistOptions, GroupExpansionOptions, MAX_GROUP_EXPANSION_NODES,
     MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort, SourceSelectionOptions, TimingEstimate,
@@ -152,6 +153,7 @@ impl AnalysisSession {
         source_netlist_json: &str,
         files_json: &str,
         mode: &str,
+        tool: &str,
         profile: &str,
     ) -> Result<AnalysisSession, JsValue> {
         let netlist: YosysNetlist = parse_json(netlist_json, "netlist")?;
@@ -171,7 +173,7 @@ impl AnalysisSession {
                 .collect(),
             mode,
             profile,
-            false,
+            NetlistDialect::from_tool(tool),
         )
         .map_err(|error| js_error(error.to_string()))?;
         Ok(Self {
@@ -194,6 +196,17 @@ impl AnalysisSession {
 
     pub fn endpoints_json(&self) -> Result<String, JsValue> {
         to_json(self.design.analysis.endpoints())
+    }
+
+    pub fn source_for_nodes_json(&self, ids_json: &str) -> Result<String, JsValue> {
+        let ids: Vec<u32> = parse_json(ids_json, "node ids")?;
+        // Synthetic group ids resolve to their member nodes, so a grouped
+        // bus register attributes as the union of its bits.
+        let (roots, roots_truncated) =
+            self.resolve_projection_roots(&ids, Some(&self.design.grouping))?;
+        let mut response = self.design.source_tiers_for_nodes(&roots);
+        response.truncated |= roots_truncated;
+        to_json(&response)
     }
 
     pub fn timing_json(&self, query_json: &str) -> Result<String, JsValue> {
@@ -610,6 +623,7 @@ mod tests {
                 .expect("source netlist JSON is present"),
             &files,
             mode,
+            "yosys",
             profile,
         )
         .expect("fixture session builds")
@@ -1024,5 +1038,37 @@ mod tests {
             validate_single_group_expansion(&[12], 10, 2, 0),
             Err("expanded node is not a grouped instance")
         );
+    }
+
+    #[test]
+    fn source_for_nodes_resolves_synthetic_group_ids_to_member_unions() {
+        let session = session("gates", "generic");
+        let base = session.design.graph.nodes.len() as u32;
+        let group_index = session
+            .design
+            .grouping
+            .groups
+            .iter()
+            .position(|group| !group.members.is_empty())
+            .expect("fixture design produces at least one group");
+        let members = session.design.grouping.groups[group_index].members.clone();
+
+        let group_response = session
+            .source_for_nodes_json(&serde_json::to_string(&[base + group_index as u32]).unwrap())
+            .expect("group id resolves");
+        let member_response = session
+            .source_for_nodes_json(&serde_json::to_string(&members).unwrap())
+            .expect("member ids resolve");
+        // A synthetic group id attributes exactly as the union of its
+        // members, and the wire shape keeps its snake_case contract.
+        assert_eq!(group_response, member_response);
+        let parsed: serde_json::Value = serde_json::from_str(&group_response).unwrap();
+        for key in ["exact", "contributing", "approximate", "truncated"] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
+        }
+        for span in parsed["exact"].as_array().unwrap() {
+            assert!(span.get("start_line").is_some());
+            assert!(span.get("file").is_some());
+        }
     }
 }
