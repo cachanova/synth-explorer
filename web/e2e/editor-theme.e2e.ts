@@ -30,6 +30,20 @@ async function computedBackground(locator: Locator, cssVariable: string) {
   }, cssVariable)
 }
 
+async function computedBackgroundValue(locator: Locator, value: string) {
+  return locator.evaluate((element, backgroundColor) => {
+    const probe = document.createElement('span')
+    probe.style.backgroundColor = backgroundColor
+    document.body.append(probe)
+    const result = {
+      actual: getComputedStyle(element).backgroundColor,
+      expected: getComputedStyle(probe).backgroundColor,
+    }
+    probe.remove()
+    return result
+  }, value)
+}
+
 async function schematicContrast(page: Page) {
   return page.evaluate(() => {
     const canvas = document.createElement('canvas')
@@ -183,6 +197,7 @@ test('keeps dark-mode schematic gates and wires distinct in every palette', asyn
 
   await page.getByRole('button', { name: 'Settings' }).click()
   const root = page.locator('html')
+  const stage = page.locator('.graph-stage')
   const themes = page.getByRole('radiogroup', { name: 'Color theme' })
 
   for (const [index, palette] of PALETTES.entries()) {
@@ -190,6 +205,15 @@ test('keeps dark-mode schematic gates and wires distinct in every palette', asyn
     await expect(theme).toContainText(palette.label)
     await theme.click()
     await expect(root).toHaveAttribute('data-palette', palette.id)
+    await expect(root).toHaveAttribute('data-theme', 'dark')
+    const paletteCanvas = await computedBackgroundValue(
+      stage,
+      palette.swatch.ground,
+    )
+    expect(
+      paletteCanvas.actual,
+      `${palette.label} canvas`,
+    ).toBe(paletteCanvas.expected)
 
     const contrast = await schematicContrast(page)
     expect(
