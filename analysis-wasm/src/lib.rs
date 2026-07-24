@@ -5,6 +5,7 @@ use synth_explorer_analysis::analysis::{
     MAX_PATH_RESULTS, MAX_SUBGRAPH_NODES, PathSort, SourceSelectionOptions, TimingEstimate,
 };
 use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
+use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::grouping::{GroupPartition, GroupingProjection};
 use synth_explorer_analysis::netlist::{YosysNetlist, select_top};
@@ -152,6 +153,7 @@ impl AnalysisSession {
         source_netlist_json: &str,
         files_json: &str,
         mode: &str,
+        tool: &str,
         profile: &str,
     ) -> Result<AnalysisSession, JsValue> {
         let netlist: YosysNetlist = parse_json(netlist_json, "netlist")?;
@@ -171,7 +173,7 @@ impl AnalysisSession {
                 .collect(),
             mode,
             profile,
-            false,
+            NetlistDialect::from_tool(tool),
         )
         .map_err(|error| js_error(error.to_string()))?;
         Ok(Self {
@@ -610,6 +612,7 @@ mod tests {
                 .expect("source netlist JSON is present"),
             &files,
             mode,
+            "yosys",
             profile,
         )
         .expect("fixture session builds")

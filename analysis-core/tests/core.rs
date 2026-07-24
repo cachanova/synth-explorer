@@ -3,6 +3,7 @@ use synth_explorer_analysis::analysis::{
     Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions,
 };
 use synth_explorer_analysis::delay_model::DelayProfile;
+use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
 use synth_explorer_analysis::grouping::{
@@ -352,7 +353,7 @@ fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
         vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
         DelayProfile::Series7,
-        false,
+        NetlistDialect::Yosys,
     )
     .unwrap();
 
@@ -414,7 +415,7 @@ fn grouped_netlist_keeps_mixed_vivado_lutram_shapes_in_one_memory() {
         vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
         DelayProfile::Series7,
-        false,
+        NetlistDialect::Yosys,
     )
     .unwrap();
 
@@ -493,7 +494,7 @@ fn grouped_netlist_stacks_parallel_srl_lanes_without_a_source_memory() {
         vec![("srl_pipe.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
         DelayProfile::Series7,
-        false,
+        NetlistDialect::Yosys,
     )
     .unwrap();
 

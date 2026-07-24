@@ -5,8 +5,6 @@ import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import { bundledExamples } from './lib/examples'
 import { EngineLoadError } from './lib/engineLoad'
 import {
-  LocalSynthesisError,
-  type SynthesisFailureKind,
   localCone,
   localExpandGroup,
   localEndpoints,
@@ -19,6 +17,10 @@ import {
   localTiming,
   synthesizeLocally,
 } from './lib/localEngine'
+import {
+  LocalSynthesisError,
+  type SynthesisFailureKind,
+} from './lib/synthesisError'
 import type {
   DelayModel,
   EndpointsResponse,

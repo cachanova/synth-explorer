@@ -9,6 +9,7 @@ export interface AnalysisInitialization {
   sourceNetlistJson: string
   filesJson: string
   mode: string
+  tool: string
   profile: string
 }
 
@@ -52,6 +53,7 @@ async function handle(request: AnalysisWorkerRequest) {
         payload.sourceNetlistJson,
         payload.filesJson,
         payload.mode,
+        payload.tool,
         payload.profile,
       )
       respond({ id: request.id, ok: true, result: parse(session.summary_json()) })

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use synth_explorer_analysis::analysis::{SourceSelectionOptions, SourceSelectionResult};
 use synth_explorer_analysis::delay_model::DelayProfile;
+use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::netlist::YosysNetlist;
 use synth_explorer_analysis::source::SourceSelectionRange;
@@ -224,7 +225,7 @@ fn build_design(fixture: &Fixture, files: Vec<(String, String)>) -> AnalysisDesi
         files,
         fixture.mode.as_str(),
         fixture.profile,
-        false,
+        NetlistDialect::Yosys,
     )
     .unwrap_or_else(|error| panic!("failed to build fixture {}: {error}", fixture.name))
 }

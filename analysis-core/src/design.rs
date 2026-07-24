@@ -5,6 +5,7 @@ use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
+use rtl_correlate::NetlistDialect;
 use crate::source::{SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance};
 use deepsize::DeepSizeOf;
 use std::collections::HashMap;
@@ -37,7 +38,7 @@ impl AnalysisDesign {
         files: Vec<(String, String)>,
         mode: impl Into<String>,
         delay_profile: DelayProfile,
-        include_vivado_procedural_ranges: bool,
+        dialect: NetlistDialect,
     ) -> Result<Self, DesignBuildError> {
         let (top, module) =
             select_top(netlist, None).map_err(|error| DesignBuildError::Top(error.to_string()))?;
@@ -47,7 +48,7 @@ impl AnalysisDesign {
             .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
         let mut source_provenance =
             recover_source_provenance(&graph, source_netlist, files.clone());
-        if include_vivado_procedural_ranges {
+        if dialect.includes_procedural_ranges() {
             source_provenance
                 .ranges
                 .extend(procedural_ranges(&source_provenance.procedural_targets));
