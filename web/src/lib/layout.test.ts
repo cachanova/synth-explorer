@@ -21,6 +21,8 @@ import {
   interpretResult,
   LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
   LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
+  layoutCollapsedGroupWithSchemWeave,
+  layoutExpandedGroupWithSchemWeave,
   MAX_GLOBAL_LAYOUT_COMPONENTS,
   layoutSubgraph,
   NETWORK_SIMPLEX_EDGE_LIMIT,
@@ -2729,6 +2731,71 @@ describe('schematic layout sizing', () => {
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
+  it('aborts an expansion without letting its stale response replace a later expansion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    const base = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+    const controller = new AbortController()
+
+    const stale = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      controller.signal,
+      [group],
+    )
+    const first = FakeWorker.instances[0]
+    const staleHandler = first.onmessage
+    const firstRequest = first.requests[0]
+
+    controller.abort()
+    await expect(stale).rejects.toMatchObject({ name: 'AbortError' })
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const latest = layoutExpandedGroupWithSchemWeave(
+      sub,
+      base,
+      group,
+      undefined,
+      [group],
+    )
+    const replacement = FakeWorker.instances[1]
+    const replacementRequest = replacement.requests[0]
+    staleHandler?.({
+      data: {
+        id: firstRequest.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+    replacement.onmessage?.({
+      data: {
+        id: replacementRequest.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+
+    await expect(latest).resolves.toMatchObject({ width: 76, height: 66 })
+    expect(FakeWorker.instances).toHaveLength(2)
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
   it('reuses completed geometry for an equivalent fresh subgraph', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const firstSubgraph: Subgraph = {
@@ -3171,6 +3238,60 @@ describe('schematic layout sizing', () => {
       data: { id: replacement.requests[0].id, ok: true, result: geometry },
     } as MessageEvent)
     await expect(current).resolves.toMatchObject({ width: 76 })
+    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('times out a collapse and lets the next collapse use a fresh worker', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const baseGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    const expanded = hydrateLayoutResult(sub, baseGeometry)
+    const group = { id: 90, members: [1], referenceHeight: 66 }
+
+    const timedOut = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      sub,
+      expanded,
+      group,
+      [],
+    )
+    const first = FakeWorker.instances[0]
+    const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
+      name: 'LayoutTimeoutError',
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await timeoutExpectation
+    expect(first.requests).toHaveLength(1)
+    expect(first.terminate).toHaveBeenCalledOnce()
+
+    const current = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      sub,
+      expanded,
+      group,
+      [],
+    )
+    const replacement = FakeWorker.instances[1]
+    const request = replacement.requests[0]
+    replacement.onmessage?.({
+      data: {
+        id: request.id,
+        ok: true,
+        result: {
+          status: 'layout',
+          geometry: baseGeometry,
+          degraded: false,
+        },
+      },
+    } as MessageEvent)
+
+    await expect(current).resolves.toMatchObject({ width: 76, height: 66 })
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 

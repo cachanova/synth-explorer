@@ -382,6 +382,33 @@ it('prepares expansion and collapse contracts without returning to the UI thread
   const snapshot = compactGeometry.schemWeaveSnapshot
   expect(snapshot).toBeDefined()
 
+  const malformedExpand = vi.fn((serialized: string) => {
+    const request = JSON.parse(serialized) as {
+      expanded_graph: SchemWeaveGraph
+    }
+    const layout = layoutFor(request.expanded_graph)
+    layout.nodes = layout.nodes.filter((node) => node.id !== group.members[0])
+    return JSON.stringify({
+      status: 'layout',
+      layout,
+    })
+  })
+  expect(runSchemWeaveWorkerRequest(
+    { ...engine, expand_group_json: malformedExpand },
+    {
+      id: 84,
+      kind: 'expand',
+      snapshot: snapshot!,
+      input: expanded,
+      group,
+      activeGroups: [group],
+    },
+  )).toEqual({
+    id: 84,
+    ok: false,
+    error: 'SchemWeave expansion omitted a grouped member',
+  })
+
   const expansionResponse = runSchemWeaveWorkerRequest(engine, {
     id: 82,
     kind: 'expand',
