@@ -3492,9 +3492,7 @@ export async function layoutExpandedGroupWithSchemWeave(
     worker.postMessage(request)
   })
   if (result.status === 'needs_full_relayout') {
-    return result.reason === 'work_limit'
-      ? refreshSchemWeaveLayout(sub, activeGroups, signal)
-      : null
+    return refreshSchemWeaveLayout(sub, activeGroups, signal)
   }
   return hydrateLayoutResult(sub, result.geometry)
 }
@@ -3555,9 +3553,7 @@ export async function layoutCollapsedGroupWithSchemWeave(
     worker.postMessage(request)
   })
   if (result.status === 'needs_full_relayout') {
-    return result.reason === 'work_limit'
-      ? refreshSchemWeaveLayout(compactSub, activeGroups, signal)
-      : null
+    return refreshSchemWeaveLayout(compactSub, activeGroups, signal)
   }
   return hydrateLayoutResult(compactSub, result.geometry)
 }
