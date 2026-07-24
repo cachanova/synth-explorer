@@ -3,6 +3,7 @@ import {
   buildSchemWeaveExpansionRequest,
   buildSchemWeaveLayoutRequest,
   interpretSchemWeaveResult,
+  SCHEMWEAVE_INCREMENTAL_WORK_LIMIT_ERROR_NAME,
   type ExpandedGroupLayout,
   type LayoutGeometry,
   type LayoutInput,
@@ -387,6 +388,20 @@ export function runSchemWeaveWorkerRequest(
       sessions,
     )
   } catch (error) {
+    if (
+      request.kind !== 'layout' &&
+      error instanceof Error &&
+      error.name === SCHEMWEAVE_INCREMENTAL_WORK_LIMIT_ERROR_NAME
+    ) {
+      return {
+        id: request.id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'work_limit',
+        },
+      }
+    }
     return {
       id: request.id,
       ok: false,

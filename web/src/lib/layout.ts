@@ -995,6 +995,16 @@ export interface SchemWeaveExpansionRequest {
 }
 
 const SCHEMWEAVE_EXPANDED_GROUP_KEEP_OUT = 30
+export const MAX_INCREMENTAL_BOUNDARY_BIT_MEMBERSHIPS = 262_144
+export const MAX_INCREMENTAL_BOUNDARY_MATCH_CHECKS = 262_144
+export const SCHEMWEAVE_INCREMENTAL_WORK_LIMIT_ERROR_NAME =
+  'SchemWeaveIncrementalWorkLimit'
+
+function incrementalBoundaryWorkLimit(message: string): never {
+  const error = new Error(message)
+  error.name = SCHEMWEAVE_INCREMENTAL_WORK_LIMIT_ERROR_NAME
+  throw error
+}
 
 export interface SchemWeaveCollapseRequest {
   expanded_graph: SchemWeaveGraph
@@ -1589,11 +1599,32 @@ function boundaryFragmentKey(
   return endpointKey == null ? null : `${endpointKey}|${fragment.netKey}`
 }
 
-function normalizedFragmentBits(
+function canonicalFragmentBits(
   fragment: SchemWeaveGraphCatalog['fragments'][number],
-): number[] {
-  return [...new Set(fragment.netBits ?? [])]
-    .sort((left, right) => left - right)
+): readonly number[] {
+  const bits = fragment.netBits ?? []
+  for (let index = 1; index < bits.length; index += 1) {
+    if (bits[index - 1] >= bits[index]) {
+      throw new Error(
+        `SchemWeave fragment ${fragment.inputIndex} has noncanonical net bits`,
+      )
+    }
+  }
+  return bits
+}
+
+function sortedNumberArrayContains(
+  values: readonly number[],
+  target: number,
+): boolean {
+  let low = 0
+  let high = values.length
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (values[middle] < target) low = middle + 1
+    else high = middle
+  }
+  return values[low] === target
 }
 
 /**
@@ -1696,8 +1727,7 @@ export function buildSchemWeaveExpansionRequest(
   interface CompactBoundaryTrunk {
     exactKey: string
     endpointKey: string
-    netBits: number[]
-    netBitSet: Set<number>
+    netBits: readonly number[]
     ids: number[]
   }
   interface ExpandedBoundaryEdge {
@@ -1705,7 +1735,23 @@ export function buildSchemWeaveExpansionRequest(
     exactKey: string
     endpointKey: string
     netKey: string
-    netBits: number[]
+    netBits: readonly number[]
+  }
+  let boundaryBitMemberships = 0
+  const boundedFragmentBits = (
+    fragment: SchemWeaveGraphCatalog['fragments'][number],
+  ): readonly number[] => {
+    boundaryBitMemberships += fragment.netBits?.length ?? 0
+    if (
+      boundaryBitMemberships >
+        MAX_INCREMENTAL_BOUNDARY_BIT_MEMBERSHIPS
+    ) {
+      incrementalBoundaryWorkLimit(
+        `incremental boundary metadata exceeds ` +
+        `${MAX_INCREMENTAL_BOUNDARY_BIT_MEMBERSHIPS} bit memberships`,
+      )
+    }
+    return canonicalFragmentBits(fragment)
   }
   const compactRetainedBySignature = new Map<string, number[]>()
   const compactTrunksByKey = new Map<string, CompactBoundaryTrunk>()
@@ -1736,7 +1782,7 @@ export function buildSchemWeaveExpansionRequest(
     if (endpointKey == null) {
       throw new Error(`failed to classify compact boundary edge ${edge.id}`)
     }
-    const netBits = normalizedFragmentBits(fragment)
+    const netBits = boundedFragmentBits(fragment)
     const trunk = compactTrunksByKey.get(boundaryKey)
     if (trunk) {
       if (compareNumberArrays(trunk.netBits, netBits) !== 0) {
@@ -1751,7 +1797,6 @@ export function buildSchemWeaveExpansionRequest(
       exactKey: boundaryKey,
       endpointKey,
       netBits,
-      netBitSet: new Set(netBits),
       ids: [edge.id],
     })
   })
@@ -1782,7 +1827,7 @@ export function buildSchemWeaveExpansionRequest(
         exactKey: `${endpointKey}|${fragment.netKey}`,
         endpointKey,
         netKey: fragment.netKey,
-        netBits: normalizedFragmentBits(fragment),
+        netBits: boundedFragmentBits(fragment),
       })
       return
     }
@@ -1828,11 +1873,6 @@ export function buildSchemWeaveExpansionRequest(
       byBit.set(bit, trunks)
     }
   }
-  for (const byBit of compactTrunksByEndpointBit.values()) {
-    for (const trunks of byBit.values()) {
-      trunks.sort((left, right) => left.exactKey.localeCompare(right.exactKey))
-    }
-  }
   const compareExpandedBoundary = (
     left: ExpandedBoundaryEdge,
     right: ExpandedBoundaryEdge,
@@ -1844,19 +1884,63 @@ export function buildSchemWeaveExpansionRequest(
     CompactBoundaryTrunk,
     ExpandedBoundaryEdge[]
   >()
+  const matchedTrunkByBitSignature = new Map<string, CompactBoundaryTrunk>()
+  let boundaryMatchChecks = 0
+  const containsExpandedBits = (
+    trunk: CompactBoundaryTrunk,
+    bits: readonly number[],
+  ) => {
+    for (const bit of bits) {
+      boundaryMatchChecks += 1
+      if (boundaryMatchChecks > MAX_INCREMENTAL_BOUNDARY_MATCH_CHECKS) {
+        incrementalBoundaryWorkLimit(
+          `incremental boundary matching exceeds ` +
+          `${MAX_INCREMENTAL_BOUNDARY_MATCH_CHECKS} containment checks`,
+        )
+      }
+      if (!sortedNumberArrayContains(trunk.netBits, bit)) return false
+    }
+    return true
+  }
   for (const expandedEdge of expandedBoundary.sort(compareExpandedBoundary)) {
     const candidates: CompactBoundaryTrunk[] = []
     if (expandedEdge.netBits.length > 0) {
-      const firstBit = expandedEdge.netBits[0]
-      const bitCandidates =
-        compactTrunksByEndpointBit.get(expandedEdge.endpointKey)
-          ?.get(firstBit) ?? []
-      for (const candidate of bitCandidates) {
+      const bitSignature =
+        `${expandedEdge.endpointKey}|${expandedEdge.netBits.join(',')}`
+      const cached = matchedTrunkByBitSignature.get(bitSignature)
+      if (cached) {
+        candidates.push(cached)
+      } else {
+        const byBit =
+          compactTrunksByEndpointBit.get(expandedEdge.endpointKey)
+        let bitCandidates: CompactBoundaryTrunk[] | undefined
+        for (const bit of expandedEdge.netBits) {
+          const owners = byBit?.get(bit)
+          if (!owners) {
+            bitCandidates = []
+            break
+          }
+          if (!bitCandidates || owners.length < bitCandidates.length) {
+            bitCandidates = owners
+          }
+        }
+        const exact = compactTrunksByKey.get(expandedEdge.exactKey)
         if (
-          expandedEdge.netBits.every((bit) => candidate.netBitSet.has(bit))
+          exact &&
+          exact.netBits.length > 0 &&
+          containsExpandedBits(exact, expandedEdge.netBits)
         ) {
-          candidates.push(candidate)
-          if (candidates.length > 1) break
+          candidates.push(exact)
+        }
+        for (const candidate of bitCandidates ?? []) {
+          if (candidate === exact) continue
+          if (containsExpandedBits(candidate, expandedEdge.netBits)) {
+            candidates.push(candidate)
+            if (candidates.length > 1) break
+          }
+        }
+        if (candidates.length === 1) {
+          matchedTrunkByBitSignature.set(bitSignature, candidates[0])
         }
       }
       if (candidates.length === 0) {
@@ -1898,9 +1982,10 @@ export function buildSchemWeaveExpansionRequest(
       trunk.netBits.length > 0 &&
       expandedEdges.every((edge) => edge.netBits.length > 0)
     ) {
-      const coveredBits = new Set(
-        expandedEdges.flatMap((edge) => edge.netBits),
-      )
+      const coveredBits = new Set<number>()
+      for (const expandedEdge of expandedEdges) {
+        for (const bit of expandedEdge.netBits) coveredBits.add(bit)
+      }
       const missingBits = trunk.netBits.filter((bit) => !coveredBits.has(bit))
       if (missingBits.length > 0) {
         throw new Error(

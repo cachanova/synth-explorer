@@ -416,6 +416,47 @@ it('keeps boundary bit containment assignments stable across edge permutations',
   )
 })
 
+it('matches max-cap shared-bit fanout without quadratic candidate scans', () => {
+  const memberCount = 1_000
+  const members = Array.from(
+    { length: memberCount },
+    (_, index) => 10 + index,
+  )
+  const compactEdges = Array.from({ length: MAX_GRAPH_EDGES }, (_, index) =>
+    expansionBoundaryEdge(
+      1,
+      100,
+      `compact-${index}`,
+      [0, index + 1],
+      `D${index}`,
+    )
+  )
+  const compact = expansionSnapshot(buildSchemWeaveLayoutRequest({
+    nodes: [expansionBoundaryNode(1), expansionBoundaryNode(100)],
+    edges: compactEdges,
+  }))
+  const expanded = buildSchemWeaveExpansionRequest(
+    compact,
+    {
+      nodes: [expansionBoundaryNode(1), ...members.map(expansionBoundaryNode)],
+      edges: Array.from({ length: MAX_GRAPH_EDGES }, (_, index) =>
+        expansionBoundaryEdge(
+          1,
+          members[index % memberCount],
+          `expanded-${index}`,
+          [0, index + 1],
+          `D${Math.floor(index / memberCount)}`,
+        )
+      ),
+    },
+    { id: 100, members },
+  )
+
+  expect(expanded.request.expansion.boundary_trunks).toHaveLength(
+    MAX_GRAPH_EDGES,
+  )
+}, 5_000)
+
 it('reconstructs inverse collapse after another group remains expanded', () => {
   const makeNode = (
     id: number,

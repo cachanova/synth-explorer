@@ -1,9 +1,12 @@
 import { expect, it, vi } from 'vitest'
-import type {
-  LayoutInput,
-  SchemWeaveGraph,
+import {
+  MAX_INCREMENTAL_BOUNDARY_BIT_MEMBERSHIPS,
+  type LayoutInput,
+  type SchemWeaveGraph,
 } from '../lib/layout'
-import type { SchemWeaveWorkerResult } from './schemweaveProtocol'
+import type {
+  SchemWeaveWorkerResult,
+} from './schemweaveProtocol'
 import { SCHEMWEAVE_BOUNDARY_BUNDLE_ERROR_NAME } from './schemweaveRuntime'
 import {
   createSchemWeaveWorkerSessionStore,
@@ -773,4 +776,107 @@ it('prepares group changes, preserves peers, and promotes the base session in LR
     },
   })
   expect(collapse_group_json).toHaveBeenCalledOnce()
+})
+
+it('falls back to a full layout when incremental boundary metadata exceeds its budget', () => {
+  const compact: LayoutInput = {
+    nodes: [
+      {
+        id: 1,
+        baseWidth: 62,
+        baseHeight: 46,
+        controlHeight: 0,
+        register: false,
+        boundary: 'internal',
+      },
+      {
+        id: 100,
+        baseWidth: 62,
+        baseHeight: 46,
+        controlHeight: 0,
+        register: false,
+        boundary: 'internal',
+      },
+    ],
+    edges: [{
+      from: 1,
+      to: 100,
+      fromPort: 'Y',
+      toPort: 'D',
+      control: false,
+      netBits: [1],
+      netKey: 'compact',
+    }],
+  }
+  const expanded: LayoutInput = {
+    nodes: [compact.nodes[0], { ...compact.nodes[1], id: 10 }],
+    edges: [{
+      ...compact.edges[0],
+      to: 10,
+      netKey: 'expanded',
+    }],
+  }
+  const layoutFor = (graph: SchemWeaveGraph) => ({
+    nodes: graph.nodes.map((node, index) => ({
+      id: node.id,
+      x: index * 100,
+      y: 0,
+      width: node.width,
+      height: node.height,
+    })),
+    edges: graph.edges.map((edge) => ({
+      id: edge.id,
+      points: [],
+    })),
+    width: graph.nodes.length * 100,
+    height: 50,
+  })
+  const layout_json = vi.fn((serialized: string) => {
+    const request = JSON.parse(serialized) as { graph: SchemWeaveGraph }
+    return JSON.stringify(layoutFor(request.graph))
+  })
+  const expand_group_json = vi.fn()
+  const sessions = createSchemWeaveWorkerSessionStore({
+    epoch: TEST_SESSION_EPOCH,
+  })
+  const compactResponse = runSchemWeaveWorkerRequest(
+    { layout_json, expand_group_json },
+    { id: 90, kind: 'layout', input: compact },
+    sessions,
+  )
+  if (
+    !compactResponse.ok ||
+    compactResponse.result.status !== 'layout' ||
+    !compactResponse.result.geometry.schemWeaveSession
+  ) {
+    throw new Error('compact layout omitted its worker session')
+  }
+  const handle = compactResponse.result.geometry.schemWeaveSession
+  const retained = sessions.entries.get(handle.sessionId)
+  if (!retained) throw new Error('compact worker session was not retained')
+  retained.snapshot.catalog.fragments[0].netBits = Array.from(
+    { length: MAX_INCREMENTAL_BOUNDARY_BIT_MEMBERSHIPS + 1 },
+    (_, bit) => bit,
+  )
+
+  expect(runSchemWeaveWorkerRequest(
+    { layout_json, expand_group_json },
+    {
+      id: 91,
+      kind: 'expand',
+      session: handle,
+      input: expanded,
+      group: { id: 100, members: [10] },
+      activeGroups: [{ id: 100, members: [10] }],
+    },
+    sessions,
+  )).toEqual({
+    id: 91,
+    ok: true,
+    result: {
+      status: 'needs_full_relayout',
+      reason: 'work_limit',
+    },
+  })
+  expect(expand_group_json).not.toHaveBeenCalled()
 })
