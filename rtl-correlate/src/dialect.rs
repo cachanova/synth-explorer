@@ -72,19 +72,12 @@ impl NetlistDialect {
     /// intermediate nets, and treating them as boundaries would attribute
     /// wrong enclosed regions. They stay unresolvable so cone walks expand
     /// through them and flag the superset approximate.
-    pub fn net_base_candidates(self, name: &str) -> Vec<String> {
+    pub fn net_base_candidates(self, name: &str) -> NetBaseCandidates<'_> {
+        let mut candidates = NetBaseCandidates::default();
         if self != Self::Vivado {
-            return Vec::new();
+            return candidates;
         }
-        let mut candidates = Vec::new();
-        let mut push = |candidate: &str| {
-            if candidate != name && !candidate.is_empty() {
-                let owned = candidate.to_owned();
-                if !candidates.contains(&owned) {
-                    candidates.push(owned);
-                }
-            }
-        };
+        let mut push = |candidate| candidates.push(name, candidate);
 
         // FSM re-encoding prefixes; the remainder is retried through every
         // later rule.
@@ -139,16 +132,48 @@ impl NetlistDialect {
                 pin = cell;
             }
         }
-        for offset in pin
-            .rmatch_indices("_reg")
-            .map(|(offset, _)| offset)
-            .filter(|&offset| generated_reg_suffix(&pin[offset..]))
-            .collect::<Vec<_>>()
-        {
-            push(&pin[..offset]);
+        for (offset, _) in pin.rmatch_indices("_reg") {
+            if generated_reg_suffix(&pin[offset..]) {
+                push(&pin[..offset]);
+            }
         }
 
         candidates
+    }
+}
+
+/// Zero-allocation candidate list: every candidate is a subslice of the
+/// queried name, and the fixed capacity comfortably exceeds the maximum
+/// rule chain (prefix strip + buffer peels + pin strip + `_reg` peels).
+/// The mapped-side walk consults this per unresolvable net per edge, so
+/// it must not touch the heap.
+#[derive(Debug, Default)]
+pub struct NetBaseCandidates<'a> {
+    items: [&'a str; 8],
+    len: usize,
+    next: usize,
+}
+
+impl<'a> NetBaseCandidates<'a> {
+    fn push(&mut self, name: &str, candidate: &'a str) {
+        if candidate.is_empty() || candidate == name || self.len == self.items.len() {
+            return;
+        }
+        if self.items[..self.len].contains(&candidate) {
+            return;
+        }
+        self.items[self.len] = candidate;
+        self.len += 1;
+    }
+}
+
+impl<'a> Iterator for NetBaseCandidates<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        let item = *self.items.get(self.next).filter(|_| self.next < self.len)?;
+        self.next += 1;
+        Some(item)
     }
 }
 
@@ -246,7 +271,10 @@ mod tests {
     }
 
     fn net_candidates(dialect: NetlistDialect, name: &str) -> Vec<String> {
-        dialect.net_base_candidates(name)
+        dialect
+            .net_base_candidates(name)
+            .map(str::to_owned)
+            .collect()
     }
 
     #[test]
@@ -277,6 +305,36 @@ mod tests {
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "FSM_onehot_state_reg_n_0_[0]"),
             ["state_reg_n_0_[0]", "state_reg", "state"],
+        );
+    }
+
+    #[test]
+    fn vivado_flop_pin_parser_rejects_malformed_tails() {
+        // Non-numeric pin tails and malformed bit indices are not flop pin
+        // nets; inventing a base there would fabricate boundaries.
+        assert!(net_candidates(NetlistDialect::Vivado, "sig_n_foo").is_empty());
+        assert!(net_candidates(NetlistDialect::Vivado, "sig_n_").is_empty());
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "sig_reg_n_0_[x]"),
+            // The `_reg` rule still applies to the un-stripped name; the
+            // malformed pin tail itself must not produce `sig_reg`/`sig`.
+            Vec::<String>::new(),
+        );
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "state_reg_n_0_[12]"),
+            ["state_reg", "state"],
+        );
+    }
+
+    #[test]
+    fn vivado_fsm_recode_prefixes_all_unmangle() {
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "FSM_sequential_state_reg_n_0"),
+            ["state_reg_n_0", "state_reg", "state"],
+        );
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "FSM_gray_state_reg"),
+            ["state_reg", "state"],
         );
     }
 

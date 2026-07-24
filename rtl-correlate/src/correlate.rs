@@ -186,6 +186,12 @@ impl CorrelationIndex {
                                 entry.select_bits.push(net);
                             } else if mux {
                                 entry.data_bits.push(net);
+                            } else if seq && (port == "D" || port == "AD") {
+                                // Register data inputs, distinct from
+                                // clock/enable/reset pins: the D-cone
+                                // stand-in for feeds_registers must not
+                                // pull control cones into the exact tier.
+                                entry.data_bits.push(net);
                             }
                         }
                     }
@@ -247,7 +253,11 @@ impl CorrelationIndex {
         let (input_bits, inputs_missing) = self.resolve_names(&cut.inputs, true);
         result.approximate |= outputs_missing || inputs_missing;
         // Logic feeding a register through an anonymous net attributes as
-        // that register's D-cone: a superset of the selection.
+        // that register's D-cone: a superset of the selection. Only the
+        // data pins seed the region — clock/enable/reset cones belong to
+        // the register's own attribution, not a neighboring LUT's exact
+        // tier. Registers without a recognized data pin contribute nothing
+        // rather than an over-wide guess.
         for q_name in &cut.feeds_registers {
             let (q_bits, _) = self.resolve_names(std::slice::from_ref(q_name), false);
             for bit in q_bits {
@@ -256,7 +266,7 @@ impl CorrelationIndex {
                 };
                 let entry = &self.cells[cell as usize];
                 if entry.seq {
-                    output_bits.extend(entry.input_bits.iter().copied());
+                    output_bits.extend(entry.data_bits.iter().copied());
                     result.approximate = true;
                 }
             }
@@ -552,13 +562,13 @@ impl CorrelationIndex {
         // prefixes); bussed forms like `data_in_IBUF[3]` unmangle their
         // base and keep the bit index.
         for candidate in self.dialect.net_base_candidates(normalized) {
-            if let Some(bits) = self.bits_by_name.get(candidate.as_str()) {
+            if let Some(bits) = self.bits_by_name.get(candidate) {
                 return Resolved::Bus(bits);
             }
         }
         if let Some((base, index)) = split_bit_suffix(normalized) {
             for candidate in self.dialect.net_base_candidates(base) {
-                if let Some(bits) = self.bits_by_name.get(candidate.as_str()) {
+                if let Some(bits) = self.bits_by_name.get(candidate) {
                     return Resolved::Bit(bits, index);
                 }
             }

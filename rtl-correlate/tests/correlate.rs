@@ -302,3 +302,182 @@ fn register_conditions_carry_select_cone_sources() {
     assert_eq!(lines(&attribution.conditions), vec![4]);
     assert!(!attribution.approximate);
 }
+
+#[test]
+fn bussed_buffer_nets_resolve_their_base_and_bit() {
+    // `data_in_IBUF[3]` blocks suffix stripping until the bit splits off;
+    // the base then unmangles and the bit index must survive.
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {"data_in": {"direction": "input", "bits": [4, 5, 6, 7]}},
+              "cells": {
+                "$and$top.sv:2$1": {
+                  "type": "$and",
+                  "attributes": {"src": "top.sv:2.10-2.20"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [7], "B": [6], "Y": [9]}
+                }
+              },
+              "netnames": {
+                "data_in": {"bits": [4, 5, 6, 7]},
+                "y": {"bits": [9]}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Vivado).expect("index builds");
+    assert!(index.is_boundary("data_in_IBUF[3]"));
+    assert!(index.is_boundary("data_in_OBUF[0]"));
+    assert!(!index.is_boundary("data_in_IBUF[9]"), "out-of-range bit");
+    // The single-bit resolution binds the right bit: an attribution whose
+    // inputs stop at data_in_IBUF[3] (net 7) must enclose the $and.
+    let attribution = index.attribute(
+        &MappedCut {
+            outputs: vec!["y".to_owned()],
+            inputs: vec!["data_in_IBUF[3]".to_owned(), "data_in_IBUF[2]".to_owned()],
+            feeds_registers: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert_eq!(lines(&attribution.exact), vec![2]);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn genuine_rtl_names_shadow_vivado_unmangling() {
+    // A design may legitimately declare `q_OBUF`; exact match must win
+    // over unmangling it to `q`.
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {"q": {"direction": "output", "bits": [2]}},
+              "cells": {
+                "$not$top.sv:3$1": {
+                  "type": "$not",
+                  "attributes": {"src": "top.sv:3.5-3.15"},
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [4], "Y": [2]}
+                }
+              },
+              "netnames": {
+                "q": {"bits": [2]},
+                "q_OBUF": {"bits": [4]}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Vivado).expect("index builds");
+    // Attribution whose output is the literal `q_OBUF` net (bit 4) must
+    // stop there — bit 4 has no driver, so nothing is enclosed. If
+    // unmangling won instead, the output would be `q` (bit 2) and the $not
+    // on line 3 would be wrongly attributed.
+    let attribution = index.attribute(
+        &MappedCut {
+            outputs: vec!["q_OBUF".to_owned()],
+            inputs: Vec::new(),
+            feeds_registers: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert!(attribution.exact.is_empty());
+}
+
+#[test]
+fn feeds_registers_seed_the_rtl_d_cone() {
+    // Crate-level: a cut that only names the register it feeds must
+    // attribute the register's D-cone, flagged as a superset.
+    let attribution = index().attribute(
+        &MappedCut {
+            outputs: Vec::new(),
+            inputs: vec!["sum".to_owned(), "b".to_owned()],
+            feeds_registers: vec!["q".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    // The full D-cone is enclosed: both branch assignments (5, 6) and the
+    // gated path (3) that reaches D outside the declared input boundaries.
+    // A superset by design, so approximate is set.
+    assert_eq!(lines(&attribution.exact), vec![3, 5, 6]);
+    assert!(attribution.approximate);
+}
+
+#[test]
+fn feeds_registers_exclude_enable_and_control_cones() {
+    // $dffe with a combinationally-driven enable: the enable condition
+    // (line 7) must not leak into the exact tier of logic that merely
+    // feeds the register's D pin.
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "clk": {"direction": "input", "bits": [2]},
+                "sel": {"direction": "input", "bits": [3]},
+                "a": {"direction": "input", "bits": [4]},
+                "b": {"direction": "input", "bits": [6]},
+                "q": {"direction": "output", "bits": [12]}
+              },
+              "cells": {
+                "$procmux$1": {
+                  "type": "$mux",
+                  "attributes": {"src": "top.sv:5.13-5.22|top.sv:6.13-6.20"},
+                  "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"},
+                  "connections": {"A": [4], "B": [6], "S": [3], "Y": [14]}
+                },
+                "$and$top.sv:7$2": {
+                  "type": "$and",
+                  "attributes": {"src": "top.sv:7.9-7.22"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [3], "B": [4], "Y": [16]}
+                },
+                "$procdff$3": {
+                  "type": "$dffe",
+                  "attributes": {"src": "top.sv:4.3-7.22"},
+                  "port_directions": {"CLK": "input", "D": "input", "EN": "input", "Q": "output"},
+                  "connections": {"CLK": [2], "D": [14], "EN": [16], "Q": [12]}
+                }
+              },
+              "netnames": {
+                "q": {"bits": [12]},
+                "a": {"bits": [4]},
+                "b": {"bits": [6]},
+                "sel": {"bits": [3]}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute(
+        &MappedCut {
+            outputs: Vec::new(),
+            inputs: vec!["a".to_owned(), "b".to_owned(), "sel".to_owned()],
+            feeds_registers: vec!["q".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert_eq!(lines(&attribution.exact), vec![5, 6]);
+    assert!(attribution.approximate);
+}
