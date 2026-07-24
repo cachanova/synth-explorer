@@ -2768,17 +2768,23 @@ describe('schematic layout sizing', () => {
     )
     const replacement = FakeWorker.instances[1]
     const replacementRequest = replacement.requests[0]
+    let latestSettled = false
+    void latest.finally(() => {
+      latestSettled = true
+    })
     staleHandler?.({
       data: {
         id: firstRequest.id,
         ok: true,
         result: {
           status: 'layout',
-          geometry: baseGeometry,
+          geometry: { ...baseGeometry, width: 999 },
           degraded: false,
         },
       },
     } as MessageEvent)
+    await Promise.resolve()
+    expect(latestSettled).toBe(false)
     replacement.onmessage?.({
       data: {
         id: replacementRequest.id,
