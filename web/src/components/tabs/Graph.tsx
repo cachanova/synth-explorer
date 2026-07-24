@@ -4,7 +4,6 @@ import {
   expandGroup,
   getCone,
   getNetlist,
-  getSourceRangesForBits,
 } from '../../api'
 import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
 import {
@@ -16,10 +15,6 @@ import {
   applyGroupExpansions,
   type ExpandedGroup,
 } from '../../lib/groupExpansion'
-import {
-  createLatestRequestQueue,
-  type LatestRequestQueue,
-} from '../../lib/latest'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
@@ -30,7 +25,6 @@ import {
 } from '../../lib/layout'
 import {
   sourceProbePresentation,
-  sourceRangeProbeMessage,
 } from '../../lib/sourceProbe'
 import { sourceTierMessage } from '../../lib/sourceTiers'
 import { controlDriverIds, controlLabel } from '../../lib/symbols'
@@ -81,51 +75,43 @@ interface FullGraphCacheEntry {
   promise: Promise<Subgraph>
 }
 
-interface EdgeSourceProbe {
-  designId: string
-  bits: number[]
-}
-
 export function Graph({ active }: { active: boolean }) {
   const store = useStore(
     ({
       analysisState,
-      activeFileName,
       design,
       coneReq,
       graphOptions,
       clearGraphSelection,
       registerGraphProbeReset,
       editorHighlight,
-      highlightSources,
       selectSchematicNodes,
+      selectSchematicNets,
       openControlCone,
     }) => ({
       analysisState,
-      activeFileName,
       design,
       coneReq,
       graphOptions,
       clearGraphSelection,
       registerGraphProbeReset,
       editorHighlight,
-      highlightSources,
       selectSchematicNodes,
+      selectSchematicNets,
       openControlCone,
     }),
     shallowEqual,
   )
   const {
     analysisState,
-    activeFileName,
     design,
     coneReq,
     graphOptions,
     clearGraphSelection,
     registerGraphProbeReset,
     editorHighlight,
-    highlightSources,
     selectSchematicNodes,
+    selectSchematicNets,
     openControlCone,
   } = store
 
@@ -144,14 +130,15 @@ export function Graph({ active }: { active: boolean }) {
   const [fetchingGroups, setFetchingGroups] = useState(false)
   const [layingOut, setLayingOut] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [sourceProbeNotice, setSourceProbeNotice] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
+  const [selectedNetNames, setSelectedNetNames] = useState<string[]>([])
   const [sourceStatus, setSourceStatus] = useState<SourceSelectionStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
   const selectGraphNode = useCallback(
     (node: GraphNode | null) => {
       setSelected(node)
+      setSelectedNetNames([])
       selectSchematicNodes(node ? [node.id] : [])
     },
     [selectSchematicNodes],
@@ -168,42 +155,11 @@ export function Graph({ active }: { active: boolean }) {
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
   const currentDesignIdRef = useRef(design?.design_id)
   currentDesignIdRef.current = design?.design_id
-  const highlightSourcesRef = useRef(highlightSources)
-  highlightSourcesRef.current = highlightSources
-  const edgeSourceProbeRef = useRef<LatestRequestQueue<EdgeSourceProbe> | null>(null)
-  if (!edgeSourceProbeRef.current) {
-    edgeSourceProbeRef.current = createLatestRequestQueue(
-      ({ designId, bits }: EdgeSourceProbe) => getSourceRangesForBits(designId, bits),
-      (response, request) => {
-        if (currentDesignIdRef.current !== request.designId) return
-        setSourceProbeNotice(
-          sourceRangeProbeMessage(response.truncated, response.approximate),
-        )
-        highlightSourcesRef.current(
-          response.ranges.map((range) => ({
-            file: range.file,
-            startLine: range.start_line,
-            startCol: range.start_column ?? 1,
-            endLine: range.end_line,
-            endCol: range.end_column ?? range.start_column ?? 1,
-            exact: range.start_column != null && range.end_column != null,
-          })),
-        )
-      },
-      (cause, request) => {
-        if (currentDesignIdRef.current !== request.designId) return
-        setSourceProbeNotice(null)
-        setError(cause instanceof Error ? cause.message : String(cause))
-      },
-    )
-  }
   const resetGraphProbe = useCallback(() => {
     // Reject an in-flight source result immediately; the replacement request
     // is debounced, so waiting for its effect cleanup leaves a stale commit gap.
     reqSeq.current += 1
     setFetchingRelevant(false)
-    edgeSourceProbeRef.current?.cancel()
-    setSourceProbeNotice(null)
     setSourceStatus(null)
     setSourceControl(false)
     setRelevantSubgraph((current) => {
@@ -266,6 +222,7 @@ export function Graph({ active }: { active: boolean }) {
     () => selectGraphNode(null),
     [graphOptions.groupMemories, graphOptions.groupVectors, selectGraphNode],
   )
+  useEffect(() => setSelectedNetNames([]), [design?.design_id])
 
   // Per-group expansion is a presentation state owned by one synthesized
   // design and grouping policy. A new design or global policy starts clean.
@@ -288,7 +245,6 @@ export function Graph({ active }: { active: boolean }) {
     () => () => {
       fullGraphCache.current?.controller.abort()
       fullGraphCache.current = null
-      edgeSourceProbeRef.current?.cancel()
       for (const inFlight of expansionControllers.current) inFlight.abort()
       expansionControllers.current.clear()
       groupExpansionController.current?.abort()
@@ -296,11 +252,6 @@ export function Graph({ active }: { active: boolean }) {
     },
     [],
   )
-  useEffect(() => {
-    edgeSourceProbeRef.current?.cancel()
-    setSourceProbeNotice(null)
-  }, [active, activeFileName, coneReq, design?.design_id])
-
   const fetchFullGraph = useCallback(
     (requestDesignId: string) => {
       if (fullGraphKey == null) return Promise.reject(new Error('missing graph cache key'))
@@ -903,34 +854,32 @@ export function Graph({ active }: { active: boolean }) {
   const onGraphSelect = useCallback(
     (node: GraphNode | null) => {
       if (!graphInteractive) return
-      edgeSourceProbeRef.current?.cancel()
-      setSourceProbeNotice(null)
       selectGraphNode(node)
     },
     [graphInteractive, selectGraphNode],
   )
   const onEdgeSelect = useCallback(
-    (bits: number[]) => {
-      if (!designId || bits.length === 0) return
-      setSourceProbeNotice(null)
+    (names: string[]) => {
+      if (names.length === 0) return
       setError(null)
-      selectGraphNode(null)
-      edgeSourceProbeRef.current?.schedule({ designId, bits })
+      setSelected(null)
+      setSelectedNetNames(names)
+      selectSchematicNets(names)
     },
-    [designId, selectGraphNode],
+    [selectSchematicNets],
   )
   const onControlSelect = useCallback(
     (control: NonNullable<GraphNode['controls']>[number]) => {
       if (!graphInteractive) return
-      edgeSourceProbeRef.current?.cancel()
-      setSourceProbeNotice(null)
+      setSelectedNetNames([])
+      selectSchematicNets([])
       openControlCone({
         nodes: controlDriverIds(control),
         label: controlLabel(control),
         generated: control.generated,
       })
     },
-    [graphInteractive, openControlCone],
+    [graphInteractive, openControlCone, selectSchematicNets],
   )
   const focusMode =
     relevantRequestCurrent && relevantIds.size > 0
@@ -966,6 +915,7 @@ export function Graph({ active }: { active: boolean }) {
             highlightedBits={highlightedBits}
             extendOverlayToBoundaryNets={coneReq?.kind === 'source'}
             selectedId={graphInteractive ? (selected?.id ?? null) : null}
+            selectedNetNames={graphInteractive ? selectedNetNames : []}
             interactive={graphInteractive}
             onSelect={onGraphSelect}
             onEdgeSelect={onEdgeSelect}
@@ -998,7 +948,6 @@ export function Graph({ active }: { active: boolean }) {
             </span>
           )}
           {error && <span className="msg err">{error}</span>}
-          {sourceProbeNotice && <span className="msg">{sourceProbeNotice}</span>}
           {sourceTierNotice && <span className="msg">{sourceTierNotice}</span>}
           {analysisState === 'stale' && (
             <span className="msg">source changed — synthesize to refresh mapping</span>

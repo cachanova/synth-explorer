@@ -531,3 +531,21 @@ fn declaration_cuts_join_the_exact_tier_precisely() {
     assert_eq!(lines(&combined.exact), vec![3, 3]);
     assert!(!combined.approximate);
 }
+
+#[test]
+fn net_cuts_attribute_the_declaration_and_driver_before_the_upstream_cone() {
+    let attribution = index().attribute_net(
+        &MappedCut {
+            outputs: vec!["gated".to_owned()],
+            inputs: Vec::new(),
+            feeds_registers: Vec::new(),
+            declarations: vec!["gated".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert_eq!(lines(&attribution.exact), vec![3, 3]);
+    assert_eq!(lines(&attribution.contributing), vec![2]);
+    assert!(!attribution.approximate);
+}

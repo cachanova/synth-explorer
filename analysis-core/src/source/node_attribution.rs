@@ -88,6 +88,45 @@ pub(crate) fn source_tiers_for_nodes(
     response
 }
 
+pub(crate) fn source_tiers_for_nets(
+    index: &CorrelationIndex,
+    names: &[String],
+) -> SourceNodeTiersResponse {
+    let mut response = SourceNodeTiersResponse {
+        truncated: names.len() > SELECTION_CAP,
+        ..SourceNodeTiersResponse::default()
+    };
+    let names = names
+        .iter()
+        .take(SELECTION_CAP)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let cut = MappedCut {
+        outputs: names.clone(),
+        inputs: Vec::new(),
+        feeds_registers: Vec::new(),
+        declarations: names,
+        truncated: false,
+        selected_is_sequential: false,
+    };
+    let mut exact = BTreeSet::new();
+    let mut contributing = BTreeSet::new();
+    merge(
+        index.attribute_net(&cut, &CorrelationLimits::default()),
+        &mut exact,
+        &mut contributing,
+        &mut response,
+    );
+
+    let contributing = contributing.difference(&exact).cloned().collect();
+    response.exact = render_spans(exact);
+    response.contributing = render_spans(contributing);
+    response
+}
+
 /// A register's cut: its Q nets as outputs. The RTL D-cone supplies
 /// statements and conditions, so no mapped-side input walk is needed.
 fn register_cut(graph: &Graph, id: NodeId, response: &mut SourceNodeTiersResponse) -> MappedCut {

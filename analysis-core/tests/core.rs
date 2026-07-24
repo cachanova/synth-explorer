@@ -1644,8 +1644,8 @@ fn schematic_selection_attributes_tiered_source_spans() {
               }
             },
             "netnames": {
-              "sum": {"bits": [8, 9]},
-              "gated": {"bits": [10, 11]},
+              "sum": {"bits": [8, 9], "attributes": {"src": "top.sv:2.14-2.17"}},
+              "gated": {"bits": [10, 11], "attributes": {"src": "top.sv:3.14-3.19"}},
               "q": {"bits": [12, 13]},
               "a": {"bits": [4, 5]},
               "b": {"bits": [6, 7]}
@@ -1719,6 +1719,11 @@ fn schematic_selection_attributes_tiered_source_spans() {
     assert_eq!(lines(&tiers.exact), vec![3]);
     assert_eq!(lines(&tiers.contributing), vec![2]);
     assert!(!tiers.approximate);
+
+    let net_tiers = design.source_tiers_for_nets(&["gated".to_owned()]);
+    assert_eq!(lines(&net_tiers.exact), vec![3, 3]);
+    assert_eq!(lines(&net_tiers.contributing), vec![2]);
+    assert!(!net_tiers.approximate);
 
     let dff = design
         .graph

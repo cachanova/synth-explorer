@@ -70,10 +70,12 @@ interface Props {
   /** Extend source-selection overlays across adjacent port/constant nets. */
   extendOverlayToBoundaryNets?: boolean
   selectedId: number | null
+  /** Net names whose routed segments use the selected-wire overlay. */
+  selectedNetNames?: string[]
   interactive: boolean
   onSelect: (node: GraphNode | null) => void
-  /** Cross-probes the exact final-net bits carried by a clicked edge. */
-  onEdgeSelect?: (bits: number[]) => void
+  /** Cross-probes the best client-visible names carried by a clicked edge. */
+  onEdgeSelect?: (names: string[]) => void
   /** Opens a dedicated control cone when the parent supports that workflow. */
   onControlSelect?: (control: ControlRef, node: GraphNode) => void
   /** Double-click a node to additively render its fanin/fanout connections. */
@@ -102,6 +104,7 @@ interface NodePins {
 const EMPTY_NODE_PINS: NodePins = { incoming: [], outgoing: [], controlInputs: [] }
 const EMPTY_HIGHLIGHTED_BITS = new Set<number>()
 const EMPTY_EXPANDED_GROUPS: ExpandedGroupFrame[] = []
+const EMPTY_SELECTED_NET_NAMES: string[] = []
 
 interface MutableNodePins {
   incoming: Set<string>
@@ -1539,7 +1542,7 @@ interface PreparedSchematicEdge {
   points: Point[]
   title: string
   bits: number
-  netBits: number[]
+  netName: string
   isBus: boolean
   relevant: boolean
   control: boolean
@@ -1728,7 +1731,7 @@ function prepareSchematicEdges({
       points,
       title,
       bits,
-      netBits: laidOutEdge.edge.bits,
+      netName: laidOutEdge.edge.net_name,
       isBus,
       relevant,
       control,
@@ -2138,7 +2141,7 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
   viewportRef: RefObject<SVGGElement | null>
   hideRef: MutableRefObject<(() => void) | null>
   suppressClickRef: MutableRefObject<boolean>
-  onSelect?: (bits: number[]) => void
+  onSelect?: (names: string[]) => void
 }) {
   const hitIndexRef = useRef<{
     geometryKey: object
@@ -2248,7 +2251,7 @@ const SchematicEdgeTooltip = memo(function SchematicEdgeTooltip({
       const edge = edgeAt(event.clientX, event.clientY)
       if (!edge) return
       event.stopPropagation()
-      onSelect(edge.netBits)
+      onSelect([edge.netName])
     }
 
     svg.addEventListener('pointermove', onPointerMove)
@@ -2304,6 +2307,7 @@ export const GraphView = memo(function GraphView({
   highlightedBits = EMPTY_HIGHLIGHTED_BITS,
   extendOverlayToBoundaryNets = false,
   selectedId,
+  selectedNetNames = EMPTY_SELECTED_NET_NAMES,
   interactive,
   onSelect,
   onEdgeSelect,
@@ -2432,20 +2436,32 @@ export const GraphView = memo(function GraphView({
     ],
   )
   const selectedEdges = useMemo(() => {
-    if (selectedId == null) return EMPTY_PREPARED_SCHEMATIC_EDGES
-    const selectedNode = metadata.nodeById.get(selectedId)?.node
-    const endpointIds = [selectedId, ...(selectedNode?.members ?? [])]
+    if (selectedId == null && selectedNetNames.length === 0) {
+      return EMPTY_PREPARED_SCHEMATIC_EDGES
+    }
     const seen = new Set<number>()
     const edges: PreparedSchematicEdge[] = []
-    for (const endpointId of endpointIds) {
-      for (const edge of preparedEdges.incidentByNode.get(endpointId) ?? []) {
-        if (seen.has(edge.index)) continue
+    if (selectedId != null) {
+      const selectedNode = metadata.nodeById.get(selectedId)?.node
+      const endpointIds = [selectedId, ...(selectedNode?.members ?? [])]
+      for (const endpointId of endpointIds) {
+        for (const edge of preparedEdges.incidentByNode.get(endpointId) ?? []) {
+          if (seen.has(edge.index)) continue
+          seen.add(edge.index)
+          edges.push(edge)
+        }
+      }
+    }
+    if (selectedNetNames.length > 0) {
+      const names = new Set(selectedNetNames)
+      for (const edge of preparedEdges.edges) {
+        if (!names.has(edge.netName) || seen.has(edge.index)) continue
         seen.add(edge.index)
         edges.push(edge)
       }
     }
     return edges
-  }, [metadata.nodeById, preparedEdges.incidentByNode, selectedId])
+  }, [metadata.nodeById, preparedEdges, selectedId, selectedNetNames])
 
   const clearDetailRestore = useCallback(() => {
     if (detailRestoreTimer.current == null) return

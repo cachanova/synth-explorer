@@ -209,6 +209,11 @@ impl AnalysisSession {
         to_json(&response)
     }
 
+    pub fn source_for_nets_json(&self, names_json: &str) -> Result<String, JsValue> {
+        let names: Vec<String> = parse_json(names_json, "net names")?;
+        to_json(&self.design.source_tiers_for_nets(&names))
+    }
+
     pub fn timing_json(&self, query_json: &str) -> Result<String, JsValue> {
         let query: TimingQuery = parse_json(query_json, "timing query")?;
         let (base, profile) = self.resolve_model(query.model, query.profile.as_deref())?;
@@ -1069,6 +1074,26 @@ mod tests {
         for span in parsed["exact"].as_array().unwrap() {
             assert!(span.get("start_line").is_some());
             assert!(span.get("file").is_some());
+        }
+    }
+
+    #[test]
+    fn source_for_nets_accepts_net_names_directly() {
+        let session = session("gates", "generic");
+        let name = session
+            .design
+            .graph
+            .edges
+            .iter()
+            .map(|edge| edge.net_name.clone())
+            .find(|name| !name.is_empty())
+            .expect("fixture has a named net");
+        let response = session
+            .source_for_nets_json(&serde_json::to_string(&[name]).unwrap())
+            .expect("net name query succeeds");
+        let parsed: serde_json::Value = serde_json::from_str(&response).unwrap();
+        for key in ["exact", "contributing", "approximate", "truncated"] {
+            assert!(parsed.get(key).is_some(), "missing key {key}");
         }
     }
 }

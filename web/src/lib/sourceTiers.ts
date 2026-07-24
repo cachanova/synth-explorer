@@ -20,6 +20,10 @@ export function fetchSourceTiers(nodeIds: number[]): Promise<SourceTiersResponse
   return queryAnalysis('sourceForNodes', nodeIds)
 }
 
+export function fetchSourceTiersForNets(names: string[]): Promise<SourceTiersResponse> {
+  return queryAnalysis('sourceForNets', names)
+}
+
 export function sourceTierMessage(
   truncated: boolean,
   approximate: boolean,

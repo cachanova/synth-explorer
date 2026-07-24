@@ -584,6 +584,42 @@ describe('GraphView LUT labels', () => {
     expect(markup).toContain('data-selected-edge-count="2"')
   })
 
+  it('highlights every visible segment of the selected net name', () => {
+    const graph = {
+      nodes: [1, 2, 3, 4].map((id) => ({
+        id,
+        x: id * 100,
+        y: 0,
+        width: 76,
+        height: 52,
+        node: { id, kind: 'cell' as const, name: `node${id}`, cell_type: '$_AND_' },
+      })),
+      edges: [
+        laidOutEdge(1, 2, 'shared'),
+        laidOutEdge(2, 3, 'shared'),
+        laidOutEdge(3, 4, 'other'),
+      ],
+      width: 500,
+      height: 52,
+    }
+    const markup = renderToStaticMarkup(
+      <GraphView
+        graph={graph}
+        rootId={-1}
+        overlayIds={new Set()}
+        relevantIds={new Set()}
+        selectedId={null}
+        selectedNetNames={['shared']}
+        interactive={false}
+        onSelect={() => undefined}
+        active={false}
+        fitNonce={0}
+      />,
+    )
+
+    expect(selectedEdgeIndexes(markup)).toEqual([0, 1])
+  })
+
   it('highlights visible wires represented by a selected grouped node', () => {
     const markup = renderToStaticMarkup(
       <GraphView

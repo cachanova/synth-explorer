@@ -5,7 +5,7 @@ use crate::delay_model::{DelayModel, DelayProfile};
 use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
-use crate::source::node_attribution::source_tiers_for_nodes;
+use crate::source::node_attribution::{source_tiers_for_nets, source_tiers_for_nodes};
 use crate::source::{
     SourceNodeTiersResponse, SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance,
 };
@@ -97,6 +97,11 @@ impl AnalysisDesign {
     /// Tiered source attribution for selected schematic nodes.
     pub fn source_tiers_for_nodes(&self, ids: &[u32]) -> SourceNodeTiersResponse {
         source_tiers_for_nodes(&self.graph, &self.correlation, ids)
+    }
+
+    /// Tiered source attribution for selected schematic nets.
+    pub fn source_tiers_for_nets(&self, names: &[String]) -> SourceNodeTiersResponse {
+        source_tiers_for_nets(&self.correlation, names)
     }
 
     pub fn stats(&self) -> Stats {
