@@ -83,3 +83,49 @@ test('highlights exact and contributing source tiers for a schematic register', 
   await expect(contributingDecorations).toHaveCount(0)
   expect(externalRequests).toEqual([])
 })
+
+const HIERARCHICAL_SOURCE = `module child(input clk, input [3:0] d, output logic [3:0] q);
+  always @(posedge clk)
+    q <= d + 1;
+endmodule
+module top(input clk, input [3:0] a, output [3:0] y);
+  child u1(.clk(clk), .d(a), .q(y));
+endmodule`
+
+test('attributes child-module registers to child source lines', async ({
+  page,
+  baseURL,
+}) => {
+  const externalRequests = recordExternalRequests(
+    page,
+    new URL(baseURL ?? 'http://127.0.0.1:4173').origin,
+  )
+
+  await page.goto('/')
+  await waitForAnalysisReady(page)
+
+  const analysisPane = page.locator('.pane-right')
+  await replaceEditorText(page, HIERARCHICAL_SOURCE)
+  await page.getByLabel('Top').fill('top')
+  await page.getByLabel('Platform').selectOption('lut4')
+  await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
+  await waitForAnalysisReady(page)
+
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+  const registerNode = page.locator('.g-node-body.g-symbol-reg').first()
+  await expect(registerNode).toBeVisible()
+  await registerNode.click()
+  await expect(registerNode).toHaveClass(/selected/)
+
+  // The register lives inside the child instance: its exact tier must
+  // highlight the child's assignment statement, not the instantiation.
+  const exactLines = page.locator('.cm-line.cm-src-hl')
+  await expect
+    .poll(() => exactLines.count(), { timeout: 30_000 })
+    .toBeGreaterThan(0)
+  await expect(exactLines.filter({ hasText: 'q <= d + 1;' })).toHaveCount(1)
+  await expect(
+    exactLines.filter({ hasText: 'child u1(.clk(clk)' }),
+  ).toHaveCount(0)
+  expect(externalRequests).toEqual([])
+})

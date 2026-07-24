@@ -2111,6 +2111,8 @@ endmodule
         let design = AnalysisDesign::from_netlists(
             &netlist,
             &netlist,
+            // This fixture is single-module, so flatten is an exact no-op.
+            &netlist,
             vec![("top.sv".to_owned(), source.to_owned())],
             "gates",
             DelayProfile::Generic,
@@ -2234,6 +2236,8 @@ endmodule
         let design = AnalysisDesign::from_netlists(
             &netlist,
             &netlist,
+            // This fixture is single-module, so flatten is an exact no-op.
+            &netlist,
             vec![("top.sv".to_owned(), source.to_owned())],
             "gates",
             DelayProfile::Generic,
@@ -2328,6 +2332,8 @@ endmodule
         assert_ne!(procedural_ranges[0].node_ids, procedural_ranges[1].node_ids);
         let procedural = AnalysisDesign::from_netlists(
             &procedural_netlist,
+            &procedural_netlist,
+            // This fixture is single-module, so flatten is an exact no-op.
             &procedural_netlist,
             vec![("top.sv".to_owned(), procedural_source.to_owned())],
             "gates",
@@ -2443,6 +2449,8 @@ endmodule
 
         let design = AnalysisDesign::from_netlists(
             &final_netlist,
+            &source_netlist,
+            // This fixture is single-module, so flatten is an exact no-op.
             &source_netlist,
             vec![("top.vhdl".to_owned(), source.to_owned())],
             "gates",

@@ -159,6 +159,7 @@ impl AnalysisSession {
         design_id: &str,
         netlist_json: &str,
         source_netlist_json: &str,
+        flat_source_netlist_json: &str,
         files_json: &str,
         mode: &str,
         tool: &str,
@@ -166,6 +167,8 @@ impl AnalysisSession {
     ) -> Result<AnalysisSession, JsValue> {
         let netlist: YosysNetlist = parse_json(netlist_json, "netlist")?;
         let source_netlist: YosysNetlist = parse_json(source_netlist_json, "source netlist")?;
+        let flat_source_netlist: YosysNetlist =
+            parse_json(flat_source_netlist_json, "flat source netlist")?;
         let files: Vec<SourceFile> = parse_json(files_json, "source files")?;
         let top = select_top(&netlist, None)
             .map_err(|error| js_error(format!("failed to resolve top module: {error}")))?
@@ -175,6 +178,7 @@ impl AnalysisSession {
         let design = AnalysisDesign::from_netlists(
             &netlist,
             &source_netlist,
+            &flat_source_netlist,
             files
                 .into_iter()
                 .map(|file| (file.name, file.content))
@@ -612,7 +616,7 @@ mod tests {
     use synth_explorer_analysis::grouping::{Group, GroupKind};
 
     const PRECOMPUTED: &str = include_str!(
-        "../../web/public/precomputed/37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8.json"
+        "../../web/public/precomputed/d61516937e3ef8dca1811e8d6870da148815be9015046b7f44598f0f59b95a84.json"
     );
 
     fn session(mode: &str, profile: &str) -> AnalysisSession {
@@ -629,6 +633,9 @@ mod tests {
             output["sourceNetlistJson"]
                 .as_str()
                 .expect("source netlist JSON is present"),
+            output["flatSourceNetlistJson"]
+                .as_str()
+                .expect("flat source netlist JSON is present"),
             &files,
             mode,
             "yosys",

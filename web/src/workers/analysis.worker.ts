@@ -7,6 +7,7 @@ export interface AnalysisInitialization {
   designId: string
   netlistJson: string
   sourceNetlistJson: string
+  flatSourceNetlistJson: string
   filesJson: string
   mode: string
   tool: string
@@ -52,6 +53,7 @@ async function handle(request: AnalysisWorkerRequest) {
         payload.designId,
         payload.netlistJson,
         payload.sourceNetlistJson,
+        payload.flatSourceNetlistJson,
         payload.filesJson,
         payload.mode,
         payload.tool,

@@ -24,17 +24,30 @@ export function runVivadoNormalizer(
   netlist: string,
   top: string,
   sourceNetlistJson: string,
+  flatSourceNetlistJson: string,
   signal?: AbortSignal,
 ): Promise<YosysWorkerResult> {
   return runYosysWorker(
-    { kind: 'vivado-normalize', netlist, top, sourceNetlistJson },
+    {
+      kind: 'vivado-normalize',
+      netlist,
+      top,
+      sourceNetlistJson,
+      flatSourceNetlistJson,
+    },
     signal,
   )
 }
 
 type YosysWorkerRequest =
   | { input: ValidatedSynthesis; memory: MemoryHandling }
-  | { kind: 'vivado-normalize'; netlist: string; top: string; sourceNetlistJson: string }
+  | {
+      kind: 'vivado-normalize'
+      netlist: string
+      top: string
+      sourceNetlistJson: string
+      flatSourceNetlistJson: string
+    }
 
 function runYosysWorker(
   request: YosysWorkerRequest,

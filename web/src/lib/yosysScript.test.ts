@@ -21,7 +21,8 @@ describe('browser Yosys script', () => {
     const input = validateSynthesisRequest(request('gates', '  -nofsm   -noabc  '))
     expect(buildYosysScript(input)).toBe(
       'read_verilog -sv design.sv\n' +
-        'hierarchy -top top\nproc\nwrite_json source-netlist.json\ndesign -reset\n' +
+        'hierarchy -top top\nproc\nwrite_json source-netlist.json\n' +
+        'flatten\nwrite_json flat-source-netlist.json\ndesign -reset\n' +
         'read_verilog -sv design.sv\n' +
         'synth -top top -flatten -nofsm -noabc\n' +
         'write_json netlist.json\n',

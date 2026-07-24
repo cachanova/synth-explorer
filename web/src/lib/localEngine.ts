@@ -135,6 +135,7 @@ async function synthesizeLocallyWithFallback(
       designId,
       netlistJson: output.netlistJson,
       sourceNetlistJson: output.sourceNetlistJson,
+      flatSourceNetlistJson: output.flatSourceNetlistJson,
       filesJson: JSON.stringify(input.files),
       mode: input.mode,
       tool: input.tool ?? 'yosys',

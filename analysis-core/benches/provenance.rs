@@ -222,6 +222,8 @@ fn build_design(fixture: &Fixture, files: Vec<(String, String)>) -> AnalysisDesi
     AnalysisDesign::from_netlists(
         &fixture.netlist,
         &fixture.source_netlist,
+        // The benchmark fixture is single-module, so flatten is an exact no-op.
+        &fixture.source_netlist,
         files,
         fixture.mode.as_str(),
         fixture.profile,

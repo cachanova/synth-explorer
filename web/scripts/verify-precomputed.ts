@@ -141,6 +141,7 @@ function verifyStructuralFacts(
   for (const [label, json] of [
     ['mapped', artifact.output.netlistJson],
     ['source', artifact.output.sourceNetlistJson],
+    ['flat source', artifact.output.flatSourceNetlistJson],
   ] as const) {
     const netlist = JSON.parse(json) as {
       modules?: Record<

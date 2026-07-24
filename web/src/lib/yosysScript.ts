@@ -9,7 +9,7 @@ export const YOSYS_VERSION = '0.67-2d1509d1b'
 // Upstream version plus SHA-256 prefixes for ghdl-synth.wasm and the compiled
 // standard-library archive. Either artifact can change synthesis output.
 export const GHDL_VERSION = '5.0.1-37ad91899ea3-245664fc-2cdbaa33'
-export const YOSYS_CACHE_SCHEMA = 2
+export const YOSYS_CACHE_SCHEMA = 3
 
 export type MemoryHandling = 'map' | 'abstract'
 export type SourceLanguage = 'verilog' | 'vhdl'
@@ -96,7 +96,7 @@ export function buildYosysScript(
   memory: MemoryHandling = 'map',
 ): string {
   let script = readVerilog(input)
-  script += `hierarchy ${topArgs(input.top)}\nproc\nwrite_json source-netlist.json\ndesign -reset\n`
+  script += `hierarchy ${topArgs(input.top)}\nproc\nwrite_json source-netlist.json\nflatten\nwrite_json flat-source-netlist.json\ndesign -reset\n`
   script += readVerilog(input)
   const extra = input.extraArgs.length ? ` ${input.extraArgs.join(' ')}` : ''
 

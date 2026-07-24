@@ -499,6 +499,8 @@ fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
     let design = AnalysisDesign::from_netlists(
         &final_netlist,
         &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
+        &source_netlist,
         vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
         DelayProfile::Series7,
@@ -560,6 +562,8 @@ fn grouped_netlist_keeps_mixed_vivado_lutram_shapes_in_one_memory() {
     .unwrap();
     let design = AnalysisDesign::from_netlists(
         &final_netlist,
+        &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
         &source_netlist,
         vec![("fifo.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
@@ -639,6 +643,8 @@ fn grouped_netlist_stacks_parallel_srl_lanes_without_a_source_memory() {
     .unwrap();
     let design = AnalysisDesign::from_netlists(
         &final_netlist,
+        &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
         &source_netlist,
         vec![("srl_pipe.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
@@ -1847,6 +1853,8 @@ fn schematic_selection_attributes_tiered_source_spans() {
     let design = AnalysisDesign::from_netlists(
         &netlist,
         &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
+        &source_netlist,
         vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
         "lut4",
         DelayProfile::Generic,
@@ -1992,6 +2000,8 @@ fn abc_renamed_flops_and_anonymous_nets_attribute_approximately() {
     let design = AnalysisDesign::from_netlists(
         &netlist,
         &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
+        &source_netlist,
         vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
         "lut4",
         DelayProfile::Generic,
@@ -2117,6 +2127,8 @@ fn vivado_dialect_attributes_renamed_registers_through_the_full_design() {
     .unwrap();
     let design = AnalysisDesign::from_netlists(
         &netlist,
+        &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
         &source_netlist,
         vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
@@ -2251,6 +2263,8 @@ fn vivado_standard_mode_buffered_netlist_attributes_registers_exactly() {
     let design = AnalysisDesign::from_netlists(
         &netlist,
         &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
+        &source_netlist,
         vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
         "xilinx",
         DelayProfile::Series7,
@@ -2353,6 +2367,8 @@ fn port_selections_attribute_declarations_and_driving_logic() {
     .unwrap();
     let design = AnalysisDesign::from_netlists(
         &netlist,
+        &source_netlist,
+        // This fixture is single-module, so flatten is an exact no-op.
         &source_netlist,
         vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
         "lut4",

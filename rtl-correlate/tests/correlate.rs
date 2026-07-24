@@ -610,3 +610,77 @@ fn flop_driven_net_contributing_tier_follows_only_the_data_input() {
     assert_eq!(lines(&attribution.contributing), vec![3]);
     assert!(!lines(&attribution.contributing).contains(&2));
 }
+
+fn hierarchical_fixture() -> &'static str {
+    // Flattened snapshot of a top instance `inst` whose child contains:
+    //   child.sv:3  wire gated = a & b;
+    r##"{
+      "modules": {
+        "top": {
+          "attributes": {"top": "1"},
+          "ports": {
+            "a": {"direction": "input", "bits": [2]},
+            "b": {"direction": "input", "bits": [3]},
+            "y": {"direction": "output", "bits": [8]}
+          },
+          "cells": {
+            "$flatten\\inst.$and$child.sv:3$1": {
+              "type": "$and",
+              "attributes": {"src": "child.sv:3.18-3.23"},
+              "port_directions": {"A": "input", "B": "input", "Y": "output"},
+              "connections": {"A": [2], "B": [3], "Y": [8]}
+            },
+            "inst": {
+              "type": "$scopeinfo",
+              "attributes": {"cell_src": "top.sv:7.3-7.34"},
+              "port_directions": {},
+              "connections": {}
+            }
+          },
+          "netnames": {
+            "a": {"bits": [2], "attributes": {}},
+            "b": {"bits": [3], "attributes": {}},
+            "inst.gated": {
+              "bits": [8],
+              "attributes": {"src": "child.sv:3.8-3.13"}
+            },
+            "y": {"bits": [8], "attributes": {}}
+          }
+        }
+      }
+    }"##
+}
+
+fn hierarchical_attribution(dialect: NetlistDialect, output: &str) -> rtl_correlate::Attribution {
+    let netlist = parse_str(hierarchical_fixture()).expect("hierarchical fixture parses");
+    let index = CorrelationIndex::build(&netlist, "top", dialect).expect("index builds");
+    index.attribute(
+        &MappedCut {
+            outputs: vec![output.to_owned()],
+            inputs: vec!["a".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    )
+}
+
+#[test]
+fn flattened_hierarchical_boundary_attributes_the_child_expression_exactly() {
+    let attribution = hierarchical_attribution(NetlistDialect::Yosys, "inst.gated");
+    assert_eq!(attribution.exact.len(), 1);
+    assert_eq!(attribution.exact[0].file, "child.sv");
+    assert_eq!(attribution.exact[0].start_line, 3);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn vivado_hierarchical_boundary_translates_to_the_flattened_yosys_name() {
+    let attribution = hierarchical_attribution(NetlistDialect::Vivado, "inst/gated");
+    assert_eq!(attribution.exact.len(), 1);
+    assert_eq!(attribution.exact[0].file, "child.sv");
+    assert_eq!(attribution.exact[0].start_line, 3);
+    assert!(!attribution.approximate);
+}

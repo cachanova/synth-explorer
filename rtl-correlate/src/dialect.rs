@@ -1,5 +1,7 @@
 //! Per-tool netlist conventions: name mangling and provenance quirks.
 
+use std::borrow::Cow;
+
 /// Which synthesis tool produced a mapped netlist.
 ///
 /// Everything the product analyzes is normalized to Yosys JSON first, but
@@ -38,18 +40,15 @@ impl NetlistDialect {
     /// shorter one. The Yosys dialect yields nothing: Yosys keeps logical
     /// names on the primitives it derives them from.
     pub fn register_base_candidates(self, name: &str) -> RegisterBaseCandidates<'_> {
-        RegisterBaseCandidates {
-            name,
-            offsets: match self {
-                Self::Yosys => Vec::new(),
-                Self::Vivado => name
-                    .rmatch_indices("_reg")
-                    .map(|(offset, _)| offset)
-                    .filter(|&offset| generated_reg_suffix(&name[offset..]))
-                    .collect(),
-            },
-            next: 0,
+        let mut candidates = RegisterBaseCandidates::new(name);
+        if self == Self::Vivado {
+            for (offset, _) in name.rmatch_indices("_reg") {
+                if generated_reg_suffix(&name[offset..]) {
+                    candidates.push(offset);
+                }
+            }
         }
+        candidates
     }
 
     /// Candidate boundary base names for a mapped net name, most-specific
@@ -73,88 +72,109 @@ impl NetlistDialect {
     /// wrong enclosed regions. They stay unresolvable so cone walks expand
     /// through them and flag the superset approximate.
     pub fn net_base_candidates(self, name: &str) -> NetBaseCandidates<'_> {
-        let mut candidates = NetBaseCandidates::default();
         if self != Self::Vivado {
-            return candidates;
+            return NetBaseCandidates::default();
         }
-        let mut push = |candidate| candidates.push(name, candidate);
-
-        // FSM re-encoding prefixes; the remainder is retried through every
-        // later rule.
-        let mut base = name;
-        for prefix in ["FSM_onehot_", "FSM_sequential_", "FSM_gray_"] {
-            if let Some(rest) = base.strip_prefix(prefix) {
-                base = rest;
-                push(base);
-                break;
-            }
+        if name.contains('/') {
+            // Vivado uses `/` for hierarchy while the flattened Yosys RTL
+            // snapshot uses `.`. Allocation is confined to hierarchical
+            // names; the common is_boundary path remains allocation-free.
+            let dot_name = name.replace('/', ".");
+            let mut owned = vec![dot_name.clone()];
+            owned.extend(
+                vivado_net_base_candidates(&dot_name).map(|candidate| candidate.into_owned()),
+            );
+            return NetBaseCandidates::owned(owned);
         }
-
-        // I/O and clock buffer suffixes peel iteratively, each stage a
-        // candidate (`clk_IBUF_BUFG` → `clk_IBUF` → `clk`).
-        let mut buffered = base;
-        loop {
-            let mut stripped = None;
-            for suffix in ["_IBUF_BUFG", "_BUFG", "_IBUF", "_OBUF"] {
-                if let Some(rest) = buffered.strip_suffix(suffix) {
-                    stripped = Some(rest);
-                    break;
-                }
-            }
-            match stripped {
-                Some(rest) if !rest.is_empty() => {
-                    push(rest);
-                    buffered = rest;
-                }
-                _ => break,
-            }
-        }
-
-        // Flop cell-pin nets: `<cell>_n_<k>` and the bussed
-        // `<cell>_n_<k>_[i]` form name the driving cell; the cell is a
-        // `_reg`-family name that unmangles to the logical register.
-        let mut pin = base;
-        if let Some((cell, tail)) = pin.rsplit_once("_n_") {
-            let digits_then_bit = {
-                let (digits, rest) = tail
-                    .split_once("_[")
-                    .map_or((tail, None), |(digits, rest)| (digits, Some(rest)));
-                !digits.is_empty()
-                    && digits.bytes().all(|byte| byte.is_ascii_digit())
-                    && rest.is_none_or(|rest| {
-                        rest.strip_suffix(']').is_some_and(|index| {
-                            !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                    })
-            };
-            if digits_then_bit {
-                push(cell);
-                pin = cell;
-            }
-        }
-        for (offset, _) in pin.rmatch_indices("_reg") {
-            if generated_reg_suffix(&pin[offset..]) {
-                push(&pin[..offset]);
-            }
-        }
-
-        candidates
+        vivado_net_base_candidates(name)
     }
 }
 
-/// Zero-allocation candidate list: every candidate is a subslice of the
-/// queried name, and the fixed capacity comfortably exceeds the maximum
-/// rule chain (prefix strip + buffer peels + pin strip + `_reg` peels).
-/// The mapped-side walk consults this per unresolvable net per edge, so
-/// it must not touch the heap.
+fn vivado_net_base_candidates(name: &str) -> NetBaseCandidates<'_> {
+    let mut candidates = NetBaseCandidates::default();
+    let mut push = |candidate| candidates.push(name, candidate);
+
+    // FSM re-encoding prefixes; the remainder is retried through every
+    // later rule.
+    let mut base = name;
+    for prefix in ["FSM_onehot_", "FSM_sequential_", "FSM_gray_"] {
+        if let Some(rest) = base.strip_prefix(prefix) {
+            base = rest;
+            push(base);
+            break;
+        }
+    }
+
+    // I/O and clock buffer suffixes peel iteratively, each stage a
+    // candidate (`clk_IBUF_BUFG` → `clk_IBUF` → `clk`).
+    let mut buffered = base;
+    loop {
+        let mut stripped = None;
+        for suffix in ["_IBUF_BUFG", "_BUFG", "_IBUF", "_OBUF"] {
+            if let Some(rest) = buffered.strip_suffix(suffix) {
+                stripped = Some(rest);
+                break;
+            }
+        }
+        match stripped {
+            Some(rest) if !rest.is_empty() => {
+                push(rest);
+                buffered = rest;
+            }
+            _ => break,
+        }
+    }
+
+    // Flop cell-pin nets: `<cell>_n_<k>` and the bussed
+    // `<cell>_n_<k>_[i]` form name the driving cell; the cell is a
+    // `_reg`-family name that unmangles to the logical register.
+    let mut pin = base;
+    if let Some((cell, tail)) = pin.rsplit_once("_n_") {
+        let digits_then_bit = {
+            let (digits, rest) = tail
+                .split_once("_[")
+                .map_or((tail, None), |(digits, rest)| (digits, Some(rest)));
+            !digits.is_empty()
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && rest.is_none_or(|rest| {
+                    rest.strip_suffix(']').is_some_and(|index| {
+                        !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                })
+        };
+        if digits_then_bit {
+            push(cell);
+            pin = cell;
+        }
+    }
+    for (offset, _) in pin.rmatch_indices("_reg") {
+        if generated_reg_suffix(&pin[offset..]) {
+            push(&pin[..offset]);
+        }
+    }
+
+    candidates
+}
+
+/// Candidate list whose ordinary entries are zero-allocation subslices of the
+/// queried name. Only Vivado hierarchical names own translated dot-form
+/// candidates.
 #[derive(Debug, Default)]
 pub struct NetBaseCandidates<'a> {
     items: [&'a str; 8],
+    owned: Option<std::vec::IntoIter<String>>,
     len: usize,
     next: usize,
 }
 
 impl<'a> NetBaseCandidates<'a> {
+    fn owned(items: Vec<String>) -> Self {
+        Self {
+            owned: Some(items.into_iter()),
+            ..Self::default()
+        }
+    }
+
     fn push(&mut self, name: &str, candidate: &'a str) {
         if candidate.is_empty() || candidate == name || self.len == self.items.len() {
             return;
@@ -168,12 +188,15 @@ impl<'a> NetBaseCandidates<'a> {
 }
 
 impl<'a> Iterator for NetBaseCandidates<'a> {
-    type Item = &'a str;
+    type Item = Cow<'a, str>;
 
-    fn next(&mut self) -> Option<&'a str> {
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(owned) = &mut self.owned {
+            return owned.next().map(Cow::Owned);
+        }
         let item = *self.items.get(self.next).filter(|_| self.next < self.len)?;
         self.next += 1;
-        Some(item)
+        Some(Cow::Borrowed(item))
     }
 }
 
@@ -181,15 +204,38 @@ impl<'a> Iterator for NetBaseCandidates<'a> {
 #[derive(Debug)]
 pub struct RegisterBaseCandidates<'a> {
     name: &'a str,
-    offsets: Vec<usize>,
+    offsets: [usize; 8],
+    len: usize,
     next: usize,
+}
+
+impl<'a> RegisterBaseCandidates<'a> {
+    fn new(name: &'a str) -> Self {
+        Self {
+            name,
+            offsets: [0; 8],
+            len: 0,
+            next: 0,
+        }
+    }
+
+    fn push(&mut self, offset: usize) {
+        if self.len == self.offsets.len() {
+            return;
+        }
+        self.offsets[self.len] = offset;
+        self.len += 1;
+    }
 }
 
 impl<'a> Iterator for RegisterBaseCandidates<'a> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<&'a str> {
-        let offset = *self.offsets.get(self.next)?;
+        let offset = *self
+            .offsets
+            .get(self.next)
+            .filter(|_| self.next < self.len)?;
         self.next += 1;
         Some(&self.name[..offset])
     }
@@ -273,7 +319,7 @@ mod tests {
     fn net_candidates(dialect: NetlistDialect, name: &str) -> Vec<String> {
         dialect
             .net_base_candidates(name)
-            .map(str::to_owned)
+            .map(Cow::into_owned)
             .collect()
     }
 
@@ -293,6 +339,18 @@ mod tests {
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "clk_IBUF_BUFG"),
             ["clk"],
+        );
+    }
+
+    #[test]
+    fn vivado_hierarchy_translates_before_other_net_rules() {
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1/busy_OBUF"),
+            ["u1.busy_OBUF", "u1.busy"],
+        );
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1/state_reg_n_0"),
+            ["u1.state_reg_n_0", "u1.state_reg", "u1.state"],
         );
     }
 
