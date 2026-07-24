@@ -1423,12 +1423,22 @@ a:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
   transition: background 0.4s ease;
 }
+.cm-src-hl-secondary {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.cm-src-hl-contributing {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
 .cm-src-range-hl {
   background: color-mix(in srgb, var(--accent) 34%, transparent);
   border-radius: 2px;
 }
 .cm-src-range-hl-secondary {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 2px;
+}
+.cm-src-range-hl-contributing {
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
   border-radius: 2px;
 }
 .cm-src-hl-fade {

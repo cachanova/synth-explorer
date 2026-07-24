@@ -25,6 +25,7 @@ export type AnalysisMethod =
   | 'sourceBits'
   | 'nodes'
   | 'source'
+  | 'sourceForNodes'
 
 export type AnalysisWorkerRequest =
   | { id: number; kind: 'initialize'; payload: AnalysisInitialization }
@@ -95,6 +96,8 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
       return parse(active.nodes_json(JSON.stringify(payload ?? [])))
     case 'source':
       return parse(active.source_selection_json(JSON.stringify(payload ?? {})))
+    case 'sourceForNodes':
+      return parse(active.source_for_nodes_json(JSON.stringify(payload ?? [])))
   }
 }
 

@@ -198,6 +198,17 @@ impl AnalysisSession {
         to_json(self.design.analysis.endpoints())
     }
 
+    pub fn source_for_nodes_json(&self, ids_json: &str) -> Result<String, JsValue> {
+        let ids: Vec<u32> = parse_json(ids_json, "node ids")?;
+        // Synthetic group ids resolve to their member nodes, so a grouped
+        // bus register attributes as the union of its bits.
+        let (roots, roots_truncated) =
+            self.resolve_projection_roots(&ids, Some(&self.design.grouping))?;
+        let mut response = self.design.source_tiers_for_nodes(&roots);
+        response.truncated |= roots_truncated;
+        to_json(&response)
+    }
+
     pub fn timing_json(&self, query_json: &str) -> Result<String, JsValue> {
         let query: TimingQuery = parse_json(query_json, "timing query")?;
         let (base, profile) = self.resolve_model(query.model, query.profile.as_deref())?;

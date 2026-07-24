@@ -1599,3 +1599,137 @@ fn word_level_sr_set_and_clear_are_control_pins() {
     assert!(controls.iter().any(|control| control.pin == "SET"));
     assert!(controls.iter().any(|control| control.pin == "CLR"));
 }
+
+#[test]
+fn schematic_selection_attributes_tiered_source_spans() {
+    // RTL snapshot (post-proc shape):
+    //   line 2: wire [1:0] sum = a + b;
+    //   line 3: wire [1:0] gated = sum & b;
+    //   lines 4-6: always block writing q via a sel mux (case srcs 5 and 6).
+    let source_netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4, 5]},
+              "b": {"direction": "input", "bits": [6, 7]},
+              "q": {"direction": "output", "bits": [12, 13]}
+            },
+            "cells": {
+              "$add$top.sv:2$1": {
+                "type": "$add",
+                "attributes": {"src": "top.sv:2.20-2.25"},
+                "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                "connections": {"A": [4, 5], "B": [6, 7], "Y": [8, 9]}
+              },
+              "$and$top.sv:3$2": {
+                "type": "$and",
+                "attributes": {"src": "top.sv:3.22-3.29"},
+                "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                "connections": {"A": [8, 9], "B": [6, 7], "Y": [10, 11]}
+              },
+              "$procmux$3": {
+                "type": "$mux",
+                "attributes": {"src": "top.sv:5.13-5.24|top.sv:6.13-6.22"},
+                "port_directions": {"A": "input", "B": "input", "S": "input", "Y": "output"},
+                "connections": {"A": [8, 9], "B": [10, 11], "S": [3], "Y": [14, 15]}
+              },
+              "$procdff$4": {
+                "type": "$dff",
+                "attributes": {"src": "top.sv:4.3-6.22"},
+                "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                "connections": {"CLK": [2], "D": [14, 15], "Q": [12, 13]}
+              }
+            },
+            "netnames": {
+              "sum": {"bits": [8, 9]},
+              "gated": {"bits": [10, 11]},
+              "q": {"bits": [12, 13]},
+              "a": {"bits": [4, 5]},
+              "b": {"bits": [6, 7]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    // Mapped netlist: one LUT computes gated[0] from boundary nets, one DFF
+    // holds q[0]; the LUT's output net kept its RTL name.
+    let netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "sel": {"direction": "input", "bits": [3]},
+              "a": {"direction": "input", "bits": [4]},
+              "b": {"direction": "input", "bits": [6]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "$abc$9$lut_gated": {
+                "type": "$lut",
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [8, 6], "Y": [10]}
+              },
+              "q_dff": {
+                "type": "$_DFF_P_",
+                "port_directions": {"C": "input", "D": "input", "Q": "output"},
+                "connections": {"C": [2], "D": [10], "Q": [12]}
+              },
+              "$abc$8$lut_sum": {
+                "type": "$lut",
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [4, 6], "Y": [8]}
+              }
+            },
+            "netnames": {
+              "sum": {"bits": [8]},
+              "gated": {"bits": [10]},
+              "q": {"bits": [12]},
+              "a": {"bits": [4]},
+              "b": {"bits": [6]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
+        "lut4",
+        DelayProfile::Generic,
+        NetlistDialect::Yosys,
+    )
+    .unwrap();
+
+    let lut = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.raw_name.contains("lut_gated"))
+        .unwrap();
+    let tiers = design.source_tiers_for_nodes(&[lut.id]);
+    let lines = |spans: &[synth_explorer_analysis::source::SourceTierSpan]| {
+        spans.iter().map(|span| span.start_line).collect::<Vec<_>>()
+    };
+    // The gated LUT implements line 3; line 2 (sum) feeds its input boundary.
+    assert_eq!(lines(&tiers.exact), vec![3]);
+    assert_eq!(lines(&tiers.contributing), vec![2]);
+    assert!(!tiers.approximate);
+
+    let dff = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.cell_type.as_deref() == Some("$_DFF_P_"))
+        .unwrap();
+    let register_tiers = design.source_tiers_for_nodes(&[dff.id]);
+    // Exact = the two branch assignments, not the whole always block.
+    assert_eq!(lines(&register_tiers.exact), vec![5, 6]);
+    assert!(lines(&register_tiers.contributing).contains(&2));
+    assert!(lines(&register_tiers.contributing).contains(&3));
+    assert!(!register_tiers.approximate);
+}

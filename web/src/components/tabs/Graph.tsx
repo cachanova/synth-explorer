@@ -32,6 +32,7 @@ import {
   sourceProbePresentation,
   sourceRangeProbeMessage,
 } from '../../lib/sourceProbe'
+import { sourceTierMessage } from '../../lib/sourceTiers'
 import { controlDriverIds, controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
@@ -95,8 +96,9 @@ export function Graph({ active }: { active: boolean }) {
       graphOptions,
       clearGraphSelection,
       registerGraphProbeReset,
+      editorHighlight,
       highlightSources,
-      highlightNodeSources,
+      selectSchematicNodes,
       openControlCone,
     }) => ({
       analysisState,
@@ -106,8 +108,9 @@ export function Graph({ active }: { active: boolean }) {
       graphOptions,
       clearGraphSelection,
       registerGraphProbeReset,
+      editorHighlight,
       highlightSources,
-      highlightNodeSources,
+      selectSchematicNodes,
       openControlCone,
     }),
     shallowEqual,
@@ -120,8 +123,9 @@ export function Graph({ active }: { active: boolean }) {
     graphOptions,
     clearGraphSelection,
     registerGraphProbeReset,
+    editorHighlight,
     highlightSources,
-    highlightNodeSources,
+    selectSchematicNodes,
     openControlCone,
   } = store
 
@@ -145,6 +149,13 @@ export function Graph({ active }: { active: boolean }) {
   const [sourceStatus, setSourceStatus] = useState<SourceSelectionStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
+  const selectGraphNode = useCallback(
+    (node: GraphNode | null) => {
+      setSelected(node)
+      selectSchematicNodes(node ? [node.id] : [])
+    },
+    [selectSchematicNodes],
+  )
   const reqSeq = useRef(0)
   const expansionControllers = useRef(new Set<AbortController>())
   const groupExpansionController = useRef<AbortController | null>(null)
@@ -211,8 +222,8 @@ export function Graph({ active }: { active: boolean }) {
         highlightedBits: [],
       }
     })
-    setSelected(null)
-  }, [])
+    selectGraphNode(null)
+  }, [selectGraphNode])
 
   useEffect(() => {
     registerGraphProbeReset(resetGraphProbe)
@@ -251,7 +262,10 @@ export function Graph({ active }: { active: boolean }) {
 
   // Grouped projections use synthetic ids while raw projections use physical
   // ids. Never carry a detail card across a policy change.
-  useEffect(() => setSelected(null), [graphOptions.groupMemories, graphOptions.groupVectors])
+  useEffect(
+    () => selectGraphNode(null),
+    [graphOptions.groupMemories, graphOptions.groupVectors, selectGraphNode],
+  )
 
   // Per-group expansion is a presentation state owned by one synthesized
   // design and grouping policy. A new design or global policy starts clean.
@@ -391,7 +405,7 @@ export function Graph({ active }: { active: boolean }) {
     const controller = new AbortController()
     setFetchingRelevant(true)
     setError(null)
-    setSelected(null)
+    selectGraphNode(null)
     const fetchRelevantGraph =
       request.kind === 'source'
         ? analyzeSourceInBrowser(requestDesignId, {
@@ -459,7 +473,7 @@ export function Graph({ active }: { active: boolean }) {
                 ? directBits
                 : [],
           })
-          if (status != null) setSelected(null)
+          if (status != null) selectGraphNode(null)
         } else {
           clearGraphSelection()
         }
@@ -779,7 +793,7 @@ export function Graph({ active }: { active: boolean }) {
     if (groupExpansionController.current) return
     const referenceHeight = displayedGraphRef.current?.graph.height
     if (referenceHeight == null) return
-    setSelected(null)
+    selectGraphNode(null)
     setError(null)
     setGroupExpansions([])
     setExpandedGroupSpecs([{
@@ -787,16 +801,16 @@ export function Graph({ active }: { active: boolean }) {
       label: node.name || node.cell_type || 'group',
       referenceHeight,
     }])
-  }, [])
+  }, [selectGraphNode])
 
   const onCollapseGroup = useCallback((_groupId: number) => {
     groupExpansionController.current?.abort()
     groupExpansionController.current = null
-    setSelected(null)
+    selectGraphNode(null)
     setFetchingGroups(false)
     setExpandedGroupSpecs([])
     setGroupExpansions([])
-  }, [])
+  }, [selectGraphNode])
 
   const onExpand = useCallback(
     (node: GraphNode) => {
@@ -891,20 +905,19 @@ export function Graph({ active }: { active: boolean }) {
       if (!graphInteractive) return
       edgeSourceProbeRef.current?.cancel()
       setSourceProbeNotice(null)
-      setSelected(node)
-      highlightNodeSources(node?.src)
+      selectGraphNode(node)
     },
-    [graphInteractive, highlightNodeSources],
+    [graphInteractive, selectGraphNode],
   )
   const onEdgeSelect = useCallback(
     (bits: number[]) => {
       if (!designId || bits.length === 0) return
       setSourceProbeNotice(null)
       setError(null)
-      setSelected(null)
+      selectGraphNode(null)
       edgeSourceProbeRef.current?.schedule({ designId, bits })
     },
-    [designId],
+    [designId, selectGraphNode],
   )
   const onControlSelect = useCallback(
     (control: NonNullable<GraphNode['controls']>[number]) => {
@@ -927,6 +940,12 @@ export function Graph({ active }: { active: boolean }) {
       : undefined
   const loading = fetchingFull || fetchingRelevant || fetchingGroups || layingOut
   const showLoading = loading || analysisState === 'refreshing'
+  const sourceTierNotice = editorHighlight?.sourceTiers
+    ? sourceTierMessage(
+        editorHighlight.sourceTiers.truncated,
+        editorHighlight.sourceTiers.approximate,
+      )
+    : null
 
   if (!design) return <div className="empty-state">No design yet.</div>
 
@@ -980,6 +999,7 @@ export function Graph({ active }: { active: boolean }) {
           )}
           {error && <span className="msg err">{error}</span>}
           {sourceProbeNotice && <span className="msg">{sourceProbeNotice}</span>}
+          {sourceTierNotice && <span className="msg">{sourceTierNotice}</span>}
           {analysisState === 'stale' && (
             <span className="msg">source changed — synthesize to refresh mapping</span>
           )}
@@ -1019,7 +1039,7 @@ export function Graph({ active }: { active: boolean }) {
           <NodeCard
             node={selected}
             drivingNet={selectedNet}
-            onClose={() => setSelected(null)}
+            onClose={() => selectGraphNode(null)}
             onExpand={() => onExpand(selected)}
           />
         )}

@@ -5,7 +5,7 @@
 /// Everything the product analyzes is normalized to Yosys JSON first, but
 /// tools differ in how they rename nets and cells and in which provenance
 /// facts survive synthesis. Those differences live here and nowhere else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, deepsize::DeepSizeOf)]
 pub enum NetlistDialect {
     Yosys,
     Vivado,

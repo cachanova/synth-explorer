@@ -6,7 +6,11 @@ use crate::graph::Graph;
 use crate::grouping::{GroupPartition, memory_arrays_from_source};
 use crate::netlist::{YosysNetlist, select_top};
 use rtl_correlate::NetlistDialect;
-use crate::source::{SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance};
+use crate::source::node_attribution::source_tiers_for_nodes;
+use crate::source::{
+    SourceNodeTiersResponse, SourceProvenanceIndex, SourceRangeMapping, recover_source_provenance,
+};
+use rtl_correlate::correlate::CorrelationIndex;
 use deepsize::DeepSizeOf;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -28,6 +32,9 @@ pub struct AnalysisDesign {
     pub grouping: GroupPartition,
     pub delay_model: DelayModel,
     pub delay_profile: DelayProfile,
+    /// RTL-snapshot correlation index for schematic→source attribution.
+    /// Absent when the snapshot's top module could not be resolved.
+    correlation: Option<CorrelationIndex>,
     mode: String,
 }
 
@@ -73,6 +80,7 @@ impl AnalysisDesign {
         let memory_arrays =
             memory_arrays_from_source(&graph, source_netlist, source_top, registers);
         let grouping = GroupPartition::build(&graph, registers, memory_arrays);
+        let correlation = CorrelationIndex::build(source_netlist, source_top, dialect).ok();
 
         Ok(Self {
             graph,
@@ -80,8 +88,20 @@ impl AnalysisDesign {
             grouping,
             delay_model,
             delay_profile,
+            correlation,
             mode: mode.into(),
         })
+    }
+
+    /// Tiered source attribution for selected schematic nodes.
+    pub fn source_tiers_for_nodes(&self, ids: &[u32]) -> SourceNodeTiersResponse {
+        let Some(correlation) = &self.correlation else {
+            return SourceNodeTiersResponse {
+                approximate: true,
+                ..SourceNodeTiersResponse::default()
+            };
+        };
+        source_tiers_for_nodes(&self.graph, correlation, ids)
     }
 
     pub fn stats(&self) -> Stats {

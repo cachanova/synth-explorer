@@ -8,6 +8,7 @@
 
 pub(crate) mod coordinates;
 pub(crate) mod index;
+pub(crate) mod node_attribution;
 pub(crate) mod recover;
 pub(crate) mod types;
 
@@ -26,6 +27,6 @@ pub(crate) const SOURCE_PROBE_TARGET_VISIT_CAP: usize = SOURCE_RANGE_ASSOCIATION
 pub(crate) use index::SourceProvenanceIndex;
 pub(crate) use recover::recover_source_provenance;
 pub use types::{
-    SourceBitRangesResponse, SourceMapResponse, SourceProbeDirection, SourceProbeHint,
-    SourceProbeHintKind, SourceRangeMapping, SourceSelectionRange,
+    SourceBitRangesResponse, SourceMapResponse, SourceNodeTiersResponse, SourceProbeDirection,
+    SourceProbeHint, SourceProbeHintKind, SourceRangeMapping, SourceSelectionRange, SourceTierSpan,
 };

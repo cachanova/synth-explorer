@@ -10,7 +10,7 @@
 pub type ParsedSourceSpan = (String, usize, Option<usize>, usize, Option<usize>);
 
 /// One parsed source location.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, deepsize::DeepSizeOf)]
 pub struct SrcSpan {
     pub file: String,
     pub start_line: usize,

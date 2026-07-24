@@ -72,7 +72,7 @@ pub struct Attribution {
     pub truncated: bool,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, deepsize::DeepSizeOf)]
 struct RtlCell {
     spans: Vec<SrcSpan>,
     seq: bool,
@@ -84,7 +84,7 @@ struct RtlCell {
 }
 
 /// Query index over the RTL snapshot's top module.
-#[derive(Debug)]
+#[derive(Debug, deepsize::DeepSizeOf)]
 pub struct CorrelationIndex {
     dialect: NetlistDialect,
     cells: Vec<RtlCell>,
@@ -184,6 +184,12 @@ impl CorrelationIndex {
             port_bits,
             seq_out_bits,
         })
+    }
+
+    /// Whether a raw mapped-side net name resolves to an RTL boundary.
+    /// Mapped-side walks use this to decide where a selection's cut stops.
+    pub fn is_boundary(&self, raw: &str) -> bool {
+        self.resolve_name(raw, false).is_some()
     }
 
     /// Attribute a mapped-side cut against the RTL snapshot.
