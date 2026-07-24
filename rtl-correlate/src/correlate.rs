@@ -56,6 +56,9 @@ pub struct MappedCut {
     /// matching RTL register's D-cone becomes part of the output region —
     /// a superset of the selection, so the caller flags it approximate.
     pub feeds_registers: Vec<String>,
+    /// Net names whose RTL declaration spans join the exact tier — port
+    /// selections highlight the port declaration itself.
+    pub declarations: Vec<String>,
     /// The mapped-side walk hit its own caps before reaching boundaries.
     pub truncated: bool,
     /// The selection is a sequential element (register attribution mode).
@@ -112,6 +115,8 @@ pub struct CorrelationIndex {
     bits_by_name: HashMap<String, Vec<YosysBit>>,
     port_bits: HashSet<u32>,
     seq_out_bits: HashSet<u32>,
+    /// Declaration spans per net bit, from netname `src` attributes.
+    decl_spans_of_bit: HashMap<u32, Vec<IndexedSpan>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -201,10 +206,19 @@ impl CorrelationIndex {
         }
 
         let mut bits_by_name: HashMap<String, Vec<YosysBit>> = HashMap::new();
+        let mut decl_spans_of_bit: HashMap<u32, Vec<IndexedSpan>> = HashMap::new();
         for (name, netname) in &module.netnames {
             if name.starts_with('$') {
                 // Private names are volatile through mapping; never a boundary.
                 continue;
+            }
+            if let Some(src) = netname.attributes.get("src") {
+                let spans: Vec<IndexedSpan> = parse_src_pool(src).map(&mut intern).collect();
+                if !spans.is_empty() {
+                    for net in netname.bits.iter().filter_map(YosysBit::net) {
+                        decl_spans_of_bit.entry(net).or_default().extend(&spans);
+                    }
+                }
             }
             bits_by_name
                 .entry(clean_public_name(name).to_owned())
@@ -225,6 +239,7 @@ impl CorrelationIndex {
             bits_by_name,
             port_bits,
             seq_out_bits,
+            decl_spans_of_bit,
         })
     }
 
@@ -271,15 +286,35 @@ impl CorrelationIndex {
                 }
             }
         }
-        if output_bits.is_empty() {
-            result.approximate = true;
-            return result;
+        // Declaration spans (port selections) seed the exact-tier collector
+        // without implying any approximation, so the tier's cap, dedup, and
+        // ordering apply to the union like any other spans. Sequential cuts
+        // never carry declarations (register_cut leaves them empty), so
+        // only the combinational path needs the seed.
+        let mut exact_seed = SpanCollector::new(limits.span_cap);
+        let (declaration_bits, _) = self.resolve_names(&cut.declarations, true);
+        for bit in declaration_bits {
+            if let Some(spans) = self.decl_spans_of_bit.get(&bit) {
+                exact_seed.extend(spans);
+            }
         }
 
-        if cut.selected_is_sequential {
+        if output_bits.is_empty() {
+            if exact_seed.is_empty() {
+                result.approximate = true;
+                return result;
+            }
+            result.exact = exact_seed.into_spans(&self.files, &mut result.truncated);
+        } else if cut.selected_is_sequential {
             self.attribute_register(&output_bits, limits, &mut result);
         } else {
-            self.attribute_combinational(&output_bits, &input_bits, limits, &mut result);
+            self.attribute_combinational(
+                &output_bits,
+                &input_bits,
+                limits,
+                exact_seed,
+                &mut result,
+            );
         }
         result
     }
@@ -390,9 +425,10 @@ impl CorrelationIndex {
         output_bits: &BTreeSet<u32>,
         input_bits: &BTreeSet<u32>,
         limits: &CorrelationLimits,
+        exact_seed: SpanCollector,
         result: &mut Attribution,
     ) {
-        let mut exact = SpanCollector::new(limits.span_cap);
+        let mut exact = exact_seed;
         let mut contributing = SpanCollector::new(limits.span_cap);
         let mut visited = HashSet::new();
         let mut budget = limits.cell_visit_cap;

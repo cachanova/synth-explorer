@@ -2119,3 +2119,109 @@ fn vivado_standard_mode_buffered_netlist_attributes_registers_exactly() {
     let lut_tiers = design.source_tiers_for_nodes(&[lut.id]);
     assert!(lines(&lut_tiers.exact).contains(&5) || lines(&lut_tiers.exact).contains(&2));
 }
+
+#[test]
+fn port_selections_attribute_declarations_and_driving_logic() {
+    // line 1: module top(input clk, input a, output q);
+    // line 3: assign g = ~a;   (drives q via dff on line 4-5)
+    let source_netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "a": {"direction": "input", "bits": [4]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "$not$top.sv:3$1": {
+                "type": "$not",
+                "attributes": {"src": "top.sv:3.14-3.16"},
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [4], "Y": [14]}
+              },
+              "$procdff$2": {
+                "type": "$dff",
+                "attributes": {"src": "top.sv:4.3-5.14"},
+                "port_directions": {"CLK": "input", "D": "input", "Q": "output"},
+                "connections": {"CLK": [2], "D": [14], "Q": [12]}
+              }
+            },
+            "netnames": {
+              "a": {"bits": [4], "attributes": {"src": "top.sv:1.28-1.29"}},
+              "q": {"bits": [12], "attributes": {"src": "top.sv:1.38-1.39"}},
+              "clk": {"bits": [2], "attributes": {"src": "top.sv:1.13-1.16"}}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let netlist = parse_str(
+        r##"{
+          "modules": { "top": {
+            "attributes": {"top": "1"},
+            "ports": {
+              "clk": {"direction": "input", "bits": [2]},
+              "a": {"direction": "input", "bits": [4]},
+              "q": {"direction": "output", "bits": [12]}
+            },
+            "cells": {
+              "$abc$5$lut_g": {
+                "type": "$lut",
+                "port_directions": {"A": "input", "Y": "output"},
+                "connections": {"A": [4], "Y": [14]}
+              },
+              "q_dff": {
+                "type": "$_DFF_P_",
+                "port_directions": {"C": "input", "D": "input", "Q": "output"},
+                "connections": {"C": [2], "D": [14], "Q": [12]}
+              }
+            },
+            "netnames": {
+              "a": {"bits": [4]},
+              "q": {"bits": [12]},
+              "g": {"bits": [14]}
+            }
+          } }
+        }"##,
+    )
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        vec![("top.sv".to_owned(), "module top; endmodule".to_owned())],
+        "lut4",
+        DelayProfile::Generic,
+        NetlistDialect::Yosys,
+    )
+    .unwrap();
+    let lines = |spans: &[synth_explorer_analysis::source::SourceTierSpan]| {
+        spans.iter().map(|span| span.start_line).collect::<Vec<_>>()
+    };
+
+    // Input port: its declaration only, precise.
+    let input_port = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.port.as_deref() == Some("a"))
+        .expect("input port node");
+    let input_tiers = design.source_tiers_for_nodes(&[input_port.id]);
+    assert_eq!(lines(&input_tiers.exact), vec![1]);
+    assert!(input_tiers.contributing.is_empty());
+    assert!(!input_tiers.approximate);
+
+    // Output port: declaration plus the driving register's block in the
+    // contributing tier (the register itself is the driver, so nothing
+    // combinational is enclosed).
+    let output_port = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.port.as_deref() == Some("q"))
+        .expect("output port node");
+    let output_tiers = design.source_tiers_for_nodes(&[output_port.id]);
+    assert_eq!(lines(&output_tiers.exact), vec![1]);
+    assert_eq!(lines(&output_tiers.contributing), vec![4]);
+    assert!(!output_tiers.approximate);
+}
