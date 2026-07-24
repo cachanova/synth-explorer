@@ -986,8 +986,15 @@ export interface SchemWeaveExpansionRequest {
       compact_edge: number
     }>
   }
+  protected_groups?: Array<{
+    id: number
+    members: number[]
+    frame_padding: number
+  }>
   constraints: SchemWeaveLayoutRequest['constraints']
 }
+
+const SCHEMWEAVE_EXPANDED_GROUP_KEEP_OUT = 30
 
 export interface SchemWeaveCollapseRequest {
   expanded_graph: SchemWeaveGraph
@@ -1581,6 +1588,7 @@ export function buildSchemWeaveExpansionRequest(
   compact: SchemWeaveSnapshot,
   expandedInput: LayoutInput,
   group: ExpandedGroupLayout,
+  activeGroups: readonly ExpandedGroupLayout[] = [group],
 ): {
   request: SchemWeaveExpansionRequest
   expandedRequest: SchemWeaveLayoutRequest
@@ -1835,6 +1843,27 @@ export function buildSchemWeaveExpansionRequest(
     graph: { nodes: expandedGraph.nodes, edges },
     fragments: fragments as SchemWeaveGraphCatalog['fragments'],
   }
+  const overlappingPeer = activeGroups.find((active) =>
+    active.id !== group.id &&
+    active.members.some((member) => members.has(member))
+  )
+  if (overlappingPeer) {
+    throw new Error(
+      `expanded group ${group.id} overlaps protected group ${overlappingPeer.id}`,
+    )
+  }
+  const retainedNodeIds = new Set(compactGraph.nodes.map((node) => node.id))
+  const protectedGroups = activeGroups
+    .filter((active) => active.id !== group.id)
+    .map((active) => ({
+      id: active.id,
+      members: [...new Set(
+        active.members.filter((member) => retainedNodeIds.has(member)),
+      )].sort((left, right) => left - right),
+      frame_padding: SCHEMWEAVE_EXPANDED_GROUP_KEEP_OUT,
+    }))
+    .filter((active) => active.members.length > 0)
+    .sort((left, right) => left.id - right.id)
 
   return {
     catalog,
@@ -1861,6 +1890,9 @@ export function buildSchemWeaveExpansionRequest(
             left.compact_edge - right.compact_edge
           ),
       },
+      ...(protectedGroups.length > 0
+        ? { protected_groups: protectedGroups }
+        : {}),
       constraints,
     },
   }
