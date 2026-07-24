@@ -1583,12 +1583,24 @@ export function buildSchemWeaveExpansionRequest(
   const compactNodeById = new Map(
     compactGraph.nodes.map((node) => [node.id, node] as const),
   )
-  const portEntriesForNode = (
+  const portEntriesByNode = (
     catalog: SchemWeaveGraphCatalog,
-    node: number,
-  ) => [...catalog.portIds]
-    .filter(([key]) => key.startsWith(`${node}:`))
-    .sort(([left], [right]) => left.localeCompare(right))
+  ) => {
+    const byNode = new Map<number, Array<[string, number]>>()
+    for (const [key, port] of catalog.portIds) {
+      const separator = key.indexOf(':')
+      const node = Number(key.slice(0, separator))
+      const entries = byNode.get(node) ?? []
+      entries.push([key, port])
+      byNode.set(node, entries)
+    }
+    for (const entries of byNode.values()) {
+      entries.sort(([left], [right]) => left.localeCompare(right))
+    }
+    return byNode
+  }
+  const compactPortsByNode = portEntriesByNode(compact.catalog)
+  const expandedPortsByNode = portEntriesByNode(expanded.catalog)
   const portRemapByNode = new Map<number, Map<number, number>>()
   const normalizedNodes = expanded.request.graph.nodes.map((node) => {
     if (members.has(node.id)) return node
@@ -1603,8 +1615,8 @@ export function buildSchemWeaveExpansionRequest(
     ) {
       throw new Error(`expanded projection changed retained node ${node.id}`)
     }
-    const compactPorts = portEntriesForNode(compact.catalog, node.id)
-    const expandedPorts = portEntriesForNode(expanded.catalog, node.id)
+    const compactPorts = compactPortsByNode.get(node.id) ?? []
+    const expandedPorts = expandedPortsByNode.get(node.id) ?? []
     if (
       compactPorts.length !== expandedPorts.length ||
       compactPorts.some(([key], index) => key !== expandedPorts[index][0])

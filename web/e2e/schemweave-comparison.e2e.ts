@@ -396,8 +396,12 @@ test('multiple groups preserve independent expansion state in any toggle order',
 }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []
+    const analysisRequests: unknown[] = []
     Object.defineProperty(window, '__multiGroupSchemRequests', {
       value: requests,
+    })
+    Object.defineProperty(window, '__multiGroupAnalysisRequests', {
+      value: analysisRequests,
     })
     const NativeWorker = window.Worker
     window.Worker = class extends NativeWorker {
@@ -412,6 +416,10 @@ test('multiple groups preserve independent expansion state in any toggle order',
         message: unknown,
         transfer?: Transferable[],
       ): void {
+        const request = message as { kind?: string; method?: string }
+        if (request.kind === 'query' && request.method === 'expandGroup') {
+          analysisRequests.push(structuredClone(message))
+        }
         if (this.comparisonWorker) requests.push(structuredClone(message))
         if (transfer) super.postMessage(message, transfer)
         else super.postMessage(message)
@@ -464,6 +472,13 @@ test('multiple groups preserve independent expansion state in any toggle order',
     ).__multiGroupSchemRequests.filter((request) => request.kind === 'collapse')
       .length
   )
+  const analysisRequestCount = () => page.evaluate(() =>
+    (
+      window as unknown as {
+        __multiGroupAnalysisRequests: unknown[]
+      }
+    ).__multiGroupAnalysisRequests.length
+  )
   const muxMemberGeometry = () =>
     page.locator(`[data-expanded-group-member="${muxId}"]`)
       .evaluateAll((nodes) => nodes.map((node) => ({
@@ -472,6 +487,7 @@ test('multiple groups preserve independent expansion state in any toggle order',
       })).sort((left, right) => (left.id ?? '').localeCompare(right.id ?? '')))
   expect(await expansionRequestCount()).toBe(2)
   expect(await collapseRequestCount()).toBe(0)
+  expect(await analysisRequestCount()).toBe(2)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
   const muxGeometryBeforeRegisterCollapse = await muxMemberGeometry()
@@ -500,6 +516,7 @@ test('multiple groups preserve independent expansion state in any toggle order',
     expand: await expansionRequestCount(),
     collapse: await collapseRequestCount(),
   }).toEqual({ expand: 2, collapse: 1 })
+  expect(await analysisRequestCount()).toBe(3)
   expect(await muxMemberGeometry()).toEqual(muxGeometryBeforeRegisterCollapse)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
   await expect(page.locator('.msg.err')).toHaveCount(0)
@@ -515,6 +532,7 @@ test('multiple groups preserve independent expansion state in any toggle order',
   ).toHaveCount(8)
   expect(await expansionRequestCount()).toBe(2)
   expect(await collapseRequestCount()).toBe(1)
+  expect(await analysisRequestCount()).toBe(3)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 
@@ -541,7 +559,212 @@ test('multiple groups preserve independent expansion state in any toggle order',
   ).toHaveCount(8)
   expect(await expansionRequestCount()).toBe(2)
   expect(await collapseRequestCount()).toBe(2)
+  expect(await analysisRequestCount()).toBe(3)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
+  await expect(page.locator('.msg.err')).toHaveCount(0)
+})
+
+test('middle collapse waits for delayed prefixes and preserves peer group state', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const responses: unknown[] = []
+    Object.defineProperty(window, '__threeGroupSchemRequests', {
+      value: requests,
+    })
+    Object.defineProperty(window, '__threeGroupSchemResponses', {
+      value: responses,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private readonly comparisonWorker: boolean
+
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        const workerUrl = String(url)
+        this.comparisonWorker = workerUrl.includes('schemweave')
+        if (this.comparisonWorker) {
+          this.addEventListener('message', (event) => {
+            responses.push(structuredClone(event.data))
+          })
+        }
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        const request = message as {
+          id?: number
+          kind?: string
+          method?: string
+        }
+        const send = () => {
+          if (this.comparisonWorker) requests.push(structuredClone(message))
+          if (transfer) super.postMessage(message, transfer)
+          else super.postMessage(message)
+        }
+        if (
+          request.kind === 'query' &&
+          request.method === 'expandGroup'
+        ) {
+          window.setTimeout(send, 150)
+          return
+        }
+        send()
+      }
+    }
+  })
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('pipe')
+  await page.getByLabel('Platform').selectOption('gates')
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const groups = page.locator(
+    '.g-node-body.g-symbol-reg[data-member-count="16"]',
+  )
+  await expect(groups).toHaveCount(4)
+  const targets = await groups.evaluateAll((nodes) =>
+    nodes.slice(0, 3).map((node) => ({
+      id: node.getAttribute('data-graph-node-id')!,
+      tooltip: node.getAttribute('data-node-tooltip'),
+    })),
+  )
+  expect(targets).toHaveLength(3)
+
+  for (const target of targets) {
+    await page.locator(
+      `[data-group-action="expand"][data-group-id="${target.id}"]`,
+    ).evaluate((control) => {
+      control.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        bubbles: true,
+      }))
+    })
+    await expect(
+      page.locator(`[data-expanded-group-member="${target.id}"]`),
+    ).toHaveCount(16)
+  }
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(3)
+  for (const target of targets) {
+    await expect(
+      page.locator(`[data-expanded-group-member="${target.id}"]`),
+    ).toHaveCount(16)
+  }
+  const relativeGeometry = async (id: string) => {
+    const positions = await page.locator(`[data-expanded-group-member="${id}"]`)
+      .evaluateAll((nodes) => nodes.map((node) => {
+        const matrix = (node as SVGGElement).transform.baseVal.consolidate()?.matrix
+        return {
+          id: node.getAttribute('data-graph-node-id'),
+          x: matrix?.e ?? 0,
+          y: matrix?.f ?? 0,
+        }
+      }))
+    const left = Math.min(...positions.map((position) => position.x))
+    const top = Math.min(...positions.map((position) => position.y))
+    return positions.map((position) => ({
+      id: position.id,
+      x: position.x - left,
+      y: position.y - top,
+    })).sort((first, second) =>
+      (first.id ?? '').localeCompare(second.id ?? '')
+    )
+  }
+  const gridTopology = async (id: string) => {
+    const positions = await relativeGeometry(id)
+    const xs = [...new Set(positions.map((position) => position.x))]
+      .sort((left, right) => left - right)
+    const ys = [...new Set(positions.map((position) => position.y))]
+      .sort((left, right) => left - right)
+    return positions.map((position) => ({
+      id: position.id,
+      column: xs.indexOf(position.x),
+      row: ys.indexOf(position.y),
+    }))
+  }
+  const activateWithKeyboard = (selector: string) =>
+    page.locator(selector).first().evaluate((control) => {
+      control.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        bubbles: true,
+      }))
+    })
+  const requestCounts = () => page.evaluate(() => {
+    const state = (
+      window as unknown as {
+        __threeGroupSchemRequests: Array<{ kind?: string }>
+        __threeGroupSchemResponses: Array<{
+          id?: number
+          result?: { status?: string; reason?: string }
+        }>
+      }
+    )
+    const requests = state.__threeGroupSchemRequests
+    const collapse = requests.findLast((request) => request.kind === 'collapse') as
+      { id?: number } | undefined
+    const collapseResponse = state.__threeGroupSchemResponses.findLast(
+      (response) => response.id === collapse?.id,
+    )
+    return {
+      expand: requests.filter((request) => request.kind === 'expand').length,
+      collapse: requests.filter((request) => request.kind === 'collapse').length,
+      collapseStatus: collapseResponse?.result?.status ?? null,
+      collapseReason: collapseResponse?.result?.reason ?? null,
+    }
+  })
+
+  expect(await requestCounts()).toEqual({
+    expand: 3,
+    collapse: 0,
+    collapseStatus: null,
+    collapseReason: null,
+  })
+  const firstShapeBefore = await gridTopology(targets[0].id)
+  const thirdShapeBefore = await gridTopology(targets[2].id)
+  await activateWithKeyboard(
+    `[data-group-action="collapse"][data-group-id="${targets[1].id}"]`,
+  )
+  await page.waitForTimeout(50)
+  // The later prefix is deliberately delayed. Do not flash a partial layout.
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(3)
+  await expect(
+    page.locator(`[data-expanded-group-member="${targets[1].id}"]`),
+  ).toHaveCount(16)
+  await expect(
+    page.locator(`[data-expanded-group-member="${targets[1].id}"]`),
+  ).toHaveCount(0)
+  expect(await requestCounts()).toEqual({
+    expand: 4,
+    collapse: 1,
+    collapseStatus: 'needs_full_relayout',
+    collapseReason: 'geometry',
+  })
+  expect(await gridTopology(targets[0].id)).toEqual(firstShapeBefore)
+  expect(await gridTopology(targets[2].id)).toEqual(thirdShapeBefore)
+
+  await activateWithKeyboard(
+    `[data-group-action="collapse"][data-group-id="${targets[0].id}"]`,
+  )
+  await page.waitForTimeout(50)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
+  await expect(
+    page.locator(`[data-expanded-group-member="${targets[0].id}"]`),
+  ).toHaveCount(16)
+  await expect(
+    page.locator(`[data-expanded-group-member="${targets[0].id}"]`),
+  ).toHaveCount(0)
+  expect(await requestCounts()).toEqual({
+    expand: 5,
+    collapse: 2,
+    collapseStatus: 'needs_full_relayout',
+    collapseReason: 'geometry',
+  })
+  expect(await gridTopology(targets[2].id)).toEqual(thirdShapeBefore)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 })
 

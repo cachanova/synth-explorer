@@ -20,6 +20,102 @@ export interface GroupExpansionState {
   expansions: ExpandedGroup[]
 }
 
+export const GROUP_EXPANSION_CACHE_MAX_ENTRIES = 8
+export const GROUP_EXPANSION_CACHE_MAX_BYTES = 16 * 1024 * 1024
+
+interface GroupExpansionCacheEntry {
+  expansion: ExpandedGroup
+  retainedBytes: number
+}
+
+export interface GroupExpansionCache {
+  context: string | null
+  entries: Map<string, GroupExpansionCacheEntry>
+  retainedBytes: number
+}
+
+export function createGroupExpansionCache(): GroupExpansionCache {
+  return {
+    context: null,
+    entries: new Map(),
+    retainedBytes: 0,
+  }
+}
+
+export function resetGroupExpansionCache(
+  cache: GroupExpansionCache,
+  context: string | null,
+): void {
+  if (cache.context === context) return
+  cache.context = context
+  cache.entries.clear()
+  cache.retainedBytes = 0
+}
+
+function estimatedExpansionBytes(expansion: ExpandedGroup): number {
+  const edgeBits = expansion.graph.edges.reduce(
+    (total, edge) => total + edge.bits.length,
+    0,
+  )
+  const boundaryEdges = expansion.boundary_trunks.reduce(
+    (total, trunk) => total + trunk.expanded_edges.length,
+    0,
+  )
+  // Deliberately conservative: node metadata contains variable strings,
+  // controls, source ranges, and member arrays not represented by fixed fields.
+  return (
+    expansion.requestKey.length * 2 +
+    expansion.label.length * 2 +
+    expansion.graph.nodes.length * 1_024 +
+    expansion.graph.edges.length * 512 +
+    expansion.members.length * 8 +
+    expansion.boundary_trunks.length * 128 +
+    boundaryEdges * 48 +
+    edgeBits * 8 +
+    512
+  )
+}
+
+export function cachedGroupExpansion(
+  cache: GroupExpansionCache,
+  context: string,
+  requestKey: string,
+): ExpandedGroup | null {
+  resetGroupExpansionCache(cache, context)
+  const entry = cache.entries.get(requestKey)
+  if (!entry) return null
+  cache.entries.delete(requestKey)
+  cache.entries.set(requestKey, entry)
+  return entry.expansion
+}
+
+export function cacheGroupExpansion(
+  cache: GroupExpansionCache,
+  context: string,
+  expansion: ExpandedGroup,
+): void {
+  resetGroupExpansionCache(cache, context)
+  const retainedBytes = estimatedExpansionBytes(expansion)
+  if (retainedBytes > GROUP_EXPANSION_CACHE_MAX_BYTES) return
+  const prior = cache.entries.get(expansion.requestKey)
+  if (prior) {
+    cache.retainedBytes -= prior.retainedBytes
+    cache.entries.delete(expansion.requestKey)
+  }
+  cache.entries.set(expansion.requestKey, { expansion, retainedBytes })
+  cache.retainedBytes += retainedBytes
+  while (
+    cache.entries.size > GROUP_EXPANSION_CACHE_MAX_ENTRIES ||
+    cache.retainedBytes > GROUP_EXPANSION_CACHE_MAX_BYTES
+  ) {
+    const oldestKey = cache.entries.keys().next().value
+    if (oldestKey == null) break
+    const oldest = cache.entries.get(oldestKey)
+    cache.entries.delete(oldestKey)
+    cache.retainedBytes -= oldest?.retainedBytes ?? 0
+  }
+}
+
 export type GroupExpansionAction =
   | { type: 'reset'; ownerKey: string | null }
   | { type: 'invalidate'; ownerKey: string }

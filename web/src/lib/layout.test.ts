@@ -294,6 +294,33 @@ it('reconstructs inverse collapse after another group remains expanded', () => {
     request: second.expandedRequest,
     catalog: second.catalog,
   })
+  secondSnapshot.layout.edges = secondSnapshot.layout.edges.map((edge) => ({
+    ...edge,
+    points: [
+      { x: edge.id, y: edge.id + 0.25 },
+      { x: edge.id + 0.5, y: edge.id + 0.75 },
+    ],
+  }))
+  const bundledEdge = second.expandedRequest.graph.edges[0]
+  secondSnapshot.layout.boundary_bundles = [{
+    id: 0,
+    endpoint: bundledEdge.source,
+    role: 'input',
+    width: 1,
+    collector: {
+      start: { x: 10, y: 11 },
+      end: { x: 10, y: 12 },
+    },
+    spine: {
+      start: { x: 8, y: 11 },
+      end: { x: 10, y: 11 },
+    },
+    members: [{
+      edge: bundledEdge.id,
+      slots: [0],
+      tap: { x: 10, y: 11 },
+    }],
+  }]
 
   const collapsed = buildSchemWeaveCollapseRequest(
     secondSnapshot,
@@ -318,6 +345,28 @@ it('reconstructs inverse collapse after another group remains expanded', () => {
       (left, right) => left - right,
     ),
   )
+  for (const edge of collapsed.request.expanded_layout.edges) {
+    const oldId = edge.points[0].x
+    const oldEdge = second.expandedRequest.graph.edges[oldId]
+    const remapped = collapsed.request.expanded_graph.edges[edge.id]
+    expect([remapped.source.node, remapped.target.node]).toEqual([
+      oldEdge.source.node,
+      oldEdge.target.node,
+    ])
+  }
+  const remappedBundle =
+    collapsed.request.expanded_layout.boundary_bundles?.[0]
+  expect(remappedBundle).toBeDefined()
+  const remappedBundleEdge = collapsed.request.expanded_layout.edges.find(
+    (edge) => edge.id === remappedBundle!.members[0].edge,
+  )
+  expect(remappedBundleEdge?.points[0].x).toBe(bundledEdge.id)
+  expect(remappedBundle?.endpoint).toEqual(
+    collapsed.request.expanded_graph.edges[
+      remappedBundle!.members[0].edge
+    ].source,
+  )
+  expect(remappedBundle?.members[0].tap).toEqual({ x: 10, y: 11 })
 })
 
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({

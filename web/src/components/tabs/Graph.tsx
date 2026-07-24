@@ -21,8 +21,12 @@ import {
 import { graphProjection } from '../../lib/graphProjection'
 import {
   applyGroupExpansions,
+  cachedGroupExpansion,
+  cacheGroupExpansion,
+  createGroupExpansionCache,
   groupExpansionReducer,
   initialGroupExpansionState,
+  resetGroupExpansionCache,
 } from '../../lib/groupExpansion'
 import {
   cacheGroupLayout,
@@ -84,6 +88,7 @@ interface DisplayedGraph {
   projectionKey: string
   subgraph: Subgraph
   graph: LaidOutGraph
+  expandedGroups: Array<{ id: number; label: string; members: number[] }>
 }
 
 interface FullGraphCacheEntry {
@@ -169,6 +174,7 @@ export function Graph({ active }: { active: boolean }) {
   const groupExpansionControllers = useRef(new Map<number, AbortController>())
   const groupExpansionControllerKeys = useRef(new Map<number, string>())
   const groupExpansionRequestContext = useRef<string | null>(null)
+  const groupExpansionCache = useRef(createGroupExpansionCache())
   const loadedFullGraphKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   const displayedGraphRef = useRef<DisplayedGraph | null>(null)
@@ -318,6 +324,10 @@ export function Graph({ active }: { active: boolean }) {
     groupExpansionControllers.current.clear()
     groupExpansionControllerKeys.current.clear()
     groupExpansionRequestContext.current = null
+    resetGroupExpansionCache(
+      groupExpansionCache.current,
+      null,
+    )
     dispatchGroupExpansion({ type: 'reset', ownerKey: groupExpansionOwnerKey })
     pendingGroupCollapse.current = null
     setFetchingGroups(false)
@@ -619,6 +629,20 @@ export function Graph({ active }: { active: boolean }) {
       ) {
         continue
       }
+      const cached = cachedGroupExpansion(
+        groupExpansionCache.current,
+        requestContext,
+        requestKey,
+      )
+      if (cached?.id === group.id) {
+        loadedRequestKeyById.set(group.id, requestKey)
+        dispatchGroupExpansion({
+          type: 'loaded',
+          ownerKey: groupExpansionOwnerKey,
+          expansion: cached,
+        })
+        continue
+      }
       const controller = new AbortController()
       controllers.set(group.id, controller)
       controllerKeys.set(group.id, requestKey)
@@ -647,6 +671,11 @@ export function Graph({ active }: { active: boolean }) {
           ) {
             return
           }
+          cacheGroupExpansion(
+            groupExpansionCache.current,
+            requestContext,
+            expansion,
+          )
           dispatchGroupExpansion({
             type: 'loaded',
             ownerKey: groupExpansionOwnerKey,
@@ -786,6 +815,35 @@ export function Graph({ active }: { active: boolean }) {
       ? relevantSubgraph?.designId
       : fullSubgraph?.designId
     if (ownerDesignId == null) return
+    const pendingCollapse = pendingGroupCollapse.current
+    if (
+      layoutEngine === 'schemweave' &&
+      pendingCollapse &&
+      pendingCollapse.display.designId === ownerDesignId &&
+      pendingCollapse.display.projectionKey === projectionKey
+    ) {
+      const desiredIds = pendingCollapse.groups
+        .filter((group) => group.id !== pendingCollapse.groupId)
+        .map((group) => group.id)
+      const specIds = expandedGroupSpecs.map((group) => group.id)
+      const activeIds = new Set(
+        activeGroupExpansions.map((group) => group.id),
+      )
+      const desiredStateCurrent =
+        desiredIds.length === specIds.length &&
+        desiredIds.every((id, index) => id === specIds[index])
+      if (!desiredStateCurrent) {
+        pendingGroupCollapse.current = null
+      } else if (
+        activeIds.size !== desiredIds.length ||
+        desiredIds.some((id) => !activeIds.has(id))
+      ) {
+        // Closing a non-tail group changes every later prefix key. Keep the
+        // previous complete layout visible until all surviving projections
+        // have reloaded, then perform one inverse collapse from that geometry.
+        return
+      }
+    }
     const toLayout = combinedSubgraph
     const previousDisplay = displayedGraphRef.current
     const sameDesign = previousDisplay?.designId === ownerDesignId
@@ -806,6 +864,7 @@ export function Graph({ active }: { active: boolean }) {
         projectionKey,
         subgraph: toLayout,
         graph: cachedLayout,
+        expandedGroups: visibleExpandedGroups,
       }
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
@@ -997,6 +1056,7 @@ export function Graph({ active }: { active: boolean }) {
           projectionKey,
           subgraph: toLayout,
           graph: g,
+          expandedGroups: visibleExpandedGroups,
         }
         layoutCache.current.set(toLayout, g)
         displayedGraphRef.current = nextDisplay
@@ -1020,6 +1080,7 @@ export function Graph({ active }: { active: boolean }) {
     active,
     activeGroupExpansions,
     combinedSubgraph,
+    expandedGroupSpecs,
     focusActive,
     fullSubgraph?.designId,
     groupExpansionOwnerKey,
@@ -1028,6 +1089,7 @@ export function Graph({ active }: { active: boolean }) {
     projectionKey,
     relevantSubgraph?.designId,
     expandedGroupsForLayout,
+    visibleExpandedGroups,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(
@@ -1301,7 +1363,7 @@ export function Graph({ active }: { active: boolean }) {
             onEdgeSelect={onEdgeSelect}
             onControlSelect={graphInteractive ? onControlSelect : undefined}
             onExpand={graphInteractive ? onExpand : undefined}
-            expandedGroups={visibleExpandedGroups}
+            expandedGroups={visibleDisplayedGraph?.expandedGroups ?? []}
             onExpandGroup={graphInteractive ? onExpandGroup : undefined}
             onCollapseGroup={graphInteractive ? onCollapseGroup : undefined}
             active={active}
