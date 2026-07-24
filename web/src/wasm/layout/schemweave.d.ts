@@ -2,6 +2,11 @@
 /* eslint-disable */
 
 /**
+ * Collapse one expanded group without moving unrelated geometry.
+ */
+export function collapse_group_json(request_json: string): string;
+
+/**
  * Expand one quotient group while retaining unrelated compact geometry.
  */
 export function expand_group_json(request_json: string): string;
@@ -15,6 +20,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
+    readonly collapse_group_json: (a: number, b: number, c: number) => void;
     readonly expand_group_json: (a: number, b: number, c: number) => void;
     readonly layout_json: (a: number, b: number, c: number) => void;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;

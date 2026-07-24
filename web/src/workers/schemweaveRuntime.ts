@@ -1,4 +1,5 @@
 import type {
+  SchemWeaveCollapseRequest,
   SchemWeaveExpansionRequest,
   SchemWeaveLayout,
   SchemWeaveLayoutRequest,
@@ -14,6 +15,11 @@ export type SchemWeaveRequest =
       id: number
       kind: 'expand'
       request: SchemWeaveExpansionRequest
+    }
+  | {
+      id: number
+      kind: 'collapse'
+      request: SchemWeaveCollapseRequest
     }
 
 export type SchemWeaveExpansionResponse =
@@ -44,6 +50,7 @@ export type SchemWeaveResponse =
 interface LayoutModule {
   layout_json(graph: string): string
   expand_group_json?(request: string): string
+  collapse_group_json?(request: string): string
 }
 
 function errorMessage(error: unknown): string {
@@ -70,16 +77,21 @@ export function runSchemWeaveRequest(
   engine: LayoutModule,
   request: SchemWeaveRequest,
 ): SchemWeaveResponse {
-  if (request.kind === 'expand') {
+  if (request.kind === 'expand' || request.kind === 'collapse') {
     try {
-      if (!engine.expand_group_json) {
-        throw new Error('SchemWeave expansion API is unavailable')
+      const groupChangeJson = request.kind === 'expand'
+        ? engine.expand_group_json
+        : engine.collapse_group_json
+      if (!groupChangeJson) {
+        throw new Error(
+          `SchemWeave ${request.kind} API is unavailable`,
+        )
       }
       return {
         id: request.id,
         ok: true,
         result: JSON.parse(
-          engine.expand_group_json(JSON.stringify(request.request)),
+          groupChangeJson(JSON.stringify(request.request)),
         ) as SchemWeaveExpansionResponse,
       }
     } catch (error) {

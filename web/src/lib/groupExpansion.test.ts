@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import {
   applyGroupExpansions,
+  cachedGroupExpansion,
+  cacheGroupExpansion,
+  createGroupExpansionCache,
+  GROUP_EXPANSION_CACHE_MAX_ENTRIES,
   groupExpansionReducer,
   initialGroupExpansionState,
   type ExpandedGroup,
@@ -28,6 +32,38 @@ const expansion = (id: number): ExpandedGroup => ({
   members: [id + 1],
   graph: graph([node(id + 1)]),
   boundary_trunks: [],
+})
+
+describe('group expansion response cache', () => {
+  it('retains multiple prefix variants and clears them with their context', () => {
+    const cache = createGroupExpansionCache()
+    const first = { ...expansion(100), requestKey: 'context|100' }
+    const second = { ...expansion(200), requestKey: 'context|100,200' }
+    cacheGroupExpansion(cache, 'context', first)
+    cacheGroupExpansion(cache, 'context', second)
+
+    expect(cachedGroupExpansion(cache, 'context', first.requestKey)).toBe(first)
+    expect(cachedGroupExpansion(cache, 'context', second.requestKey)).toBe(second)
+    expect(cachedGroupExpansion(cache, 'other', first.requestKey)).toBeNull()
+    expect(cache.entries).toHaveLength(0)
+  })
+
+  it('evicts the least recently used prefix at the hard entry bound', () => {
+    const cache = createGroupExpansionCache()
+    for (let index = 0; index < GROUP_EXPANSION_CACHE_MAX_ENTRIES; index++) {
+      cacheGroupExpansion(cache, 'context', expansion(index))
+    }
+    expect(cachedGroupExpansion(cache, 'context', '0')).not.toBeNull()
+    cacheGroupExpansion(
+      cache,
+      'context',
+      expansion(GROUP_EXPANSION_CACHE_MAX_ENTRIES),
+    )
+
+    expect(cachedGroupExpansion(cache, 'context', '1')).toBeNull()
+    expect(cachedGroupExpansion(cache, 'context', '0')).not.toBeNull()
+    expect(cache.entries.size).toBe(GROUP_EXPANSION_CACHE_MAX_ENTRIES)
+  })
 })
 
 describe('groupExpansionReducer', () => {

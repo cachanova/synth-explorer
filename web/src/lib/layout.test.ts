@@ -6,6 +6,7 @@ import {
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
 import {
+  buildSchemWeaveCollapseRequest,
   buildSchemWeaveExpansionRequest,
   buildSchemWeaveLayoutRequest,
   clearLayoutGeometryCache,
@@ -139,6 +140,233 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
   expect(legacyExpanded.request.reference_height).toBe(
     compactSnapshot.layout.height,
   )
+
+  const expandedSnapshot: SchemWeaveSnapshot = {
+    request: expanded.expandedRequest,
+    catalog: expanded.catalog,
+    layout: {
+      nodes: expanded.request.expanded_graph.nodes.map((node, index) => ({
+        id: node.id,
+        x: index * 100,
+        y: 0,
+        width: node.width,
+        height: node.height,
+      })),
+      edges: expanded.request.expanded_graph.edges.map((edge) => ({
+        id: edge.id,
+        points: [],
+      })),
+      width: 400,
+      height: 50,
+    },
+  }
+  const collapsed = buildSchemWeaveCollapseRequest(
+    expandedSnapshot,
+    expandedInput,
+    compactInput,
+    { id: 100, members: [10, 11], referenceHeight: 50 },
+  )
+  expect(collapsed.request.expanded_graph).toEqual(
+    expanded.request.expanded_graph,
+  )
+  expect(collapsed.request.compact_graph).toEqual(compact.request.graph)
+  expect(collapsed.request.expansion).toEqual(expanded.request.expansion)
+  expect(collapsed.compactRequest).toEqual(compact.request)
+})
+
+it('reconstructs inverse collapse after another group remains expanded', () => {
+  const makeNode = (
+    id: number,
+    boundary: LayoutInput['nodes'][number]['boundary'] = 'internal',
+  ): LayoutInput['nodes'][number] => ({
+    id,
+    baseWidth: 80,
+    baseHeight: 50,
+    controlHeight: 0,
+    register: false,
+    boundary,
+  })
+  const makeEdge = (
+    from: number,
+    to: number,
+    net: number,
+  ): LayoutInput['edges'][number] => ({
+    from,
+    to,
+    fromPort: 'Y',
+    toPort: 'A',
+    control: false,
+    net,
+  })
+  const layoutFor = (
+    request: ReturnType<typeof buildSchemWeaveLayoutRequest>,
+  ): SchemWeaveSnapshot => ({
+    request: request.request,
+    catalog: request.catalog,
+    layout: {
+      nodes: request.request.graph.nodes.map((node, index) => ({
+        id: node.id,
+        x: index * 100,
+        y: 0,
+        width: node.width,
+        height: node.height,
+      })),
+      edges: request.request.graph.edges.map((edge) => ({
+        id: edge.id,
+        points: [],
+      })),
+      width: request.request.graph.nodes.length * 100,
+      height: 50,
+    },
+  })
+  const baseInput: LayoutInput = {
+    nodes: [makeNode(1, 'input'), makeNode(100), makeNode(200), makeNode(2, 'output')],
+    edges: [makeEdge(1, 100, 1), makeEdge(100, 200, 2), makeEdge(200, 2, 3)],
+  }
+  const firstInput: LayoutInput = {
+    nodes: [
+      makeNode(1, 'input'),
+      makeNode(10),
+      makeNode(11),
+      makeNode(200),
+      makeNode(2, 'output'),
+    ],
+    edges: [
+      makeEdge(1, 10, 1),
+      makeEdge(1, 11, 1),
+      makeEdge(10, 200, 2),
+      makeEdge(11, 200, 2),
+      makeEdge(200, 2, 3),
+    ],
+  }
+  const secondInput: LayoutInput = {
+    nodes: [
+      makeNode(1, 'input'),
+      makeNode(10),
+      makeNode(11),
+      makeNode(20),
+      makeNode(21),
+      makeNode(2, 'output'),
+    ],
+    edges: [
+      makeEdge(1, 10, 1),
+      makeEdge(1, 11, 1),
+      makeEdge(10, 20, 2),
+      makeEdge(10, 21, 2),
+      makeEdge(11, 20, 2),
+      makeEdge(11, 21, 2),
+      makeEdge(20, 2, 3),
+      makeEdge(21, 2, 3),
+    ],
+  }
+  const targetInput: LayoutInput = {
+    nodes: [
+      makeNode(1, 'input'),
+      makeNode(100),
+      makeNode(20),
+      makeNode(21),
+      makeNode(2, 'output'),
+    ],
+    edges: [
+      makeEdge(1, 100, 1),
+      makeEdge(100, 20, 2),
+      makeEdge(100, 21, 2),
+      makeEdge(20, 2, 3),
+      makeEdge(21, 2, 3),
+    ],
+  }
+  const base = layoutFor(buildSchemWeaveLayoutRequest(baseInput))
+  const first = buildSchemWeaveExpansionRequest(
+    base,
+    firstInput,
+    { id: 100, members: [10, 11] },
+  )
+  const firstSnapshot = layoutFor({
+    request: first.expandedRequest,
+    catalog: first.catalog,
+  })
+  const second = buildSchemWeaveExpansionRequest(
+    firstSnapshot,
+    secondInput,
+    { id: 200, members: [20, 21] },
+  )
+  const secondSnapshot = layoutFor({
+    request: second.expandedRequest,
+    catalog: second.catalog,
+  })
+  secondSnapshot.layout.edges = secondSnapshot.layout.edges.map((edge) => ({
+    ...edge,
+    points: [
+      { x: edge.id, y: edge.id + 0.25 },
+      { x: edge.id + 0.5, y: edge.id + 0.75 },
+    ],
+  }))
+  const bundledEdge = second.expandedRequest.graph.edges[0]
+  secondSnapshot.layout.boundary_bundles = [{
+    id: 0,
+    endpoint: bundledEdge.source,
+    role: 'input',
+    width: 1,
+    collector: {
+      start: { x: 10, y: 11 },
+      end: { x: 10, y: 12 },
+    },
+    spine: {
+      start: { x: 8, y: 11 },
+      end: { x: 10, y: 11 },
+    },
+    members: [{
+      edge: bundledEdge.id,
+      slots: [0],
+      tap: { x: 10, y: 11 },
+    }],
+  }]
+
+  const collapsed = buildSchemWeaveCollapseRequest(
+    secondSnapshot,
+    secondInput,
+    targetInput,
+    { id: 100, members: [10, 11] },
+  )
+  expect(collapsed.request.expanded_graph.nodes.map((node) => node.id)).toEqual(
+    second.expandedRequest.graph.nodes.map((node) => node.id),
+  )
+  expect(
+    collapsed.request.expanded_layout.edges.map((edge) => edge.id),
+  ).toEqual(
+    collapsed.request.expanded_graph.edges.map((edge) => edge.id),
+  )
+  expect(
+    collapsed.request.compact_graph.nodes.map((node) => node.id).sort(
+      (left, right) => left - right,
+    ),
+  ).toEqual(
+    targetInput.nodes.map((node) => node.id).sort(
+      (left, right) => left - right,
+    ),
+  )
+  for (const edge of collapsed.request.expanded_layout.edges) {
+    const oldId = edge.points[0].x
+    const oldEdge = second.expandedRequest.graph.edges[oldId]
+    const remapped = collapsed.request.expanded_graph.edges[edge.id]
+    expect([remapped.source.node, remapped.target.node]).toEqual([
+      oldEdge.source.node,
+      oldEdge.target.node,
+    ])
+  }
+  const remappedBundle =
+    collapsed.request.expanded_layout.boundary_bundles?.[0]
+  expect(remappedBundle).toBeDefined()
+  const remappedBundleEdge = collapsed.request.expanded_layout.edges.find(
+    (edge) => edge.id === remappedBundle!.members[0].edge,
+  )
+  expect(remappedBundleEdge?.points[0].x).toBe(bundledEdge.id)
+  expect(remappedBundle?.endpoint).toEqual(
+    collapsed.request.expanded_graph.edges[
+      remappedBundle!.members[0].edge
+    ].source,
+  )
+  expect(remappedBundle?.members[0].tap).toEqual({ x: 10, y: 11 })
 })
 
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({

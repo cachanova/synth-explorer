@@ -960,6 +960,7 @@ export interface SchemWeaveSnapshot {
   request: SchemWeaveLayoutRequest
   layout: SchemWeaveLayout
   catalog: SchemWeaveGraphCatalog
+  expandedGroups?: ExpandedGroupLayout[]
 }
 
 export interface SchemWeaveExpansionRequest {
@@ -975,6 +976,14 @@ export interface SchemWeaveExpansionRequest {
       compact_edge: number
     }>
   }
+  constraints: SchemWeaveLayoutRequest['constraints']
+}
+
+export interface SchemWeaveCollapseRequest {
+  expanded_graph: SchemWeaveGraph
+  expanded_layout: SchemWeaveLayout
+  compact_graph: SchemWeaveGraph
+  expansion: SchemWeaveExpansionRequest['expansion']
   constraints: SchemWeaveLayoutRequest['constraints']
 }
 
@@ -1574,12 +1583,24 @@ export function buildSchemWeaveExpansionRequest(
   const compactNodeById = new Map(
     compactGraph.nodes.map((node) => [node.id, node] as const),
   )
-  const portEntriesForNode = (
+  const portEntriesByNode = (
     catalog: SchemWeaveGraphCatalog,
-    node: number,
-  ) => [...catalog.portIds]
-    .filter(([key]) => key.startsWith(`${node}:`))
-    .sort(([left], [right]) => left.localeCompare(right))
+  ) => {
+    const byNode = new Map<number, Array<[string, number]>>()
+    for (const [key, port] of catalog.portIds) {
+      const separator = key.indexOf(':')
+      const node = Number(key.slice(0, separator))
+      const entries = byNode.get(node) ?? []
+      entries.push([key, port])
+      byNode.set(node, entries)
+    }
+    for (const entries of byNode.values()) {
+      entries.sort(([left], [right]) => left.localeCompare(right))
+    }
+    return byNode
+  }
+  const compactPortsByNode = portEntriesByNode(compact.catalog)
+  const expandedPortsByNode = portEntriesByNode(expanded.catalog)
   const portRemapByNode = new Map<number, Map<number, number>>()
   const normalizedNodes = expanded.request.graph.nodes.map((node) => {
     if (members.has(node.id)) return node
@@ -1594,8 +1615,8 @@ export function buildSchemWeaveExpansionRequest(
     ) {
       throw new Error(`expanded projection changed retained node ${node.id}`)
     }
-    const compactPorts = portEntriesForNode(compact.catalog, node.id)
-    const expandedPorts = portEntriesForNode(expanded.catalog, node.id)
+    const compactPorts = compactPortsByNode.get(node.id) ?? []
+    const expandedPorts = expandedPortsByNode.get(node.id) ?? []
     if (
       compactPorts.length !== expandedPorts.length ||
       compactPorts.some(([key], index) => key !== expandedPorts[index][0])
@@ -1831,6 +1852,162 @@ export function buildSchemWeaveExpansionRequest(
           ),
       },
       constraints,
+    },
+  }
+}
+
+/**
+ * Reconstruct the exact expansion contract in reverse so the engine can
+ * collapse one group without moving any other active group.
+ */
+export function buildSchemWeaveCollapseRequest(
+  expanded: SchemWeaveSnapshot,
+  expandedInput: LayoutInput,
+  compactInput: LayoutInput,
+  group: ExpandedGroupLayout,
+): {
+  request: SchemWeaveCollapseRequest
+  compactRequest: SchemWeaveLayoutRequest
+  catalog: SchemWeaveGraphCatalog
+} {
+  const compact = buildSchemWeaveLayoutRequest(compactInput)
+  const reconstructed = buildSchemWeaveExpansionRequest(
+    {
+      request: compact.request,
+      layout: expanded.layout,
+      catalog: compact.catalog,
+    },
+    expandedInput,
+    group,
+  )
+  const portKeyByEndpoint = (catalog: SchemWeaveGraphCatalog) => {
+    const keys = new Map<string, string>()
+    for (const [key, port] of catalog.portIds) {
+      const separator = key.indexOf(':')
+      const node = key.slice(0, separator)
+      keys.set(`${node}:${port}`, key.slice(separator + 1))
+    }
+    return keys
+  }
+  const currentPortKeys = portKeyByEndpoint(expanded.catalog)
+  const reconstructedPortKeys = portKeyByEndpoint(reconstructed.catalog)
+  const semanticNodes = (
+    graph: SchemWeaveGraph,
+    portKeys: Map<string, string>,
+  ) => graph.nodes.map((node) => ({
+    id: node.id,
+    width: node.width,
+    height: node.height,
+    cycle_breaker: node.cycle_breaker,
+    ports: node.ports.map((port) => ({
+      key: portKeys.get(`${node.id}:${port.id}`),
+      side: port.side,
+      offset: port.offset,
+    })).sort((left, right) => (left.key ?? '').localeCompare(right.key ?? '')),
+  })).sort((left, right) => left.id - right.id)
+  if (
+    JSON.stringify(semanticNodes(expanded.request.graph, currentPortKeys)) !==
+    JSON.stringify(
+      semanticNodes(
+        reconstructed.expandedRequest.graph,
+        reconstructedPortKeys,
+      ),
+    )
+  ) {
+    throw new Error('current SchemWeave snapshot changed collapse nodes')
+  }
+  const edgeSignature = (
+    edge: SchemWeaveGraph['edges'][number],
+    fragment: SchemWeaveGraphCatalog['fragments'][number],
+    portKeys: Map<string, string>,
+  ) => [
+    `${edge.source.node}:${portKeys.get(`${edge.source.node}:${edge.source.port}`)}`,
+    `${edge.target.node}:${portKeys.get(`${edge.target.node}:${edge.target.port}`)}`,
+    fragment.netKey,
+    fragment.sourceBundle?.slots.join(',') ?? '',
+    fragment.targetBundle?.slots.join(',') ?? '',
+    edge.participates_in_ranking,
+  ].join('|')
+  const reconstructedIdsBySignature = new Map<string, number[]>()
+  for (const edge of reconstructed.expandedRequest.graph.edges) {
+    const fragment = reconstructed.catalog.fragments[edge.id]
+    if (!fragment) {
+      throw new Error(`reconstructed collapse graph omitted edge ${edge.id}`)
+    }
+    const signature = edgeSignature(
+      edge,
+      fragment,
+      reconstructedPortKeys,
+    )
+    const ids = reconstructedIdsBySignature.get(signature) ?? []
+    ids.push(edge.id)
+    reconstructedIdsBySignature.set(signature, ids)
+  }
+  const remappedEdgeId = new Map<number, number>()
+  for (const edge of [...expanded.request.graph.edges].sort(
+    (left, right) => left.id - right.id,
+  )) {
+    const fragment = expanded.catalog.fragments[edge.id]
+    if (!fragment) {
+      throw new Error(`current SchemWeave snapshot omitted edge ${edge.id}`)
+    }
+    const signature = edgeSignature(edge, fragment, currentPortKeys)
+    const ids = reconstructedIdsBySignature.get(signature)
+    const id = ids?.shift()
+    if (id == null) {
+      throw new Error('current SchemWeave snapshot changed collapse edges')
+    }
+    remappedEdgeId.set(edge.id, id)
+  }
+  if ([...reconstructedIdsBySignature.values()].some((ids) => ids.length > 0)) {
+    throw new Error('current SchemWeave snapshot omitted collapse edges')
+  }
+  const remapEndpoint = (endpoint: { node: number; port: number }) => {
+    const key = currentPortKeys.get(`${endpoint.node}:${endpoint.port}`)
+    const port = key == null
+      ? undefined
+      : reconstructed.catalog.portIds.get(`${endpoint.node}:${key}`)
+    if (port == null) {
+      throw new Error('current SchemWeave snapshot changed collapse ports')
+    }
+    return { node: endpoint.node, port }
+  }
+  const remappedLayout: SchemWeaveLayout = {
+    ...expanded.layout,
+    edges: expanded.layout.edges.map((edge) => {
+      const id = remappedEdgeId.get(edge.id)
+      if (id == null) {
+        throw new Error(`current SchemWeave layout omitted edge ${edge.id}`)
+      }
+      return { ...edge, id }
+    }).sort((left, right) => left.id - right.id),
+    ...(expanded.layout.boundary_bundles
+      ? {
+          boundary_bundles: expanded.layout.boundary_bundles.map((bundle) => ({
+            ...bundle,
+            endpoint: remapEndpoint(bundle.endpoint),
+            members: bundle.members.map((member) => {
+              const edge = remappedEdgeId.get(member.edge)
+              if (edge == null) {
+                throw new Error(
+                  `current SchemWeave bundle omitted edge ${member.edge}`,
+                )
+              }
+              return { ...member, edge }
+            }),
+          })),
+        }
+      : {}),
+  }
+  return {
+    catalog: compact.catalog,
+    compactRequest: compact.request,
+    request: {
+      expanded_graph: reconstructed.expandedRequest.graph,
+      expanded_layout: remappedLayout,
+      compact_graph: compact.request.graph,
+      expansion: reconstructed.request.expansion,
+      constraints: compact.request.constraints,
     },
   }
 }
@@ -2869,6 +3046,9 @@ function getWorker(engine: LayoutEngine): Worker {
           expansionEntry.catalog,
           expansionEntry.request,
         )
+        if (geometry.schemWeaveSnapshot) {
+          geometry.schemWeaveSnapshot.expandedGroups = expansionEntry.groups
+        }
         geometry.groups = expansionEntry.groups.map((group) => {
           const memberIds = new Set(group.members)
           const members = geometry.nodes.filter((node) => memberIds.has(node.id))
@@ -3093,6 +3273,71 @@ export async function layoutExpandedGroupWithSchemWeave(
     worker.postMessage(request)
   })
   return geometry ? hydrateLayoutResult(sub, geometry) : null
+}
+
+/**
+ * Collapse one quotient group while preserving every unrelated expanded
+ * group. A null result explicitly asks the caller to use a full layout.
+ */
+export async function layoutCollapsedGroupWithSchemWeave(
+  compactSub: Subgraph,
+  expandedSub: Subgraph,
+  expandedLayout: LaidOutGraph,
+  group: ExpandedGroupLayout,
+  activeGroups: ExpandedGroupLayout[],
+  signal?: AbortSignal,
+): Promise<LaidOutGraph | null> {
+  if (signal?.aborted) throw abortError()
+  const snapshot = expandedLayout.schemWeaveSnapshot
+  if (!snapshot) return null
+  const prepared = buildSchemWeaveCollapseRequest(
+    snapshot,
+    prepareLayoutInput(expandedSub),
+    prepareLayoutInput(compactSub),
+    group,
+  )
+  const id = ++seq
+  const request: SchemWeaveRequest = {
+    id,
+    kind: 'collapse',
+    request: prepared.request,
+  }
+  const worker = getWorker('schemweave')
+  const geometry = await new Promise<LayoutGeometry | null>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    const cleanup = () => {
+      signal?.removeEventListener('abort', onAbort)
+      if (timeout) clearTimeout(timeout)
+    }
+    const onAbort = () => {
+      if (!expansionPending.has(id)) return
+      terminateWorker('schemweave', worker, abortError())
+    }
+    expansionPending.set(id, {
+      catalog: prepared.catalog,
+      request: prepared.compactRequest,
+      groups: activeGroups,
+      resolve: (value) => {
+        cleanup()
+        resolve(value)
+      },
+      reject: (error) => {
+        cleanup()
+        reject(error)
+      },
+    })
+    signal?.addEventListener('abort', onAbort, { once: true })
+    timeout = setTimeout(
+      () => terminateWorker('schemweave', worker, layoutTimeoutError()),
+      LAYOUT_DEADLINE_MS,
+    )
+    worker.postMessage(request)
+  })
+  return geometry ? hydrateLayoutResult(compactSub, geometry) : null
 }
 
 // Above this size NETWORK_SIMPLEX becomes unsafe in elkjs: on deep datapath
