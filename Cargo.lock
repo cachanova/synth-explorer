@@ -776,7 +776,7 @@ dependencies = [
 [[package]]
 name = "schemweave"
 version = "0.1.0"
-source = "git+https://github.com/cachanova/schemweave.git?rev=176eefb3dfe4572edc67e2cda2a0f6ab680105be#176eefb3dfe4572edc67e2cda2a0f6ab680105be"
+source = "git+https://github.com/cachanova/schemweave.git?rev=0c23e0ccd083a24b15008e4449b66e29c54949db#0c23e0ccd083a24b15008e4449b66e29c54949db"
 dependencies = [
  "serde",
  "thiserror",
