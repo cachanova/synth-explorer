@@ -174,7 +174,7 @@ fn js_error(message: impl AsRef<str>) -> JsValue {
 
 #[cfg(test)]
 mod tests {
-    use schemweave::{ConstrainedLayoutError, LayoutError};
+    use schemweave::{ConstrainedLayoutError, Layout, LayoutError};
 
     use super::{
         BOUNDARY_BUNDLE_GEOMETRY_ERROR_NAME, collapse_group_json, expand_group_json,
@@ -224,6 +224,106 @@ mod tests {
             layout["boundary_bundles"][0]["members"][0]["slots"],
             serde_json::json!([0, 7])
         );
+    }
+
+    #[test]
+    fn consolidates_declared_vector_bundle_member_routes() {
+        let port = |id: u32, side: &str, offset: f64| serde_json::json!({"id":id,"side":side,"offset":offset});
+        let edge = |id: u32,
+                    source_node: u32,
+                    source_port: u32,
+                    target_node: u32,
+                    target_port: u32,
+                    net: u32| {
+            serde_json::json!({
+                "id": id,
+                "source": {"node": source_node, "port": source_port},
+                "target": {"node": target_node, "port": target_port},
+                "net": net,
+                "participates_in_ranking": true
+            })
+        };
+        let mut edges = vec![edge(0, 26, 0, 44, 2, 25), edge(9, 44, 3, 43, 0, 24)];
+        edges.extend((1..=8).map(|id| edge(id, 43, 1, 47, 0, id + 10)));
+        edges.extend((10..=17).map(|id| edge(id, 45, 0, 44, 0, id - 10)));
+        edges.extend((18..=25).map(|id| edge(id, 46, 0, 44, 1, id - 15)));
+        let members = |first: u32| {
+            (0..8)
+                .map(|slot| serde_json::json!({"edge":first + slot,"slots":[slot]}))
+                .collect::<Vec<_>>()
+        };
+        let request = serde_json::json!({
+            "graph": {
+                "nodes": [
+                    {"id":26,"width":74,"height":34,"ports":[port(0, "east", 17.0)]},
+                    {
+                        "id":43,
+                        "width":92,
+                        "height":84,
+                        "cycle_breaker":true,
+                        "ports":[port(0, "west", 18.56), port(1, "east", 29.0)]
+                    },
+                    {
+                        "id":44,
+                        "width":70,
+                        "height":72,
+                        "ports":[
+                            port(0, "west", 18.0),
+                            port(1, "west", 36.0),
+                            port(2, "west", 54.0),
+                            port(3, "east", 36.0)
+                        ]
+                    },
+                    {"id":45,"width":74,"height":34,"ports":[port(0, "east", 17.0)]},
+                    {"id":46,"width":74,"height":34,"ports":[port(0, "east", 17.0)]},
+                    {"id":47,"width":74,"height":34,"ports":[port(0, "west", 17.0)]}
+                ],
+                "edges": edges
+            },
+            "constraints": {
+                "inputs": [26, 45, 46],
+                "outputs": [47],
+                "boundary_bundles": [
+                    {
+                        "id":0,
+                        "endpoint":{"node":45,"port":0},
+                        "width":8,
+                        "members":members(10)
+                    },
+                    {
+                        "id":1,
+                        "endpoint":{"node":46,"port":0},
+                        "width":8,
+                        "members":members(18)
+                    },
+                    {
+                        "id":2,
+                        "endpoint":{"node":47,"port":0},
+                        "width":8,
+                        "members":members(1)
+                    }
+                ]
+            }
+        });
+        let layout: Layout =
+            serde_json::from_str(&layout_json(&request.to_string()).unwrap()).unwrap();
+
+        assert_eq!(layout.boundary_bundles.len(), 3);
+        for bundle in &layout.boundary_bundles {
+            assert_eq!(bundle.members.len(), 8);
+            let representative = layout
+                .edges
+                .iter()
+                .find(|route| route.id == bundle.members[0].edge)
+                .unwrap();
+            assert!(bundle.members.iter().all(|member| {
+                layout
+                    .edges
+                    .iter()
+                    .find(|route| route.id == member.edge)
+                    .is_some_and(|route| route.points == representative.points)
+            }));
+        }
     }
 
     #[test]
