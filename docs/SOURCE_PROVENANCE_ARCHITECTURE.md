@@ -138,9 +138,12 @@ spans. `Analysis::node_ref` combines those recovered spans with the native
 fragments before producing the existing `NodeRef.src` string.
 
 Signal-bit source projection accepts a bounded, deduplicated bit set and
-returns exact mappings before marking approximate matches. The index uses its
-bit reverse indexes when that is cheaper than scanning the retained mappings.
-Response ordering and truncation remain deterministic in either path.
+returns exact mappings before marking approximate matches. Schematic net
+attribution combines those mappings with name-based declaration and region
+tiers, so anonymous mapped nets retain their exact reverse provenance. The
+index uses its bit reverse indexes when that is cheaper than scanning the
+retained mappings. Response ordering and truncation remain deterministic in
+either path.
 
 ## Source-map projection
 
@@ -158,7 +161,7 @@ browser, not an independently maintained index.
 The WASM boundary exposes the same provenance through:
 
 - `source_map_json`;
-- `source_ranges_for_bits_json`;
+- `source_for_nets_json`, with both visible names and final-net bits;
 - `nodes_json`, including `NodeRef.src`; and
 - `source_selection_json`.
 

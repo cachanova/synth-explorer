@@ -45,19 +45,3 @@ export function sourceProbePresentation(
       }
   }
 }
-
-export function sourceRangeProbeMessage(
-  truncated: boolean,
-  approximate: boolean,
-): string | null {
-  if (truncated && approximate) {
-    return 'Source highlight is approximate, and some source locations were omitted because response limits were reached.'
-  }
-  if (truncated) {
-    return 'Source highlight is partial because some source locations were omitted by response limits.'
-  }
-  if (approximate) {
-    return 'Source highlight is approximate because synthesis did not preserve exact wire provenance.'
-  }
-  return null
-}

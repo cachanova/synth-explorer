@@ -424,12 +424,6 @@ export interface SourceMapResponse {
   truncated: boolean
 }
 
-export interface SourceBitRangesResponse {
-  ranges: SourceRangeMapping[]
-  truncated: boolean
-  approximate: boolean
-}
-
 // --- Bundled examples ---
 
 export type ExampleLanguage = 'verilog' | 'vhdl'

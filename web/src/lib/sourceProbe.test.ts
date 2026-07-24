@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sourceProbePresentation, sourceRangeProbeMessage } from './sourceProbe'
+import { sourceProbePresentation } from './sourceProbe'
 
 describe('source probe presentation', () => {
   it('renders retained roots for incomplete mapping without claiming optimization', () => {
@@ -16,12 +16,5 @@ describe('source probe presentation', () => {
     expect(sourceProbePresentation('mapped').acceptReturnedGraph).toBe(true)
     expect(sourceProbePresentation('optimized_or_absorbed').acceptReturnedGraph).toBe(false)
     expect(sourceProbePresentation('unmapped').acceptReturnedGraph).toBe(false)
-  })
-
-  it('distinguishes approximate reverse provenance from response truncation', () => {
-    expect(sourceRangeProbeMessage(false, true)).toContain('approximate')
-    expect(sourceRangeProbeMessage(false, true)).not.toContain('limits')
-    expect(sourceRangeProbeMessage(true, false)).toContain('omitted')
-    expect(sourceRangeProbeMessage(false, false)).toBeNull()
   })
 })

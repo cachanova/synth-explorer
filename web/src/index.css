@@ -20,6 +20,8 @@
   --schematic-gate-fill: var(--bg-2);
   --schematic-gate-stroke: var(--border-strong);
   --schematic-wire: var(--border-strong);
+  --schematic-dim-opacity: 0.25;
+  --schematic-control-dim-opacity: 0.1625;
   --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, 'Cascadia Code',
     Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -2219,16 +2221,27 @@ th.sortable:hover {
   stroke-width: 2.4;
 }
 .graph-stage-wrap[data-focus='off'] [data-relevant='0'] {
-  opacity: 0.25;
+  opacity: var(--schematic-dim-opacity);
 }
 .graph-stage-wrap[data-focus='off'] .g-edge.control[data-relevant='0'],
 .graph-stage-wrap[data-focus='off'] .g-edge-arrows.control[data-relevant='0'] {
-  opacity: 0.1625;
+  opacity: var(--schematic-control-dim-opacity);
 }
 .graph-stage-wrap[data-focus='on'] [data-relevant='0'] {
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
+}
+.g-node-body.g-dimmed,
+.g-node-details.g-dimmed,
+.g-edge.g-dimmed,
+.g-edge-arrows.g-dimmed,
+.g-bus-label.g-dimmed {
+  opacity: var(--schematic-dim-opacity);
+}
+.g-edge.control.g-dimmed,
+.g-edge-arrows.control.g-dimmed {
+  opacity: var(--schematic-control-dim-opacity);
 }
 .g-bus-label {
   font-family: var(--mono);
