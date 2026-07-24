@@ -2268,7 +2268,15 @@ endmodule
       hasText: 'logic first; logic second;',
     }),
   ).toBeVisible()
-  await expect(page.locator('.cm-src-range-hl')).toHaveText(/^second;?$/)
+  // Tiered wire attribution highlights the net's declaration and driving
+  // statement; exact-net identity means `second` ranges appear and
+  // `first` ranges do not.
+  await expect(
+    page.locator('.cm-src-range-hl').filter({ hasText: /^second;?$/ }),
+  ).toHaveCount(1)
+  await expect(
+    page.locator('.cm-src-range-hl').filter({ hasText: /^first;?$/ }),
+  ).toHaveCount(0)
   await selectText(declarationLine, 6, 5, 9, 13)
   await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
   await expect(page.locator('.cm-src-range-hl')).toHaveCount(0)
