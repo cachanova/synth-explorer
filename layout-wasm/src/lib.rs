@@ -2,7 +2,7 @@
 
 use schemweave::{
     ConstrainedLayoutError, Graph, GroupCollapseOptions, GroupExpansion, GroupExpansionError,
-    GroupExpansionOptions, Layout, LayoutConfig, LayoutConstraints, LayoutError,
+    GroupExpansionOptions, Layout, LayoutConfig, LayoutConstraints, LayoutError, ProtectedGroup,
     collapse_group_in_place, expand_group_in_place_with_reference_height,
 };
 use serde::{Deserialize, Serialize};
@@ -45,6 +45,8 @@ struct ExpansionRequest {
     expansion: GroupExpansion,
     reference_height: f64,
     #[serde(default)]
+    protected_groups: Vec<ProtectedGroup>,
+    #[serde(default)]
     constraints: LayoutConstraints,
 }
 
@@ -80,6 +82,7 @@ pub fn expand_group_json(request_json: &str) -> Result<String, JsValue> {
             layout: config.layout,
             quality_effort: config.quality_effort,
             constraints: config.constraints,
+            protected_groups: request.protected_groups,
         },
     ) {
         Ok(layout) => ExpansionResponse::Layout { layout },
@@ -244,20 +247,27 @@ mod tests {
         let response = expand_group_json(
             r#"{
                 "compact_graph":{
-                    "nodes":[{"id":10,"width":80,"height":50,"ports":[]}],
+                    "nodes":[
+                        {"id":10,"width":80,"height":50,"ports":[]},
+                        {"id":3,"width":80,"height":50,"ports":[]}
+                    ],
                     "edges":[]
                 },
                 "compact_layout":{
-                    "nodes":[{"id":10,"x":0,"y":0,"width":80,"height":50}],
+                    "nodes":[
+                        {"id":10,"x":0,"y":0,"width":80,"height":50},
+                        {"id":3,"x":200,"y":0,"width":80,"height":50}
+                    ],
                     "edges":[],
-                    "width":80,
+                    "width":280,
                     "height":200
                 },
                 "reference_height":200,
                 "expanded_graph":{
                     "nodes":[
                         {"id":1,"width":80,"height":50,"ports":[]},
-                        {"id":2,"width":80,"height":50,"ports":[]}
+                        {"id":2,"width":80,"height":50,"ports":[]},
+                        {"id":3,"width":80,"height":50,"ports":[]}
                     ],
                     "edges":[]
                 },
@@ -265,18 +275,23 @@ mod tests {
                     "anchor":10,
                     "members":[1,2],
                     "boundary_trunks":[]
-                }
+                },
+                "protected_groups":[
+                    {"id":20,"members":[3],"frame_padding":30}
+                ]
             }"#,
         )
         .unwrap();
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
 
         assert_eq!(value["status"], "layout");
-        assert_eq!(value["layout"]["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(value["layout"]["nodes"].as_array().unwrap().len(), 3);
         assert_eq!(
             value["layout"]["nodes"][0]["x"],
             value["layout"]["nodes"][1]["x"]
         );
+        assert_eq!(value["layout"]["nodes"][2]["id"], 3);
+        assert_eq!(value["layout"]["nodes"][2]["x"].as_f64(), Some(200.0));
     }
 
     #[test]

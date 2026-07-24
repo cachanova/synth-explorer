@@ -349,6 +349,7 @@ export function runSchemWeaveWorkerRequest(
         base.snapshot,
         request.input,
         request.group,
+        request.activeGroups,
       )
       const response = runSchemWeaveRequest(engine, {
         id: request.id,

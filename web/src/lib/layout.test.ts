@@ -113,10 +113,17 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
     ],
   }
 
+  const group = { id: 100, members: [10, 11], referenceHeight: 50 }
   const expanded = buildSchemWeaveExpansionRequest(
     compactSnapshot,
     expandedInput,
-    { id: 100, members: [10, 11], referenceHeight: 50 },
+    group,
+    [
+      { id: 400, members: [4000, 4001] },
+      { id: 300, members: [999, 2, 2] },
+      group,
+      { id: 200, members: [998, 1, 1] },
+    ],
   )
 
   expect(expanded.request.expanded_graph.edges.map((edge) => edge.id)).toEqual([
@@ -129,6 +136,10 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
     { expanded_edge: 3, compact_edge: 1 },
   ])
   expect(expanded.request.reference_height).toBe(50)
+  expect(expanded.request.protected_groups).toEqual([
+    { id: 200, members: [1], frame_padding: 30 },
+    { id: 300, members: [2], frame_padding: 30 },
+  ])
   expect(expanded.catalog.fragments).toHaveLength(4)
   expect(expanded.expandedRequest.graph).toEqual(
     expanded.request.expanded_graph,
@@ -136,6 +147,14 @@ it('preserves compact trunk ids while expanding electrical boundary edges', () =
   expect(expanded.expandedRequest.constraints).toEqual(
     expanded.request.constraints,
   )
+  expect(() =>
+    buildSchemWeaveExpansionRequest(
+      compactSnapshot,
+      expandedInput,
+      group,
+      [group, { id: 200, members: [1, 10] }],
+    )
+  ).toThrow('expanded group 100 overlaps protected group 200')
 
   const legacyExpanded = buildSchemWeaveExpansionRequest(
     compactSnapshot,

@@ -728,6 +728,11 @@ it('prepares group changes, preserves peers, and promotes the base session in LR
   expect(sessions.entries.has(2)).toBe(false)
   expect(sessions.entries.has(3)).toBe(true)
   expect(expand_group_json).toHaveBeenCalledOnce()
+  expect(
+    JSON.parse(expand_group_json.mock.calls[0][0]).protected_groups,
+  ).toEqual([
+    { id: 20, members: [3], frame_padding: 30 },
+  ])
   const expandedGeometry = (
     expansionResponse as Extract<
       typeof expansionResponse,
