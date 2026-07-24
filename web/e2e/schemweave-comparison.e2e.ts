@@ -420,7 +420,7 @@ test('group expansion uses Rust in place and collapse restores without layout', 
   )).toBe(requestCount)
 })
 
-test('an evicted worker session rebuilds the compact base and preserves expansion', async ({
+test('an evicted worker session full-layouts the current expanded projection', async ({
   page,
 }) => {
   await page.addInitScript(() => {
@@ -524,10 +524,107 @@ test('an evicted worker session rebuilds the compact base and preserves expansio
     layouts: 2,
     expansions: [
       { status: 'needs_full_relayout', reason: 'geometry' },
-      { status: 'layout', reason: null },
     ],
   })
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  await expect(page.locator('.graph-error')).toHaveCount(0)
+})
+
+test('Xilinx RAM expansion full-layouts after retained geometry is rejected', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const requests: unknown[] = []
+    const responses: unknown[] = []
+    Object.defineProperty(window, '__ramExpansionRequests', {
+      value: requests,
+    })
+    Object.defineProperty(window, '__ramExpansionResponses', {
+      value: responses,
+    })
+    const NativeWorker = window.Worker
+    window.Worker = class extends NativeWorker {
+      private readonly comparisonWorker: boolean
+
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        this.comparisonWorker = String(url).includes('schemweave')
+        if (this.comparisonWorker) {
+          this.addEventListener('message', (event) => {
+            responses.push(structuredClone(event.data))
+          })
+        }
+      }
+
+      override postMessage(
+        message: unknown,
+        transfer?: Transferable[],
+      ): void {
+        if (this.comparisonWorker) requests.push(structuredClone(message))
+        if (transfer) super.postMessage(message, transfer)
+        else super.postMessage(message)
+      }
+    }
+  })
+
+  await page.goto('/?layout=schemweave')
+  await page.getByLabel('Bundled example').selectOption('inferred_fifo')
+  await page.getByLabel('Platform').selectOption('xilinx')
+  await expect(page.locator('.pane-right')).toHaveAttribute(
+    'data-analysis-state',
+    'current',
+    { timeout: 30_000 },
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const grouped = page.locator(
+    '[data-member-count="3"][data-node-tooltip*="memory"]',
+  )
+  await expect(grouped).toHaveCount(1)
+  const groupId = await grouped.getAttribute('data-graph-node-id')
+  expect(groupId).not.toBeNull()
+  await page.locator(
+    `[data-group-action="expand"][data-group-id="${groupId}"]`,
+  ).click()
+
+  await expect(
+    page.locator(`[data-expanded-group-member="${groupId}"]`),
+  ).toHaveCount(3)
+  await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
+  await expect.poll(() => page.evaluate((expandedGroupId) => {
+    const state = window as unknown as {
+      __ramExpansionRequests: Array<{
+        id: number
+        kind?: string
+        input?: { groups?: Array<{ id: number }> }
+      }>
+      __ramExpansionResponses: Array<{
+        id: number
+        result?: { status?: string; reason?: string }
+      }>
+    }
+    const requests = state.__ramExpansionRequests
+    const expansions = requests.filter((request) => request.kind === 'expand')
+    const expansionResponse = state.__ramExpansionResponses.find(
+      (response) => response.id === expansions[0]?.id,
+    )
+    const layouts = requests.filter((request) => request.kind === 'layout')
+    return {
+      expansions: expansions.length,
+      layouts: layouts.length,
+      expansionStatus: expansionResponse?.result?.status,
+      expansionReason: expansionResponse?.result?.reason,
+      finalLayoutGroups: layouts.at(-1)?.input?.groups?.map((group) => group.id),
+      expandedGroupId,
+    }
+  }, Number(groupId))).toEqual({
+    expansions: 1,
+    layouts: 2,
+    expansionStatus: 'needs_full_relayout',
+    expansionReason: 'geometry',
+    finalLayoutGroups: [Number(groupId)],
+    expandedGroupId: Number(groupId),
+  })
   await expect(page.locator('.graph-error')).toHaveCount(0)
 })
 

@@ -3084,7 +3084,7 @@ describe('schematic layout sizing', () => {
     replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
-  it('reports an evicted expansion session for grouped recovery', async () => {
+  it('full-layouts the expanded projection when retained geometry cannot be preserved', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const sub = workerSubgraph()
     const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
@@ -3126,8 +3126,25 @@ describe('schematic layout sizing', () => {
       },
     } as MessageEvent)
 
-    await expect(pending).resolves.toBeNull()
-    expect(worker.requests).toHaveLength(1)
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(2))
+    const fullRequest = worker.requests[1]
+    expect(fullRequest).toMatchObject({
+      kind: 'layout',
+      input: {
+        groups: [group],
+      },
+    })
+    worker.onmessage?.(schemWeaveWorkerResponse(fullRequest, geometry))
+
+    await expect(pending).resolves.toMatchObject({
+      nodes: [{ id: 1 }],
+      width: 76,
+      height: 66,
+    })
+    expect(worker.requests.map((request) => request.kind)).toEqual([
+      'expand',
+      'layout',
+    ])
     worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
   })
 
@@ -3184,6 +3201,64 @@ describe('schematic layout sizing', () => {
     })
     expect(worker.requests.map((request) => request.kind)).toEqual([
       'expand',
+      'layout',
+    ])
+    worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
+  })
+
+  it('full-layouts the remaining projection when retained collapse geometry cannot be preserved', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const sub = workerSubgraph()
+    const prepared = buildSchemWeaveLayoutRequest(prepareLayoutInput(sub))
+    const expandedGeometry = interpretSchemWeaveResult(
+      geometry,
+      prepared.catalog,
+      prepared.request,
+    )
+    expandedGeometry.schemWeaveSession = {
+      sessionEpoch: 'test-worker',
+      sessionId: 43,
+    }
+    const expanded = hydrateLayoutResult(sub, expandedGeometry)
+    const removed = { id: 90, members: [1], referenceHeight: 66 }
+    const retained = { id: 91, members: [1], referenceHeight: 66 }
+
+    const pending = layoutCollapsedGroupWithSchemWeave(
+      sub,
+      expanded,
+      removed,
+      [retained],
+    )
+    const worker = FakeWorker.instances[0]
+    const incrementalRequest = worker.requests[0]
+    worker.onmessage?.({
+      data: {
+        id: incrementalRequest.id,
+        ok: true,
+        result: {
+          status: 'needs_full_relayout',
+          reason: 'geometry',
+        },
+      },
+    } as MessageEvent)
+
+    await vi.waitFor(() => expect(worker.requests).toHaveLength(2))
+    const fullRequest = worker.requests[1]
+    expect(fullRequest).toMatchObject({
+      kind: 'layout',
+      input: {
+        groups: [retained],
+      },
+    })
+    worker.onmessage?.(schemWeaveWorkerResponse(fullRequest, geometry))
+
+    await expect(pending).resolves.toMatchObject({
+      nodes: [{ id: 1 }],
+      width: 76,
+      height: 66,
+    })
+    expect(worker.requests.map((request) => request.kind)).toEqual([
+      'collapse',
       'layout',
     ])
     worker.onerror?.({ message: 'cleanup' } as ErrorEvent)
