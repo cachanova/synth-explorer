@@ -751,6 +751,12 @@ export function Graph({ active }: { active: boolean }) {
       projectedNodeIds,
     ],
   )
+  const waitingForVisibleGroupExpansions = useMemo(() => {
+    const loadedIds = new Set(activeGroupExpansions.map((group) => group.id))
+    return expandedGroupSpecs.some(
+      (group) => projectedNodeIds.has(group.id) && !loadedIds.has(group.id),
+    )
+  }, [activeGroupExpansions, expandedGroupSpecs, projectedNodeIds])
 
   // Merge ordinary one-hop context before applying the one open quotient group.
   const groupedBase = useMemo(() => {
@@ -816,6 +822,10 @@ export function Graph({ active }: { active: boolean }) {
       ? relevantSubgraph?.designId
       : fullSubgraph?.designId
     if (ownerDesignId == null) return
+    // Adding a lower-id group changes the canonical prefix of every later
+    // group. Keep the last complete layout visible until every visible prefix
+    // has reloaded instead of briefly rendering the compact projection.
+    if (waitingForVisibleGroupExpansions) return
     const pendingCollapse = pendingGroupCollapse.current
     if (
       layoutEngine === 'schemweave' &&
@@ -1107,6 +1117,7 @@ export function Graph({ active }: { active: boolean }) {
     relevantSubgraph?.designId,
     expandedGroupsForLayout,
     visibleExpandedGroups,
+    waitingForVisibleGroupExpansions,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(
