@@ -38,6 +38,7 @@ import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
 import {
   comparisonLayoutEngine,
+  layoutCollapsedGroupWithSchemWeave,
   layoutExpandedGroupWithSchemWeave,
   layoutSubgraph,
   prewarmLayoutWorker,
@@ -171,6 +172,11 @@ export function Graph({ active }: { active: boolean }) {
   const loadedFullGraphKey = useRef<string | null>(null)
   const laidOutSubgraph = useRef<Subgraph | null>(null)
   const displayedGraphRef = useRef<DisplayedGraph | null>(null)
+  const pendingGroupCollapse = useRef<{
+    groupId: number
+    display: DisplayedGraph
+    groups: ExpandedGroupLayout[]
+  } | null>(null)
   const layoutCache = useRef(new WeakMap<Subgraph, LaidOutGraph>())
   const groupLayoutSession = useRef(createGroupLayoutSession())
   // The full projection is independent of source/cone selection. Reusing this
@@ -313,6 +319,7 @@ export function Graph({ active }: { active: boolean }) {
     groupExpansionControllerKeys.current.clear()
     groupExpansionRequestContext.current = null
     dispatchGroupExpansion({ type: 'reset', ownerKey: groupExpansionOwnerKey })
+    pendingGroupCollapse.current = null
     setFetchingGroups(false)
   }, [groupExpansionOwnerKey])
 
@@ -907,9 +914,75 @@ export function Graph({ active }: { active: boolean }) {
       }
       return currentLayout
     }
+    const collapseWithSchemWeave = async (): Promise<LaidOutGraph | null> => {
+      const pendingCollapse = pendingGroupCollapse.current
+      if (
+        layoutEngine !== 'schemweave' ||
+        !pendingCollapse ||
+        pendingCollapse.display.designId !== ownerDesignId ||
+        pendingCollapse.display.projectionKey !== projectionKey ||
+        expandedGroupsForLayout.length === 0
+      ) {
+        return null
+      }
+      const previousGroups = pendingCollapse.groups
+      const currentIds = new Set(
+        expandedGroupsForLayout.map((group) => group.id),
+      )
+      const previousIds = new Set(previousGroups.map((group) => group.id))
+      const removed = previousGroups.filter((group) => !currentIds.has(group.id))
+      const added = expandedGroupsForLayout.filter(
+        (group) => !previousIds.has(group.id),
+      )
+      if (
+        removed.length !== 1 ||
+        removed[0].id !== pendingCollapse.groupId ||
+        added.length !== 0
+      ) {
+        return null
+      }
+      const collapsed = await layoutCollapsedGroupWithSchemWeave(
+        toLayout,
+        pendingCollapse.display.subgraph,
+        pendingCollapse.display.graph,
+        removed[0],
+        expandedGroupsForLayout,
+        controller.signal,
+      )
+      if (!collapsed || !groupedBaseSubgraph) return collapsed
+      const activeById = new Map(
+        activeGroupExpansions.map((expansion) => [expansion.id, expansion]),
+      )
+      const last = expandedGroupsForLayout.at(-1)
+      const response = last ? activeById.get(last.id) : undefined
+      if (response) {
+        cacheGroupLayout(
+          groupLayoutSession.current,
+          groupedBaseSubgraph,
+          response.requestKey,
+          collapsed,
+        )
+      }
+      return collapsed
+    }
+    const layoutWithSchemWeave = async () => {
+      const pendingCollapse = pendingGroupCollapse.current
+      try {
+        const collapsed = await collapseWithSchemWeave()
+        if (collapsed) return collapsed
+      } catch (error) {
+        if (controller.signal.aborted) throw error
+        console.warn('SchemWeave inverse collapse fell back to expansion', error)
+      } finally {
+        if (pendingGroupCollapse.current === pendingCollapse) {
+          pendingGroupCollapse.current = null
+        }
+      }
+      return expandWithSchemWeave(expandedGroupsForLayout)
+    }
     const layoutPromise =
       layoutEngine === 'schemweave' && expandedGroupsForLayout.length > 0
-        ? expandWithSchemWeave(expandedGroupsForLayout)
+        ? layoutWithSchemWeave()
         : layoutSubgraph(
             toLayout,
             controller.signal,
@@ -1035,6 +1108,7 @@ export function Graph({ active }: { active: boolean }) {
         : null
     ) ?? displayedGraphRef.current?.graph.height
     if (referenceHeight == null) return
+    pendingGroupCollapse.current = null
     setSelected(null)
     setError(null)
     dispatchGroupExpansion({
@@ -1049,6 +1123,16 @@ export function Graph({ active }: { active: boolean }) {
   }, [groupExpansionOwnerKey, groupedBaseSubgraph])
 
   const onCollapseGroup = useCallback((groupId: number) => {
+    const display = displayedGraphRef.current
+    const groups = expandedGroupsForLayout
+    pendingGroupCollapse.current =
+      layoutEngine === 'schemweave' &&
+        display &&
+        display.graph.schemWeaveSnapshot &&
+        groups.length > 1 &&
+        groups.some((group) => group.id === groupId)
+        ? { groupId, display, groups }
+        : null
     const controller = groupExpansionControllers.current.get(groupId)
     controller?.abort()
     groupExpansionControllers.current.delete(groupId)
@@ -1061,7 +1145,7 @@ export function Graph({ active }: { active: boolean }) {
       ownerKey: groupExpansionOwnerKey,
       id: groupId,
     })
-  }, [groupExpansionOwnerKey])
+  }, [expandedGroupsForLayout, groupExpansionOwnerKey, layoutEngine])
 
   const onExpand = useCallback(
     (node: GraphNode) => {

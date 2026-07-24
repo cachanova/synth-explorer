@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest'
 import {
   toSchemWeaveLayoutRequest,
   type LayoutInput,
+  type SchemWeaveCollapseRequest,
   type SchemWeaveExpansionRequest,
   type SchemWeaveLayoutRequest,
 } from '../lib/layout'
@@ -86,6 +87,40 @@ it('dispatches incremental group expansion through the dedicated WASM API', () =
     },
   })
   expect(JSON.parse(expand_group_json.mock.calls[0][0])).toEqual(expansion)
+})
+
+it('dispatches incremental group collapse through the dedicated WASM API', () => {
+  const collapse: SchemWeaveCollapseRequest = {
+    expanded_graph: { nodes: [], edges: [] },
+    expanded_layout: { nodes: [], edges: [], width: 0, height: 0 },
+    compact_graph: { nodes: [], edges: [] },
+    expansion: {
+      anchor: 10,
+      members: [1, 2],
+      boundary_trunks: [],
+    },
+    constraints: { inputs: [], outputs: [] },
+  }
+  const collapse_group_json = vi.fn().mockReturnValue(JSON.stringify({
+    status: 'layout',
+    layout: { nodes: [], edges: [], width: 0, height: 0 },
+  }))
+
+  expect(runSchemWeaveRequest(
+    {
+      layout_json: vi.fn(),
+      collapse_group_json,
+    },
+    { id: 52, kind: 'collapse', request: collapse },
+  )).toEqual({
+    id: 52,
+    ok: true,
+    result: {
+      status: 'layout',
+      layout: { nodes: [], edges: [], width: 0, height: 0 },
+    },
+  })
+  expect(JSON.parse(collapse_group_json.mock.calls[0][0])).toEqual(collapse)
 })
 
 it('serializes exact boundary constraints and returns raw bundle geometry', () => {

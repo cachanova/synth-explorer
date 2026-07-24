@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 
 use schemweave::{
-    ConstrainedLayoutError, Graph, GroupExpansion, GroupExpansionError, GroupExpansionOptions,
-    Layout, LayoutConfig, LayoutConstraints, LayoutError,
-    expand_group_in_place_with_reference_height,
+    ConstrainedLayoutError, Graph, GroupCollapseOptions, GroupExpansion, GroupExpansionError,
+    GroupExpansionOptions, Layout, LayoutConfig, LayoutConstraints, LayoutError,
+    collapse_group_in_place, expand_group_in_place_with_reference_height,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
@@ -102,6 +102,53 @@ pub fn expand_group_json(request_json: &str) -> Result<String, JsValue> {
         .map_err(|error| js_error(format!("failed to encode group expansion: {error}")))
 }
 
+#[derive(Deserialize)]
+struct CollapseRequest {
+    expanded_graph: Graph,
+    expanded_layout: Layout,
+    compact_graph: Graph,
+    expansion: GroupExpansion,
+    #[serde(default)]
+    constraints: LayoutConstraints,
+}
+
+/// Collapse one expanded group without moving unrelated geometry.
+#[wasm_bindgen]
+pub fn collapse_group_json(request_json: &str) -> Result<String, JsValue> {
+    let request: CollapseRequest = serde_json::from_str(request_json)
+        .map_err(|error| js_error(format!("invalid group collapse request: {error}")))?;
+    let mut config = LayoutConfig::highest_quality();
+    config.constraints = request.constraints;
+    let result = match collapse_group_in_place(
+        &request.expanded_graph,
+        &request.expanded_layout,
+        &request.compact_graph,
+        &request.expansion,
+        &GroupCollapseOptions {
+            layout: config.layout,
+            constraints: config.constraints,
+        },
+    ) {
+        Ok(layout) => ExpansionResponse::Layout { layout },
+        Err(GroupExpansionError::NeedsFullRelayout) => ExpansionResponse::NeedsFullRelayout {
+            reason: FullRelayoutReason::Geometry,
+        },
+        Err(GroupExpansionError::ExpansionWorkLimitExceeded { .. }) => {
+            ExpansionResponse::NeedsFullRelayout {
+                reason: FullRelayoutReason::WorkLimit,
+            }
+        }
+        Err(GroupExpansionError::PreservedGeometryTooLarge { .. }) => {
+            ExpansionResponse::NeedsFullRelayout {
+                reason: FullRelayoutReason::PreservedGeometryTooLarge,
+            }
+        }
+        Err(error) => return Err(js_error(error.to_string())),
+    };
+    serde_json::to_string(&result)
+        .map_err(|error| js_error(format!("failed to encode group collapse: {error}")))
+}
+
 fn layout_error_name(error: &ConstrainedLayoutError) -> Option<&'static str> {
     matches!(
         error,
@@ -127,7 +174,8 @@ mod tests {
     use schemweave::{ConstrainedLayoutError, LayoutError};
 
     use super::{
-        BOUNDARY_BUNDLE_GEOMETRY_ERROR_NAME, expand_group_json, layout_error_name, layout_json,
+        BOUNDARY_BUNDLE_GEOMETRY_ERROR_NAME, collapse_group_json, expand_group_json,
+        layout_error_name, layout_json,
     };
 
     #[test]
@@ -229,5 +277,44 @@ mod tests {
             value["layout"]["nodes"][0]["x"],
             value["layout"]["nodes"][1]["x"]
         );
+    }
+
+    #[test]
+    fn collapses_a_group_through_the_consumer_wrapper() {
+        let response = collapse_group_json(
+            r#"{
+                "expanded_graph":{
+                    "nodes":[
+                        {"id":1,"width":80,"height":50,"ports":[]},
+                        {"id":2,"width":80,"height":50,"ports":[]}
+                    ],
+                    "edges":[]
+                },
+                "expanded_layout":{
+                    "nodes":[
+                        {"id":1,"x":0,"y":0,"width":80,"height":50},
+                        {"id":2,"x":0,"y":80,"width":80,"height":50}
+                    ],
+                    "edges":[],
+                    "width":80,
+                    "height":200
+                },
+                "compact_graph":{
+                    "nodes":[{"id":10,"width":80,"height":50,"ports":[]}],
+                    "edges":[]
+                },
+                "expansion":{
+                    "anchor":10,
+                    "members":[1,2],
+                    "boundary_trunks":[]
+                }
+            }"#,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(value["status"], "layout");
+        assert_eq!(value["layout"]["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(value["layout"]["nodes"][0]["id"], 10);
     }
 }

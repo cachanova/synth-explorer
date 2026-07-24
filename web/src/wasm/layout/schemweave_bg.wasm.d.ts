@@ -1,6 +1,7 @@
 /* tslint:disable */
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
+export const collapse_group_json: (a: number, b: number, c: number) => void;
 export const expand_group_json: (a: number, b: number, c: number) => void;
 export const layout_json: (a: number, b: number, c: number) => void;
 export const __wbindgen_add_to_stack_pointer: (a: number) => number;

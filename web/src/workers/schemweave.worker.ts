@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import init, {
+  collapse_group_json,
   expand_group_json,
   layout_json,
 } from '../wasm/layout/schemweave'
@@ -27,7 +28,7 @@ async function handle(request: SchemWeaveRequest) {
   try {
     await ensureEngine()
     response = runSchemWeaveRequest(
-      { layout_json, expand_group_json },
+      { layout_json, expand_group_json, collapse_group_json },
       request,
     )
   } catch (error) {

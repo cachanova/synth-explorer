@@ -456,9 +456,25 @@ test('multiple groups preserve independent expansion state in any toggle order',
     ).__multiGroupSchemRequests.filter((request) => request.kind === 'expand')
       .length
   )
+  const collapseRequestCount = () => page.evaluate(() =>
+    (
+      window as unknown as {
+        __multiGroupSchemRequests: Array<{ kind?: string }>
+      }
+    ).__multiGroupSchemRequests.filter((request) => request.kind === 'collapse')
+      .length
+  )
+  const muxMemberGeometry = () =>
+    page.locator(`[data-expanded-group-member="${muxId}"]`)
+      .evaluateAll((nodes) => nodes.map((node) => ({
+        id: node.getAttribute('data-graph-node-id'),
+        transform: node.getAttribute('transform'),
+      })).sort((left, right) => (left.id ?? '').localeCompare(right.id ?? '')))
   expect(await expansionRequestCount()).toBe(2)
+  expect(await collapseRequestCount()).toBe(0)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
+  const muxGeometryBeforeRegisterCollapse = await muxMemberGeometry()
 
   const activateWithKeyboard = async (
     selector: string,
@@ -480,7 +496,11 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(
     page.locator(`[data-expanded-group-member="${muxId}"]`),
   ).toHaveCount(8)
-  expect(await expansionRequestCount()).toBe(3)
+  expect({
+    expand: await expansionRequestCount(),
+    collapse: await collapseRequestCount(),
+  }).toEqual({ expand: 2, collapse: 1 })
+  expect(await muxMemberGeometry()).toEqual(muxGeometryBeforeRegisterCollapse)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(1)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 
@@ -493,7 +513,8 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(
     page.locator(`[data-expanded-group-member="${muxId}"]`),
   ).toHaveCount(8)
-  expect(await expansionRequestCount()).toBe(3)
+  expect(await expansionRequestCount()).toBe(2)
+  expect(await collapseRequestCount()).toBe(1)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 
@@ -518,7 +539,8 @@ test('multiple groups preserve independent expansion state in any toggle order',
   await expect(
     page.locator(`[data-expanded-group-member="${muxId}"]`),
   ).toHaveCount(8)
-  expect(await expansionRequestCount()).toBe(3)
+  expect(await expansionRequestCount()).toBe(2)
+  expect(await collapseRequestCount()).toBe(2)
   await expect(page.locator('.g-expanded-group-boundary')).toHaveCount(2)
   await expect(page.locator('.msg.err')).toHaveCount(0)
 })
