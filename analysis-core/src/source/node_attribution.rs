@@ -7,6 +7,7 @@
 //! shapes (see `rtl_correlate::correlate`).
 
 use crate::graph::{Graph, NodeId, NodeKind};
+use crate::netlist::PortDirection;
 use crate::source::coordinates::source_columns_are_authoritative;
 use crate::source::types::{SourceNodeTiersResponse, SourceTierSpan};
 use rtl_correlate::correlate::{CorrelationIndex, CorrelationLimits, MappedCut};
@@ -44,6 +45,17 @@ pub(crate) fn source_tiers_for_nodes(
         let node = &graph.nodes[id as usize];
         match node.kind {
             NodeKind::Const => {}
+            NodeKind::PortBit => {
+                // Ports highlight their declaration; outputs additionally
+                // attribute the logic driving them.
+                let cut = port_cut(graph, id);
+                merge(
+                    index.attribute(&cut, &limits),
+                    &mut exact,
+                    &mut contributing,
+                    &mut response,
+                );
+            }
             _ if node.seq => {
                 // Registers attribute individually: each has its own Q
                 // boundary and D-side statement set.
@@ -99,8 +111,40 @@ fn register_cut(graph: &Graph, id: NodeId, response: &mut SourceNodeTiersRespons
         outputs: outputs.into_iter().collect(),
         inputs: Vec::new(),
         feeds_registers: Vec::new(),
+        declarations: Vec::new(),
         truncated: false,
         selected_is_sequential: true,
+    }
+}
+
+/// A port's cut: its net names as declarations; output and inout ports
+/// also attribute their driving logic as the enclosed output region.
+fn port_cut(graph: &Graph, id: NodeId) -> MappedCut {
+    let node = &graph.nodes[id as usize];
+    let mut nets = BTreeSet::new();
+    for &edge_index in &graph.outgoing[id as usize] {
+        let edge = &graph.edges[edge_index];
+        collect_net_names(graph, edge.bit, &edge.net_name, &mut nets);
+    }
+    for &edge_index in &graph.incoming[id as usize] {
+        let edge = &graph.edges[edge_index];
+        collect_net_names(graph, edge.bit, &edge.net_name, &mut nets);
+    }
+    if nets.is_empty() {
+        nets.insert(node.name.clone());
+    }
+    let driven = matches!(
+        node.port_dir,
+        Some(PortDirection::Output) | Some(PortDirection::Inout)
+    );
+    let names: Vec<String> = nets.into_iter().collect();
+    MappedCut {
+        outputs: if driven { names.clone() } else { Vec::new() },
+        inputs: Vec::new(),
+        feeds_registers: Vec::new(),
+        declarations: names,
+        truncated: false,
+        selected_is_sequential: false,
     }
 }
 
@@ -214,6 +258,7 @@ fn combinational_cut(
         outputs: outputs.into_iter().collect(),
         inputs: inputs.into_iter().collect(),
         feeds_registers: feeds_registers.into_iter().collect(),
+        declarations: Vec::new(),
         truncated,
         selected_is_sequential: false,
     }
