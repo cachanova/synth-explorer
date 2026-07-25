@@ -21,10 +21,14 @@
 //! resolves through hierarchical names and attributes to child source spans
 //! without leaving mapped-side `$scopeinfo` nodes.
 //!
-//! `hdlname` is deliberately not used: deterministic same-pass dotted names
-//! suffice. Segment-wise `hdlname` matching remains the fallback if separator
-//! ambiguity ever bites. Vivado's `/` form is indexed as an alias of the dotted
-//! name; replacing `.` this way shares flatten's escaped-identifier tradeoff.
+//! `hdlname` is deliberately not used: both flows run the same default-`.`
+//! flatten, so PUBLIC dotted names match deterministically (private names
+//! are excluded — the flows differ before flatten). Segment-wise `hdlname`
+//! matching remains the fallback if separator ambiguity ever bites.
+//! Vivado's `/` form is indexed as an alias replacing every `.`; this shares
+//! flatten's escaped-identifier tradeoff and does not cover generate-scope
+//! segments where Vivado keeps `.` inside a level (`lanes[0].lane_shift/…`)
+//! — those degrade to the honest approximate superset.
 
 use crate::NetlistDialect;
 use crate::netlist::{PortDirection, YosysBit, YosysNetlist};
@@ -261,7 +265,9 @@ impl CorrelationIndex {
 
     /// Whether a raw mapped-side net name resolves to an RTL boundary.
     /// Mapped-side walks call this per candidate name per edge; it must not
-    /// allocate or materialize bit vectors.
+    /// allocate or materialize bit vectors — with one bounded exception:
+    /// FSM-prefixed hierarchical Vivado names require joining a rebuilt
+    /// candidate (up to four small strings per probe on that rare shape).
     pub fn is_boundary(&self, raw: &str) -> bool {
         match self.resolve(raw) {
             Resolved::Bus(_) => true,

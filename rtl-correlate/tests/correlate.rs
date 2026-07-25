@@ -853,3 +853,49 @@ fn flat_output_port_seed_attributes_its_combinational_driver() {
     assert_eq!(lines(&attribution.exact), vec![2]);
     assert!(!attribution.approximate);
 }
+
+#[test]
+fn seed_bits_bypass_declared_input_stops_in_multi_node_cuts() {
+    // A multi-node selection can legitimately list the same net as an
+    // output (driven toward an external consumer) and an input (feeding
+    // another selected node). The shared driver's span must land in exact:
+    // seeds always attribute their own driver.
+    let attribution = index().attribute(
+        &MappedCut {
+            outputs: vec!["gated".to_owned()],
+            inputs: vec!["gated".to_owned(), "sum".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert_eq!(lines(&attribution.exact), vec![3]);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn hierarchical_nets_attribute_through_the_net_path() {
+    // The #191 net-selection path and hierarchical resolution compose: a
+    // wire click inside a child instance resolves the dotted name.
+    let netlist = parse_str(hierarchical_fixture()).expect("hierarchical fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute_net(
+        &MappedCut {
+            outputs: vec!["inst.gated".to_owned()],
+            inputs: Vec::new(),
+            feeds_registers: Vec::new(),
+            declarations: vec!["inst.gated".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    // Exact = the child expression driving the net plus its declaration
+    // span, both in child.sv.
+    assert!(lines(&attribution.exact).contains(&3));
+    assert!(attribution.exact.iter().all(|span| span.file == "child.sv"));
+    assert!(!attribution.approximate);
+}
