@@ -24,6 +24,7 @@ interface VivadoNormalizeRequest {
   kind: 'vivado-normalize'
   netlist: string
   sourceNetlistJson: string
+  flatSourceNetlistJson: string
   top: string
 }
 
@@ -32,6 +33,7 @@ type Request = SynthesisRequest | VivadoNormalizeRequest
 export interface YosysWorkerResult {
   netlistJson: string
   sourceNetlistJson: string
+  flatSourceNetlistJson: string
   log: string
   vivadoTiming?: VivadoTimingReport
 }
@@ -141,14 +143,18 @@ async function run(request: Request): Promise<YosysWorkerResult> {
   const sourceNetlistJson = vivado
     ? request.sourceNetlistJson
     : readText(preopen, 'source-netlist.json')
-  if (!netlistJson || !sourceNetlistJson) {
-    throw new YosysFailure('yosys did not produce both netlists', log)
+  const flatSourceNetlistJson = vivado
+    ? request.flatSourceNetlistJson
+    : readText(preopen, 'flat-source-netlist.json')
+  if (!netlistJson || !sourceNetlistJson || !flatSourceNetlistJson) {
+    throw new YosysFailure('yosys did not produce all three netlists', log)
   }
-  const outputBytes = netlistJson.length + sourceNetlistJson.length
+  const outputBytes =
+    netlistJson.length + sourceNetlistJson.length + flatSourceNetlistJson.length
   if (outputBytes > 128 * 1024 * 1024) {
     throw new YosysFailure('yosys output exceeded 128 MiB', log)
   }
-  return { netlistJson, sourceNetlistJson, log: tail(log) }
+  return { netlistJson, sourceNetlistJson, flatSourceNetlistJson, log: tail(log) }
 }
 
 function textFile(contents: string): File {

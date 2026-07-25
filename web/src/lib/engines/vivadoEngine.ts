@@ -29,6 +29,7 @@ export const vivadoEngine: SynthEngine = {
         vivado.netlist,
         vivado.top,
         source.sourceNetlistJson,
+        source.flatSourceNetlistJson,
         signal,
       )
       output = {

@@ -149,6 +149,7 @@ function estimateBytes(record: SynthesisArtifactInput) {
     (sourceBytes +
       record.output.netlistJson.length +
       record.output.sourceNetlistJson.length +
+      record.output.flatSourceNetlistJson.length +
       record.output.log.length +
       JSON.stringify(record.output.vivadoTiming ?? '').length)
   )
@@ -219,6 +220,7 @@ function isStructurallyValidArtifact(
     candidate.output !== null &&
     typeof candidate.output.netlistJson === 'string' &&
     typeof candidate.output.sourceNetlistJson === 'string' &&
+    typeof candidate.output.flatSourceNetlistJson === 'string' &&
     typeof candidate.output.log === 'string' &&
     (
       candidate.output.vivadoTiming === undefined ||

@@ -13,9 +13,22 @@
 //! block, so register attribution reads the D-side mux tree for statement
 //! precision and treats the flop's own span as a coarse fallback.
 //!
-//! The index covers the top module only: the RTL snapshot is written before
-//! `flatten`, so logic inside child instances attributes to the
-//! instantiation site's span and the result is flagged approximate.
+//! The index is built from the FLATTENED RTL snapshot, emitted with
+//! `write_json -noscopeinfo`: `flatten` rewrites child names to deterministic
+//! `\inst.leaf` forms while preserving each inlined object's own `src`, and
+//! the writer omits the separate instance-provenance `$scopeinfo` cells (see
+//! the flatten naming findings note). Logic inside child instances therefore
+//! resolves through hierarchical names and attributes to child source spans
+//! without leaving mapped-side `$scopeinfo` nodes.
+//!
+//! `hdlname` is deliberately not used: both flows run the same default-`.`
+//! flatten, so PUBLIC dotted names match deterministically (private names
+//! are excluded — the flows differ before flatten). Segment-wise `hdlname`
+//! matching remains the fallback if separator ambiguity ever bites.
+//! Vivado's `/` form is indexed as an alias replacing every `.`; this shares
+//! flatten's escaped-identifier tradeoff and does not cover generate-scope
+//! segments where Vivado keeps `.` inside a level (`lanes[0].lane_shift/…`)
+//! — those degrade to the honest approximate superset.
 
 use crate::NetlistDialect;
 use crate::netlist::{PortDirection, YosysBit, YosysNetlist};
@@ -220,10 +233,17 @@ impl CorrelationIndex {
                     }
                 }
             }
+            let public_name = clean_public_name(name);
             bits_by_name
-                .entry(clean_public_name(name).to_owned())
+                .entry(public_name.to_owned())
                 .or_default()
                 .extend(netname.bits.iter().cloned());
+            if dialect == NetlistDialect::Vivado && public_name.contains('.') {
+                bits_by_name
+                    .entry(public_name.replace('.', "/"))
+                    .or_default()
+                    .extend(netname.bits.iter().cloned());
+            }
         }
 
         let mut port_bits = HashSet::new();
@@ -245,7 +265,9 @@ impl CorrelationIndex {
 
     /// Whether a raw mapped-side net name resolves to an RTL boundary.
     /// Mapped-side walks call this per candidate name per edge; it must not
-    /// allocate or materialize bit vectors.
+    /// allocate or materialize bit vectors — with one bounded exception:
+    /// FSM-prefixed hierarchical Vivado names require joining a rebuilt
+    /// candidate (up to four small strings per probe on that rare shape).
     pub fn is_boundary(&self, raw: &str) -> bool {
         match self.resolve(raw) {
             Resolved::Bus(_) => true,
@@ -523,12 +545,17 @@ impl CorrelationIndex {
         truncated: &mut bool,
     ) -> BTreeSet<u32> {
         let mut frontier = BTreeSet::new();
-        let mut queue: VecDeque<u32> = seeds.into_iter().collect();
-        while let Some(bit) = queue.pop_front() {
-            if stop_bits.contains(&bit)
-                || self.port_bits.contains(&bit)
-                || self.seq_out_bits.contains(&bit)
-            {
+        let mut queue: VecDeque<(u32, bool)> = seeds.into_iter().map(|bit| (bit, true)).collect();
+        while let Some((bit, is_seed)) = queue.pop_front() {
+            // Seed bits are the selection's own outputs: a net that doubles
+            // as a top-level port or appears in `stop_bits` (for example, a
+            // declared input shared by selected nodes in a multi-node cut)
+            // must not stop the walk before its driver is attributed.
+            // Sequential drivers remain boundaries even for seeds — the
+            // register owns its own attribution.
+            let stop = self.seq_out_bits.contains(&bit)
+                || (!is_seed && (stop_bits.contains(&bit) || self.port_bits.contains(&bit)));
+            if stop {
                 frontier.insert(bit);
                 continue;
             }
@@ -546,7 +573,7 @@ impl CorrelationIndex {
             let entry = &self.cells[cell as usize];
             spans.extend(&entry.spans);
             for &input in &entry.input_bits {
-                queue.push_back(input);
+                queue.push_back((input, false));
             }
         }
         frontier
@@ -654,13 +681,13 @@ impl CorrelationIndex {
         // prefixes); bussed forms like `data_in_IBUF[3]` unmangle their
         // base and keep the bit index.
         for candidate in self.dialect.net_base_candidates(normalized) {
-            if let Some(bits) = self.bits_by_name.get(candidate) {
+            if let Some(bits) = self.bits_by_name.get(candidate.as_ref()) {
                 return Resolved::Bus(bits);
             }
         }
         if let Some((base, index)) = split_bit_suffix(normalized) {
             for candidate in self.dialect.net_base_candidates(base) {
-                if let Some(bits) = self.bits_by_name.get(candidate) {
+                if let Some(bits) = self.bits_by_name.get(candidate.as_ref()) {
                     return Resolved::Bit(bits, index);
                 }
             }

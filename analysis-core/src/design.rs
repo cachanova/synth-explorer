@@ -41,6 +41,7 @@ impl AnalysisDesign {
     pub fn from_netlists(
         netlist: &YosysNetlist,
         source_netlist: &YosysNetlist,
+        flat_source_netlist: &YosysNetlist,
         files: Vec<(String, String)>,
         mode: impl Into<String>,
         delay_profile: DelayProfile,
@@ -51,6 +52,8 @@ impl AnalysisDesign {
         let graph = Graph::from_netlist(netlist, top, module)
             .map_err(|error| DesignBuildError::Graph(error.to_string()))?;
         let (source_top, _) = select_top(source_netlist, None)
+            .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
+        let (flat_source_top, _) = select_top(flat_source_netlist, None)
             .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
         let mut source_provenance =
             recover_source_provenance(&graph, source_netlist, files.clone());
@@ -80,7 +83,7 @@ impl AnalysisDesign {
             memory_arrays_from_source(&graph, source_netlist, source_top, registers);
         let grouping = GroupPartition::build(&graph, registers, memory_arrays);
         // Infallible in practice: select_top already resolved this module.
-        let correlation = CorrelationIndex::build(source_netlist, source_top, dialect)
+        let correlation = CorrelationIndex::build(flat_source_netlist, flat_source_top, dialect)
             .map_err(|error| DesignBuildError::SourceTop(error.to_string()))?;
 
         Ok(Self {

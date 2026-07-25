@@ -73,105 +73,177 @@ impl NetlistDialect {
     /// wrong enclosed regions. They stay unresolvable so cone walks expand
     /// through them and flag the superset approximate.
     pub fn net_base_candidates(self, name: &str) -> NetBaseCandidates<'_> {
-        let mut candidates = NetBaseCandidates::default();
         if self != Self::Vivado {
-            return candidates;
+            return NetBaseCandidates::default();
         }
-        let mut push = |candidate| candidates.push(name, candidate);
-
-        // FSM re-encoding prefixes; the remainder is retried through every
-        // later rule.
-        let mut base = name;
-        for prefix in ["FSM_onehot_", "FSM_sequential_", "FSM_gray_"] {
-            if let Some(rest) = base.strip_prefix(prefix) {
-                base = rest;
-                push(base);
-                break;
-            }
-        }
-
-        // I/O and clock buffer suffixes peel iteratively, each stage a
-        // candidate (`clk_IBUF_BUFG` → `clk_IBUF` → `clk`).
-        let mut buffered = base;
-        loop {
-            let mut stripped = None;
-            for suffix in ["_IBUF_BUFG", "_BUFG", "_IBUF", "_OBUF"] {
-                if let Some(rest) = buffered.strip_suffix(suffix) {
-                    stripped = Some(rest);
-                    break;
-                }
-            }
-            match stripped {
-                Some(rest) if !rest.is_empty() => {
-                    push(rest);
-                    buffered = rest;
-                }
-                _ => break,
-            }
-        }
-
-        // Flop cell-pin nets: `<cell>_n_<k>` and the bussed
-        // `<cell>_n_<k>_[i]` form name the driving cell; the cell is a
-        // `_reg`-family name that unmangles to the logical register.
-        let mut pin = base;
-        if let Some((cell, tail)) = pin.rsplit_once("_n_") {
-            let digits_then_bit = {
-                let (digits, rest) = tail
-                    .split_once("_[")
-                    .map_or((tail, None), |(digits, rest)| (digits, Some(rest)));
-                !digits.is_empty()
-                    && digits.bytes().all(|byte| byte.is_ascii_digit())
-                    && rest.is_none_or(|rest| {
-                        rest.strip_suffix(']').is_some_and(|index| {
-                            !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
-                        })
-                    })
-            };
-            if digits_then_bit {
-                push(cell);
-                pin = cell;
-            }
-        }
-        for (offset, _) in pin.rmatch_indices("_reg") {
-            if generated_reg_suffix(&pin[offset..]) {
-                push(&pin[..offset]);
-            }
-        }
-
-        candidates
+        vivado_net_base_candidates(name)
     }
 }
 
-/// Zero-allocation candidate list: every candidate is a subslice of the
-/// queried name, and the fixed capacity comfortably exceeds the maximum
-/// rule chain (prefix strip + buffer peels + pin strip + `_reg` peels).
-/// The mapped-side walk consults this per unresolvable net per edge, so
-/// it must not touch the heap.
-#[derive(Debug, Default)]
+fn vivado_net_base_candidates(name: &str) -> NetBaseCandidates<'_> {
+    let mut candidates = NetBaseCandidates::default();
+    let last_segment = name.rfind(['.', '/']).map_or((name, ""), |separator| {
+        (&name[separator + 1..], &name[..=separator])
+    });
+
+    // FSM re-encoding prefixes apply to the final hierarchical path segment;
+    // the leading path is retained on every derived candidate.
+    let mut base = name;
+    let mut fsm_path = None;
+    for prefix in ["FSM_onehot_", "FSM_sequential_", "FSM_gray_"] {
+        if let Some(rest) = last_segment.0.strip_prefix(prefix) {
+            if last_segment.1.is_empty() {
+                base = rest;
+                candidates.push_borrowed(name, base);
+            } else {
+                fsm_path = Some(last_segment.1);
+                base = rest;
+                candidates.push_joined(last_segment.1, base);
+            }
+            break;
+        }
+    }
+
+    // I/O and clock buffer suffixes peel iteratively, each stage a
+    // candidate (`clk_IBUF_BUFG` → `clk_IBUF` → `clk`).
+    let mut buffered = base;
+    loop {
+        let mut stripped = None;
+        for suffix in ["_IBUF_BUFG", "_BUFG", "_IBUF", "_OBUF"] {
+            if let Some(rest) = buffered.strip_suffix(suffix) {
+                stripped = Some(rest);
+                break;
+            }
+        }
+        match stripped {
+            Some(rest) if !rest.is_empty() => {
+                if let Some(path) = fsm_path {
+                    candidates.push_joined(path, rest);
+                } else {
+                    candidates.push_borrowed(name, rest);
+                }
+                buffered = rest;
+            }
+            _ => break,
+        }
+    }
+
+    // Flop cell-pin nets: `<cell>_n_<k>` and the bussed
+    // `<cell>_n_<k>_[i]` form name the driving cell; the cell is a
+    // `_reg`-family name that unmangles to the logical register.
+    let mut pin = base;
+    if let Some((cell, tail)) = pin.rsplit_once("_n_") {
+        let digits_then_bit = {
+            let (digits, rest) = tail
+                .split_once("_[")
+                .map_or((tail, None), |(digits, rest)| (digits, Some(rest)));
+            !digits.is_empty()
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && rest.is_none_or(|rest| {
+                    rest.strip_suffix(']').is_some_and(|index| {
+                        !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                })
+        };
+        if digits_then_bit {
+            if let Some(path) = fsm_path {
+                candidates.push_joined(path, cell);
+            } else {
+                candidates.push_borrowed(name, cell);
+            }
+            pin = cell;
+        }
+    }
+    for (offset, _) in pin.rmatch_indices("_reg") {
+        if generated_reg_suffix(&pin[offset..]) {
+            if let Some(path) = fsm_path {
+                candidates.push_joined(path, &pin[..offset]);
+            } else {
+                candidates.push_borrowed(name, &pin[..offset]);
+            }
+        }
+    }
+
+    candidates
+}
+
+/// Candidate list whose suffix-derived entries are zero-allocation subslices
+/// of the queried name. Only a hierarchical FSM prefix strip reconstructs a
+/// string so it can preserve the leading path.
+#[derive(Debug)]
 pub struct NetBaseCandidates<'a> {
-    items: [&'a str; 8],
+    items: [Option<NetBaseCandidate<'a>>; 8],
     len: usize,
     next: usize,
 }
 
+#[derive(Debug)]
+pub enum NetBaseCandidate<'a> {
+    Borrowed(&'a str),
+    Joined(String),
+}
+
+impl AsRef<str> for NetBaseCandidate<'_> {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Borrowed(candidate) => candidate,
+            Self::Joined(candidate) => candidate,
+        }
+    }
+}
+
+impl Default for NetBaseCandidates<'_> {
+    fn default() -> Self {
+        Self {
+            items: std::array::from_fn(|_| None),
+            len: 0,
+            next: 0,
+        }
+    }
+}
+
 impl<'a> NetBaseCandidates<'a> {
-    fn push(&mut self, name: &str, candidate: &'a str) {
+    fn push_borrowed(&mut self, name: &str, candidate: &'a str) {
         if candidate.is_empty() || candidate == name || self.len == self.items.len() {
             return;
         }
-        if self.items[..self.len].contains(&candidate) {
+        if self.items[..self.len]
+            .iter()
+            .flatten()
+            .any(|existing| existing.as_ref() == candidate)
+        {
             return;
         }
-        self.items[self.len] = candidate;
+        self.items[self.len] = Some(NetBaseCandidate::Borrowed(candidate));
+        self.len += 1;
+    }
+
+    fn push_joined(&mut self, path: &str, candidate: &str) {
+        if candidate.is_empty() || self.len == self.items.len() {
+            return;
+        }
+        let candidate = format!("{path}{candidate}");
+        if self.items[..self.len]
+            .iter()
+            .flatten()
+            .any(|existing| existing.as_ref() == candidate)
+        {
+            return;
+        }
+        self.items[self.len] = Some(NetBaseCandidate::Joined(candidate));
         self.len += 1;
     }
 }
 
 impl<'a> Iterator for NetBaseCandidates<'a> {
-    type Item = &'a str;
+    type Item = NetBaseCandidate<'a>;
 
-    fn next(&mut self) -> Option<&'a str> {
-        let item = *self.items.get(self.next).filter(|_| self.next < self.len)?;
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = self
+            .items
+            .get_mut(self.next)
+            .filter(|_| self.next < self.len)?
+            .take()?;
         self.next += 1;
         Some(item)
     }
@@ -273,7 +345,7 @@ mod tests {
     fn net_candidates(dialect: NetlistDialect, name: &str) -> Vec<String> {
         dialect
             .net_base_candidates(name)
-            .map(str::to_owned)
+            .map(|candidate| candidate.as_ref().to_owned())
             .collect()
     }
 
@@ -293,6 +365,18 @@ mod tests {
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "clk_IBUF_BUFG"),
             ["clk"],
+        );
+    }
+
+    #[test]
+    fn vivado_hierarchy_preserves_separators_while_applying_net_rules() {
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1/busy_OBUF"),
+            ["u1/busy"],
+        );
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1/state_reg_n_0"),
+            ["u1/state_reg", "u1/state"],
         );
     }
 
@@ -335,6 +419,18 @@ mod tests {
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "FSM_gray_state_reg"),
             ["state_reg", "state"],
+        );
+    }
+
+    #[test]
+    fn vivado_fsm_recode_prefixes_apply_to_the_last_path_segment() {
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1/FSM_onehot_state_reg_n_0",),
+            ["u1/state_reg_n_0", "u1/state_reg", "u1/state"],
+        );
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1.FSM_onehot_state_reg_n_0",),
+            ["u1.state_reg_n_0", "u1.state_reg", "u1.state"],
         );
     }
 

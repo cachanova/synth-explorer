@@ -21,10 +21,11 @@ describe('browser Yosys script', () => {
     const input = validateSynthesisRequest(request('gates', '  -nofsm   -noabc  '))
     expect(buildYosysScript(input)).toBe(
       'read_verilog -sv design.sv\n' +
-        'hierarchy -top top\nproc\nwrite_json source-netlist.json\ndesign -reset\n' +
+        'hierarchy -top top\nproc\nwrite_json source-netlist.json\n' +
+        'flatten\nwrite_json -noscopeinfo flat-source-netlist.json\ndesign -reset\n' +
         'read_verilog -sv design.sv\n' +
         'synth -top top -flatten -nofsm -noabc\n' +
-        'write_json netlist.json\n',
+        'write_json -noscopeinfo netlist.json\n',
     )
   })
 
@@ -137,7 +138,7 @@ describe('browser Yosys script', () => {
         'read_verilog vivado-netlist.v\n' +
         'hierarchy -check -top top\n' +
         'flatten\nselect -clear\nselect top\n' +
-        'write_json -selected netlist.json\n',
+        'write_json -noscopeinfo -selected netlist.json\n',
     )
     expect(() => buildVivadoNormalizeScript('top; exec')).toThrow('invalid top')
   })

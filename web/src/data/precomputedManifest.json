@@ -2,119 +2,123 @@
   "entries": [
     {
       "name": "default",
-      "key": "48d2193e9320c96004e60f381e64a37ad60651e8bd5e77989b49a5a385da8f1f"
+      "key": "7ca1b5f193c46560bc01108ff8271c7b474bbe2161bd391f774127631eac736d"
     },
     {
       "name": "reg_mux:vhdl",
-      "key": "51d8f1e98ee084da832950e69a6d20508f87ba8a32ead19f4d217c79d50872e0"
+      "key": "3e2d1c9cd81ba6323914d4c92046121d5646cd372473cec13682baffe00b023a"
     },
     {
       "name": "priority_encoder_case:vhdl",
-      "key": "0eb2982cfb097165f43c7a68787f1c9b90ad21e4af4f43af849a44532765e61c"
+      "key": "f6eed71ef57a861ec0959f009bb9507a3f0cb233d0f4478eedb27a3f583cc916"
     },
     {
       "name": "priority_encoder_for:vhdl",
-      "key": "2af626c5d3a44e800b31e90ad57e193aad105f75bd04464abe405498c19f3b57"
+      "key": "22412b052b71ca92becc80869ad0446f405377d2abc259bfecfc027323891b8c"
     },
     {
       "name": "priority_encoder_carry:vhdl",
-      "key": "e60694e9d52f9be25c849782817653912cfe8ab7b9cf857c0262a0832d3bfd05"
+      "key": "a96433ba63adc81a4ea957f9bf273fb9023e67eca87e6d6806a9a16cfaf807c3"
     },
     {
       "name": "adder_chain:vhdl",
-      "key": "0b28d6c58a251cac4d31f725bc859b59c0cbacfe6ff3eb7e03a2161cb2ee3743"
+      "key": "8668cf214eed51b0fb0f0004ec31b7604eaafb37fac3029fb0f4a4fb8006de51"
     },
     {
       "name": "barrel_shifter:vhdl",
-      "key": "3e3dfcf4a4eb81bacd95774568b0640ff7ff11d82fddd1069944684a2240edf9"
+      "key": "3c660696b1fbcae16ddf7ebfbae0114ab5772ee84f63e97e676a76dc42eafbaa"
     },
     {
       "name": "round_robin_arbiter:vhdl",
-      "key": "8967e93ace8b5439c7999c1eeaace19e660888c3cbe94d52ffadc277833d886e"
+      "key": "59693a6d98cede889e87c1d13cb7f0d1d57127eae247282bac9908595d727145"
     },
     {
       "name": "pipe:vhdl",
-      "key": "816bba565535c0a0f4d61f2762a66e57ca4c7b144f6c049627b5f3c997786780"
+      "key": "c8aaf120d771bef521920f22f623951b9195499383c86749a1508e6e44736937"
     },
     {
       "name": "srl_pipe:vhdl",
-      "key": "c753587fa9e7591baad14a97d32b5d3aceb2392ecf0b3b07fb5d4ffe29fa7f11"
+      "key": "382e85f72e8aea5f5e2d187e1cc92dd445ca3b3989de585183ad1189e87cda76"
     },
     {
       "name": "fifo_pipe:vhdl",
-      "key": "573ad3ceef2c09b91e93d31ccf330bb09cbebacad67a383b510999af5e7a4cfe"
+      "key": "4d03fef220d67f1b6990cb7a164700b96a32b0777f1253f8c6583322990bc7f4"
     },
     {
       "name": "inferred_fifo:vhdl",
-      "key": "c54e069afb912fbff513b149cc488046b704c4f3875993120f2077ec4259ece3"
+      "key": "a3da8e7ff3714b8f9562b8d43a94c86fdaf39281299a099e1f0f6dc0c396ed8c"
     },
     {
       "name": "async_fifo_blackbox:vhdl",
-      "key": "cb9189cae8c4961685c5895ab1f0961a603a4802f7a0a13d7b2454d24b51c8f2"
+      "key": "a284730bbba0831778ed73a077ec4c05c949f6d015ccde3141c6a5bee3c6601a"
     },
     {
       "name": "handshake_controller:vhdl",
-      "key": "20d5bdf848ab3a5154c7991b4efcff6784d02f16e6162ee855e19e8b12adf7b5"
+      "key": "8a60a12bdd5264db8ab68fb3f6a91425eddcabfb379b04e081801971e96940ee"
     },
     {
       "name": "counter:vhdl",
-      "key": "40fa41a9de224e900785e5a609120bca46cfe6b97523e0cc0161a1baed66ea86"
+      "key": "ccabcc6cec9ce20f2b5e91d3befdfdb6e081c453ab5e3aa9f8bd2cb013340a56"
     },
     {
       "name": "reg_mux:verilog",
-      "key": "6f25c2d8d527ac2dacb75281fc54a6e4a454559efbe7824ee5115d94a68eb001"
+      "key": "9b1215378809f0d296d2ba8e2c38e6fdeeabe4d6d2919975540790b004929f10"
     },
     {
       "name": "priority_encoder_case:verilog",
-      "key": "77b0d74bb9637f0a3d00d01b2743f19901aa862f4f70307b4d404aae31a1ddeb"
+      "key": "9939ea1c7df9efa34b0048245a65d320932e75af613f42e60d076624aa137f45"
     },
     {
       "name": "priority_encoder_for:verilog",
-      "key": "41888b6f6428585018fd50a66abe54e07ff4868416cca1d1bc1eee68ad875784"
+      "key": "65a48038dd46220145d382580e2f06b24361d5c819de15cab70e7b1674f5546c"
     },
     {
       "name": "priority_encoder_carry:verilog",
-      "key": "81208335ea867266f8ad114cb1866e3eedfc3cf3d5a12a77673e292e44c581f8"
+      "key": "7cccd0f46619cc59e3c146b36e211b79392b5b51e51007f2951f3e8b2b0353f0"
     },
     {
       "name": "adder_chain:verilog",
-      "key": "37bb6ecead16c6915a583bdf21607fbc3345fb55ee0adaa85a0263439abd6cc0"
+      "key": "7bbb4bb234019fad4deafda60e37199a173ad98ed3d5132ff940dc4ece58cca4"
     },
     {
       "name": "barrel_shifter:verilog",
-      "key": "564fc48f28c343723e80c2162e6a4ceecc9ce5c72ce1ce89e554eb81bdc18fec"
+      "key": "697306b5f9e3e6a944791f11ea277457d984bafd90126897bf425281aaa2fd9a"
     },
     {
       "name": "round_robin_arbiter:verilog",
-      "key": "37326325514266a7636dac567a458bca4fd19c042a2e547533a9e09a226ccdb8"
+      "key": "d61516937e3ef8dca1811e8d6870da148815be9015046b7f44598f0f59b95a84"
     },
     {
       "name": "pipe:verilog",
-      "key": "8329cf6d4b8e9c4d7e8009960bf41a915fd1622c236cece35c62720860463aca"
+      "key": "07b305828db8f3a3fcf977d50e77ff138f01c3a41ce9d2d5ea7341f55ba2a495"
+    },
+    {
+      "name": "shift_register_bank:verilog",
+      "key": "2b3f351b6e197ce0aadbde3c1565936676024542d942ec7d7a29cdae8ce3c0b0"
     },
     {
       "name": "srl_pipe:verilog",
-      "key": "fac2ae7b3eeae3e2962842cb539d121076fa1477bb5a6cfa2f93ad824a3be1e9"
+      "key": "2adae1f883682a0d36f7a41055ac5e43a05efdf4c957369ba83343a0bb220fbe"
     },
     {
       "name": "fifo_pipe:verilog",
-      "key": "c7d3d0eae544642d35f195e0a1a664e89a902def3bc5dac6b2a689803f847034"
+      "key": "4bf3df534d412a04f221e5a06b0b76d748b02164e075d630df1d1f18a86df046"
     },
     {
       "name": "inferred_fifo:verilog",
-      "key": "7b4eaeea8a7f3c73fdbe9661c7594036f10c11b318d63c38d3a6584277b893d7"
+      "key": "11bfe6f12d5a0dbae0bd49afc42607a6d4387b2be6e9709dc473d93676bc566b"
     },
     {
       "name": "async_fifo_blackbox:verilog",
-      "key": "4dbd1046ae5c8d137f2d285d4b92f10da40a1c949ac37281e5d00499db0babec"
+      "key": "d3726b5695257d37ea6f9221df23d27765d031122fc97137bd2f5966e84c195f"
     },
     {
       "name": "handshake_controller:verilog",
-      "key": "4ee4dde202d462a6475e61518fca53b2445496aeb69319209d0a484b1b487723"
+      "key": "d08dc2d20e882f6fa6a5705208a4db037690538534474e194fa37a371c7747ea"
     },
     {
       "name": "counter:verilog",
-      "key": "edc351ed6f313d231877c4090e58abf3f9c237de45361fcdc3ba426bec723198"
+      "key": "92437c4ac94fb5760d560454b62a7346887e03ba21323e4d4ef8b6a679f3a2bd"
     }
   ]
 }

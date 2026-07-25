@@ -610,3 +610,292 @@ fn flop_driven_net_contributing_tier_follows_only_the_data_input() {
     assert_eq!(lines(&attribution.contributing), vec![3]);
     assert!(!lines(&attribution.contributing).contains(&2));
 }
+
+fn hierarchical_fixture() -> &'static str {
+    // Flattened snapshot of a top instance `inst` whose child contains:
+    //   child.sv:3  wire gated = a & b;
+    // `inst.gated` is deliberately not a port bit: a separate top-level
+    // buffer drives `y`, so this fixture tests hierarchy independent of the
+    // seed-port bypass.
+    r##"{
+      "modules": {
+        "top": {
+          "attributes": {"top": "1"},
+          "ports": {
+            "a": {"direction": "input", "bits": [2]},
+            "b": {"direction": "input", "bits": [3]},
+            "y": {"direction": "output", "bits": [9]}
+          },
+          "cells": {
+            "$flatten\\inst.$and$child.sv:3$1": {
+              "type": "$and",
+              "attributes": {"src": "child.sv:3.18-3.23"},
+              "port_directions": {"A": "input", "B": "input", "Y": "output"},
+              "connections": {"A": [2], "B": [3], "Y": [8]}
+            },
+            "$buf$top.sv:7$2": {
+              "type": "$buf",
+              "attributes": {"src": "top.sv:7.3-7.34"},
+              "port_directions": {"A": "input", "Y": "output"},
+              "connections": {"A": [8], "Y": [9]}
+            }
+          },
+          "netnames": {
+            "a": {"bits": [2], "attributes": {}},
+            "b": {"bits": [3], "attributes": {}},
+            "inst.gated": {
+              "bits": [8],
+              "attributes": {"src": "child.sv:3.8-3.13"}
+            },
+            "y": {"bits": [9], "attributes": {}}
+          }
+        }
+      }
+    }"##
+}
+
+fn hierarchical_attribution(dialect: NetlistDialect, output: &str) -> rtl_correlate::Attribution {
+    let netlist = parse_str(hierarchical_fixture()).expect("hierarchical fixture parses");
+    let index = CorrelationIndex::build(&netlist, "top", dialect).expect("index builds");
+    index.attribute(
+        &MappedCut {
+            outputs: vec![output.to_owned()],
+            inputs: vec!["a".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    )
+}
+
+#[test]
+fn flattened_hierarchical_boundary_attributes_the_child_expression_exactly() {
+    let attribution = hierarchical_attribution(NetlistDialect::Yosys, "inst.gated");
+    assert_eq!(attribution.exact.len(), 1);
+    assert_eq!(attribution.exact[0].file, "child.sv");
+    assert_eq!(attribution.exact[0].start_line, 3);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn vivado_hierarchical_boundary_translates_to_the_flattened_yosys_name() {
+    let attribution = hierarchical_attribution(NetlistDialect::Vivado, "inst/gated");
+    assert_eq!(attribution.exact.len(), 1);
+    assert_eq!(attribution.exact[0].file, "child.sv");
+    assert_eq!(attribution.exact[0].start_line, 3);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn repeated_instances_resolve_to_the_same_child_source_line() {
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a1": {"direction": "input", "bits": [2]},
+                "b1": {"direction": "input", "bits": [3]},
+                "a2": {"direction": "input", "bits": [4]},
+                "b2": {"direction": "input", "bits": [5]}
+              },
+              "cells": {
+                "$flatten\\u1.$and$child.sv:3$1": {
+                  "type": "$and",
+                  "attributes": {"src": "child.sv:3.18-3.23"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [2], "B": [3], "Y": [8]}
+                },
+                "$flatten\\u2.$and$child.sv:3$1": {
+                  "type": "$and",
+                  "attributes": {"src": "child.sv:3.18-3.23"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [4], "B": [5], "Y": [9]}
+                }
+              },
+              "netnames": {
+                "a1": {"bits": [2]},
+                "b1": {"bits": [3]},
+                "a2": {"bits": [4]},
+                "b2": {"bits": [5]},
+                "u1.gated": {"bits": [8], "attributes": {"src": "child.sv:3.8-3.13"}},
+                "u2.gated": {"bits": [9], "attributes": {"src": "child.sv:3.8-3.13"}}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("repeated-instance fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+
+    for (instance, inputs) in [("u1.gated", ["a1", "b1"]), ("u2.gated", ["a2", "b2"])] {
+        let attribution = index.attribute(
+            &MappedCut {
+                outputs: vec![instance.to_owned()],
+                inputs: inputs.into_iter().map(str::to_owned).collect(),
+                feeds_registers: Vec::new(),
+                declarations: Vec::new(),
+                truncated: false,
+                selected_is_sequential: false,
+            },
+            &CorrelationLimits::default(),
+        );
+        assert!(
+            attribution
+                .exact
+                .iter()
+                .any(|span| span.file == "child.sv" && span.start_line == 3),
+            "{instance} must resolve to the shared child expression",
+        );
+        assert!(!attribution.approximate);
+    }
+}
+
+#[test]
+fn nested_hierarchy_resolves_the_deep_child_source_line() {
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]}
+              },
+              "cells": {
+                "$flatten\\u1.u2.$and$leaf.sv:4$1": {
+                  "type": "$and",
+                  "attributes": {"src": "leaf.sv:4.16-4.21"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [2], "B": [3], "Y": [8]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "u1.u2.sig": {"bits": [8], "attributes": {"src": "leaf.sv:4.8-4.11"}}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("nested fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute(
+        &MappedCut {
+            outputs: vec!["u1.u2.sig".to_owned()],
+            inputs: vec!["a".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+
+    assert!(
+        attribution
+            .exact
+            .iter()
+            .any(|span| span.file == "leaf.sv" && span.start_line == 4),
+    );
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn flat_output_port_seed_attributes_its_combinational_driver() {
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "y": {"direction": "output", "bits": [8]}
+              },
+              "cells": {
+                "$and$top.sv:2$1": {
+                  "type": "$and",
+                  "attributes": {"src": "top.sv:2.14-2.19"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [2], "B": [3], "Y": [8]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "y": {"bits": [8], "attributes": {"src": "top.sv:1.43-1.44"}}
+              }
+            }
+          }
+        }"##,
+    )
+    .expect("flat output-port fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute(
+        &MappedCut {
+            outputs: vec!["y".to_owned()],
+            inputs: vec!["a".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+
+    assert_eq!(lines(&attribution.exact), vec![2]);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn seed_bits_bypass_declared_input_stops_in_multi_node_cuts() {
+    // A multi-node selection can legitimately list the same net as an
+    // output (driven toward an external consumer) and an input (feeding
+    // another selected node). The shared driver's span must land in exact:
+    // seeds always attribute their own driver.
+    let attribution = index().attribute(
+        &MappedCut {
+            outputs: vec!["gated".to_owned()],
+            inputs: vec!["gated".to_owned(), "sum".to_owned(), "b".to_owned()],
+            feeds_registers: Vec::new(),
+            declarations: Vec::new(),
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    assert_eq!(lines(&attribution.exact), vec![3]);
+    assert!(!attribution.approximate);
+}
+
+#[test]
+fn hierarchical_nets_attribute_through_the_net_path() {
+    // The #191 net-selection path and hierarchical resolution compose: a
+    // wire click inside a child instance resolves the dotted name.
+    let netlist = parse_str(hierarchical_fixture()).expect("hierarchical fixture parses");
+    let index =
+        CorrelationIndex::build(&netlist, "top", NetlistDialect::Yosys).expect("index builds");
+    let attribution = index.attribute_net(
+        &MappedCut {
+            outputs: vec!["inst.gated".to_owned()],
+            inputs: Vec::new(),
+            feeds_registers: Vec::new(),
+            declarations: vec!["inst.gated".to_owned()],
+            truncated: false,
+            selected_is_sequential: false,
+        },
+        &CorrelationLimits::default(),
+    );
+    // Exact = the child expression driving the net plus its declaration
+    // span, both in child.sv.
+    assert!(lines(&attribution.exact).contains(&3));
+    assert!(attribution.exact.iter().all(|span| span.file == "child.sv"));
+    assert!(!attribution.approximate);
+}

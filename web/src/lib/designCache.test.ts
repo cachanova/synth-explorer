@@ -31,6 +31,7 @@ function artifact(key: string): SynthesisArtifact {
     output: {
       netlistJson: '{}',
       sourceNetlistJson: '{}',
+      flatSourceNetlistJson: '{}',
       log: 'ok',
     },
   }
@@ -50,8 +51,10 @@ describe('precomputed synthesis identity', () => {
   })
 
   it('preserves existing Yosys keys and isolates local Vivado producers', async () => {
+    // Pinned for cache schema 3 (flattened source snapshot); a deliberate
+    // schema bump is the only change allowed to move this hash.
     await expect(synthesisKey(input)).resolves.toBe(
-      '986bb5711941737939fd119203defe7526140ad397557afd4e780426f4d2bbc2',
+      'd289a58c01ca413950b834871705dd509ccd7dfc09a5f5aa7f7b5b0584ac8655',
     )
     const vivadoInput: ValidatedSynthesis = {
       ...input,
@@ -71,6 +74,10 @@ describe('precomputed synthesis identity', () => {
   it('accepts only the exact cache key, producer, schema, and input', async () => {
     const key = await synthesisKey(input)
     expect(isValidSynthesisArtifact(artifact(key), key, input)).toBe(true)
+    const legacyArtifact = artifact(key)
+    delete (legacyArtifact.output as Partial<typeof legacyArtifact.output>)
+      .flatSourceNetlistJson
+    expect(isValidSynthesisArtifact(legacyArtifact, key, input)).toBe(false)
     expect(isValidSynthesisArtifact({ ...artifact(key), producer: 'other' }, key, input)).toBe(false)
     expect(isValidSynthesisArtifact(artifact(key), `${key}0`, input)).toBe(false)
     expect(

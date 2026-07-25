@@ -129,7 +129,12 @@ export function Toolbar() {
             const language = event.target.value as ExampleLanguage
             setExampleLanguage(language)
             const example = store.examples.find((entry) => entry.name === selectedExample)
-            if (example) store.loadExample(example.variants[language])
+            const variant = example?.variants[language]
+            if (variant) {
+              store.loadExample(variant)
+            } else {
+              setSelectedExample('')
+            }
           }}
         >
           <option value="verilog">Verilog</option>
@@ -145,15 +150,18 @@ export function Toolbar() {
           onChange={(event) => {
             setSelectedExample(event.target.value)
             const example = store.examples.find((entry) => entry.name === event.target.value)
-            if (example) store.loadExample(example.variants[exampleLanguage])
+            const variant = example?.variants[exampleLanguage]
+            if (variant) store.loadExample(variant)
           }}
         >
           <option value="">{store.examples.length ? 'Load example…' : '(no examples)'}</option>
-          {store.examples.map((example) => (
-            <option key={example.name} value={example.name}>
-              {example.title || example.name}
-            </option>
-          ))}
+          {store.examples
+            .filter((example) => example.variants[exampleLanguage])
+            .map((example) => (
+              <option key={example.name} value={example.name}>
+                {example.title || example.name}
+              </option>
+            ))}
         </select>
       </label>
 

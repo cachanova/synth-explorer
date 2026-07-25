@@ -48,9 +48,6 @@ try {
     const generated = [{ name: 'default', artifact: await newestCacheRecord(page) }]
     const exampleSelect = page.getByLabel('Bundled example')
     const languageSelect = page.getByLabel('Language')
-    const exampleNames = await exampleSelect.locator('option').evaluateAll((options) =>
-      options.map((option) => option.value).filter(Boolean),
-    )
     for (const language of ['vhdl', 'verilog']) {
       await languageSelect.selectOption(language)
       if (await exampleSelect.inputValue()) {
@@ -59,6 +56,11 @@ try {
         )
         await waitForMapping(page)
       }
+      // The bundled-example list is language-filtered: examples may declare
+      // only one variant, so enumerate per language.
+      const exampleNames = await exampleSelect.locator('option').evaluateAll((options) =>
+        options.map((option) => option.value).filter(Boolean),
+      )
       for (const name of exampleNames) {
         process.stdout.write(`Generating ${name}:${language}...\n`)
         await exampleSelect.selectOption(name)

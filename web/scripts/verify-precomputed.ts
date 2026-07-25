@@ -42,6 +42,7 @@ const expectedStructuralFacts: Record<
   async_fifo_blackbox: { top: 'async_fifo_wrapper', inputs: 22, outputs: 18 },
   handshake_controller: { top: 'handshake_controller', inputs: 5, outputs: 5 },
   counter: { top: 'counter', inputs: 3, outputs: 8 },
+  shift_register_bank: { top: 'shift_register_bank', inputs: 6, outputs: 4 },
 }
 
 const root = process.cwd()
@@ -141,6 +142,7 @@ function verifyStructuralFacts(
   for (const [label, json] of [
     ['mapped', artifact.output.netlistJson],
     ['source', artifact.output.sourceNetlistJson],
+    ['flat source', artifact.output.flatSourceNetlistJson],
   ] as const) {
     const netlist = JSON.parse(json) as {
       modules?: Record<
