@@ -113,6 +113,12 @@ pub struct EdgeBoundaryMember {
     pub net_bits: Vec<u32>,
 }
 
+#[derive(Debug, Clone, Default)]
+struct BoundaryElectricalProvenance {
+    source_bits: Option<Vec<u32>>,
+    target_bits: Option<Vec<u32>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ControlRole {
@@ -175,6 +181,51 @@ pub struct Subgraph {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
     pub truncated: bool,
+}
+
+/// Private projection state whose provenance entries are index-aligned with
+/// `subgraph.edges`. Public ungrouped responses discard the sidecar unchanged;
+/// grouped quotient projection consumes it before returning a `Subgraph`.
+#[derive(Debug, Clone)]
+struct ProjectedSubgraph {
+    subgraph: Subgraph,
+    boundary_electrical: Vec<Option<Box<BoundaryElectricalProvenance>>>,
+}
+
+impl ProjectedSubgraph {
+    fn new(
+        subgraph: Subgraph,
+        boundary_electrical: Vec<Option<Box<BoundaryElectricalProvenance>>>,
+    ) -> Self {
+        assert_eq!(
+            subgraph.edges.len(),
+            boundary_electrical.len(),
+            "every projected edge must have one provenance sidecar slot"
+        );
+        Self {
+            subgraph,
+            boundary_electrical,
+        }
+    }
+
+    fn into_public(self) -> Subgraph {
+        self.subgraph
+    }
+}
+
+impl From<Subgraph> for ProjectedSubgraph {
+    fn from(subgraph: Subgraph) -> Self {
+        let boundary_electrical = (0..subgraph.edges.len()).map(|_| None).collect();
+        Self::new(subgraph, boundary_electrical)
+    }
+}
+
+impl std::ops::Deref for ProjectedSubgraph {
+    type Target = Subgraph;
+
+    fn deref(&self) -> &Self::Target {
+        &self.subgraph
+    }
 }
 
 /// One canonical group rendered as its physical instances plus their immediate
@@ -1555,7 +1606,7 @@ impl Analysis {
         );
         Some(match grouping {
             Some(partition) => quotient_subgraph(graph, subgraph, partition),
-            None => subgraph,
+            None => subgraph.into_public(),
         })
     }
 
@@ -1735,7 +1786,7 @@ impl Analysis {
         );
         match grouping {
             Some(partition) => quotient_subgraph(graph, subgraph, partition),
-            None => subgraph,
+            None => subgraph.into_public(),
         }
     }
 
@@ -1895,7 +1946,7 @@ impl Analysis {
         );
         match grouping {
             Some(partition) => quotient_subgraph(graph, subgraph, partition),
-            None => subgraph,
+            None => subgraph.into_public(),
         }
     }
 
@@ -1983,7 +2034,7 @@ impl Analysis {
                     group_expansion_boundary_trunks(&expanded_graph, compact_group_id, &member_set);
                 (expanded_graph, boundary_trunks)
             }
-            None => (raw, Vec::new()),
+            None => (raw.into_public(), Vec::new()),
         };
         Some(GroupExpansion {
             graph,
@@ -2178,7 +2229,7 @@ impl Analysis {
         seen: &HashSet<NodeId>,
         edge_set: &HashSet<usize>,
         projection: SubgraphProjection<'_>,
-    ) -> Subgraph {
+    ) -> ProjectedSubgraph {
         let mut node_ids: Vec<NodeId> = seen
             .iter()
             .copied()
@@ -2239,7 +2290,7 @@ impl Analysis {
             truncated: projection.truncated || edges_truncated || controls_truncated,
         };
         let projected = if projection.show_infrastructure {
-            subgraph
+            subgraph.into()
         } else {
             collapse_infrastructure(graph, subgraph)
         };
@@ -2646,11 +2697,15 @@ fn waterfilled_sample_counts(limits: &[usize], budget: usize) -> Vec<usize> {
 /// never indexed back into `graph.nodes`.
 fn quotient_subgraph(
     graph: &Graph,
-    subgraph: Subgraph,
+    projected: impl Into<ProjectedSubgraph>,
     grouping: GroupingProjection<'_>,
 ) -> Subgraph {
     const MAX_MERGED_SRC_FRAGMENTS: usize = 8;
     let base = graph.nodes.len() as u32;
+    let ProjectedSubgraph {
+        mut subgraph,
+        boundary_electrical,
+    } = projected.into();
 
     struct GroupAcc {
         members: Vec<u32>,
@@ -2664,7 +2719,7 @@ fn quotient_subgraph(
 
     let mut group_accs: BTreeMap<GroupId, GroupAcc> = BTreeMap::new();
     let mut nodes: Vec<GraphNode> = Vec::new();
-    for node in subgraph.nodes {
+    for node in std::mem::take(&mut subgraph.nodes) {
         let Some(group_id) = grouping.group_id(node.node.id) else {
             nodes.push(node);
             continue;
@@ -2780,7 +2835,10 @@ fn quotient_subgraph(
     }
 
     let mut merged: BTreeMap<(u32, u32, String, String), MergedEdge> = BTreeMap::new();
-    for edge in subgraph.edges {
+    for (edge, provenance) in std::mem::take(&mut subgraph.edges)
+        .into_iter()
+        .zip(boundary_electrical)
+    {
         let from = unit_id(Some(grouping), base, edge.from);
         let to = unit_id(Some(grouping), base, edge.to);
         if from == to {
@@ -2812,7 +2870,14 @@ fn quotient_subgraph(
                 .source_boundary_members
                 .entry(edge.from)
                 .or_default()
-                .extend(edge.bits.iter().copied());
+                .extend(
+                    provenance
+                        .as_deref()
+                        .and_then(|provenance| provenance.source_bits.as_deref())
+                        .unwrap_or(&edge.bits)
+                        .iter()
+                        .copied(),
+                );
         }
         if grouping
             .group(edge.to)
@@ -2822,7 +2887,14 @@ fn quotient_subgraph(
                 .target_boundary_members
                 .entry(edge.to)
                 .or_default()
-                .extend(edge.bits.iter().copied());
+                .extend(
+                    provenance
+                        .as_deref()
+                        .and_then(|provenance| provenance.target_bits.as_deref())
+                        .unwrap_or(&edge.bits)
+                        .iter()
+                        .copied(),
+                );
         }
         if edge.control == Some(true) {
             entry.edge.control = Some(true);
@@ -4352,12 +4424,17 @@ fn merge_edges(
     )
 }
 
-fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
+fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> ProjectedSubgraph {
     #[derive(Clone, Copy)]
     struct ProjectionFrame<'a> {
         edge: &'a GraphEdge,
         bits: &'a [u32],
         control: bool,
+    }
+
+    struct CollapsedEdge {
+        edge: GraphEdge,
+        boundary_electrical: Option<Box<BoundaryElectricalProvenance>>,
     }
 
     let hidden: HashSet<NodeId> = subgraph
@@ -4381,7 +4458,7 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
         })
         .collect();
     if hidden.is_empty() {
-        return subgraph;
+        return subgraph.into();
     }
 
     let mut outgoing: HashMap<NodeId, Vec<&GraphEdge>> = HashMap::new();
@@ -4389,7 +4466,7 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
         outgoing.entry(edge.from).or_default().push(edge);
     }
 
-    let mut merged: BTreeMap<(NodeId, NodeId, String, String, String, bool), GraphEdge> =
+    let mut merged: BTreeMap<(NodeId, NodeId, String, String, String, bool), CollapsedEdge> =
         BTreeMap::new();
     let mut truncated = subgraph.truncated;
     let mut projection_work = 0usize;
@@ -4423,18 +4500,37 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
                     truncated = true;
                     break 'sources;
                 }
-                let entry = merged.entry(key).or_insert_with(|| GraphEdge {
-                    from: edge.from,
-                    to: current.edge.to,
-                    from_port: edge.from_port.clone(),
-                    to_port: current.edge.to_port.clone(),
-                    net_name: current.edge.net_name.clone(),
-                    bits: Vec::new(),
-                    control: current.control.then_some(true),
-                    source_boundary_members: Vec::new(),
-                    target_boundary_members: Vec::new(),
+                let entry = merged.entry(key).or_insert_with(|| CollapsedEdge {
+                    edge: GraphEdge {
+                        from: edge.from,
+                        to: current.edge.to,
+                        from_port: edge.from_port.clone(),
+                        to_port: current.edge.to_port.clone(),
+                        net_name: current.edge.net_name.clone(),
+                        bits: Vec::new(),
+                        control: current.control.then_some(true),
+                        source_boundary_members: Vec::new(),
+                        target_boundary_members: Vec::new(),
+                    },
+                    boundary_electrical: None,
                 });
-                entry.bits.extend_from_slice(current.bits);
+                entry.edge.bits.extend_from_slice(current.bits);
+                if graph.nodes[edge.from as usize].kind == NodeKind::PortBit {
+                    entry
+                        .boundary_electrical
+                        .get_or_insert_with(Default::default)
+                        .source_bits
+                        .get_or_insert_with(Vec::new)
+                        .extend_from_slice(&edge.bits);
+                }
+                if graph.nodes[current.edge.to as usize].kind == NodeKind::PortBit {
+                    entry
+                        .boundary_electrical
+                        .get_or_insert_with(Default::default)
+                        .target_bits
+                        .get_or_insert_with(Vec::new)
+                        .extend_from_slice(&current.edge.bits);
+                }
                 continue;
             }
             if !seen.insert((
@@ -4464,22 +4560,37 @@ fn collapse_infrastructure(graph: &Graph, subgraph: Subgraph) -> Subgraph {
         }
     }
 
-    Subgraph {
-        nodes: subgraph
-            .nodes
-            .into_iter()
-            .filter(|node| !hidden.contains(&node.node.id))
-            .collect(),
-        edges: merged
-            .into_values()
-            .map(|mut edge| {
-                edge.bits.sort_unstable();
-                edge.bits.dedup();
-                edge
-            })
-            .collect(),
-        truncated,
+    let mut edges = Vec::with_capacity(merged.len());
+    let mut boundary_electrical = Vec::with_capacity(merged.len());
+    for mut collapsed in merged.into_values() {
+        collapsed.edge.bits.sort_unstable();
+        collapsed.edge.bits.dedup();
+        if let Some(provenance) = collapsed.boundary_electrical.as_deref_mut() {
+            if let Some(bits) = &mut provenance.source_bits {
+                bits.sort_unstable();
+                bits.dedup();
+            }
+            if let Some(bits) = &mut provenance.target_bits {
+                bits.sort_unstable();
+                bits.dedup();
+            }
+        }
+        edges.push(collapsed.edge);
+        boundary_electrical.push(collapsed.boundary_electrical);
     }
+
+    ProjectedSubgraph::new(
+        Subgraph {
+            nodes: subgraph
+                .nodes
+                .into_iter()
+                .filter(|node| !hidden.contains(&node.node.id))
+                .collect(),
+            edges,
+            truncated,
+        },
+        boundary_electrical,
+    )
 }
 
 fn compare_raw_edges(a: &Edge, b: &Edge) -> Ordering {
@@ -4524,21 +4635,31 @@ fn compare_graph_edges(a: &GraphEdge, b: &GraphEdge) -> Ordering {
         ))
 }
 
-fn cap_subgraph_edges(mut subgraph: Subgraph) -> Subgraph {
-    subgraph.edges.sort_by(compare_graph_edges);
-    if subgraph.edges.len() > MAX_SUBGRAPH_EDGES {
-        subgraph.edges.truncate(MAX_SUBGRAPH_EDGES);
+fn cap_subgraph_edges(projected: ProjectedSubgraph) -> ProjectedSubgraph {
+    let ProjectedSubgraph {
+        mut subgraph,
+        boundary_electrical,
+    } = projected;
+    let mut edges_with_provenance = std::mem::take(&mut subgraph.edges)
+        .into_iter()
+        .zip(boundary_electrical)
+        .collect::<Vec<_>>();
+    edges_with_provenance.sort_by(|(left, _), (right, _)| compare_graph_edges(left, right));
+    if edges_with_provenance.len() > MAX_SUBGRAPH_EDGES {
+        edges_with_provenance.truncate(MAX_SUBGRAPH_EDGES);
         subgraph.truncated = true;
     }
     let mut remaining_bits = MAX_SUBGRAPH_EDGE_BITS;
-    for edge in &mut subgraph.edges {
+    for (edge, _) in &mut edges_with_provenance {
         if edge.bits.len() > remaining_bits {
             edge.bits.truncate(remaining_bits);
             subgraph.truncated = true;
         }
         remaining_bits = remaining_bits.saturating_sub(edge.bits.len());
     }
-    subgraph
+    let (edges, boundary_electrical) = edges_with_provenance.into_iter().unzip();
+    subgraph.edges = edges;
+    ProjectedSubgraph::new(subgraph, boundary_electrical)
 }
 
 fn build_stats(
@@ -5780,7 +5901,13 @@ mod tests {
     fn infrastructure_projection_preserves_reconvergent_bit_sources() {
         let nodes = (0..=5)
             .map(|id| {
-                combinational_node(id, if matches!(id, 0 | 5) { "$and" } else { "OBUF" }, None)
+                if id == 0 {
+                    let mut input = port_node(id, "a", PortDirection::Input);
+                    input.port_bit = Some(0);
+                    input
+                } else {
+                    combinational_node(id, if id == 5 { "$and" } else { "OBUF" }, None)
+                }
             })
             .collect();
         let graph = graph_from_parts(
@@ -5834,6 +5961,13 @@ mod tests {
 
         assert_eq!(projected.edges.len(), 1);
         assert_eq!(projected.edges[0].bits, vec![1, 2]);
+        assert_eq!(
+            projected.boundary_electrical[0]
+                .as_deref()
+                .and_then(|provenance| provenance.source_bits.as_deref()),
+            Some([99].as_slice()),
+            "reconvergent paths must union and deduplicate one source boundary identity"
+        );
     }
 
     #[test]
@@ -8759,6 +8893,221 @@ mod tests {
             serde_json::to_value(quotient).unwrap(),
             "quotient metadata must not depend on projected node or edge order"
         );
+    }
+
+    #[test]
+    fn quotient_boundary_metadata_preserves_input_bits_through_hidden_buffers() {
+        let mut input_0 = port_node(0, "a[0]", PortDirection::Input);
+        input_0.raw_name = "a".to_owned();
+        input_0.port = Some("a".to_owned());
+        input_0.port_bit = Some(0);
+        let mut input_1 = port_node(1, "a[1]", PortDirection::Input);
+        input_1.raw_name = "a".to_owned();
+        input_1.port = Some("a".to_owned());
+        input_1.port_bit = Some(1);
+        let graph = graph_from_parts(
+            "buffered_boundary",
+            vec![
+                input_0,
+                input_1,
+                combinational_node(2, "IBUF", None),
+                combinational_node(3, "$or", None),
+            ],
+            Vec::new(),
+            vec![Vec::new(); 4],
+            vec![Vec::new(); 4],
+        );
+        let partition = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Port,
+                members: vec![0, 1],
+                label: "a[1:0]".to_owned(),
+                cell_type: String::new(),
+            }],
+            group_of: HashMap::from([(0, 0), (1, 0)]),
+        };
+        let projected_node = |id| GraphNode {
+            node: node_ref(&graph, id),
+            is_root: None,
+            is_boundary: None,
+            depth: None,
+            params: BTreeMap::new(),
+            controls: Vec::new(),
+            width: None,
+            member_count: None,
+            members: None,
+            boundary_members: Vec::new(),
+        };
+        let projected_edge =
+            |from, to, from_port: &str, to_port: &str, net_name: &str, bit| GraphEdge {
+                from,
+                to,
+                from_port: from_port.to_owned(),
+                to_port: to_port.to_owned(),
+                net_name: net_name.to_owned(),
+                bits: vec![bit],
+                control: None,
+                source_boundary_members: Vec::new(),
+                target_boundary_members: Vec::new(),
+            };
+        let mut projected = collapse_infrastructure(
+            &graph,
+            Subgraph {
+                nodes: (0..4).map(projected_node).collect(),
+                edges: vec![
+                    projected_edge(0, 3, "a", "A", "a[0]", 10),
+                    projected_edge(1, 2, "a", "I", "a[1]", 11),
+                    projected_edge(2, 3, "O", "A", "a_IBUF[1]", 101),
+                ],
+                truncated: false,
+            },
+        );
+        // Exercise the production cap/sort boundary from a deliberately
+        // non-canonical order. Edge and sidecar must move together.
+        projected.subgraph.edges.reverse();
+        projected.boundary_electrical.reverse();
+        let projected = cap_subgraph_edges(projected);
+
+        let buffered = projected
+            .edges
+            .iter()
+            .find(|edge| edge.from == 1 && edge.to == 3)
+            .expect("hidden IBUF must project input member 1 directly to the logic");
+        assert_eq!(
+            buffered.bits,
+            vec![101],
+            "visual edge identity remains the downstream post-IBUF net"
+        );
+
+        let quotient = quotient_subgraph(&graph, projected, GroupingProjection::all(&partition));
+        let edge = quotient
+            .edges
+            .iter()
+            .find(|edge| edge.to == 3)
+            .expect("grouped input boundary must connect to the logic");
+        assert_eq!(
+            edge.source_boundary_members,
+            vec![
+                EdgeBoundaryMember {
+                    member: 0,
+                    net_bits: vec![10],
+                },
+                EdgeBoundaryMember {
+                    member: 1,
+                    net_bits: vec![11],
+                },
+            ],
+            "each grouped input slot must retain its pre-buffer electrical net"
+        );
+        assert_eq!(
+            edge.bits,
+            vec![10, 101],
+            "quotient drawing bits retain their existing downstream identities"
+        );
+    }
+
+    #[test]
+    fn quotient_boundary_metadata_uses_final_bits_after_hidden_output_buffers() {
+        let mut output_0 = port_node(2, "q[0]", PortDirection::Output);
+        output_0.raw_name = "q".to_owned();
+        output_0.port = Some("q".to_owned());
+        output_0.port_bit = Some(0);
+        let mut output_1 = port_node(3, "q[1]", PortDirection::Output);
+        output_1.raw_name = "q".to_owned();
+        output_1.port = Some("q".to_owned());
+        output_1.port_bit = Some(1);
+        let graph = graph_from_parts(
+            "buffered_output_boundary",
+            vec![
+                combinational_node(0, "$or", None),
+                combinational_node(1, "OBUF", None),
+                output_0,
+                output_1,
+            ],
+            Vec::new(),
+            vec![Vec::new(); 4],
+            vec![Vec::new(); 4],
+        );
+        let partition = GroupPartition {
+            groups: vec![Group {
+                kind: GroupKind::Port,
+                members: vec![2, 3],
+                label: "q[1:0]".to_owned(),
+                cell_type: String::new(),
+            }],
+            group_of: HashMap::from([(2, 0), (3, 0)]),
+        };
+        let projected_node = |id| GraphNode {
+            node: node_ref(&graph, id),
+            is_root: None,
+            is_boundary: None,
+            depth: None,
+            params: BTreeMap::new(),
+            controls: Vec::new(),
+            width: None,
+            member_count: None,
+            members: None,
+            boundary_members: Vec::new(),
+        };
+        let projected_edge =
+            |from, to, from_port: &str, to_port: &str, net_name: &str, bit| GraphEdge {
+                from,
+                to,
+                from_port: from_port.to_owned(),
+                to_port: to_port.to_owned(),
+                net_name: net_name.to_owned(),
+                bits: vec![bit],
+                control: None,
+                source_boundary_members: Vec::new(),
+                target_boundary_members: Vec::new(),
+            };
+        let projected = collapse_infrastructure(
+            &graph,
+            Subgraph {
+                nodes: (0..4).map(projected_node).collect(),
+                edges: vec![
+                    projected_edge(0, 2, "Y", "q", "q[0]", 20),
+                    projected_edge(0, 1, "Y", "I", "pre_OBUF[1]", 120),
+                    projected_edge(1, 3, "O", "q", "q[1]", 21),
+                ],
+                truncated: false,
+            },
+        );
+
+        let buffered_index = projected
+            .edges
+            .iter()
+            .position(|edge| edge.from == 0 && edge.to == 3)
+            .expect("hidden OBUF must project the logic directly to output member 1");
+        let buffered = &projected.edges[buffered_index];
+        assert_eq!(buffered.bits, vec![21]);
+        assert_eq!(
+            projected.boundary_electrical[buffered_index]
+                .as_deref()
+                .and_then(|provenance| provenance.target_bits.as_deref()),
+            Some([21].as_slice())
+        );
+
+        let quotient = quotient_subgraph(&graph, projected, GroupingProjection::all(&partition));
+        let edge = quotient
+            .edges
+            .iter()
+            .find(|edge| edge.from == 0)
+            .expect("logic must connect to the grouped output boundary");
+        assert_eq!(
+            edge.target_boundary_members,
+            vec![
+                EdgeBoundaryMember {
+                    member: 2,
+                    net_bits: vec![20],
+                },
+                EdgeBoundaryMember {
+                    member: 3,
+                    net_bits: vec![21],
+                },
+            ]
+        );
+        assert!(edge.source_boundary_members.is_empty());
     }
 
     #[test]

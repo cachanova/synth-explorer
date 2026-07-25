@@ -314,6 +314,155 @@ fn grouped_boundary_metadata_preserves_order_fanout_and_direct_aliases() {
 }
 
 #[test]
+fn grouped_input_boundary_keeps_pre_ibuf_bits_on_mixed_direct_and_buffered_routes() {
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "a": { "direction": "input", "bits": [2, 3] },
+                "y": { "direction": "output", "bits": [5] }
+            },
+            "cells": {
+                "a_1_IBUF_inst": {
+                    "type": "IBUF",
+                    "port_directions": { "I": "input", "O": "output" },
+                    "connections": { "I": [3], "O": [4] }
+                },
+                "logic": {
+                    "type": "$or",
+                    "port_directions": { "A": "input", "B": "input", "Y": "output" },
+                    "connections": { "A": [2], "B": [4], "Y": [5] }
+                }
+            },
+            "netnames": {
+                "a": { "bits": [2, 3] },
+                "a_1_IBUF": { "bits": [4] },
+                "y": { "bits": [5] }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["buffered_boundary.sv".to_owned()]);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, Vec::new());
+
+    let grouped = analysis.full_netlist(
+        &graph,
+        full_options(100, false, true, false),
+        Some(GroupingProjection::all(&partition)),
+    );
+    let input = grouped
+        .nodes
+        .iter()
+        .find(|node| node.node.name == "a[1:0]")
+        .expect("multibit input must be grouped");
+    let input_edges = grouped
+        .edges
+        .iter()
+        .filter(|edge| edge.from == input.node.id)
+        .collect::<Vec<_>>();
+    assert_eq!(input_edges.len(), 2);
+    let direct = input_edges
+        .iter()
+        .find(|edge| edge.to_port == "A")
+        .expect("direct input slot");
+    let buffered = input_edges
+        .iter()
+        .find(|edge| edge.to_port == "B")
+        .expect("IBUF-projected input slot");
+
+    assert_eq!(
+        direct.source_boundary_members,
+        vec![synth_explorer_analysis::analysis::EdgeBoundaryMember {
+            member: input.boundary_members[0].member,
+            net_bits: vec![2],
+        }]
+    );
+    assert_eq!(
+        buffered.source_boundary_members,
+        vec![synth_explorer_analysis::analysis::EdgeBoundaryMember {
+            member: input.boundary_members[1].member,
+            net_bits: vec![3],
+        }],
+        "the buffered slot must retain its top-level electrical net"
+    );
+    assert_eq!(direct.bits, vec![2]);
+    assert_eq!(buffered.bits, vec![4], "visual identity stays post-IBUF");
+}
+
+#[test]
+fn grouped_output_boundary_keeps_final_bits_on_mixed_direct_and_obuf_routes() {
+    let netlist = parse_value(serde_json::json!({
+        "modules": { "top": {
+            "attributes": { "top": "1" },
+            "ports": {
+                "a": { "direction": "input", "bits": [2] },
+                "q": { "direction": "output", "bits": [3, 5] }
+            },
+            "cells": {
+                "logic": {
+                    "type": "$not",
+                    "port_directions": { "A": "input", "Y": "output" },
+                    "connections": { "A": [2], "Y": [3] }
+                },
+                "q_1_OBUF_inst": {
+                    "type": "OBUF",
+                    "port_directions": { "I": "input", "O": "output" },
+                    "connections": { "I": [3], "O": [5] }
+                }
+            },
+            "netnames": {
+                "a": { "bits": [2] },
+                "logic_y": { "bits": [3] },
+                "q": { "bits": [3, 5] }
+            }
+        } }
+    }))
+    .unwrap();
+    let (top, module) = select_top(&netlist, None).unwrap();
+    let graph = Graph::from_netlist(&netlist, top, module).unwrap();
+    let analysis = Analysis::new(&graph, vec!["buffered_output.sv".to_owned()]);
+    let partition = GroupPartition::build(&graph, &analysis.endpoints().registers, Vec::new());
+
+    let grouped = analysis.full_netlist(
+        &graph,
+        full_options(100, false, true, false),
+        Some(GroupingProjection::all(&partition)),
+    );
+    let output = grouped
+        .nodes
+        .iter()
+        .find(|node| node.node.name == "q[1:0]")
+        .expect("multibit output must be grouped");
+    let edge = grouped
+        .edges
+        .iter()
+        .find(|edge| edge.to == output.node.id)
+        .expect("logic must connect to the grouped output");
+
+    assert_eq!(
+        edge.target_boundary_members,
+        vec![
+            synth_explorer_analysis::analysis::EdgeBoundaryMember {
+                member: output.boundary_members[0].member,
+                net_bits: vec![3],
+            },
+            synth_explorer_analysis::analysis::EdgeBoundaryMember {
+                member: output.boundary_members[1].member,
+                net_bits: vec![5],
+            },
+        ],
+        "the OBUF-projected slot must use the final top-level electrical net"
+    );
+    assert_eq!(
+        edge.bits,
+        vec![3, 5],
+        "public visual bits must contain the direct and final post-OBUF nets"
+    );
+}
+
+#[test]
 fn grouped_netlist_stacks_physical_primitives_from_one_logical_memory() {
     let final_netlist = parse_value(serde_json::json!({
         "modules": { "top": {
