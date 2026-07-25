@@ -247,8 +247,8 @@ function nodeVisual(
     fill = 'color-mix(in srgb, var(--green) 14%, var(--bg-2))'
     stroke = 'var(--green)'
   } else if (kind === 'const') {
-    fill = 'var(--bg-1)'
-    stroke = 'var(--border)'
+    fill = 'var(--schematic-gate-fill)'
+    stroke = 'var(--schematic-gate-stroke)'
   } else if (kind === 'reg' || kind === 'latch') {
     fill = 'color-mix(in srgb, var(--seq) 8%, var(--bg-2))'
     stroke = 'var(--seq)'

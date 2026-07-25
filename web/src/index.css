@@ -17,9 +17,19 @@
   --amber: #c69026;
   --red: #e5534b;
   --seq: #c8a5f0;
-  --schematic-gate-fill: var(--bg-2);
-  --schematic-gate-stroke: var(--border-strong);
-  --schematic-wire: var(--border-strong);
+  --schematic-gate-fill: color-mix(in srgb, var(--text) 10%, var(--bg-2));
+  --schematic-gate-stroke: color-mix(
+    in srgb,
+    var(--text-dim) 60%,
+    var(--border-strong)
+  );
+  --schematic-wire: color-mix(
+    in srgb,
+    var(--text-dim) 60%,
+    var(--border-strong)
+  );
+  --schematic-control: var(--amber);
+  --schematic-control-opacity: 0.75;
   --schematic-dim-opacity: 0.25;
   --schematic-control-dim-opacity: 0.1625;
   --mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, 'Cascadia Code',
@@ -2192,9 +2202,9 @@ th.sortable:hover {
   stroke-width: 1.3;
 }
 .g-edge.control {
-  stroke: var(--amber);
+  stroke: var(--schematic-control);
   stroke-dasharray: 4 3;
-  opacity: 0.65;
+  opacity: var(--schematic-control-opacity);
 }
 .g-edge.bus {
   stroke-width: 2.4;
@@ -2209,7 +2219,8 @@ th.sortable:hover {
   pointer-events: none;
 }
 .g-edge-arrows.control {
-  opacity: 0.65;
+  fill: var(--schematic-control);
+  opacity: var(--schematic-control-opacity);
 }
 .g-edge-arrows.hl {
   fill: var(--accent);
@@ -2947,4 +2958,10 @@ th.sortable:hover {
     var(--text-dim) 70%,
     var(--border-strong)
   );
+  --schematic-control: color-mix(
+    in srgb,
+    var(--text-dim) 70%,
+    var(--amber)
+  );
+  --schematic-control-opacity: 0.85;
 }
