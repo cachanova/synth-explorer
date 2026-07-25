@@ -27,6 +27,9 @@ test('opens every language variant without downloading synthesis engines', async
   for (const language of ['verilog', 'vhdl'] as const) {
     await languageSelect.selectOption(language)
     for (const example of examples) {
+      // Examples may declare a single language variant; the bundled list is
+      // language-filtered, so skip the ones absent for this language.
+      if (!example.variants[language]) continue
       await exampleSelect.selectOption(example.name)
       await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
       await expect(analysisPane).toHaveAttribute('data-analysis-state', 'current', {
