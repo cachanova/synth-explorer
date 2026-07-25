@@ -13,7 +13,7 @@ export function bundledExamples(): ExamplesResponse {
       let complete = true
       const variants = Object.fromEntries(
         Object.entries(entry.variants).map(([language, variant]) => {
-          const files = variant.files.flatMap((name) => {
+          const files = variant.files.flatMap((name: string) => {
             const content = sources[`../data/examples/${name}`]
             return content == null ? [] : [{ name, content }]
           })

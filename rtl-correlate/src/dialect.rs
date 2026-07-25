@@ -1,7 +1,5 @@
 //! Per-tool netlist conventions: name mangling and provenance quirks.
 
-use std::borrow::Cow;
-
 /// Which synthesis tool produced a mapped netlist.
 ///
 /// Everything the product analyzes is normalized to Yosys JSON first, but
@@ -40,15 +38,18 @@ impl NetlistDialect {
     /// shorter one. The Yosys dialect yields nothing: Yosys keeps logical
     /// names on the primitives it derives them from.
     pub fn register_base_candidates(self, name: &str) -> RegisterBaseCandidates<'_> {
-        let mut candidates = RegisterBaseCandidates::new(name);
-        if self == Self::Vivado {
-            for (offset, _) in name.rmatch_indices("_reg") {
-                if generated_reg_suffix(&name[offset..]) {
-                    candidates.push(offset);
-                }
-            }
+        RegisterBaseCandidates {
+            name,
+            offsets: match self {
+                Self::Yosys => Vec::new(),
+                Self::Vivado => name
+                    .rmatch_indices("_reg")
+                    .map(|(offset, _)| offset)
+                    .filter(|&offset| generated_reg_suffix(&name[offset..]))
+                    .collect(),
+            },
+            next: 0,
         }
-        candidates
     }
 
     /// Candidate boundary base names for a mapped net name, most-specific
@@ -75,32 +76,30 @@ impl NetlistDialect {
         if self != Self::Vivado {
             return NetBaseCandidates::default();
         }
-        if name.contains('/') {
-            // Vivado uses `/` for hierarchy while the flattened Yosys RTL
-            // snapshot uses `.`. Allocation is confined to hierarchical
-            // names; the common is_boundary path remains allocation-free.
-            let dot_name = name.replace('/', ".");
-            let mut owned = vec![dot_name.clone()];
-            owned.extend(
-                vivado_net_base_candidates(&dot_name).map(|candidate| candidate.into_owned()),
-            );
-            return NetBaseCandidates::owned(owned);
-        }
         vivado_net_base_candidates(name)
     }
 }
 
 fn vivado_net_base_candidates(name: &str) -> NetBaseCandidates<'_> {
     let mut candidates = NetBaseCandidates::default();
-    let mut push = |candidate| candidates.push(name, candidate);
+    let last_segment = name.rfind(['.', '/']).map_or((name, ""), |separator| {
+        (&name[separator + 1..], &name[..=separator])
+    });
 
-    // FSM re-encoding prefixes; the remainder is retried through every
-    // later rule.
+    // FSM re-encoding prefixes apply to the final hierarchical path segment;
+    // the leading path is retained on every derived candidate.
     let mut base = name;
+    let mut fsm_path = None;
     for prefix in ["FSM_onehot_", "FSM_sequential_", "FSM_gray_"] {
-        if let Some(rest) = base.strip_prefix(prefix) {
-            base = rest;
-            push(base);
+        if let Some(rest) = last_segment.0.strip_prefix(prefix) {
+            if last_segment.1.is_empty() {
+                base = rest;
+                candidates.push_borrowed(name, base);
+            } else {
+                fsm_path = Some(last_segment.1);
+                base = rest;
+                candidates.push_joined(last_segment.1, base);
+            }
             break;
         }
     }
@@ -118,7 +117,11 @@ fn vivado_net_base_candidates(name: &str) -> NetBaseCandidates<'_> {
         }
         match stripped {
             Some(rest) if !rest.is_empty() => {
-                push(rest);
+                if let Some(path) = fsm_path {
+                    candidates.push_joined(path, rest);
+                } else {
+                    candidates.push_borrowed(name, rest);
+                }
                 buffered = rest;
             }
             _ => break,
@@ -143,60 +146,106 @@ fn vivado_net_base_candidates(name: &str) -> NetBaseCandidates<'_> {
                 })
         };
         if digits_then_bit {
-            push(cell);
+            if let Some(path) = fsm_path {
+                candidates.push_joined(path, cell);
+            } else {
+                candidates.push_borrowed(name, cell);
+            }
             pin = cell;
         }
     }
     for (offset, _) in pin.rmatch_indices("_reg") {
         if generated_reg_suffix(&pin[offset..]) {
-            push(&pin[..offset]);
+            if let Some(path) = fsm_path {
+                candidates.push_joined(path, &pin[..offset]);
+            } else {
+                candidates.push_borrowed(name, &pin[..offset]);
+            }
         }
     }
 
     candidates
 }
 
-/// Candidate list whose ordinary entries are zero-allocation subslices of the
-/// queried name. Only Vivado hierarchical names own translated dot-form
-/// candidates.
-#[derive(Debug, Default)]
+/// Candidate list whose suffix-derived entries are zero-allocation subslices
+/// of the queried name. Only a hierarchical FSM prefix strip reconstructs a
+/// string so it can preserve the leading path.
+#[derive(Debug)]
 pub struct NetBaseCandidates<'a> {
-    items: [&'a str; 8],
-    owned: Option<std::vec::IntoIter<String>>,
+    items: [Option<NetBaseCandidate<'a>>; 8],
     len: usize,
     next: usize,
 }
 
-impl<'a> NetBaseCandidates<'a> {
-    fn owned(items: Vec<String>) -> Self {
-        Self {
-            owned: Some(items.into_iter()),
-            ..Self::default()
+#[derive(Debug)]
+pub enum NetBaseCandidate<'a> {
+    Borrowed(&'a str),
+    Joined(String),
+}
+
+impl AsRef<str> for NetBaseCandidate<'_> {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Borrowed(candidate) => candidate,
+            Self::Joined(candidate) => candidate,
         }
     }
+}
 
-    fn push(&mut self, name: &str, candidate: &'a str) {
+impl Default for NetBaseCandidates<'_> {
+    fn default() -> Self {
+        Self {
+            items: std::array::from_fn(|_| None),
+            len: 0,
+            next: 0,
+        }
+    }
+}
+
+impl<'a> NetBaseCandidates<'a> {
+    fn push_borrowed(&mut self, name: &str, candidate: &'a str) {
         if candidate.is_empty() || candidate == name || self.len == self.items.len() {
             return;
         }
-        if self.items[..self.len].contains(&candidate) {
+        if self.items[..self.len]
+            .iter()
+            .flatten()
+            .any(|existing| existing.as_ref() == candidate)
+        {
             return;
         }
-        self.items[self.len] = candidate;
+        self.items[self.len] = Some(NetBaseCandidate::Borrowed(candidate));
+        self.len += 1;
+    }
+
+    fn push_joined(&mut self, path: &str, candidate: &str) {
+        if candidate.is_empty() || self.len == self.items.len() {
+            return;
+        }
+        let candidate = format!("{path}{candidate}");
+        if self.items[..self.len]
+            .iter()
+            .flatten()
+            .any(|existing| existing.as_ref() == candidate)
+        {
+            return;
+        }
+        self.items[self.len] = Some(NetBaseCandidate::Joined(candidate));
         self.len += 1;
     }
 }
 
 impl<'a> Iterator for NetBaseCandidates<'a> {
-    type Item = Cow<'a, str>;
+    type Item = NetBaseCandidate<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(owned) = &mut self.owned {
-            return owned.next().map(Cow::Owned);
-        }
-        let item = *self.items.get(self.next).filter(|_| self.next < self.len)?;
+        let item = self
+            .items
+            .get_mut(self.next)
+            .filter(|_| self.next < self.len)?
+            .take()?;
         self.next += 1;
-        Some(Cow::Borrowed(item))
+        Some(item)
     }
 }
 
@@ -204,38 +253,15 @@ impl<'a> Iterator for NetBaseCandidates<'a> {
 #[derive(Debug)]
 pub struct RegisterBaseCandidates<'a> {
     name: &'a str,
-    offsets: [usize; 8],
-    len: usize,
+    offsets: Vec<usize>,
     next: usize,
-}
-
-impl<'a> RegisterBaseCandidates<'a> {
-    fn new(name: &'a str) -> Self {
-        Self {
-            name,
-            offsets: [0; 8],
-            len: 0,
-            next: 0,
-        }
-    }
-
-    fn push(&mut self, offset: usize) {
-        if self.len == self.offsets.len() {
-            return;
-        }
-        self.offsets[self.len] = offset;
-        self.len += 1;
-    }
 }
 
 impl<'a> Iterator for RegisterBaseCandidates<'a> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<&'a str> {
-        let offset = *self
-            .offsets
-            .get(self.next)
-            .filter(|_| self.next < self.len)?;
+        let offset = *self.offsets.get(self.next)?;
         self.next += 1;
         Some(&self.name[..offset])
     }
@@ -319,7 +345,7 @@ mod tests {
     fn net_candidates(dialect: NetlistDialect, name: &str) -> Vec<String> {
         dialect
             .net_base_candidates(name)
-            .map(Cow::into_owned)
+            .map(|candidate| candidate.as_ref().to_owned())
             .collect()
     }
 
@@ -343,14 +369,14 @@ mod tests {
     }
 
     #[test]
-    fn vivado_hierarchy_translates_before_other_net_rules() {
+    fn vivado_hierarchy_preserves_separators_while_applying_net_rules() {
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "u1/busy_OBUF"),
-            ["u1.busy_OBUF", "u1.busy"],
+            ["u1/busy"],
         );
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "u1/state_reg_n_0"),
-            ["u1.state_reg_n_0", "u1.state_reg", "u1.state"],
+            ["u1/state_reg", "u1/state"],
         );
     }
 
@@ -393,6 +419,18 @@ mod tests {
         assert_eq!(
             net_candidates(NetlistDialect::Vivado, "FSM_gray_state_reg"),
             ["state_reg", "state"],
+        );
+    }
+
+    #[test]
+    fn vivado_fsm_recode_prefixes_apply_to_the_last_path_segment() {
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1/FSM_onehot_state_reg_n_0",),
+            ["u1/state_reg_n_0", "u1/state_reg", "u1/state"],
+        );
+        assert_eq!(
+            net_candidates(NetlistDialect::Vivado, "u1.FSM_onehot_state_reg_n_0",),
+            ["u1.state_reg_n_0", "u1.state_reg", "u1.state"],
         );
     }
 

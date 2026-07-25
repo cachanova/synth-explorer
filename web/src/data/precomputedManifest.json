@@ -93,6 +93,10 @@
       "key": "07b305828db8f3a3fcf977d50e77ff138f01c3a41ce9d2d5ea7341f55ba2a495"
     },
     {
+      "name": "shift_register_bank:verilog",
+      "key": "2b3f351b6e197ce0aadbde3c1565936676024542d942ec7d7a29cdae8ce3c0b0"
+    },
+    {
       "name": "srl_pipe:verilog",
       "key": "2adae1f883682a0d36f7a41055ac5e43a05efdf4c957369ba83343a0bb220fbe"
     },

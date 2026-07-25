@@ -13,11 +13,18 @@
 //! block, so register attribution reads the D-side mux tree for statement
 //! precision and treats the flop's own span as a coarse fallback.
 //!
-//! The index is built from the FLATTENED RTL snapshot: `flatten` rewrites
-//! child names to deterministic `\inst.leaf` forms while preserving `src`
-//! verbatim (see the flatten naming findings note), so logic inside child
-//! instances resolves through hierarchical names and attributes to child
-//! source spans. `$scopeinfo` marker cells are skipped.
+//! The index is built from the FLATTENED RTL snapshot, emitted with
+//! `write_json -noscopeinfo`: `flatten` rewrites child names to deterministic
+//! `\inst.leaf` forms while preserving each inlined object's own `src`, and
+//! the writer omits the separate instance-provenance `$scopeinfo` cells (see
+//! the flatten naming findings note). Logic inside child instances therefore
+//! resolves through hierarchical names and attributes to child source spans
+//! without leaving mapped-side `$scopeinfo` nodes.
+//!
+//! `hdlname` is deliberately not used: deterministic same-pass dotted names
+//! suffice. Segment-wise `hdlname` matching remains the fallback if separator
+//! ambiguity ever bites. Vivado's `/` form is indexed as an alias of the dotted
+//! name; replacing `.` this way shares flatten's escaped-identifier tradeoff.
 
 use crate::NetlistDialect;
 use crate::netlist::{PortDirection, YosysBit, YosysNetlist};
@@ -158,9 +165,6 @@ impl CorrelationIndex {
         };
         // BTreeMap iteration keeps cell indices deterministic across runs.
         for cell in module.cells.values() {
-            if cell.cell_type == "$scopeinfo" {
-                continue;
-            }
             let index = cells.len() as u32;
             let seq = sequential_cell_type(&cell.cell_type);
             let mux = matches!(cell.cell_type.as_str(), "$mux" | "$pmux");
@@ -225,10 +229,17 @@ impl CorrelationIndex {
                     }
                 }
             }
+            let public_name = clean_public_name(name);
             bits_by_name
-                .entry(clean_public_name(name).to_owned())
+                .entry(public_name.to_owned())
                 .or_default()
                 .extend(netname.bits.iter().cloned());
+            if dialect == NetlistDialect::Vivado && public_name.contains('.') {
+                bits_by_name
+                    .entry(public_name.replace('.', "/"))
+                    .or_default()
+                    .extend(netname.bits.iter().cloned());
+            }
         }
 
         let mut port_bits = HashSet::new();
@@ -531,9 +542,11 @@ impl CorrelationIndex {
         let mut queue: VecDeque<(u32, bool)> = seeds.into_iter().map(|bit| (bit, true)).collect();
         while let Some((bit, is_seed)) = queue.pop_front() {
             // Seed bits are the selection's own outputs: a net that doubles
-            // as a top-level port must not stop the walk before its driver
-            // is attributed. Sequential drivers remain boundaries even for
-            // seeds — the register owns its own attribution.
+            // as a top-level port or appears in `stop_bits` (for example, a
+            // declared input shared by selected nodes in a multi-node cut)
+            // must not stop the walk before its driver is attributed.
+            // Sequential drivers remain boundaries even for seeds — the
+            // register owns its own attribution.
             let stop = self.seq_out_bits.contains(&bit)
                 || (!is_seed && (stop_bits.contains(&bit) || self.port_bits.contains(&bit)));
             if stop {

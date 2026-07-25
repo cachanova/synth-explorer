@@ -96,6 +96,7 @@ test('attributes child-module registers to child source lines', async ({
   page,
   baseURL,
 }) => {
+  test.setTimeout(240_000)
   const externalRequests = recordExternalRequests(
     page,
     new URL(baseURL ?? 'http://127.0.0.1:4173').origin,

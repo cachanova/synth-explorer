@@ -2406,3 +2406,255 @@ fn port_selections_attribute_declarations_and_driving_logic() {
     assert_eq!(lines(&output_tiers.contributing), vec![4]);
     assert!(!output_tiers.approximate);
 }
+
+#[test]
+fn hierarchical_attribution_uses_the_distinct_flat_source_netlist() {
+    let source_netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "y": {"direction": "output", "bits": [9]}
+              },
+              "cells": {
+                "u1": {
+                  "type": "child",
+                  "attributes": {"src": "hierarchy.sv:6.3-6.40"},
+                  "port_directions": {"a": "input", "b": "input", "gated": "output"},
+                  "connections": {"a": [2], "b": [3], "gated": [8]}
+                },
+                "$buf$hierarchy.sv:7$2": {
+                  "type": "$buf",
+                  "attributes": {"src": "hierarchy.sv:7.14-7.19"},
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [8], "Y": [9]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "gated": {"bits": [8]},
+                "y": {"bits": [9]}
+              }
+            },
+            "child": {
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "gated": {"direction": "output", "bits": [4]}
+              },
+              "cells": {
+                "$and$hierarchy.sv:2$1": {
+                  "type": "$and",
+                  "attributes": {"src": "hierarchy.sv:2.18-2.23"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [2], "B": [3], "Y": [4]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "gated": {"bits": [4], "attributes": {"src": "hierarchy.sv:1.48-1.53"}}
+              }
+            }
+          }
+        }"##,
+    )
+    .unwrap();
+    let flat_source_netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "y": {"direction": "output", "bits": [9]}
+              },
+              "cells": {
+                "$flatten\\u1.$and$hierarchy.sv:2$1": {
+                  "type": "$and",
+                  "attributes": {"src": "hierarchy.sv:2.18-2.23"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [2], "B": [3], "Y": [8]}
+                },
+                "$buf$hierarchy.sv:7$2": {
+                  "type": "$buf",
+                  "attributes": {"src": "hierarchy.sv:7.14-7.19"},
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [8], "Y": [9]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "u1.gated": {
+                  "bits": [8],
+                  "attributes": {"src": "hierarchy.sv:1.48-1.53"}
+                },
+                "y": {"bits": [9]}
+              }
+            }
+          }
+        }"##,
+    )
+    .unwrap();
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "y": {"direction": "output", "bits": [9]}
+              },
+              "cells": {
+                "$abc$9$u1.gated": {
+                  "type": "$lut",
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [2, 3], "Y": [8]}
+                },
+                "$buf$top": {
+                  "type": "$buf",
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [8], "Y": [9]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "u1.gated": {"bits": [8]},
+                "y": {"bits": [9]}
+              }
+            }
+          }
+        }"##,
+    )
+    .unwrap();
+    let source = "module child(input a, input b, output gated);\n\
+                  assign gated = a & b;\n\
+                  endmodule\n\
+                  module top(input a, input b, output y);\n\
+                  wire gated;\n\
+                  child u1(.a(a), .b(b), .gated(gated));\n\
+                  assign y = gated;\n\
+                  endmodule\n";
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        &flat_source_netlist,
+        vec![("hierarchy.sv".to_owned(), source.to_owned())],
+        "lut4",
+        DelayProfile::Generic,
+        NetlistDialect::Yosys,
+    )
+    .unwrap();
+
+    let child_lut = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.raw_name.contains("u1.gated"))
+        .expect("flattened child LUT");
+    let tiers = design.source_tiers_for_nodes(&[child_lut.id]);
+    assert!(
+        tiers
+            .exact
+            .iter()
+            .any(|span| span.file == "hierarchy.sv" && span.start_line == 2),
+        "the mapped child LUT must attribute through the flat snapshot to the child assignment",
+    );
+    assert!(!tiers.approximate);
+}
+
+#[test]
+fn combinational_output_port_attributes_its_driver_and_declaration_exactly() {
+    let source_netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "y": {"direction": "output", "bits": [8]}
+              },
+              "cells": {
+                "$and$top.sv:2$1": {
+                  "type": "$and",
+                  "attributes": {"src": "top.sv:2.14-2.19"},
+                  "port_directions": {"A": "input", "B": "input", "Y": "output"},
+                  "connections": {"A": [2], "B": [3], "Y": [8]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2], "attributes": {"src": "top.sv:1.18-1.19"}},
+                "b": {"bits": [3], "attributes": {"src": "top.sv:1.27-1.28"}},
+                "y": {"bits": [8], "attributes": {"src": "top.sv:1.37-1.38"}}
+              }
+            }
+          }
+        }"##,
+    )
+    .unwrap();
+    let netlist = parse_str(
+        r##"{
+          "modules": {
+            "top": {
+              "attributes": {"top": "1"},
+              "ports": {
+                "a": {"direction": "input", "bits": [2]},
+                "b": {"direction": "input", "bits": [3]},
+                "y": {"direction": "output", "bits": [8]}
+              },
+              "cells": {
+                "$abc$4$y": {
+                  "type": "$lut",
+                  "port_directions": {"A": "input", "Y": "output"},
+                  "connections": {"A": [2, 3], "Y": [8]}
+                }
+              },
+              "netnames": {
+                "a": {"bits": [2]},
+                "b": {"bits": [3]},
+                "y": {"bits": [8]}
+              }
+            }
+          }
+        }"##,
+    )
+    .unwrap();
+    let design = AnalysisDesign::from_netlists(
+        &netlist,
+        &source_netlist,
+        &source_netlist,
+        vec![(
+            "top.sv".to_owned(),
+            "module top(input a, input b, output y);\nassign y = a & b;\nendmodule\n".to_owned(),
+        )],
+        "lut4",
+        DelayProfile::Generic,
+        NetlistDialect::Yosys,
+    )
+    .unwrap();
+
+    let output_port = design
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.port.as_deref() == Some("y"))
+        .expect("output port");
+    let tiers = design.source_tiers_for_nodes(&[output_port.id]);
+    let exact_lines = tiers
+        .exact
+        .iter()
+        .map(|span| span.start_line)
+        .collect::<Vec<_>>();
+    assert_eq!(exact_lines, vec![1, 2]);
+    assert!(tiers.contributing.is_empty());
+    assert!(!tiers.approximate);
+}

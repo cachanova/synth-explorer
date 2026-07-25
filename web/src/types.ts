@@ -437,7 +437,7 @@ export interface Example {
   name: string // "adder_chain"
   title: string
   description: string
-  variants: Record<ExampleLanguage, ExampleVariant>
+  variants: Partial<Record<ExampleLanguage, ExampleVariant>>
 }
 
 export interface ExamplesResponse {

@@ -72,6 +72,14 @@
     }
   },
   {
+    "name": "shift_register_bank",
+    "title": "Hierarchical Shift Register Bank",
+    "description": "A bank of repeated child-module shift registers for exploring hierarchical source attribution.",
+    "variants": {
+      "verilog": { "top": "shift_register_bank", "files": ["shift_register_bank.sv"] }
+    }
+  },
+  {
     "name": "srl_pipe",
     "title": "SRL Pipe",
     "description": "A width- and stage-count-parameterized enabled pipeline written to infer FPGA shift-register resources, with zero-stage bypass.",
