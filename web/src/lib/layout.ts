@@ -112,7 +112,12 @@ export interface LayoutInput {
 export const MAX_GLOBAL_LAYOUT_COMPONENTS = 32
 export const EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER = 2
 const EXPANDED_GROUP_NODE_SPACING = 18
-const EXPANDED_GROUP_VERTICAL_PADDING = 46
+// The header band leaves room for the group label; the remaining sides only
+// need the gutter that boundary nets use to reach their member pins.
+const EXPANDED_GROUP_TOP_PADDING = 30
+const EXPANDED_GROUP_SIDE_PADDING = 16
+const EXPANDED_GROUP_VERTICAL_PADDING =
+  EXPANDED_GROUP_TOP_PADDING + EXPANDED_GROUP_SIDE_PADDING
 
 function expandedGroupSingleColumnHeight(
   members: Array<{ height?: number }>,
@@ -868,6 +873,23 @@ export function toElkGraph(
     }
   })
 
+  const pinId = (
+    map: Map<number, Map<string, number>>,
+    id: number,
+    pin: string,
+    prefix: 'i' | 'o',
+  ): string => (map.get(id)?.has(pin) ? `${id}#${prefix}:${pin}` : String(id))
+  const sourcePortId = (edge: LayoutInputEdge): string =>
+    regIds.has(edge.from)
+      ? `${edge.from}#out`
+      : pinId(pins.outgoingIndex, edge.from, edge.fromPort, 'o')
+  const targetPortId = (edge: LayoutInputEdge): string =>
+    regIds.has(edge.to)
+      ? edge.control
+        ? `${edge.to}#control:${edge.toPort}`
+        : `${edge.to}#in`
+      : pinId(pins.incomingIndex, edge.to, edge.toPort, 'i')
+
   const groupedMemberIds = new Set(
     input.groups?.flatMap((group) => group.members) ?? [],
   )
@@ -875,6 +897,41 @@ export function toElkGraph(
     nodeChildren.map((child) => [Number(child.id), child]),
   )
   const groupIdByMember = new Map<number, number>()
+  for (const group of input.groups ?? []) {
+    if (!group.members.some((member) => childById.has(member))) continue
+    for (const member of group.members) groupIdByMember.set(member, group.id)
+  }
+
+  // Collect every net that crosses a group boundary, keyed by the member pin it
+  // terminates on. A vertically stacked group turns each of these into its own
+  // proxy port at that pin's exact height, so ELK routes the net straight to
+  // the pin instead of funnelling the whole group through one point on the
+  // frame edge and doubling back along a perimeter rail.
+  const groupEndpoints = new Map<number, {
+    west: Map<string, number>
+    east: Map<string, number>
+  }>()
+  const endpointsFor = (groupId: number) => {
+    let entry = groupEndpoints.get(groupId)
+    if (!entry) {
+      entry = { west: new Map(), east: new Map() }
+      groupEndpoints.set(groupId, entry)
+    }
+    return entry
+  }
+  for (const edge of input.edges) {
+    const fromGroupId = groupIdByMember.get(edge.from)
+    const toGroupId = groupIdByMember.get(edge.to)
+    if (fromGroupId === toGroupId) continue
+    if (fromGroupId != null) {
+      endpointsFor(fromGroupId).east.set(sourcePortId(edge), edge.from)
+    }
+    if (toGroupId != null) {
+      endpointsFor(toGroupId).west.set(targetPortId(edge), edge.to)
+    }
+  }
+
+  const stackedGroupIds = new Set<number>()
   const groupChildren: ElkNode[] = (input.groups ?? []).flatMap((group) => {
     const members = group.members.flatMap((member) => {
       const child = childById.get(member)
@@ -891,8 +948,23 @@ export function toElkGraph(
     // Callers outside the interactive expansion path may not have a reference
     // layout. Preserve the bounded legacy fallback for those inputs.
     const stackVertically = shouldStackExpandedGroup(group, members)
-    for (const member of group.members) {
-      groupIdByMember.set(member, group.id)
+    if (stackVertically) stackedGroupIds.add(group.id)
+    // A vertical stack is placed deterministically: header band, then members
+    // in canonical order separated by one spacing step. `interpretResult`
+    // repacks the laid-out members onto these same offsets, so a proxy port
+    // derived from them lands exactly on its member pin.
+    const memberOffsetY = new Map<string, number>()
+    let stackOffsetY = EXPANDED_GROUP_TOP_PADDING
+    for (const member of members) {
+      memberOffsetY.set(member.id, stackOffsetY)
+      stackOffsetY += (member.height ?? 0) + EXPANDED_GROUP_NODE_SPACING
+    }
+    const proxyPortY = (member: number, portId: string): number => {
+      const child = childById.get(member)
+      const offsetY = child ? memberOffsetY.get(child.id) : undefined
+      if (!child || offsetY == null) return singleColumnHeight / 2
+      const port = child.ports?.find((candidate) => candidate.id === portId)
+      return offsetY + (port?.y ?? (child.height ?? 0) / 2)
     }
     const columnCount = expandedGroupColumnCount(group, members)
     const arrangedMembers = stackVertically
@@ -926,29 +998,32 @@ export function toElkGraph(
     }
     const groupWidth = Math.max(
       ...members.map((member) => member.width ?? 0),
-    ) + 32
+    ) + 2 * EXPANDED_GROUP_SIDE_PADDING
+    const endpoints = groupEndpoints.get(group.id)
+    const proxyPorts = (
+      side: 'in' | 'out',
+      endpointsBySide: Map<string, number> | undefined,
+    ) =>
+      [...(endpointsBySide ?? [])]
+        .map(([portId, member]) => ({
+          id: `group:${group.id}#${side}:${portId}`,
+          x: side === 'in' ? 0 : groupWidth,
+          y: proxyPortY(member, portId),
+          width: 0,
+          height: 0,
+          layoutOptions: {
+            'elk.port.side': side === 'in' ? 'WEST' : 'EAST',
+          },
+        }))
+        .sort((left, right) => left.y - right.y)
     return [{
       id: `group:${group.id}`,
       children: arrangedMembers,
       edges: layoutEdges,
       ports: stackVertically
         ? [
-            {
-              id: `group:${group.id}#in`,
-              x: 0,
-              y: singleColumnHeight / 2,
-              width: 0,
-              height: 0,
-              layoutOptions: { 'elk.port.side': 'WEST' },
-            },
-            {
-              id: `group:${group.id}#out`,
-              x: groupWidth,
-              y: singleColumnHeight / 2,
-              width: 0,
-              height: 0,
-              layoutOptions: { 'elk.port.side': 'EAST' },
-            },
+            ...proxyPorts('in', endpoints?.west),
+            ...proxyPorts('out', endpoints?.east),
           ]
         : [
             {
@@ -981,7 +1056,9 @@ export function toElkGraph(
               'elk.nodeSize.minimum': `(${groupWidth},${singleColumnHeight})`,
             }
           : { 'elk.portConstraints': 'FIXED_SIDE' }),
-        'elk.padding': '[top=30,left=16,bottom=16,right=16]',
+        'elk.padding':
+          `[top=${EXPANDED_GROUP_TOP_PADDING},left=${EXPANDED_GROUP_SIDE_PADDING}` +
+          `,bottom=${EXPANDED_GROUP_SIDE_PADDING},right=${EXPANDED_GROUP_SIDE_PADDING}]`,
         'elk.spacing.nodeNode': '18',
         'elk.layered.spacing.nodeNodeBetweenLayers': '18',
         'elk.layered.nodePlacement.strategy':
@@ -999,12 +1076,17 @@ export function toElkGraph(
     ...groupChildren,
   ]
 
-  const pinId = (
-    map: Map<number, Map<string, number>>,
-    id: number,
-    pin: string,
-    prefix: 'i' | 'o',
-  ): string => (map.get(id)?.has(pin) ? `${id}#${prefix}:${pin}` : String(id))
+  // A stacked group exposes one proxy port per crossing net; a grid group keeps
+  // the shared pair, because its members are placed by ELK and their pin
+  // heights are not known when the ports are declared.
+  const groupProxyPortId = (
+    groupId: number,
+    side: 'in' | 'out',
+    portId: string,
+  ): string =>
+    stackedGroupIds.has(groupId)
+      ? `group:${groupId}#${side}:${portId}`
+      : `group:${groupId}#${side}`
 
   const edges: ElkExtendedEdge[] = input.edges.flatMap((e, i) => {
     const fromGroupId = groupIdByMember.get(e.from)
@@ -1013,23 +1095,17 @@ export function toElkGraph(
     // ELK edge between the compound's own proxy ports becomes a large exterior
     // self-loop and contributes no useful placement information.
     if (fromGroupId != null && fromGroupId === toGroupId) return []
+    const from = sourcePortId(e)
+    const to = targetPortId(e)
     return [{
           id: `e${i}`,
           sources: [
             fromGroupId != null
-              ? `group:${fromGroupId}#out`
-              : regIds.has(e.from)
-              ? `${e.from}#out`
-              : pinId(pins.outgoingIndex, e.from, e.fromPort, 'o'),
+              ? groupProxyPortId(fromGroupId, 'out', from)
+              : from,
           ],
           targets: [
-            toGroupId != null
-              ? `group:${toGroupId}#in`
-              : regIds.has(e.to)
-              ? e.control
-                ? `${e.to}#control:${e.toPort}`
-                : `${e.to}#in`
-              : pinId(pins.incomingIndex, e.to, e.toPort, 'i'),
+            toGroupId != null ? groupProxyPortId(toGroupId, 'in', to) : to,
           ],
         }]
   })
@@ -1155,6 +1231,7 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   // when their model-order hints are identical. Reassign the already allocated
   // vertical slots to the canonical member order before deriving pin routes.
   // This changes neither the compound bounds nor surrounding node placement.
+  const groupById = new Map(groups.map((group) => [group.id, group]))
   for (const group of input.groups ?? []) {
     const members = group.members.flatMap((member) => {
       const node = laidOutById.get(member)
@@ -1164,14 +1241,20 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       members.length === 0 ||
       !shouldStackExpandedGroup(group, members)
     ) continue
-    let memberY = Math.min(...members.map((member) => member.y))
+    // Anchor on the frame's own header band rather than on wherever ELK landed
+    // the topmost member. `toElkGraph` derives its per-net proxy port heights
+    // from the same offsets, so the two agree exactly and every boundary net
+    // meets its member pin without a vertical correction.
+    const frame = groupById.get(group.id)
+    let memberY = frame
+      ? frame.y + EXPANDED_GROUP_TOP_PADDING
+      : Math.min(...members.map((member) => member.y))
     members.forEach((member) => {
       member.y = memberY
       memberY += member.height + EXPANDED_GROUP_NODE_SPACING
     })
   }
 
-  const groupById = new Map(groups.map((group) => [group.id, group]))
   const groupIdByMember = new Map(
     (input.groups ?? []).flatMap((group) =>
       group.members.map((member) => [member, group.id] as const),
@@ -1213,6 +1296,7 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   }
   const compoundRouteById = new Map<number, {
     frame: LaidOutGroup
+    stacked: boolean
     topRailY: number
     bottomRailY: number
     accessByMember: Map<number, { leftRailX: number; rightRailX: number }>
@@ -1251,6 +1335,7 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
     )
     compoundRouteById.set(group.id, {
       frame,
+      stacked: shouldStackExpandedGroup(group, members),
       topRailY: frame.y + 25,
       bottomRailY: frame.y + frame.height - 8,
       accessByMember,
@@ -1274,6 +1359,16 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   ): Point[] => {
     const access = route.accessByMember.get(memberId)
     if (!access) return [start, boundary]
+    // A stacked group owns one boundary port per net at the pin's own height,
+    // so the leg stays in the side gutter and never touches a perimeter rail.
+    if (route.stacked) {
+      return compactRoute([
+        start,
+        { x: access.rightRailX, y: start.y },
+        { x: access.rightRailX, y: boundary.y },
+        boundary,
+      ])
+    }
     const railY = perimeterRailY(start.y, boundary.y, route)
     return compactRoute([
       start,
@@ -1291,6 +1386,14 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   ): Point[] => {
     const access = route.accessByMember.get(memberId)
     if (!access) return [boundary, end]
+    if (route.stacked) {
+      return compactRoute([
+        boundary,
+        { x: access.leftRailX, y: boundary.y },
+        { x: access.leftRailX, y: end.y },
+        end,
+      ])
+    }
     const railY = perimeterRailY(boundary.y, end.y, route)
     return compactRoute([
       boundary,
@@ -1299,6 +1402,23 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       { x: access.leftRailX, y: end.y },
       end,
     ])
+  }
+  // ELK rounds the boundary port it routed to, so a stacked group's last leg can
+  // miss its member pin by a fraction of a pixel. Slide the trailing run of the
+  // routed polyline onto the pin's own height instead of leaving a hairline jog
+  // beside the frame. The run is horizontal, so this stays orthogonal.
+  const snapRunToPin = (points: Point[], pinY: number, fromEnd: boolean) => {
+    const order = fromEnd
+      ? [...points.keys()].reverse()
+      : [...points.keys()]
+    const runY = points[order[0]]?.y
+    if (runY == null || runY === pinY) return points
+    const snapped = [...points]
+    for (const index of order.slice(0, -1)) {
+      if (snapped[index].y !== runY) break
+      snapped[index] = { x: snapped[index].x, y: pinY }
+    }
+    return snapped
   }
   const edges: LayoutGeometry['edges'] = input.edges.map((edge, inputIndex) => {
     const routed = routedByInputIndex.get(inputIndex)
@@ -1311,17 +1431,31 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
     const toRoute =
       toGroupId == null ? null : compoundRouteById.get(toGroupId)
     if (section) {
-      const routedPoints = [
+      let routedPoints = [
         section.startPoint,
         ...(section.bendPoints ?? []),
         section.endPoint,
       ]
+      if (fromRoute?.stacked) {
+        routedPoints = snapRunToPin(
+          routedPoints,
+          fallbackPoint(edge.from, true, edge).y,
+          false,
+        )
+      }
+      if (toRoute?.stacked) {
+        routedPoints = snapRunToPin(
+          routedPoints,
+          fallbackPoint(edge.to, false, edge).y,
+          true,
+        )
+      }
       if (fromRoute) {
         const start = fallbackPoint(edge.from, true, edge)
         points.push(...memberToBoundary(
           edge.from,
           start,
-          section.startPoint,
+          routedPoints[0],
           fromRoute,
         ).slice(0, -1))
       }
@@ -1329,7 +1463,7 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       if (toRoute) {
         const end = fallbackPoint(edge.to, false, edge)
         points.push(...boundaryToMember(
-          section.endPoint,
+          routedPoints[routedPoints.length - 1],
           edge.to,
           end,
           toRoute,
@@ -1344,7 +1478,9 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       if (!fromRoute && toRoute) {
         const boundary = {
           x: toRoute.frame.x,
-          y: toRoute.frame.y + toRoute.frame.height / 2,
+          y: toRoute.stacked
+            ? end.y
+            : toRoute.frame.y + toRoute.frame.height / 2,
         }
         const entryX = boundary.x - 8
         points.push(
@@ -1356,7 +1492,9 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       } else if (fromRoute && !toRoute) {
         const boundary = {
           x: fromRoute.frame.x + fromRoute.frame.width,
-          y: fromRoute.frame.y + fromRoute.frame.height / 2,
+          y: fromRoute.stacked
+            ? start.y
+            : fromRoute.frame.y + fromRoute.frame.height / 2,
         }
         const exitX = boundary.x + 8
         points.push(
@@ -1392,11 +1530,15 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       } else if (fromRoute && toRoute) {
         const fromBoundary = {
           x: fromRoute.frame.x + fromRoute.frame.width,
-          y: fromRoute.frame.y + fromRoute.frame.height / 2,
+          y: fromRoute.stacked
+            ? start.y
+            : fromRoute.frame.y + fromRoute.frame.height / 2,
         }
         const toBoundary = {
           x: toRoute.frame.x,
-          y: toRoute.frame.y + toRoute.frame.height / 2,
+          y: toRoute.stacked
+            ? end.y
+            : toRoute.frame.y + toRoute.frame.height / 2,
         }
         points.push(
           ...memberToBoundary(edge.from, start, fromBoundary, fromRoute),

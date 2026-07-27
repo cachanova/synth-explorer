@@ -237,3 +237,93 @@ describe('dense ELK layout policy', () => {
     expect(edgeNodeIntersections).toBe(0)
   }, 20_000)
 })
+
+describe('expanded group boundary routing', () => {
+  it('routes every crossing net straight to its member pin', async () => {
+    const BITS = 5
+    const members = Array.from({ length: BITS }, (_, index) =>
+      node(100 + index, 'count', {
+        kind: 'cell',
+        cell_type: 'FDRE',
+        seq: true,
+      }),
+    )
+    const drivers = Array.from({ length: BITS }, (_, index) =>
+      node(200 + index, `d${index}`, { kind: 'cell', cell_type: '$_XOR_' }),
+    )
+    const sinks = Array.from({ length: BITS }, (_, index) =>
+      node(300 + index, `s${index}`, { kind: 'cell', cell_type: '$_AND_' }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'clk', { port_direction: 'input' }),
+        node(2, 'rst', { port_direction: 'input' }),
+        node(3, 'en', { kind: 'cell', cell_type: '$_AND_' }),
+        ...drivers,
+        ...members,
+        ...sinks,
+      ],
+      edges: members.flatMap((member, index) => [
+        {
+          from: drivers[index].id, to: member.id,
+          from_port: 'Y', to_port: 'D', net_name: `d${index}`, bits: [index],
+        },
+        {
+          from: 1, to: member.id, from_port: 'clk', to_port: 'C',
+          net_name: 'clk', bits: [90], control: true,
+        },
+        {
+          from: 2, to: member.id, from_port: 'rst', to_port: 'R',
+          net_name: 'rst', bits: [91], control: true,
+        },
+        {
+          from: 3, to: member.id, from_port: 'Y', to_port: 'E',
+          net_name: 'en', bits: [92], control: true,
+        },
+        {
+          from: member.id, to: sinks[index].id,
+          from_port: 'Q', to_port: 'A', net_name: `q${index}`, bits: [index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: members.map((member) => member.id),
+      referenceHeight: 1_000,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+
+    const frame = result.groups?.find((group) => group.id === 500)
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(members.map((member) => member.id))
+    expect(frame).toBeDefined()
+
+    let crossings = 0
+    input.edges.forEach((edge, index) => {
+      const entering = memberIds.has(edge.to) && !memberIds.has(edge.from)
+      const leaving = memberIds.has(edge.from) && !memberIds.has(edge.to)
+      if (!entering && !leaving) return
+      crossings += 1
+      const member = laidOut.get(entering ? edge.to : edge.from)!
+      const points = result.edges[index].points
+      const pin = entering ? points.at(-1)! : points[0]
+
+      // The net terminates on its own member's pin, and inside the frame it
+      // never leaves that member's vertical band -- no perimeter-rail detour
+      // up or down the boundary before doubling back to the pin.
+      expect(pin.x).toBe(entering ? member.x : member.x + member.width)
+      expect(pin.y).toBeGreaterThan(member.y)
+      expect(pin.y).toBeLessThan(member.y + member.height)
+      for (const point of points) {
+        if (point.x < frame!.x || point.x > frame!.x + frame!.width) continue
+        expect(point.y).toBeGreaterThanOrEqual(member.y)
+        expect(point.y).toBeLessThanOrEqual(member.y + member.height)
+      }
+    })
+    expect(crossings).toBe(BITS * 5)
+  }, 20_000)
+})

@@ -188,12 +188,159 @@ describe('schematic layout sizing', () => {
     expect(compound?.children?.map((child) =>
       child.layoutOptions?.['elk.layered.layering.layerConstraint']
     )).toEqual(['FIRST', 'FIRST'])
-    expect(compound?.ports?.map((port) => port.id)).toEqual([
-      'group:100#in',
-      'group:100#out',
-    ])
+    // Nothing crosses this group's boundary, so it needs no proxy port at all.
+    expect(compound?.ports).toEqual([])
     expect(graph.edges).toEqual([])
     expect(compound?.layoutOptions?.['elk.direction']).toBe('RIGHT')
+  })
+
+  it('gives each crossing net of a stacked group its own boundary port', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(10, 'port', { kind: 'port', name: 'd', port_direction: 'input' }),
+        node(12, 'port', { kind: 'port', name: 'clk', port_direction: 'input' }),
+        node(1, 'FDRE'),
+        node(2, 'FDRE'),
+        node(11, 'port', { kind: 'port', name: 'q', port_direction: 'output' }),
+      ],
+      edges: [
+        { from: 10, to: 1, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [1] },
+        {
+          from: 12,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'C',
+          net_name: 'clk',
+          bits: [2],
+          control: true,
+        },
+        { from: 10, to: 2, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [3] },
+        { from: 1, to: 2, from_port: 'Q', to_port: 'R', net_name: 'link', bits: [4] },
+        { from: 2, to: 11, from_port: 'Q', to_port: 'A', net_name: 'q', bits: [5] },
+      ],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2],
+      referenceHeight: 1_000,
+    }])
+    const graph = toElkGraph(input)
+    const compound = graph.children?.find((child) => child.id === 'group:100')
+
+    // One port per crossing net endpoint, none for the member-to-member link.
+    expect(compound?.ports?.map((port) => port.id)).toEqual([
+      'group:100#in:1#in',
+      'group:100#in:1#control:C',
+      'group:100#in:2#in',
+      'group:100#out:2#out',
+    ])
+    expect(
+      graph.edges?.map((edge) => [edge.sources[0], edge.targets[0]]),
+    ).toEqual([
+      ['10#o:Y', 'group:100#in:1#in'],
+      ['12#o:Y', 'group:100#in:1#control:C'],
+      ['10#o:Y', 'group:100#in:2#in'],
+      ['group:100#out:2#out', '11#i:A'],
+    ])
+    // West ports run top-to-bottom in member order; D sits above C on member 1,
+    // and member 2's D sits below both.
+    const westY = compound?.ports
+      ?.filter((port) => port.layoutOptions?.['elk.port.side'] === 'WEST')
+      .map((port) => port.y ?? 0) ?? []
+    expect(westY).toEqual([...westY].sort((left, right) => left - right))
+    expect(new Set(westY).size).toBe(3)
+  })
+
+  it('lands every stacked-group boundary port on its member pin', () => {
+    const sub: Subgraph = {
+      nodes: [
+        node(10, 'port', { kind: 'port', name: 'd', port_direction: 'input' }),
+        node(12, 'port', { kind: 'port', name: 'clk', port_direction: 'input' }),
+        node(1, 'FDRE'),
+        node(2, 'FDRE'),
+      ],
+      edges: [
+        { from: 10, to: 1, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [1] },
+        {
+          from: 12,
+          to: 1,
+          from_port: 'Y',
+          to_port: 'C',
+          net_name: 'clk',
+          bits: [2],
+          control: true,
+        },
+        { from: 10, to: 2, from_port: 'Y', to_port: 'D', net_name: 'd', bits: [3] },
+      ],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(sub, [{
+      id: 100,
+      members: [1, 2],
+      referenceHeight: 1_000,
+    }])
+    const graph = toElkGraph(input)
+    const compound = (graph.children ?? []).find(
+      (child) => child.id === 'group:100',
+    )!
+    const frame = { x: 400, y: 60 }
+    const portById = new Map(
+      (compound.ports ?? []).map((port) => [port.id, port]),
+    )
+    // Replay what ELK produces for these declared ports: each net stops on the
+    // frame edge at its own port height.
+    const geometry = interpretResult(input, {
+      id: 'root',
+      width: 900,
+      height: 600,
+      children: [
+        { id: '10', x: 10, y: 200, width: 62, height: 46 },
+        { id: '12', x: 10, y: 320, width: 62, height: 46 },
+        {
+          ...compound,
+          x: frame.x,
+          y: frame.y,
+          children: (compound.children ?? []).map((child, index) => ({
+            ...child,
+            x: 16,
+            y: 30 + index * 100,
+          })),
+        },
+      ],
+      edges: (graph.edges ?? []).map((edge) => {
+        const port = portById.get(edge.targets[0])!
+        return {
+          ...edge,
+          sections: [{
+            id: `${edge.id}s0`,
+            startPoint: { x: 72, y: 223 },
+            endPoint: { x: frame.x, y: frame.y + (port.y ?? 0) },
+          }],
+        }
+      }),
+    })
+    const memberById = new Map(
+      geometry.nodes.map((laidOut) => [laidOut.id, laidOut]),
+    )
+
+    input.edges.forEach((edge, index) => {
+      const member = memberById.get(edge.to)!
+      const route = geometry.edges[index].points
+      const entry = route.at(-2)!
+      const pin = route.at(-1)!
+      // The net crosses the frame at the pin's own height and goes straight in:
+      // no perimeter rail, no vertical correction inside the group.
+      expect(pin.x).toBe(member.x)
+      expect(entry.x).toBe(frame.x)
+      expect(entry.y).toBe(pin.y)
+      expect(pin.y).toBeGreaterThan(member.y)
+      expect(pin.y).toBeLessThan(member.y + member.height)
+    })
+    // Distinct pins on one member stay distinct.
+    expect(geometry.edges[0].points.at(-1)?.y).not.toBe(
+      geometry.edges[1].points.at(-1)?.y,
+    )
   })
 
   it('switches an expanded group to a clean grid beyond twice the reference height', () => {
@@ -379,7 +526,7 @@ describe('schematic layout sizing', () => {
         {
           id: 'e0',
           sources: ['10'],
-          targets: ['group:100#in'],
+          targets: ['group:100#in:1#in'],
           sections: [{
             id: 'e0s0',
             startPoint: { x: 72, y: 163 },
@@ -388,7 +535,7 @@ describe('schematic layout sizing', () => {
         },
         {
           id: 'e2',
-          sources: ['group:100#out'],
+          sources: ['group:100#out:2#out'],
           targets: ['11'],
           sections: [{
             id: 'e2s0',
@@ -399,7 +546,7 @@ describe('schematic layout sizing', () => {
         {
           id: 'e3',
           sources: ['12'],
-          targets: ['group:100#in'],
+          targets: ['group:100#in:1#control:C'],
           sections: [{
             id: 'e3s0',
             startPoint: { x: 72, y: 263 },
