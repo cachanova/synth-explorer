@@ -9,11 +9,14 @@ import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
 import {
   MAX_GRAPH_RENDER_NODES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
+  MAX_OPEN_EXPANDED_GROUPS,
 } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
 import {
   applyGroupExpansions,
+  openExpandedGroup,
   type ExpandedGroup,
+  type ExpandedGroupSpec,
 } from '../../lib/groupExpansion'
 import { mergeSubgraphs } from '../../lib/mergeSubgraph'
 import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
@@ -56,12 +59,6 @@ interface ExpansionState {
   graph: Subgraph
   droppedNodes: number
   droppedEdges: number
-}
-
-interface ExpandedGroupSpec {
-  id: number
-  label: string
-  referenceHeight: number
 }
 
 interface DisplayedGraph {
@@ -454,9 +451,11 @@ export function Graph({ active }: { active: boolean }) {
     requestDesignMismatch,
   ])
 
-  // Keep at most one local group open. A single bounded request avoids
-  // quadratic rebuilds while still letting every grouped instance expose an
-  // expansion control.
+  // Every open group is re-projected together whenever the open set changes:
+  // each response has to see its neighbors expanded, otherwise a net between
+  // two open groups would still terminate on a quotient node. The open set is
+  // capped, which keeps this bounded. Previous expansions stay rendered until
+  // the new set resolves, so opening one group does not blink the others.
   useEffect(() => {
     groupExpansionController.current?.abort()
     groupExpansionController.current = null
@@ -473,31 +472,46 @@ export function Graph({ active }: { active: boolean }) {
     const controller = new AbortController()
     groupExpansionController.current = controller
     const designId = design.design_id
-    const group = expandedGroupSpecs[0]
-    setGroupExpansions([])
+    const openIds = expandedGroupSpecs.map((group) => group.id)
     setFetchingGroups(true)
-    expandGroup(designId, {
-        node: group.id,
-        expanded_nodes: [group.id],
-        max_nodes: MAX_GROUP_EXPANSION_RENDER_NODES,
-        hide_control: graphOptions.hideControl,
-        hide_const: graphOptions.hideConst,
-        group_vectors: graphOptions.groupVectors,
-        group_memories: graphOptions.groupMemories,
-      }, controller.signal)
-      .then((response) => ({ id: group.id, label: group.label, ...response }))
-      .then((expansion) => {
+    Promise.all(
+      expandedGroupSpecs.map((group) =>
+        expandGroup(designId, {
+          node: group.id,
+          expanded_nodes: openIds,
+          max_nodes: MAX_GROUP_EXPANSION_RENDER_NODES,
+          hide_control: graphOptions.hideControl,
+          hide_const: graphOptions.hideConst,
+          group_vectors: graphOptions.groupVectors,
+          group_memories: graphOptions.groupMemories,
+        }, controller.signal)
+          .then((response) => ({
+            expansion: { id: group.id, label: group.label, ...response },
+          }))
+          .catch((error: unknown) => ({ failed: group, error })),
+      ),
+    )
+      .then((results) => {
         if (controller.signal.aborted || currentDesignIdRef.current !== designId) return
-        setGroupExpansions([expansion])
-      })
-      .catch((e) => {
-        if (controller.signal.aborted) return
-        setGroupExpansions([])
-        setExpandedGroupSpecs((current) =>
-          current[0]?.id === group.id ? [] : current,
+        setGroupExpansions(
+          results.flatMap((result) =>
+            'expansion' in result ? [result.expansion] : [],
+          ),
         )
+        // Only the groups that failed close again; the rest stay open.
+        const failures = results.flatMap((result) =>
+          'failed' in result ? [result] : [],
+        )
+        if (failures.length === 0) return
+        const failedIds = new Set(failures.map((failure) => failure.failed.id))
+        setExpandedGroupSpecs((current) =>
+          current.filter((group) => !failedIds.has(group.id)),
+        )
+        const { error } = failures[0]
         setError(
-          `Could not expand group: ${e instanceof ApiRequestError ? e.message : String(e)}`,
+          `Could not expand group ${failures[0].failed.label}: ${
+            error instanceof ApiRequestError ? error.message : String(error)
+          }`,
         )
       })
       .finally(() => {
@@ -737,26 +751,28 @@ export function Graph({ active }: { active: boolean }) {
   const designId = design?.design_id
   const onExpandGroup = useCallback((node: GraphNode) => {
     if (node.member_count == null && node.members == null) return
-    if (groupExpansionController.current) return
     const referenceHeight = displayedGraphRef.current?.graph.height
     if (referenceHeight == null) return
+    if (expandedGroupSpecs.length >= MAX_OPEN_EXPANDED_GROUPS) {
+      setError(
+        `Close a group before opening another — at most ${MAX_OPEN_EXPANDED_GROUPS} groups can be open at once.`,
+      )
+      return
+    }
     selectGraphNode(null)
     setError(null)
-    setGroupExpansions([])
-    setExpandedGroupSpecs([{
-      id: node.id,
-      label: node.name || node.cell_type || 'group',
+    setExpandedGroupSpecs((current) => openExpandedGroup(
+      current,
+      { id: node.id, label: node.name || node.cell_type || 'group' },
       referenceHeight,
-    }])
-  }, [selectGraphNode])
+    ))
+  }, [expandedGroupSpecs.length, selectGraphNode])
 
-  const onCollapseGroup = useCallback((_groupId: number) => {
-    groupExpansionController.current?.abort()
-    groupExpansionController.current = null
+  const onCollapseGroup = useCallback((groupId: number) => {
     selectGraphNode(null)
-    setFetchingGroups(false)
-    setExpandedGroupSpecs([])
-    setGroupExpansions([])
+    setExpandedGroupSpecs((current) =>
+      current.filter((group) => group.id !== groupId),
+    )
   }, [selectGraphNode])
 
   const onExpand = useCallback(

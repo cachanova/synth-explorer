@@ -14,6 +14,11 @@ use wasm_bindgen::prelude::*;
 
 const MAX_PROJECTION_ROOTS: usize = MAX_SUBGRAPH_NODES / 2;
 const MAX_EXPANDED_GROUP_ROOTS: usize = 256;
+/// Every open group keeps its members raw in each expansion projection, so the
+/// per-node group lookup scans this list. Keep it short enough that the scan
+/// stays negligible and the client's refetch of all open groups stays bounded.
+/// `web/src/lib/graphLimits.ts` mirrors this cap.
+const MAX_EXPANDED_GROUPS: usize = 8;
 
 #[derive(Deserialize)]
 struct SourceFile {
@@ -105,22 +110,31 @@ struct GroupExpansionQuery {
     group_memories: Option<bool>,
 }
 
-fn validate_single_group_expansion(
+/// Resolve the synthetic ids of every open group to canonical group ids. The
+/// requested group always leads the set. Keeping the other open groups expanded
+/// in the same projection is what lets a net between two open groups land on
+/// real member pins instead of the neighbor's quotient node.
+fn resolve_expanded_groups(
     expanded_nodes: &[u32],
     base: u32,
     group_count: usize,
     group_id: u32,
-) -> Result<(), &'static str> {
+) -> Result<Vec<u32>, &'static str> {
+    let mut expanded = vec![group_id];
     for node in expanded_nodes {
         let id = node
             .checked_sub(base)
             .filter(|id| (*id as usize) < group_count)
             .ok_or("expanded node is not a grouped instance")?;
-        if id != group_id {
-            return Err("only one grouped instance can be expanded at a time");
+        if expanded.contains(&id) {
+            continue;
         }
+        if expanded.len() >= MAX_EXPANDED_GROUPS {
+            return Err("too many grouped instances are expanded at once");
+        }
+        expanded.push(id);
     }
-    Ok(())
+    Ok(expanded)
 }
 
 #[derive(Deserialize)]
@@ -362,14 +376,13 @@ impl AnalysisSession {
             .checked_sub(base)
             .filter(|id| self.design.grouping.groups.get(*id as usize).is_some())
             .ok_or_else(|| js_error("node is not a grouped instance"))?;
-        validate_single_group_expansion(
+        let expanded_groups = resolve_expanded_groups(
             &query.expanded_nodes,
             base,
             self.design.grouping.groups.len(),
             group_id,
         )
         .map_err(js_error)?;
-        let expanded_groups = [group_id];
         let grouping = GroupingProjection::from_flags_with_expanded(
             &self.design.grouping,
             query.group_vectors.unwrap_or(false),
@@ -1017,16 +1030,60 @@ mod tests {
     }
 
     #[test]
-    fn group_expansion_rejects_a_second_open_group() {
-        assert_eq!(validate_single_group_expansion(&[10], 10, 2, 0), Ok(()));
+    fn group_expansion_keeps_every_open_group_expanded() {
+        assert_eq!(resolve_expanded_groups(&[10], 10, 4, 0), Ok(vec![0]));
+        assert_eq!(resolve_expanded_groups(&[10, 11], 10, 4, 0), Ok(vec![0, 1]));
+        // The requested group leads the set whether or not the client repeats it.
         assert_eq!(
-            validate_single_group_expansion(&[10, 11], 10, 2, 0),
-            Err("only one grouped instance can be expanded at a time")
+            resolve_expanded_groups(&[11, 12, 11], 10, 4, 1),
+            Ok(vec![1, 2])
         );
         assert_eq!(
-            validate_single_group_expansion(&[12], 10, 2, 0),
+            resolve_expanded_groups(&[14], 10, 4, 0),
             Err("expanded node is not a grouped instance")
         );
+        let too_many: Vec<u32> = (0..=MAX_EXPANDED_GROUPS as u32).map(|id| 10 + id).collect();
+        assert_eq!(
+            resolve_expanded_groups(&too_many, 10, too_many.len(), 0),
+            Err("too many grouped instances are expanded at once")
+        );
+    }
+
+    #[test]
+    fn group_expansion_json_accepts_several_open_groups() {
+        let session = session("gates", "series7");
+        let base = session.design.graph.nodes.len() as u32;
+        assert!(
+            session.design.grouping.groups.len() >= 2,
+            "fixture has at least two grouped instances"
+        );
+        let members: HashSet<u32> = session.design.grouping.groups[0]
+            .members
+            .iter()
+            .copied()
+            .collect();
+
+        let response = session
+            .expand_group_json(
+                &serde_json::json!({
+                    "node": base,
+                    "expanded_nodes": [base, base + 1],
+                    "group_vectors": true,
+                    "group_memories": true
+                })
+                .to_string(),
+            )
+            .expect("a second open group no longer rejects the request");
+        let json: serde_json::Value =
+            serde_json::from_str(&response).expect("group expansion JSON parses");
+        let node_ids: HashSet<u32> = json["graph"]["nodes"]
+            .as_array()
+            .expect("nodes is an array")
+            .iter()
+            .map(|node| node["id"].as_u64().expect("node id is numeric") as u32)
+            .collect();
+
+        assert!(members.is_subset(&node_ids), "requested members render raw");
     }
 
     #[test]
