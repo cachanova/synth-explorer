@@ -609,13 +609,7 @@ export function Graph({ active }: { active: boolean }) {
     const sameProjection =
       sameDesign &&
       previousDisplay.projectionKey === projectionKey
-    const shouldRefit = (nextGraph: LaidOutGraph) =>
-      shouldRefitProjection(
-        previousDisplay?.graph,
-        nextGraph,
-        sameDesign,
-        sameProjection,
-      )
+    const shouldRefit = shouldRefitProjection(sameDesign, sameProjection)
     const cachedLayout = layoutCache.current.get(toLayout)
     if (cachedLayout) {
       const nextDisplay = {
@@ -627,7 +621,7 @@ export function Graph({ active }: { active: boolean }) {
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
       laidOutSubgraph.current = toLayout
-      if (shouldRefit(cachedLayout)) setFitNonce((n) => n + 1)
+      if (shouldRefit) setFitNonce((n) => n + 1)
       return
     }
     let cancelled = false
@@ -650,7 +644,7 @@ export function Graph({ active }: { active: boolean }) {
         setDisplayedGraph(nextDisplay)
         laidOutSubgraph.current = toLayout
         setLayingOut(false)
-        if (shouldRefit(g)) setFitNonce((n) => n + 1)
+        if (shouldRefit) setFitNonce((n) => n + 1)
       })
       .catch((e) => {
         if (cancelled || controller.signal.aborted) return

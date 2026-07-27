@@ -62,24 +62,18 @@ export interface LaidOutGroup {
   height: number
 }
 
-export function layoutsShareNode(
-  previous: LaidOutGraph | null | undefined,
-  next: LaidOutGraph,
-): boolean {
-  if (!previous) return false
-  const previousIds = new Set(previous.nodes.map((node) => node.id))
-  return next.nodes.some((node) => previousIds.has(node.id))
-}
-
+/**
+ * A new projection is a different sub-schematic, so frame exactly the cells it
+ * shows. Overlap with the previous projection does not make the retained camera
+ * meaningful: the new cone can sit anywhere in the old view, or extend past it.
+ * Only an additive change to the same projection keeps its camera, which
+ * `preserveViewportAnchor` handles.
+ */
 export function shouldRefitProjection(
-  previous: LaidOutGraph | null | undefined,
-  next: LaidOutGraph,
   sameDesign: boolean,
   sameProjection: boolean,
 ): boolean {
-  if (!sameDesign) return true
-  if (sameProjection) return false
-  return !layoutsShareNode(previous, next)
+  return !sameDesign || !sameProjection
 }
 
 export interface ExpandedGroupLayout {
