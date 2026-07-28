@@ -551,6 +551,68 @@ describe('expanded grid fanout bundling', () => {
     expect(shared.frame.height).toBeLessThan(private_.frame.height)
   }, 30_000)
 
+  it('lands every net on its pin when member widths differ', async () => {
+    // Column count is derived from member width and is computed twice: once in
+    // toElkGraph to place the ports, once in interpretResult to place the cells.
+    // Uniform members hide any disagreement, so vary the label widths.
+    const cells = Array.from({ length: 20 }, (_, index) =>
+      node(100 + index, 'x'.repeat(1 + (index % 7) * 9), {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'd', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          from: 1, to: member.id, from_port: `Y${index}`, to_port: 'I1',
+          net_name: `n${index}`, bits: [index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `q${index}`, bits: [500 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight: 140,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+
+    const misplaced: unknown[] = []
+    let checked = 0
+    input.edges.forEach((edge, index) => {
+      const entering = memberIds.has(edge.to) && !memberIds.has(edge.from)
+      const leaving = memberIds.has(edge.from) && !memberIds.has(edge.to)
+      if (!entering && !leaving) return
+      checked += 1
+      const member = laidOut.get(entering ? edge.to : edge.from)!
+      const points = result.edges[index].points
+      const pin = entering ? points.at(-1)! : points[0]
+      const wantX = entering ? member.x : member.x + member.width
+      if (Math.abs(pin.x - wantX) > 1.5) {
+        misplaced.push({ id: member.id, pinX: pin.x, wantX })
+      }
+      if (pin.y < member.y - 1 || pin.y > member.y + member.height + 1) {
+        misplaced.push({ id: member.id, pinY: pin.y, top: member.y })
+      }
+    })
+    expect(checked).toBe(40)
+    expect(misplaced).toEqual([])
+  }, 30_000)
+
   it('sizes a grid group independently of the reference height', async () => {
     // Once a group is a grid, `EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER` has no
     // further say: channel height is set by how many nets cross, not by the
