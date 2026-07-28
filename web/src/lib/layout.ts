@@ -168,6 +168,146 @@ function expandedGroupColumnCount(
   return Math.max(1, Math.ceil(members.length / maxGridRows))
 }
 
+// ---------------------------------------------------------------------------
+// Perfect-lattice grid for expanded groups.
+//
+// Members sit on a uniform cell grid: every column the same width, every row
+// the same height, so the block reads as a real array. Wires get their own
+// space instead of competing with the members for it -- a horizontal channel at
+// each row boundary carries nets that must cross columns, and the gutter beside
+// each column carries the vertical hop onto the pin. Channel height is sized by
+// how many nets actually cross there, so the block only grows where wires
+// really need the room.
+// ---------------------------------------------------------------------------
+
+const GRID_GUTTER = 26          // clear space between two columns of cells
+const GRID_TRACK_PITCH = 7      // vertical distance between wires in a channel
+const GRID_CHANNEL_MARGIN = 6   // clearance at each end of a channel
+const GRID_MIN_CHANNEL = 16     // channel height when nothing crosses there
+
+export interface GridLattice {
+  columnCount: number
+  rowCount: number
+  cellWidth: number
+  cellHeight: number
+  width: number
+  height: number
+  /** Top-left of each member cell, relative to the frame. */
+  cellOf: (index: number) => { x: number; y: number }
+  /** x of the vertical gutter immediately left of a column. */
+  gutterLeftOf: (column: number) => number
+  /** x of the vertical gutter immediately right of a column. */
+  gutterRightOf: (column: number) => number
+  /** y of the track a crossing net rides, relative to the frame. */
+  trackY: (portId: string) => number | undefined
+  columnOf: (index: number) => number
+  rowOf: (index: number) => number
+}
+
+export function planGridLattice(
+  memberIds: number[],
+  columnCount: number,
+  sizeOf: (member: number) => { width: number; height: number },
+  westPorts: Array<{ portId: string; member: number }>,
+  eastPorts: Array<{ portId: string; member: number }>,
+): GridLattice {
+  const rowCount = Math.max(1, Math.ceil(memberIds.length / columnCount))
+  const cellWidth = Math.max(
+    1,
+    ...memberIds.map((member) => sizeOf(member).width),
+  )
+  const cellHeight = Math.max(
+    1,
+    ...memberIds.map((member) => sizeOf(member).height),
+  )
+  const indexOfMember = new Map(memberIds.map((member, i) => [member, i]))
+  const columnOf = (index: number) => index % columnCount
+  const rowOf = (index: number) => Math.floor(index / columnCount)
+
+  // Which channel each crossing net rides. A net entering from the west uses
+  // the channel above its own row; one leaving east uses the channel below.
+  // Channel k sits above row k, so there are rowCount + 1 of them.
+  const channelNets: Array<Array<string>> = Array.from(
+    { length: rowCount + 1 },
+    () => [],
+  )
+  for (const { portId, member } of westPorts) {
+    const index = indexOfMember.get(member)
+    if (index == null || columnOf(index) === 0) continue // straight in
+    channelNets[rowOf(index)].push(portId)
+  }
+  for (const { portId, member } of eastPorts) {
+    const index = indexOfMember.get(member)
+    if (index == null || columnOf(index) === columnCount - 1) continue
+    channelNets[rowOf(index) + 1].push(portId)
+  }
+
+  const demand = (nets: string[]) =>
+    nets.length === 0
+      ? GRID_MIN_CHANNEL
+      : Math.max(
+          GRID_MIN_CHANNEL,
+          nets.length * GRID_TRACK_PITCH + 2 * GRID_CHANNEL_MARGIN,
+        )
+  // Row pitch has to be one number for the block to read as an array, so every
+  // channel between two rows is as tall as the busiest of them. The channels
+  // above the first row and below the last sit outside that repeat and stay
+  // sized to their own demand.
+  const interior = channelNets.slice(1, rowCount).map(demand)
+  const uniformInterior = interior.length > 0 ? Math.max(...interior) : 0
+  const channelHeight = channelNets.map((nets, k) =>
+    k === 0 || k === rowCount ? demand(nets) : uniformInterior,
+  )
+  // Reserve the label band above the first channel.
+  const channelTop: number[] = []
+  let cursor = EXPANDED_GROUP_TOP_PADDING - GRID_MIN_CHANNEL
+  for (let k = 0; k <= rowCount; k += 1) {
+    channelTop.push(cursor)
+    cursor += channelHeight[k]
+    if (k < rowCount) cursor += cellHeight
+  }
+  const height = cursor + EXPANDED_GROUP_SIDE_PADDING
+  const width =
+    EXPANDED_GROUP_SIDE_PADDING * 2 +
+    columnCount * cellWidth +
+    Math.max(0, columnCount - 1) * GRID_GUTTER
+
+  const cellX = (column: number) =>
+    EXPANDED_GROUP_SIDE_PADDING + column * (cellWidth + GRID_GUTTER)
+  const cellY = (row: number) => channelTop[row] + channelHeight[row]
+
+  const trackByPort = new Map<string, number>()
+  channelNets.forEach((nets, k) => {
+    nets.forEach((portId, slot) => {
+      trackByPort.set(
+        portId,
+        channelTop[k] + GRID_CHANNEL_MARGIN + slot * GRID_TRACK_PITCH,
+      )
+    })
+  })
+
+  return {
+    columnCount,
+    rowCount,
+    cellWidth,
+    cellHeight,
+    width,
+    height,
+    cellOf: (index) => ({ x: cellX(columnOf(index)), y: cellY(rowOf(index)) }),
+    gutterLeftOf: (column) =>
+      column === 0
+        ? EXPANDED_GROUP_SIDE_PADDING / 2
+        : cellX(column) - GRID_GUTTER / 2,
+    gutterRightOf: (column) =>
+      column >= columnCount - 1
+        ? width - EXPANDED_GROUP_SIDE_PADDING / 2
+        : cellX(column + 1) - GRID_GUTTER / 2,
+    trackY: (portId) => trackByPort.get(portId),
+    columnOf,
+    rowOf,
+  }
+}
+
 function shouldKeepGlobalBoundaries(input: LayoutInput): boolean {
   const nodeById = new Map(input.nodes.map((node) => [node.id, node]))
   const neighbors = new Map(
@@ -931,7 +1071,6 @@ export function toElkGraph(
     }
   }
 
-  const stackedGroupIds = new Set<number>()
   const groupChildren: ElkNode[] = (input.groups ?? []).flatMap((group) => {
     const members = group.members.flatMap((member) => {
       const child = childById.get(member)
@@ -948,7 +1087,6 @@ export function toElkGraph(
     // Callers outside the interactive expansion path may not have a reference
     // layout. Preserve the bounded legacy fallback for those inputs.
     const stackVertically = shouldStackExpandedGroup(group, members)
-    if (stackVertically) stackedGroupIds.add(group.id)
     // A vertical stack is placed deterministically: header band, then members
     // in canonical order separated by one spacing step. `interpretResult`
     // repacks the laid-out members onto these same offsets, so a proxy port
@@ -967,6 +1105,37 @@ export function toElkGraph(
       return offsetY + (port?.y ?? (child.height ?? 0) / 2)
     }
     const columnCount = expandedGroupColumnCount(group, members)
+    const endpointsForGroup = groupEndpoints.get(group.id)
+    const lattice = stackVertically ? null : planGridLattice(
+      group.members.filter((member) => childById.has(member)),
+      columnCount,
+      (member) => {
+        const child = childById.get(member)
+        return { width: child?.width ?? 0, height: child?.height ?? 0 }
+      },
+      [...(endpointsForGroup?.west ?? [])].map(([portId, member]) =>
+        ({ portId, member })),
+      [...(endpointsForGroup?.east ?? [])].map(([portId, member]) =>
+        ({ portId, member })),
+    )
+    const memberIndex = new Map(
+      group.members.filter((m) => childById.has(m)).map((m, i) => [m, i]),
+    )
+    // Pin height inside a member, used to place a boundary port that faces it.
+    const pinOffsetY = (member: number, portId: string): number => {
+      const child = childById.get(member)
+      if (!child) return 0
+      const port = child.ports?.find((candidate) => candidate.id === portId)
+      return port?.y ?? (child.height ?? 0) / 2
+    }
+    const latticePortY = (member: number, portId: string): number => {
+      if (!lattice) return 0
+      const track = lattice.trackY(portId)
+      if (track != null) return track
+      const index = memberIndex.get(member)
+      if (index == null) return lattice.height / 2
+      return lattice.cellOf(index).y + pinOffsetY(member, portId)
+    }
     const arrangedMembers = stackVertically
       ? members.map((member, index) => {
           return {
@@ -986,10 +1155,15 @@ export function toElkGraph(
             },
           }
         })
-      : members
+      : members.map((member) => {
+          const index = memberIndex.get(Number(member.id))
+          if (!lattice || index == null) return member
+          const cell = lattice.cellOf(index)
+          return { ...member, x: cell.x, y: cell.y }
+        })
     const layoutEdges: ElkExtendedEdge[] = []
     for (let index = 0; index + 1 < members.length; index += 1) {
-      if (stackVertically || (index + 1) % columnCount === 0) continue
+      if (stackVertically || lattice || (index + 1) % columnCount === 0) continue
       layoutEdges.push({
         id: `group-layout:${group.id}:${index}`,
         sources: [members[index].id],
@@ -1003,48 +1177,40 @@ export function toElkGraph(
     const proxyPorts = (
       side: 'in' | 'out',
       endpointsBySide: Map<string, number> | undefined,
-    ) =>
-      [...(endpointsBySide ?? [])]
-        .map(([portId, member]) => ({
-          id: `group:${group.id}#${side}:${portId}`,
-          x: side === 'in' ? 0 : groupWidth,
-          y: proxyPortY(member, portId),
-          width: 0,
-          height: 0,
-          layoutOptions: {
-            'elk.port.side': side === 'in' ? 'WEST' : 'EAST',
-          },
-        }))
-        .sort((left, right) => left.y - right.y)
+    ) => {
+      const ports = [...(endpointsBySide ?? [])].map(([portId, member]) => ({
+        id: `group:${group.id}#${side}:${portId}`,
+        ...(stackVertically
+          ? { x: side === 'in' ? 0 : groupWidth, y: proxyPortY(member, portId) }
+          : lattice
+            ? {
+                x: side === 'in' ? 0 : lattice.width,
+                y: latticePortY(member, portId),
+              }
+            : {}),
+        width: 0,
+        height: 0,
+        layoutOptions: {
+          'elk.port.side': side === 'in' ? 'WEST' : 'EAST',
+        },
+      }))
+      return stackVertically
+        ? ports.sort((left, right) => (left.y ?? 0) - (right.y ?? 0))
+        : ports
+    }
     return [{
       id: `group:${group.id}`,
       children: arrangedMembers,
       edges: layoutEdges,
-      ports: stackVertically
-        ? [
-            ...proxyPorts('in', endpoints?.west),
-            ...proxyPorts('out', endpoints?.east),
-          ]
-        : [
-            {
-              id: `group:${group.id}#in`,
-              width: 0,
-              height: 0,
-              layoutOptions: { 'elk.port.side': 'WEST' },
-            },
-            {
-              id: `group:${group.id}#out`,
-              width: 0,
-              height: 0,
-              layoutOptions: { 'elk.port.side': 'EAST' },
-            },
-          ],
+      ports: [
+        ...proxyPorts('in', endpoints?.west),
+        ...proxyPorts('out', endpoints?.east),
+      ],
       ...(stackVertically
-        ? {
-            width: groupWidth,
-            height: singleColumnHeight,
-          }
-        : {}),
+        ? { width: groupWidth, height: singleColumnHeight }
+        : lattice
+          ? { width: lattice.width, height: lattice.height }
+          : {}),
       layoutOptions: {
         'elk.algorithm': 'layered',
         'elk.direction': 'RIGHT',
@@ -1055,7 +1221,16 @@ export function toElkGraph(
               'elk.nodeSize.constraints': '[MINIMUM_SIZE]',
               'elk.nodeSize.minimum': `(${groupWidth},${singleColumnHeight})`,
             }
-          : { 'elk.portConstraints': 'FIXED_SIDE' }),
+          : lattice
+            ? {
+                // Positions are ours; ELK only places the block and routes to
+                // the boundary ports we declared.
+                'elk.algorithm': 'fixed',
+                'elk.portConstraints': 'FIXED_POS',
+                'elk.nodeSize.constraints': '[MINIMUM_SIZE]',
+                'elk.nodeSize.minimum': `(${lattice.width},${lattice.height})`,
+              }
+            : { 'elk.portConstraints': 'FIXED_SIDE' }),
         'elk.padding':
           `[top=${EXPANDED_GROUP_TOP_PADDING},left=${EXPANDED_GROUP_SIDE_PADDING}` +
           `,bottom=${EXPANDED_GROUP_SIDE_PADDING},right=${EXPANDED_GROUP_SIDE_PADDING}]`,
@@ -1076,17 +1251,11 @@ export function toElkGraph(
     ...groupChildren,
   ]
 
-  // A stacked group exposes one proxy port per crossing net; a grid group keeps
-  // the shared pair, because its members are placed by ELK and their pin
-  // heights are not known when the ports are declared.
   const groupProxyPortId = (
     groupId: number,
     side: 'in' | 'out',
     portId: string,
-  ): string =>
-    stackedGroupIds.has(groupId)
-      ? `group:${groupId}#${side}:${portId}`
-      : `group:${groupId}#${side}`
+  ): string => `group:${groupId}#${side}:${portId}`
 
   const edges: ElkExtendedEdge[] = input.edges.flatMap((e, i) => {
     const fromGroupId = groupIdByMember.get(e.from)
@@ -1231,7 +1400,59 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   // when their model-order hints are identical. Reassign the already allocated
   // vertical slots to the canonical member order before deriving pin routes.
   // This changes neither the compound bounds nor surrounding node placement.
+  const endpointPortIdFor = (edge: LayoutInputEdge, output: boolean): string => {
+    const id = output ? edge.from : edge.to
+    const pin = output ? edge.fromPort : edge.toPort
+    if (byId.get(id)?.register) {
+      if (output) return `${id}#out`
+      return edge.control ? `${id}#control:${pin}` : `${id}#in`
+    }
+    const index = output ? pins.outgoingIndex : pins.incomingIndex
+    return index.get(id)?.has(pin)
+      ? `${id}#${output ? 'o' : 'i'}:${pin}`
+      : String(id)
+  }
   const groupById = new Map(groups.map((group) => [group.id, group]))
+  // Grid groups are placed on the same lattice toElkGraph planned, so the
+  // routing below meets every pin exactly.
+  const latticeByGroup = new Map<number, GridLattice>()
+  for (const group of input.groups ?? []) {
+    const frame = groupById.get(group.id)
+    const present = group.members.filter((member) => laidOutById.has(member))
+    const members = present.flatMap((member) => {
+      const node = laidOutById.get(member)
+      return node ? [node] : []
+    })
+    if (!frame || members.length === 0) continue
+    if (shouldStackExpandedGroup(group, members)) continue
+    const sizeById = new Map(members.map((m) => [m.id, m]))
+    const westSeen = new Map<string, number>()
+    const eastSeen = new Map<string, number>()
+    for (const edge of input.edges) {
+      const toIn = present.includes(edge.to) && !present.includes(edge.from)
+      const fromOut = present.includes(edge.from) && !present.includes(edge.to)
+      if (toIn) westSeen.set(endpointPortIdFor(edge, false), edge.to)
+      if (fromOut) eastSeen.set(endpointPortIdFor(edge, true), edge.from)
+    }
+    const lattice = planGridLattice(
+      present,
+      expandedGroupColumnCount(group, members),
+      (member) => {
+        const node = sizeById.get(member)
+        return { width: node?.width ?? 0, height: node?.height ?? 0 }
+      },
+      [...westSeen].map(([portId, member]) => ({ portId, member })),
+      [...eastSeen].map(([portId, member]) => ({ portId, member })),
+    )
+    latticeByGroup.set(group.id, lattice)
+    present.forEach((member, index) => {
+      const node = laidOutById.get(member)
+      if (!node) return
+      const cell = lattice.cellOf(index)
+      node.x = frame.x + cell.x
+      node.y = frame.y + cell.y
+    })
+  }
   for (const group of input.groups ?? []) {
     const members = group.members.flatMap((member) => {
       const node = laidOutById.get(member)
@@ -1359,22 +1580,12 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   ): Point[] => {
     const access = route.accessByMember.get(memberId)
     if (!access) return [start, boundary]
-    // A stacked group owns one boundary port per net at the pin's own height,
-    // so the leg stays in the side gutter and never touches a perimeter rail.
-    if (route.stacked) {
-      return compactRoute([
-        start,
-        { x: access.rightRailX, y: start.y },
-        { x: access.rightRailX, y: boundary.y },
-        boundary,
-      ])
-    }
-    const railY = perimeterRailY(start.y, boundary.y, route)
+    // Each net owns a boundary port at its pin's height, so the leg stays in
+    // the side gutter.
     return compactRoute([
       start,
       { x: access.rightRailX, y: start.y },
-      { x: access.rightRailX, y: railY },
-      { x: boundary.x, y: railY },
+      { x: access.rightRailX, y: boundary.y },
       boundary,
     ])
   }
@@ -1386,19 +1597,9 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   ): Point[] => {
     const access = route.accessByMember.get(memberId)
     if (!access) return [boundary, end]
-    if (route.stacked) {
-      return compactRoute([
-        boundary,
-        { x: access.leftRailX, y: boundary.y },
-        { x: access.leftRailX, y: end.y },
-        end,
-      ])
-    }
-    const railY = perimeterRailY(boundary.y, end.y, route)
     return compactRoute([
       boundary,
-      { x: boundary.x, y: railY },
-      { x: access.leftRailX, y: railY },
+      { x: access.leftRailX, y: boundary.y },
       { x: access.leftRailX, y: end.y },
       end,
     ])
@@ -1420,6 +1621,75 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
     }
     return snapped
   }
+  // Mirror of the endpoint port ids toElkGraph assigned, so a boundary net can
+  // find the lead edge ELK routed for it inside the compound.
+  // Route a crossing net on the lattice: ride the planned channel to the gutter
+  // beside the target column, hop to the pin's height, then straight in. Every
+  // leg lies in space reserved for wires, so nothing crosses a member.
+  // Where a crossing net meets the frame: its channel track, or the pin's own
+  // height when it needs no horizontal transit.
+  const latticeBoundaryY = (
+    groupId: number,
+    edge: LayoutInputEdge,
+    output: boolean,
+  ): number | undefined => {
+    const lattice = latticeByGroup.get(groupId)
+    const frame = groupById.get(groupId)
+    if (!lattice || !frame) return undefined
+    const track = lattice.trackY(endpointPortIdFor(edge, output))
+    return track == null ? undefined : frame.y + track
+  }
+
+  const latticeLeg = (
+    groupId: number,
+    member: number,
+    edge: LayoutInputEdge,
+    output: boolean,
+    boundary: Point,
+    pin: Point,
+  ): Point[] | undefined => {
+    const lattice = latticeByGroup.get(groupId)
+    const frame = groupById.get(groupId)
+    const group = input.groups?.find((candidate) => candidate.id === groupId)
+    if (!lattice || !frame || !group) return undefined
+    const present = group.members.filter((m) => laidOutById.has(m))
+    const index = present.indexOf(member)
+    if (index < 0) return undefined
+    const column = lattice.columnOf(index)
+    const track = lattice.trackY(endpointPortIdFor(edge, output))
+    if (track == null) {
+      // Column 0 inbound / last column outbound: the port already faces the
+      // pin, so this is one straight run. Correct any residual offset in the
+      // frame margin rather than against the member's edge.
+      return compactRoute(
+        output
+          ? [pin, { x: boundary.x, y: pin.y }, boundary]
+          : [boundary, { x: boundary.x, y: pin.y }, pin],
+      )
+    }
+    const trackAbs = frame.y + track
+    const gutter = frame.x + (output
+      ? lattice.gutterRightOf(column)
+      : lattice.gutterLeftOf(column))
+    return output
+      ? compactRoute([
+          pin,
+          { x: gutter, y: pin.y },
+          { x: gutter, y: trackAbs },
+          { x: boundary.x, y: trackAbs },
+          boundary,
+        ])
+      : compactRoute([
+          boundary,
+          // Turn onto the track at the frame edge, so the run stays orthogonal
+          // even when the boundary point is not exactly on it.
+          { x: boundary.x, y: trackAbs },
+          { x: gutter, y: trackAbs },
+          { x: gutter, y: pin.y },
+          pin,
+        ])
+  }
+
   const edges: LayoutGeometry['edges'] = input.edges.map((edge, inputIndex) => {
     const routed = routedByInputIndex.get(inputIndex)
     const points: Point[] = []
@@ -1452,22 +1722,19 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
       }
       if (fromRoute) {
         const start = fallbackPoint(edge.from, true, edge)
-        points.push(...memberToBoundary(
-          edge.from,
-          start,
-          routedPoints[0],
-          fromRoute,
-        ).slice(0, -1))
+        const leg =
+          latticeLeg(fromGroupId!, edge.from, edge, true, routedPoints[0], start) ??
+          memberToBoundary(edge.from, start, routedPoints[0], fromRoute)
+        points.push(...leg.slice(0, -1))
       }
       points.push(...routedPoints)
       if (toRoute) {
         const end = fallbackPoint(edge.to, false, edge)
-        points.push(...boundaryToMember(
-          routedPoints[routedPoints.length - 1],
-          edge.to,
-          end,
-          toRoute,
-        ).slice(1))
+        const boundary = routedPoints[routedPoints.length - 1]
+        const leg =
+          latticeLeg(toGroupId!, edge.to, edge, false, boundary, end) ??
+          boundaryToMember(boundary, edge.to, end, toRoute)
+        points.push(...leg.slice(1))
       }
     } else {
       // Preserve the structural edge even if ELK omits a routed section. This
@@ -1480,25 +1747,29 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
           x: toRoute.frame.x,
           y: toRoute.stacked
             ? end.y
-            : toRoute.frame.y + toRoute.frame.height / 2,
+            : latticeBoundaryY(toGroupId!, edge, false)
+              ?? toRoute.frame.y + toRoute.frame.height / 2,
         }
         const entryX = boundary.x - 8
         points.push(
           start,
           { x: entryX, y: start.y },
           { x: entryX, y: boundary.y },
-          ...boundaryToMember(boundary, edge.to, end, toRoute),
+          ...(latticeLeg(toGroupId!, edge.to, edge, false, boundary, end)
+            ?? boundaryToMember(boundary, edge.to, end, toRoute)),
         )
       } else if (fromRoute && !toRoute) {
         const boundary = {
           x: fromRoute.frame.x + fromRoute.frame.width,
           y: fromRoute.stacked
             ? start.y
-            : fromRoute.frame.y + fromRoute.frame.height / 2,
+            : latticeBoundaryY(fromGroupId!, edge, true)
+              ?? fromRoute.frame.y + fromRoute.frame.height / 2,
         }
         const exitX = boundary.x + 8
         points.push(
-          ...memberToBoundary(edge.from, start, boundary, fromRoute),
+          ...(latticeLeg(fromGroupId!, edge.from, edge, true, boundary, start)
+            ?? memberToBoundary(edge.from, start, boundary, fromRoute)),
           { x: exitX, y: boundary.y },
           { x: exitX, y: end.y },
           end,
@@ -1532,18 +1803,22 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
           x: fromRoute.frame.x + fromRoute.frame.width,
           y: fromRoute.stacked
             ? start.y
-            : fromRoute.frame.y + fromRoute.frame.height / 2,
+            : latticeBoundaryY(fromGroupId!, edge, true)
+              ?? fromRoute.frame.y + fromRoute.frame.height / 2,
         }
         const toBoundary = {
           x: toRoute.frame.x,
           y: toRoute.stacked
             ? end.y
-            : toRoute.frame.y + toRoute.frame.height / 2,
+            : latticeBoundaryY(toGroupId!, edge, false)
+              ?? toRoute.frame.y + toRoute.frame.height / 2,
         }
         points.push(
-          ...memberToBoundary(edge.from, start, fromBoundary, fromRoute),
+          ...(latticeLeg(fromGroupId!, edge.from, edge, true, fromBoundary, start)
+            ?? memberToBoundary(edge.from, start, fromBoundary, fromRoute)),
           ...localEdgePoints(fromBoundary, toBoundary).slice(1),
-          ...boundaryToMember(toBoundary, edge.to, end, toRoute).slice(1),
+          ...(latticeLeg(toGroupId!, edge.to, edge, false, toBoundary, end)
+            ?? boundaryToMember(toBoundary, edge.to, end, toRoute)).slice(1),
         )
       } else {
         points.push(start, end)
