@@ -239,8 +239,12 @@ describe('dense ELK layout policy', () => {
 })
 
 describe('expanded group boundary routing', () => {
-  it('routes every crossing net straight to its member pin', async () => {
-    const BITS = 5
+  // A tall reference keeps the group in one column; a short one forces the
+  // lattice grid, where nets ride channels between the rows.
+  for (const [shape, referenceHeight] of
+    [['stacked', 1_000], ['grid', 170]] as const) {
+  it(`routes every crossing net to its member pin (${shape})`, async () => {
+    const BITS = 16
     const members = Array.from({ length: BITS }, (_, index) =>
       node(100 + index, 'count', {
         kind: 'cell',
@@ -290,7 +294,7 @@ describe('expanded group boundary routing', () => {
     const input = prepareLayoutInput(subgraph, [{
       id: 500,
       members: members.map((member) => member.id),
-      referenceHeight: 1_000,
+      referenceHeight,
     }])
     const result = interpretResult(
       input,
@@ -301,8 +305,11 @@ describe('expanded group boundary routing', () => {
     const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
     const memberIds = new Set(members.map((member) => member.id))
     expect(frame).toBeDefined()
+    const insideFrame = (point: { x: number }) =>
+      point.x >= frame!.x && point.x <= frame!.x + frame!.width
 
     let crossings = 0
+    const entryHeights = new Set<number>()
     input.edges.forEach((edge, index) => {
       const entering = memberIds.has(edge.to) && !memberIds.has(edge.from)
       const leaving = memberIds.has(edge.from) && !memberIds.has(edge.to)
@@ -312,18 +319,138 @@ describe('expanded group boundary routing', () => {
       const points = result.edges[index].points
       const pin = entering ? points.at(-1)! : points[0]
 
-      // The net terminates on its own member's pin, and inside the frame it
-      // never leaves that member's vertical band -- no perimeter-rail detour
-      // up or down the boundary before doubling back to the pin.
+      // Where the net meets the west edge of the frame.
+      if (entering) {
+        const crossing = points.find((point) => point.x >= frame!.x)
+        if (crossing) entryHeights.add(Math.round(crossing.y))
+      }
+
+      // Every net terminates on its own member's pin.
       expect(pin.x).toBe(entering ? member.x : member.x + member.width)
       expect(pin.y).toBeGreaterThan(member.y)
       expect(pin.y).toBeLessThan(member.y + member.height)
-      for (const point of points) {
-        if (point.x < frame!.x || point.x > frame!.x + frame!.width) continue
-        expect(point.y).toBeGreaterThanOrEqual(member.y)
-        expect(point.y).toBeLessThanOrEqual(member.y + member.height)
+
+      if (shape === 'stacked') {
+        // One column: the net enters at its pin's height and goes straight in.
+        // A perimeter-rail detour would leave the member's vertical band.
+        for (const point of points) {
+          if (!insideFrame(point)) continue
+          expect(point.y).toBeGreaterThanOrEqual(member.y)
+          expect(point.y).toBeLessThanOrEqual(member.y + member.height)
+        }
+      }
+
+      for (let i = 1; i < points.length; i += 1) {
+        const a = points[i - 1]
+        const b = points[i]
+        // Inside the frame every leg lies in reserved wire space: orthogonal,
+        // and never across another member's cell.
+        if (insideFrame(a) && insideFrame(b)) {
+          expect(a.x === b.x || a.y === b.y).toBe(true)
+        }
+        for (const other of result.nodes) {
+          if (other.id === edge.from || other.id === edge.to) continue
+          if (!memberIds.has(other.id)) continue
+          const overlaps =
+            Math.max(a.x, b.x) > other.x &&
+            Math.min(a.x, b.x) < other.x + other.width &&
+            Math.max(a.y, b.y) > other.y &&
+            Math.min(a.y, b.y) < other.y + other.height
+          expect(overlaps).toBe(false)
+        }
       }
     })
     expect(crossings).toBe(BITS * 5)
-  }, 20_000)
+
+    const cells = members.flatMap((member) => {
+      const laid = laidOut.get(member.id)
+      return laid ? [laid] : []
+    })
+    const xs = [...new Set(cells.map((cell) => Math.round(cell.x)))]
+      .sort((left, right) => left - right)
+    const ys = [...new Set(cells.map((cell) => Math.round(cell.y)))]
+      .sort((left, right) => left - right)
+
+    // The defect this replaces funnelled every crossing net through one point
+    // on the frame edge. Each net now meets the frame at its own height --
+    // its channel track, or its pin.
+    expect(entryHeights.size).toBeGreaterThan(ys.length)
+
+    // The header band carries the group's label, so no wire may run through it.
+    const labelBandBottom = frame!.y + 30
+    input.edges.forEach((edge, index) => {
+      if (memberIds.has(edge.to) === memberIds.has(edge.from)) return
+      for (const point of result.edges[index].points) {
+        if (!insideFrame(point)) continue
+        expect(point.y).toBeGreaterThanOrEqual(labelBandBottom)
+      }
+    })
+
+    if (shape === 'grid') {
+      // A real lattice: a single column pitch and a single row pitch.
+      expect(xs.length).toBeGreaterThan(1)
+      expect(new Set(xs.slice(1).map((x, i) => x - xs[i])).size).toBe(1)
+      expect(new Set(ys.slice(1).map((y, i) => y - ys[i])).size).toBe(1)
+      // Uniform cells, so the block reads as an array.
+      expect(new Set(cells.map((cell) => cell.width)).size).toBe(1)
+      expect(new Set(cells.map((cell) => cell.height)).size).toBe(1)
+    } else {
+      expect(xs).toHaveLength(1)
+    }
+  }, 30_000)
+  }
+})
+
+describe('expanded grid lattice', () => {
+  // Partial last rows and odd member counts must not break the lattice: the
+  // block only reads as an array if one column pitch and one row pitch cover
+  // every cell.
+  it.each([
+    [7, 120], [13, 140], [16, 140], [17, 140], [32, 200],
+  ])('keeps a uniform lattice for %i members', async (count, referenceHeight) => {
+    const cellsIn = Array.from({ length: count }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'a', { port_direction: 'input' }),
+        node(2, 'b', { port_direction: 'input' }),
+        ...cellsIn,
+        node(3, 'y', { port_direction: 'output' }),
+      ],
+      edges: cellsIn.flatMap((member, index) => [
+        { from: 1, to: member.id, from_port: 'a', to_port: 'I1',
+          net_name: `a${index}`, bits: [index] },
+        { from: 2, to: member.id, from_port: 'b', to_port: 'I2',
+          net_name: `b${index}`, bits: [100 + index] },
+        { from: member.id, to: 3, from_port: 'O', to_port: 'y',
+          net_name: `y${index}`, bits: [200 + index] },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cellsIn.map((member) => member.id),
+      referenceHeight,
+    }])
+    const memberIds = new Set(cellsIn.map((member) => member.id))
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const cells = result.nodes.filter((laid) => memberIds.has(laid.id))
+    const xs = [...new Set(cells.map((cell) => cell.x))]
+      .sort((left, right) => left - right)
+    const ys = [...new Set(cells.map((cell) => cell.y))]
+      .sort((left, right) => left - right)
+
+    expect(new Set(xs.slice(1).map((x, i) => x - xs[i])).size).toBe(1)
+    expect(new Set(ys.slice(1).map((y, i) => y - ys[i])).size).toBe(1)
+    expect(new Set(cells.map((cell) => cell.width)).size).toBe(1)
+    expect(new Set(cells.map((cell) => cell.height)).size).toBe(1)
+    expect(xs.length * ys.length).toBeGreaterThanOrEqual(count)
+  }, 30_000)
 })

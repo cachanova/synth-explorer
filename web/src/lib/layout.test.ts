@@ -366,13 +366,17 @@ describe('schematic layout sizing', () => {
     expect(compound?.children?.every((child) =>
       child.layoutOptions?.['elk.layered.layering.layerConstraint'] == null
     )).toBe(true)
-    expect(compound?.edges?.map((edge) => ({
-      sources: edge.sources,
-      targets: edge.targets,
-    }))).toEqual([
-      { sources: ['1'], targets: ['2'] },
-      { sources: ['3'], targets: ['4'] },
-    ])
+    // Members are placed on a fixed lattice, so the compound needs no interior
+    // edges to shape the grid.
+    expect(compound?.edges).toEqual([])
+    expect(compound?.layoutOptions?.['elk.algorithm']).toBe('fixed')
+    const cells = compound?.children?.map((child) =>
+      ({ x: child.x ?? 0, y: child.y ?? 0 })) ?? []
+    const columnXs = [...new Set(cells.map((cell) => cell.x))]
+      .sort((left, right) => left - right)
+    expect(new Set(columnXs.slice(1).map((x, i) => x - columnXs[i])).size)
+      .toBe(1)
+    expect(new Set(cells.map((cell) => cell.y)).size).toBe(2)
   })
 
   it('uses a vertical column at the exact 2x limit and a grid just beyond it', () => {
@@ -633,53 +637,54 @@ describe('schematic layout sizing', () => {
       members: [1, 2, 3, 4],
       referenceHeight: 100,
     }])
+    // The compound's size, member cells and ports all come from the lattice, so
+    // stand the fixture up from the graph the layout actually asks ELK for.
+    const compound = (toElkGraph(input).children ?? [])
+      .find((child) => child.id === 'group:100')!
+    const port = (compound.ports ?? [])
+      .find((candidate) => candidate.id.startsWith('group:100#in:'))!
     const geometry = interpretResult(input, {
       id: 'root',
-      width: 480,
-      height: 300,
+      width: 900,
+      height: 600,
       children: [
         { id: '10', x: 10, y: 130, width: 62, height: 46 },
-        {
-          id: 'group:100',
-          x: 100,
-          y: 40,
-          width: 320,
-          height: 220,
-          children: [
-            { id: '1', x: 20, y: 30, width: 110, height: 70 },
-            { id: '2', x: 178, y: 30, width: 110, height: 70 },
-            { id: '3', x: 20, y: 118, width: 110, height: 70 },
-            { id: '4', x: 178, y: 118, width: 110, height: 70 },
-          ],
-        },
+        { ...compound, x: 100, y: 40 },
       ],
       edges: [{
         id: 'e0',
         sources: ['10'],
-        targets: ['group:100#in'],
+        targets: [port.id],
         sections: [{
           id: 'e0s0',
           startPoint: { x: 72, y: 153 },
-          endPoint: { x: 100, y: 150 },
+          endPoint: { x: 100, y: 40 + (port.y ?? 0) },
         }],
       }],
     })
-    const sibling = geometry.nodes.find((laidOut) => laidOut.id === 1)!
     const route = geometry.edges[0].points
-    const crossesSibling = route.slice(1).some((point, index) => {
+    const target = geometry.nodes.find((laidOut) => laidOut.id === 2)!
+    const crossesAnyMember = route.slice(1).some((point, index) => {
       const previous = route[index]
-      return (
-        Math.max(previous.x, point.x) > sibling.x &&
-        Math.min(previous.x, point.x) < sibling.x + sibling.width &&
-        Math.max(previous.y, point.y) > sibling.y &&
-        Math.min(previous.y, point.y) < sibling.y + sibling.height
+      return geometry.nodes.some((other) =>
+        other.id !== 2 && other.id !== 10 &&
+        Math.max(previous.x, point.x) > other.x &&
+        Math.min(previous.x, point.x) < other.x + other.width &&
+        Math.max(previous.y, point.y) > other.y &&
+        Math.min(previous.y, point.y) < other.y + other.height,
       )
     })
+    // Inside the frame the leg rides a channel then a gutter -- never a
+    // diagonal, and never across a sibling cell.
+    const insideDiagonal = route.slice(1).some((point, index) => {
+      const previous = route[index]
+      return previous.x >= 100 && point.x >= 100 &&
+        previous.x !== point.x && previous.y !== point.y
+    })
 
-    expect(crossesSibling).toBe(false)
-    expect(route.at(-1)?.x).toBe(
-      geometry.nodes.find((laidOut) => laidOut.id === 2)?.x,
-    )
+    expect(crossesAnyMember).toBe(false)
+    expect(insideDiagonal).toBe(false)
+    expect(route.at(-1)?.x).toBe(target.x)
   })
 
   it('routes dense compound fanout through proxy ports without dropping edges', () => {
@@ -708,9 +713,11 @@ describe('schematic layout sizing', () => {
     const compound = graph.children?.find((child) => child.id === 'group:2000')
 
     expect(graph.edges).toHaveLength(members.length)
-    expect(new Set(graph.edges?.flatMap((edge) => edge.targets))).toEqual(
-      new Set(['group:2000#in']),
-    )
+    // Each member gets its own boundary port instead of one shared funnel.
+    expect(new Set(graph.edges?.flatMap((edge) => edge.targets)).size)
+      .toBe(members.length)
+    expect(new Set(compound?.ports?.map((port) => port.id)).size)
+      .toBe(members.length)
     expect(input.edges).toHaveLength(members.length)
     expect(compound?.layoutOptions?.['elk.direction']).toBe('RIGHT')
   })
