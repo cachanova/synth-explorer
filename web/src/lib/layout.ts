@@ -185,7 +185,7 @@ const GRID_TRACK_PITCH = 7      // vertical distance between wires in a channel
 const GRID_CHANNEL_MARGIN = 6   // clearance at each end of a channel
 const GRID_MIN_CHANNEL = 16     // channel height when nothing crosses there
 
-export interface GridLattice {
+interface GridLattice {
   columnCount: number
   rowCount: number
   cellWidth: number
@@ -204,7 +204,7 @@ export interface GridLattice {
   rowOf: (index: number) => number
 }
 
-export function planGridLattice(
+function planGridLattice(
   memberIds: number[],
   columnCount: number,
   sizeOf: (member: number) => { width: number; height: number },
@@ -255,12 +255,17 @@ export function planGridLattice(
   // sized to their own demand.
   const interior = channelNets.slice(1, rowCount).map(demand)
   const uniformInterior = interior.length > 0 ? Math.max(...interior) : 0
+  // The outermost channels sit against the frame rather than between two rows,
+  // so they take no space unless a net actually rides them. Interior channels
+  // always keep a gap, since rows must not touch.
   const channelHeight = channelNets.map((nets, k) =>
-    k === 0 || k === rowCount ? demand(nets) : uniformInterior,
+    k === 0 || k === rowCount
+      ? (nets.length === 0 ? 0 : demand(nets))
+      : uniformInterior,
   )
-  // Reserve the label band above the first channel.
+  // Start below the header band so a track never crosses the group's label.
   const channelTop: number[] = []
-  let cursor = EXPANDED_GROUP_TOP_PADDING - GRID_MIN_CHANNEL
+  let cursor = EXPANDED_GROUP_TOP_PADDING
   for (let k = 0; k <= rowCount; k += 1) {
     channelTop.push(cursor)
     cursor += channelHeight[k]
@@ -1416,6 +1421,15 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   // Grid groups are placed on the same lattice toElkGraph planned, so the
   // routing below meets every pin exactly.
   const latticeByGroup = new Map<number, GridLattice>()
+  // Cell index per member, built once: the routing below runs per edge and must
+  // not rescan the group's member list.
+  const latticeIndexByGroup = new Map<number, Map<number, number>>()
+  const gridGroups = new Map<number, {
+    group: ExpandedGroupLayout
+    frame: LaidOutGroup
+    present: number[]
+    members: LayoutGeometry['nodes']
+  }>()
   for (const group of input.groups ?? []) {
     const frame = groupById.get(group.id)
     const present = group.members.filter((member) => laidOutById.has(member))
@@ -1425,15 +1439,41 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
     })
     if (!frame || members.length === 0) continue
     if (shouldStackExpandedGroup(group, members)) continue
-    const sizeById = new Map(members.map((m) => [m.id, m]))
-    const westSeen = new Map<string, number>()
-    const eastSeen = new Map<string, number>()
-    for (const edge of input.edges) {
-      const toIn = present.includes(edge.to) && !present.includes(edge.from)
-      const fromOut = present.includes(edge.from) && !present.includes(edge.to)
-      if (toIn) westSeen.set(endpointPortIdFor(edge, false), edge.to)
-      if (fromOut) eastSeen.set(endpointPortIdFor(edge, true), edge.from)
+    gridGroups.set(group.id, { group, frame, present, members })
+  }
+  const gridGroupOfMember = new Map<number, number>()
+  for (const [id, entry] of gridGroups) {
+    for (const member of entry.present) gridGroupOfMember.set(member, id)
+  }
+  // One sweep over the edges collects every group's boundary endpoints, keyed
+  // exactly as toElkGraph keyed its ports so tracks and ports line up.
+  const westByGroup = new Map<number, Map<string, number>>()
+  const eastByGroup = new Map<number, Map<string, number>>()
+  const endpointsInto = (
+    store: Map<number, Map<string, number>>,
+    groupId: number,
+  ) => {
+    let entry = store.get(groupId)
+    if (!entry) {
+      entry = new Map()
+      store.set(groupId, entry)
     }
+    return entry
+  }
+  for (const edge of input.edges) {
+    const fromGroup = gridGroupOfMember.get(edge.from)
+    const toGroup = gridGroupOfMember.get(edge.to)
+    if (toGroup != null && toGroup !== fromGroup) {
+      endpointsInto(westByGroup, toGroup)
+        .set(endpointPortIdFor(edge, false), edge.to)
+    }
+    if (fromGroup != null && fromGroup !== toGroup) {
+      endpointsInto(eastByGroup, fromGroup)
+        .set(endpointPortIdFor(edge, true), edge.from)
+    }
+  }
+  for (const [id, { group, frame, present, members }] of gridGroups) {
+    const sizeById = new Map(members.map((member) => [member.id, member]))
     const lattice = planGridLattice(
       present,
       expandedGroupColumnCount(group, members),
@@ -1441,10 +1481,16 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
         const node = sizeById.get(member)
         return { width: node?.width ?? 0, height: node?.height ?? 0 }
       },
-      [...westSeen].map(([portId, member]) => ({ portId, member })),
-      [...eastSeen].map(([portId, member]) => ({ portId, member })),
+      [...(westByGroup.get(id) ?? [])].map(([portId, member]) =>
+        ({ portId, member })),
+      [...(eastByGroup.get(id) ?? [])].map(([portId, member]) =>
+        ({ portId, member })),
     )
-    latticeByGroup.set(group.id, lattice)
+    latticeByGroup.set(id, lattice)
+    latticeIndexByGroup.set(
+      id,
+      new Map(present.map((member, index) => [member, index])),
+    )
     present.forEach((member, index) => {
       const node = laidOutById.get(member)
       if (!node) return
@@ -1650,11 +1696,8 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   ): Point[] | undefined => {
     const lattice = latticeByGroup.get(groupId)
     const frame = groupById.get(groupId)
-    const group = input.groups?.find((candidate) => candidate.id === groupId)
-    if (!lattice || !frame || !group) return undefined
-    const present = group.members.filter((m) => laidOutById.has(m))
-    const index = present.indexOf(member)
-    if (index < 0) return undefined
+    const index = latticeIndexByGroup.get(groupId)?.get(member)
+    if (!lattice || !frame || index == null) return undefined
     const column = lattice.columnOf(index)
     const track = lattice.trackY(endpointPortIdFor(edge, output))
     if (track == null) {

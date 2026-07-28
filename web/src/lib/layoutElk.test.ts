@@ -376,6 +376,16 @@ describe('expanded group boundary routing', () => {
     // its channel track, or its pin.
     expect(entryHeights.size).toBeGreaterThan(ys.length)
 
+    // The header band carries the group's label, so no wire may run through it.
+    const labelBandBottom = frame!.y + 30
+    input.edges.forEach((edge, index) => {
+      if (memberIds.has(edge.to) === memberIds.has(edge.from)) return
+      for (const point of result.edges[index].points) {
+        if (!insideFrame(point)) continue
+        expect(point.y).toBeGreaterThanOrEqual(labelBandBottom)
+      }
+    })
+
     if (shape === 'grid') {
       // A real lattice: a single column pitch and a single row pitch.
       expect(xs.length).toBeGreaterThan(1)
