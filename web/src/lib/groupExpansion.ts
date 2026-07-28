@@ -11,6 +11,35 @@ export interface AppliedGroupExpansions {
   groups: Array<{ id: number; label: string; members: number[] }>
 }
 
+/** A group the user has opened, with the diagram height it was sized against. */
+export interface ExpandedGroupSpec {
+  id: number
+  label: string
+  referenceHeight: number
+}
+
+/**
+ * Open a group without disturbing the groups already open. Later groups reuse
+ * the first one's reference height so every open group is sized against the
+ * same collapsed baseline rather than the taller diagram its predecessors
+ * produced.
+ */
+export function openExpandedGroup(
+  current: ExpandedGroupSpec[],
+  group: { id: number; label: string },
+  referenceHeight: number,
+): ExpandedGroupSpec[] {
+  if (current.some((entry) => entry.id === group.id)) return current
+  return [
+    ...current,
+    {
+      id: group.id,
+      label: group.label,
+      referenceHeight: current[0]?.referenceHeight ?? referenceHeight,
+    },
+  ]
+}
+
 const edgeKey = (edge: GraphEdge) =>
   `${edge.from}->${edge.to}|${edge.from_port}|${edge.to_port}`
 

@@ -6672,6 +6672,88 @@ mod tests {
     }
 
     #[test]
+    fn group_expansion_routes_to_member_pins_of_another_open_group() {
+        let mut edges = Vec::new();
+        let mut outgoing = vec![Vec::new(); 4];
+        let mut incoming = vec![Vec::new(); 4];
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 0, 2, 10);
+        add_test_edge(&mut edges, &mut outgoing, &mut incoming, 1, 3, 11);
+        let graph = graph_from_parts(
+            "expand_group",
+            (0..4)
+                .map(|id| combinational_node(id, "$and", None))
+                .collect(),
+            edges,
+            outgoing,
+            incoming,
+        );
+        let analysis = Analysis::new(&graph, Vec::new());
+        let grouping = GroupPartition {
+            groups: vec![
+                Group {
+                    kind: GroupKind::Memory,
+                    members: vec![0, 1],
+                    label: "memory [2×1]".to_owned(),
+                    cell_type: "$mem".to_owned(),
+                },
+                Group {
+                    kind: GroupKind::Comb,
+                    members: vec![2, 3],
+                    label: "logic[1:0]".to_owned(),
+                    cell_type: "$and".to_owned(),
+                },
+            ],
+            group_of: HashMap::from([(0, 0), (1, 0), (2, 1), (3, 1)]),
+        };
+        // Both groups are open, so neither collapses back to a quotient node in
+        // the other's expansion projection.
+        let projection =
+            GroupingProjection::from_flags_with_expanded(&grouping, true, true, &[0, 1]);
+
+        let expanded = analysis
+            .expand_group(
+                &graph,
+                &grouping,
+                0,
+                GroupExpansionOptions {
+                    max_nodes: MAX_SUBGRAPH_NODES,
+                    hide_control: true,
+                    hide_const: true,
+                },
+                projection,
+            )
+            .expect("known group");
+
+        assert_eq!(expanded.members, vec![0, 1]);
+        assert_eq!(
+            expanded
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.node.id)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        assert!(
+            expanded
+                .graph
+                .nodes
+                .iter()
+                .all(|node| node.members.is_none())
+        );
+        assert_eq!(
+            expanded
+                .graph
+                .edges
+                .iter()
+                .map(|edge| (edge.from, edge.to, edge.bits.clone()))
+                .collect::<Vec<_>>(),
+            vec![(0, 2, vec![10]), (1, 3, vec![11])]
+        );
+        assert!(!expanded.graph.truncated);
+    }
+
+    #[test]
     fn group_expansion_maps_compact_boundary_trunks_to_projected_edges_by_exact_key() {
         let mut edges = Vec::new();
         let mut outgoing = vec![Vec::new(); 4];
