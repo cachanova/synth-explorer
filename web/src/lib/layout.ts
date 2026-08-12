@@ -99,6 +99,12 @@ export interface LayoutInputEdge {
   fromPort: string
   toPort: string
   control: boolean
+  /**
+   * Net bits this edge carries. One driver pin can emit several distinct nets --
+   * the slices of a bus -- so the pin alone does not identify a net. Empty or
+   * absent when the source has no bit information.
+   */
+  bits?: number[]
   sourceBoundaryMembers?: EdgeBoundaryMember[]
   targetBoundaryMembers?: EdgeBoundaryMember[]
 }
@@ -142,30 +148,23 @@ function shouldStackExpandedGroup(
 
 function expandedGroupColumnCount(
   group: ExpandedGroupLayout,
-  members: Array<{ height?: number }>,
+  members: Array<{ width?: number; height?: number }>,
 ): number {
   if (shouldStackExpandedGroup(group, members)) return 1
-  const verticalLimit = group.referenceHeight == null
-    ? null
-    : group.referenceHeight * EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER
-  const maxMemberHeight = Math.max(
-    1,
-    ...members.map((member) => member.height ?? 0),
+  // Column count deliberately does not chase a height target. A grid's height is
+  // set by how many nets cross its channels, not by how the cells are arranged,
+  // so trading rows for columns buys back almost nothing vertically while making
+  // the block far wider. `EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER` still decides
+  // stacked-vs-grid above, where a single column's height really is predictable.
+  // Here we only shape the block, aiming for a roughly square array.
+  const cellWidth = Math.max(1, ...members.map((member) => member.width ?? 0))
+  const cellHeight = Math.max(1, ...members.map((member) => member.height ?? 0))
+  const columns = Math.round(
+    Math.sqrt((members.length * cellHeight) / cellWidth),
   )
-  const maxGridRows = verticalLimit == null
-    ? Math.max(1, Math.ceil(Math.sqrt(members.length / 0.65)))
-    : Math.max(
-        1,
-        Math.floor(
-          (
-            verticalLimit -
-            EXPANDED_GROUP_VERTICAL_PADDING +
-            EXPANDED_GROUP_NODE_SPACING
-          ) /
-            (maxMemberHeight + EXPANDED_GROUP_NODE_SPACING),
-        ),
-      )
-  return Math.max(1, Math.ceil(members.length / maxGridRows))
+  // At least two columns: reaching here means one column was already judged too
+  // tall, so a single-column "grid" would just rebuild the shape we rejected.
+  return Math.min(members.length, Math.max(2, columns))
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +178,20 @@ function expandedGroupColumnCount(
 // how many nets actually cross there, so the block only grows where wires
 // really need the room.
 // ---------------------------------------------------------------------------
+
+// Identifies the net an edge carries, so grid channels can allocate one track
+// per net instead of one per sink: a high-fanout net costs a single track.
+//
+// The driver pin alone is not enough. A grouped bus driver emits one edge per
+// sink from the same pin, each carrying a different slice of the bus -- those
+// are distinct nets and must not share a track, or the picture would claim they
+// are electrically connected. The bit set is what separates them. When an edge
+// carries no bits there is nothing to prove two edges are the same net, so each
+// falls back to its own key rather than risking a false merge.
+const netKeyOf = (edge: LayoutInputEdge): string =>
+  edge.bits != null && edge.bits.length > 0
+    ? `${edge.from}#${edge.fromPort}#${[...edge.bits].sort((a, b) => a - b).join(',')}`
+    : `edge:${edge.from}#${edge.fromPort}#${edge.to}#${edge.toPort}`
 
 const GRID_GUTTER = 26          // clear space between two columns of cells
 const GRID_TRACK_PITCH = 7      // vertical distance between wires in a channel
@@ -208,8 +221,8 @@ function planGridLattice(
   memberIds: number[],
   columnCount: number,
   sizeOf: (member: number) => { width: number; height: number },
-  westPorts: Array<{ portId: string; member: number }>,
-  eastPorts: Array<{ portId: string; member: number }>,
+  westPorts: Array<{ portId: string; member: number; net: string }>,
+  eastPorts: Array<{ portId: string; member: number; net: string }>,
 ): GridLattice {
   const rowCount = Math.max(1, Math.ceil(memberIds.length / columnCount))
   const cellWidth = Math.max(
@@ -227,28 +240,37 @@ function planGridLattice(
   // Which channel each crossing net rides. A net entering from the west uses
   // the channel above its own row; one leaving east uses the channel below.
   // Channel k sits above row k, so there are rowCount + 1 of them.
-  const channelNets: Array<Array<string>> = Array.from(
+  //
+  // Ports are keyed per member pin, but a net that fans out to several members
+  // is still one wire: it rides a single track and drops onto each pin through
+  // that member's own gutter. Tracks are therefore allocated per net, not per
+  // port, which is what keeps a high-fanout net from claiming one track per sink.
+  const channelNets: Array<Array<{ portId: string; net: string }>> = Array.from(
     { length: rowCount + 1 },
     () => [],
   )
-  for (const { portId, member } of westPorts) {
+  for (const { portId, member, net } of westPorts) {
     const index = indexOfMember.get(member)
     if (index == null || columnOf(index) === 0) continue // straight in
-    channelNets[rowOf(index)].push(portId)
+    channelNets[rowOf(index)].push({ portId, net })
   }
-  for (const { portId, member } of eastPorts) {
+  for (const { portId, member, net } of eastPorts) {
     const index = indexOfMember.get(member)
     if (index == null || columnOf(index) === columnCount - 1) continue
-    channelNets[rowOf(index) + 1].push(portId)
+    channelNets[rowOf(index) + 1].push({ portId, net })
   }
 
-  const demand = (nets: string[]) =>
-    nets.length === 0
+  const trackCount = (entries: Array<{ net: string }>) =>
+    new Set(entries.map((entry) => entry.net)).size
+  const demand = (entries: Array<{ net: string }>) => {
+    const tracks = trackCount(entries)
+    return tracks === 0
       ? GRID_MIN_CHANNEL
       : Math.max(
           GRID_MIN_CHANNEL,
-          nets.length * GRID_TRACK_PITCH + 2 * GRID_CHANNEL_MARGIN,
+          tracks * GRID_TRACK_PITCH + 2 * GRID_CHANNEL_MARGIN,
         )
+  }
   // Row pitch has to be one number for the block to read as an array, so every
   // channel between two rows is as tall as the busiest of them. The channels
   // above the first row and below the last sit outside that repeat and stay
@@ -258,9 +280,9 @@ function planGridLattice(
   // The outermost channels sit against the frame rather than between two rows,
   // so they take no space unless a net actually rides them. Interior channels
   // always keep a gap, since rows must not touch.
-  const channelHeight = channelNets.map((nets, k) =>
+  const channelHeight = channelNets.map((entries, k) =>
     k === 0 || k === rowCount
-      ? (nets.length === 0 ? 0 : demand(nets))
+      ? (entries.length === 0 ? 0 : demand(entries))
       : uniformInterior,
   )
   // Start below the header band so a track never crosses the group's label.
@@ -282,8 +304,14 @@ function planGridLattice(
   const cellY = (row: number) => channelTop[row] + channelHeight[row]
 
   const trackByPort = new Map<string, number>()
-  channelNets.forEach((nets, k) => {
-    nets.forEach((portId, slot) => {
+  channelNets.forEach((entries, k) => {
+    const slotOfNet = new Map<string, number>()
+    entries.forEach(({ portId, net }) => {
+      let slot = slotOfNet.get(net)
+      if (slot == null) {
+        slot = slotOfNet.size
+        slotOfNet.set(net, slot)
+      }
       trackByPort.set(
         portId,
         channelTop[k] + GRID_CHANNEL_MARGIN + slot * GRID_TRACK_PITCH,
@@ -899,6 +927,7 @@ export function prepareLayoutInput(
         control:
           edge.control === true ||
           Boolean(target && isRegKind(target) && isRegisterControlPin(edge.to_port)),
+        ...(edge.bits != null && edge.bits.length > 0 ? { bits: edge.bits } : {}),
         ...(sourceBoundaryMembers != null ? { sourceBoundaryMembers } : {}),
         ...(targetBoundaryMembers != null ? { targetBoundaryMembers } : {}),
       }
@@ -1052,9 +1081,11 @@ export function toElkGraph(
   // proxy port at that pin's exact height, so ELK routes the net straight to
   // the pin instead of funnelling the whole group through one point on the
   // frame edge and doubling back along a perimeter rail.
+  // A net is identified by the pin that drives it, so every edge leaving the
+  // same driver pin shares a track inside a group's channels.
   const groupEndpoints = new Map<number, {
-    west: Map<string, number>
-    east: Map<string, number>
+    west: Map<string, { member: number; net: string }>
+    east: Map<string, { member: number; net: string }>
   }>()
   const endpointsFor = (groupId: number) => {
     let entry = groupEndpoints.get(groupId)
@@ -1068,11 +1099,18 @@ export function toElkGraph(
     const fromGroupId = groupIdByMember.get(edge.from)
     const toGroupId = groupIdByMember.get(edge.to)
     if (fromGroupId === toGroupId) continue
+    const net = netKeyOf(edge)
     if (fromGroupId != null) {
-      endpointsFor(fromGroupId).east.set(sourcePortId(edge), edge.from)
+      endpointsFor(fromGroupId).east.set(sourcePortId(edge), {
+        member: edge.from,
+        net,
+      })
     }
     if (toGroupId != null) {
-      endpointsFor(toGroupId).west.set(targetPortId(edge), edge.to)
+      endpointsFor(toGroupId).west.set(targetPortId(edge), {
+        member: edge.to,
+        net,
+      })
     }
   }
 
@@ -1118,10 +1156,10 @@ export function toElkGraph(
         const child = childById.get(member)
         return { width: child?.width ?? 0, height: child?.height ?? 0 }
       },
-      [...(endpointsForGroup?.west ?? [])].map(([portId, member]) =>
-        ({ portId, member })),
-      [...(endpointsForGroup?.east ?? [])].map(([portId, member]) =>
-        ({ portId, member })),
+      [...(endpointsForGroup?.west ?? [])].map(([portId, entry]) =>
+        ({ portId, ...entry })),
+      [...(endpointsForGroup?.east ?? [])].map(([portId, entry]) =>
+        ({ portId, ...entry })),
     )
     const memberIndex = new Map(
       group.members.filter((m) => childById.has(m)).map((m, i) => [m, i]),
@@ -1181,9 +1219,9 @@ export function toElkGraph(
     const endpoints = groupEndpoints.get(group.id)
     const proxyPorts = (
       side: 'in' | 'out',
-      endpointsBySide: Map<string, number> | undefined,
+      endpointsBySide: Map<string, { member: number; net: string }> | undefined,
     ) => {
-      const ports = [...(endpointsBySide ?? [])].map(([portId, member]) => ({
+      const ports = [...(endpointsBySide ?? [])].map(([portId, { member }]) => ({
         id: `group:${group.id}#${side}:${portId}`,
         ...(stackVertically
           ? { x: side === 'in' ? 0 : groupWidth, y: proxyPortY(member, portId) }
@@ -1447,10 +1485,11 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   }
   // One sweep over the edges collects every group's boundary endpoints, keyed
   // exactly as toElkGraph keyed its ports so tracks and ports line up.
-  const westByGroup = new Map<number, Map<string, number>>()
-  const eastByGroup = new Map<number, Map<string, number>>()
+  type Endpoint = { member: number; net: string }
+  const westByGroup = new Map<number, Map<string, Endpoint>>()
+  const eastByGroup = new Map<number, Map<string, Endpoint>>()
   const endpointsInto = (
-    store: Map<number, Map<string, number>>,
+    store: Map<number, Map<string, Endpoint>>,
     groupId: number,
   ) => {
     let entry = store.get(groupId)
@@ -1463,13 +1502,14 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
   for (const edge of input.edges) {
     const fromGroup = gridGroupOfMember.get(edge.from)
     const toGroup = gridGroupOfMember.get(edge.to)
+    const net = netKeyOf(edge)
     if (toGroup != null && toGroup !== fromGroup) {
       endpointsInto(westByGroup, toGroup)
-        .set(endpointPortIdFor(edge, false), edge.to)
+        .set(endpointPortIdFor(edge, false), { member: edge.to, net })
     }
     if (fromGroup != null && fromGroup !== toGroup) {
       endpointsInto(eastByGroup, fromGroup)
-        .set(endpointPortIdFor(edge, true), edge.from)
+        .set(endpointPortIdFor(edge, true), { member: edge.from, net })
     }
   }
   for (const [id, { group, frame, present, members }] of gridGroups) {
@@ -1481,10 +1521,10 @@ export function interpretResult(input: LayoutInput, root: ElkNode): LayoutGeomet
         const node = sizeById.get(member)
         return { width: node?.width ?? 0, height: node?.height ?? 0 }
       },
-      [...(westByGroup.get(id) ?? [])].map(([portId, member]) =>
-        ({ portId, member })),
-      [...(eastByGroup.get(id) ?? [])].map(([portId, member]) =>
-        ({ portId, member })),
+      [...(westByGroup.get(id) ?? [])].map(([portId, entry]) =>
+        ({ portId, ...entry })),
+      [...(eastByGroup.get(id) ?? [])].map(([portId, entry]) =>
+        ({ portId, ...entry })),
     )
     latticeByGroup.set(id, lattice)
     latticeIndexByGroup.set(

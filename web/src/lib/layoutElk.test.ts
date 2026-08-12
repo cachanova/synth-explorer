@@ -454,3 +454,242 @@ describe('expanded grid lattice', () => {
     expect(xs.length * ys.length).toBeGreaterThanOrEqual(count)
   }, 30_000)
 })
+
+describe('expanded grid fanout bundling', () => {
+  // Build a grid group of `count` members. `shared` decides whether one driver
+  // pin feeds every member (one net fanning out) or each member gets its own
+  // driver pin (`count` independent nets).
+  const build = async (count: number, shared: boolean, referenceHeight = 140) => {
+    const cells = Array.from({ length: count }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'drv', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          from: 1,
+          to: member.id,
+          from_port: shared ? 'Y' : `Y${index}`,
+          to_port: 'I1',
+          net_name: shared ? 'bus' : `n${index}`,
+          bits: [shared ? 1 : index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `y${index}`, bits: [900 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const frame = (result.groups ?? []).find((group) => group.id === 500)
+    expect(frame).toBeDefined()
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+    return { input, result, frame: frame!, laidOut, memberIds }
+  }
+
+  it('gives a fanout net one track per row instead of one per sink', async () => {
+    const { input, result, frame, laidOut, memberIds } = await build(16, true)
+
+    const members = [...memberIds].map((id) => laidOut.get(id)!)
+    const rowCount = new Set(members.map((member) => member.y)).size
+    const firstColumnX = Math.min(...members.map((member) => member.x))
+
+    // Members in the first column are reached straight from the frame edge and
+    // need no track. Every other member's net must ride one.
+    const trackYs: number[] = []
+    let needingTrack = 0
+    input.edges.forEach((edge, index) => {
+      if (!memberIds.has(edge.to) || memberIds.has(edge.from)) return
+      const member = laidOut.get(edge.to)!
+      if (member.x <= firstColumnX) return
+      needingTrack += 1
+      // The track is the long horizontal run that carries the net across the
+      // frame; the short one at the end is just the hop onto the pin. Pick the
+      // horizontal segment with the most travel inside the frame.
+      const points = result.edges[index].points
+      let best = { span: 0, y: Number.NaN }
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        const [a, b] = [points[i], points[i + 1]]
+        if (Math.abs(a.y - b.y) > 0.5) continue
+        const span =
+          Math.min(Math.max(a.x, b.x), frame.x + frame.width) -
+          Math.max(Math.min(a.x, b.x), frame.x)
+        if (span > best.span) best = { span, y: a.y }
+      }
+      if (Number.isFinite(best.y)) trackYs.push(Math.round(best.y))
+    })
+
+    expect(needingTrack).toBeGreaterThan(rowCount)
+    // The whole point: sinks of one net share a track. Before bundling this was
+    // one distinct track per sink, so this count equalled `needingTrack`.
+    expect(new Set(trackYs).size).toBeLessThanOrEqual(rowCount)
+    expect(new Set(trackYs).size).toBeLessThan(needingTrack)
+  }, 30_000)
+
+  it('keeps distinct bus slices from one driver pin on separate tracks', async () => {
+    // A grouped bus driver emits one edge per sink from the same pin, each
+    // carrying a different slice. Those are different nets: sharing a track
+    // would draw them as one wire and claim they are connected.
+    const cells = Array.from({ length: 16 }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'bus', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          // Same driver pin for every sink, but a distinct bit each.
+          from: 1, to: member.id, from_port: 'Q', to_port: 'I1',
+          net_name: `bus[${index}]`, bits: [index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `q${index}`, bits: [500 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight: 140,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const frame = (result.groups ?? []).find((group) => group.id === 500)!
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+    const members = [...memberIds].map((id) => laidOut.get(id)!)
+    const firstColumnX = Math.min(...members.map((member) => member.x))
+
+    const trackYs: number[] = []
+    input.edges.forEach((edge, index) => {
+      if (!memberIds.has(edge.to) || memberIds.has(edge.from)) return
+      const member = laidOut.get(edge.to)!
+      if (member.x <= firstColumnX) return
+      const points = result.edges[index].points
+      let best = { span: 0, y: Number.NaN }
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        const [a, b] = [points[i], points[i + 1]]
+        if (Math.abs(a.y - b.y) > 0.5) continue
+        const span =
+          Math.min(Math.max(a.x, b.x), frame.x + frame.width) -
+          Math.max(Math.min(a.x, b.x), frame.x)
+        if (span > best.span) best = { span, y: a.y }
+      }
+      if (Number.isFinite(best.y)) trackYs.push(Math.round(best.y))
+    })
+
+    expect(trackYs.length).toBeGreaterThan(0)
+    // Every slice is its own net, so no two may share a track.
+    expect(new Set(trackYs).size).toBe(trackYs.length)
+  }, 30_000)
+
+  it('keeps a fanout group shorter than the same group with private nets', async () => {
+    const [shared, private_] = await Promise.all([
+      build(16, true),
+      build(16, false),
+    ])
+    expect(shared.frame.height).toBeLessThan(private_.frame.height)
+  }, 30_000)
+
+  it('lands every net on its pin when member widths differ', async () => {
+    // Column count is derived from member width and is computed twice: once in
+    // toElkGraph to place the ports, once in interpretResult to place the cells.
+    // Uniform members hide any disagreement, so vary the label widths.
+    const cells = Array.from({ length: 20 }, (_, index) =>
+      node(100 + index, 'x'.repeat(1 + (index % 7) * 9), {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'd', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          from: 1, to: member.id, from_port: `Y${index}`, to_port: 'I1',
+          net_name: `n${index}`, bits: [index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `q${index}`, bits: [500 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight: 140,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+
+    const misplaced: unknown[] = []
+    let checked = 0
+    input.edges.forEach((edge, index) => {
+      const entering = memberIds.has(edge.to) && !memberIds.has(edge.from)
+      const leaving = memberIds.has(edge.from) && !memberIds.has(edge.to)
+      if (!entering && !leaving) return
+      checked += 1
+      const member = laidOut.get(entering ? edge.to : edge.from)!
+      const points = result.edges[index].points
+      const pin = entering ? points.at(-1)! : points[0]
+      const wantX = entering ? member.x : member.x + member.width
+      if (Math.abs(pin.x - wantX) > 1.5) {
+        misplaced.push({ id: member.id, pinX: pin.x, wantX })
+      }
+      if (pin.y < member.y - 1 || pin.y > member.y + member.height + 1) {
+        misplaced.push({ id: member.id, pinY: pin.y, top: member.y })
+      }
+    })
+    expect(checked).toBe(40)
+    expect(misplaced).toEqual([])
+  }, 30_000)
+
+  it('sizes a grid group independently of the reference height', async () => {
+    // Once a group is a grid, `EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER` has no
+    // further say: channel height is set by how many nets cross, not by the
+    // reference, so pretending to solve for a height target only distorted the
+    // shape. Both references below are small enough to force a grid.
+    const [tight, loose] = await Promise.all([
+      build(16, true, 140),
+      build(16, true, 200),
+    ])
+    expect(tight.frame.height).toBe(loose.frame.height)
+    expect(tight.frame.width).toBe(loose.frame.width)
+  }, 30_000)
+})
