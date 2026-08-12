@@ -543,6 +543,73 @@ describe('expanded grid fanout bundling', () => {
     expect(new Set(trackYs).size).toBeLessThan(needingTrack)
   }, 30_000)
 
+  it('keeps distinct bus slices from one driver pin on separate tracks', async () => {
+    // A grouped bus driver emits one edge per sink from the same pin, each
+    // carrying a different slice. Those are different nets: sharing a track
+    // would draw them as one wire and claim they are connected.
+    const cells = Array.from({ length: 16 }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'bus', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          // Same driver pin for every sink, but a distinct bit each.
+          from: 1, to: member.id, from_port: 'Q', to_port: 'I1',
+          net_name: `bus[${index}]`, bits: [index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `q${index}`, bits: [500 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight: 140,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const frame = (result.groups ?? []).find((group) => group.id === 500)!
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+    const members = [...memberIds].map((id) => laidOut.get(id)!)
+    const firstColumnX = Math.min(...members.map((member) => member.x))
+
+    const trackYs: number[] = []
+    input.edges.forEach((edge, index) => {
+      if (!memberIds.has(edge.to) || memberIds.has(edge.from)) return
+      const member = laidOut.get(edge.to)!
+      if (member.x <= firstColumnX) return
+      const points = result.edges[index].points
+      let best = { span: 0, y: Number.NaN }
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        const [a, b] = [points[i], points[i + 1]]
+        if (Math.abs(a.y - b.y) > 0.5) continue
+        const span =
+          Math.min(Math.max(a.x, b.x), frame.x + frame.width) -
+          Math.max(Math.min(a.x, b.x), frame.x)
+        if (span > best.span) best = { span, y: a.y }
+      }
+      if (Number.isFinite(best.y)) trackYs.push(Math.round(best.y))
+    })
+
+    expect(trackYs.length).toBeGreaterThan(0)
+    // Every slice is its own net, so no two may share a track.
+    expect(new Set(trackYs).size).toBe(trackYs.length)
+  }, 30_000)
+
   it('keeps a fanout group shorter than the same group with private nets', async () => {
     const [shared, private_] = await Promise.all([
       build(16, true),

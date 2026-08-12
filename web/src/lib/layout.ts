@@ -99,6 +99,12 @@ export interface LayoutInputEdge {
   fromPort: string
   toPort: string
   control: boolean
+  /**
+   * Net bits this edge carries. One driver pin can emit several distinct nets --
+   * the slices of a bus -- so the pin alone does not identify a net. Empty or
+   * absent when the source has no bit information.
+   */
+  bits?: number[]
   sourceBoundaryMembers?: EdgeBoundaryMember[]
   targetBoundaryMembers?: EdgeBoundaryMember[]
 }
@@ -173,11 +179,19 @@ function expandedGroupColumnCount(
 // really need the room.
 // ---------------------------------------------------------------------------
 
-// One electrical net is whatever a single driver pin drives, however many sinks
-// it reaches. Grid channels allocate a track per net under this key, so a
-// high-fanout net costs one track rather than one per sink.
+// Identifies the net an edge carries, so grid channels can allocate one track
+// per net instead of one per sink: a high-fanout net costs a single track.
+//
+// The driver pin alone is not enough. A grouped bus driver emits one edge per
+// sink from the same pin, each carrying a different slice of the bus -- those
+// are distinct nets and must not share a track, or the picture would claim they
+// are electrically connected. The bit set is what separates them. When an edge
+// carries no bits there is nothing to prove two edges are the same net, so each
+// falls back to its own key rather than risking a false merge.
 const netKeyOf = (edge: LayoutInputEdge): string =>
-  `${edge.from}#${edge.fromPort}`
+  edge.bits != null && edge.bits.length > 0
+    ? `${edge.from}#${edge.fromPort}#${[...edge.bits].sort((a, b) => a - b).join(',')}`
+    : `edge:${edge.from}#${edge.fromPort}#${edge.to}#${edge.toPort}`
 
 const GRID_GUTTER = 26          // clear space between two columns of cells
 const GRID_TRACK_PITCH = 7      // vertical distance between wires in a channel
@@ -266,9 +280,9 @@ function planGridLattice(
   // The outermost channels sit against the frame rather than between two rows,
   // so they take no space unless a net actually rides them. Interior channels
   // always keep a gap, since rows must not touch.
-  const channelHeight = channelNets.map((nets, k) =>
+  const channelHeight = channelNets.map((entries, k) =>
     k === 0 || k === rowCount
-      ? (nets.length === 0 ? 0 : demand(nets))
+      ? (entries.length === 0 ? 0 : demand(entries))
       : uniformInterior,
   )
   // Start below the header band so a track never crosses the group's label.
@@ -913,6 +927,7 @@ export function prepareLayoutInput(
         control:
           edge.control === true ||
           Boolean(target && isRegKind(target) && isRegisterControlPin(edge.to_port)),
+        ...(edge.bits != null && edge.bits.length > 0 ? { bits: edge.bits } : {}),
         ...(sourceBoundaryMembers != null ? { sourceBoundaryMembers } : {}),
         ...(targetBoundaryMembers != null ? { targetBoundaryMembers } : {}),
       }
