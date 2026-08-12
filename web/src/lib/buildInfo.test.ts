@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { BUILD_COMMIT, buildCommitUrl, shortBuildCommit } from './buildInfo'
 
 describe('build stamp', () => {
+  // Tests always run inside a git checkout, so a missing commit here means the
+  // build-time injection broke rather than that the context was unavailable.
   it('carries the commit the bundle was built from', () => {
-    expect(BUILD_COMMIT).toMatch(/^([0-9a-f]{40})?$/)
+    expect(BUILD_COMMIT).toMatch(/^[0-9a-f]{40}$/)
   })
 
   it('abbreviates a commit to twelve characters', () => {

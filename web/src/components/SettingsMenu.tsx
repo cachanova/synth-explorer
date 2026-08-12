@@ -357,7 +357,12 @@ export function SettingsMenu() {
             <div className="settings-build">
               <span>Build</span>
               {commitUrl ? (
-                <a href={commitUrl} target="_blank" rel="noreferrer">
+                <a
+                  href={commitUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Build commit ${shortBuildCommit(BUILD_COMMIT)} on GitHub (opens in a new tab)`}
+                >
                   {shortBuildCommit(BUILD_COMMIT)}
                 </a>
               ) : (
