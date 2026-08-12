@@ -8,11 +8,9 @@ export const analysissession_expand_group_json: (a: number, b: number, c: number
 export const analysissession_fanout_json: (a: number, b: number) => [number, number, number, number];
 export const analysissession_netlist_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
-export const analysissession_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_paths_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_source_for_nets_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_source_for_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
-export const analysissession_source_map_json: (a: number) => [number, number, number, number];
 export const analysissession_source_selection_json: (a: number, b: number, c: number) => [number, number, number, number];
 export const analysissession_summary_json: (a: number) => [number, number, number, number];
 export const analysissession_timing_json: (a: number, b: number, c: number) => [number, number, number, number];

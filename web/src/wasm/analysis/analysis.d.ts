@@ -10,11 +10,9 @@ export class AnalysisSession {
     fanout_json(limit?: number | null): string;
     netlist_json(query_json: string): string;
     constructor(design_id: string, netlist_json: string, source_netlist_json: string, flat_source_netlist_json: string, files_json: string, mode: string, tool: string, profile: string);
-    nodes_json(ids_json: string): string;
     paths_json(query_json: string): string;
     source_for_nets_json(query_json: string): string;
     source_for_nodes_json(ids_json: string): string;
-    source_map_json(): string;
     source_selection_json(query_json: string): string;
     summary_json(): string;
     timing_json(query_json: string): string;
@@ -31,11 +29,9 @@ export interface InitOutput {
     readonly analysissession_fanout_json: (a: number, b: number) => [number, number, number, number];
     readonly analysissession_netlist_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
-    readonly analysissession_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_paths_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_source_for_nets_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_source_for_nodes_json: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly analysissession_source_map_json: (a: number) => [number, number, number, number];
     readonly analysissession_source_selection_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly analysissession_summary_json: (a: number) => [number, number, number, number];
     readonly analysissession_timing_json: (a: number, b: number, c: number) => [number, number, number, number];

@@ -24,7 +24,7 @@ needs the bridge described in [`../vivado-bridge/`](../vivado-bridge/).
 | `npx tsc -b` | Type-check the application and workers |
 | `npm run build` | Produce the static `dist/` deployment |
 | `npm run test:e2e` | Build-independent Playwright checks against `PLAYWRIGHT_BASE_URL` or local preview |
-| `npm run generate:precomputed` | Regenerate gate-mode artifacts for the default design and both language variants of every bundled example |
+| `npm run generate:precomputed` | Regenerate gate-mode artifacts for the default design and every declared bundled-example variant |
 | `npm run verify:precomputed` | Verify precomputed coverage, exact input keys, producer, schema, and artifact shape |
 
 Run `npm run build` before `npm run test:e2e`; Playwright starts a local Vite
@@ -44,9 +44,9 @@ preview automatically unless `PLAYWRIGHT_BASE_URL` points elsewhere.
 - `public/precomputed/` contains content-addressed gate-mode artifacts for the
   default design and bundled examples; `src/data/precomputedManifest.json`
   limits which exact input keys may use them.
-- `src/data/examples/` is the canonical bundled example catalog. Every concept
-  has paired Verilog/SystemVerilog and VHDL variants selected with the toolbar
-  language toggle.
+- `src/data/examples/` is the canonical bundled example catalog. Each concept
+  declares its available Verilog/SystemVerilog and VHDL variants for the
+  toolbar language toggle.
 
 The editor workspace (open source files, active file, top, platform, and flags)
 is saved in IndexedDB and restored after a refresh. The trash button resets that

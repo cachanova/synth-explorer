@@ -27,13 +27,15 @@ pub const LOCAL_APP_ORIGIN: &str = "http://127.0.0.1:32124";
 pub const PROTOCOL_VERSION: u32 = 2;
 const LOG_TAIL_LIMIT: usize = 64 * 1024;
 const NETLIST_SIZE_LIMIT: u64 = 64 * 1024 * 1024;
-const REQUEST_BODY_LIMIT: usize = 8 * 1024 * 1024;
+const REQUEST_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const SOURCE_SIZE_LIMIT: usize = 4 * 1024 * 1024;
+const EDIF_SIZE_LIMIT: usize = 16 * 1024 * 1024;
 const TIMING_REPORT_SIZE_LIMIT: u64 = 256 * 1024;
 const VIVADO_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(45);
 const PART_MARKER: &str = "SYNTH_EXPLORER_PART\t";
 const NETLIST_MARKER_NAME: &str = "netlist-complete.marker";
+const TIMING_MARKER_NAME: &str = "timing-complete.marker";
 const TIMING_METADATA_NAME: &str = "vivado-timing.tsv";
 const TIMING_REPORT_NAME: &str = "vivado-timing.rpt";
 #[cfg(target_os = "linux")]
@@ -57,6 +59,7 @@ pub struct BridgeStatus {
     pub protocol_version: u32,
     pub bridge_version: &'static str,
     pub vivado_version: String,
+    pub edif_timing: bool,
     pub parts: Vec<VivadoPart>,
 }
 
@@ -82,6 +85,27 @@ pub struct SynthesisResponse {
     pub log: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timing: Option<VivadoTimingReport>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct EdifTimingRequest {
+    pub edif: String,
+    pub top: String,
+    pub target: String,
+    #[serde(default = "default_max_paths")]
+    pub max_paths: u32,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct EdifTimingResponse {
+    pub top: String,
+    pub target: String,
+    pub timing: VivadoTimingReport,
+    pub log: String,
+}
+
+const fn default_max_paths() -> u32 {
+    1
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -197,8 +221,49 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/v1/status", get(status).options(preflight))
         .route("/v1/synthesize", post(synthesize).options(preflight))
+        .route("/v1/time-edif", post(time_edif).options(preflight))
         .layer(DefaultBodyLimit::max(REQUEST_BODY_LIMIT))
         .with_state(state)
+}
+
+async fn time_edif(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<EdifTimingRequest>,
+) -> Response {
+    let origin = match allowed_origin(&state, &headers) {
+        Ok(origin) => origin,
+        Err(error) => return error.into_response(),
+    };
+    let request = match validate_edif_timing_request(request, &state.status.parts) {
+        Ok(request) => request,
+        Err(error) => return with_cors(error.into_response(), origin),
+    };
+    let permit = match state.running.clone().try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return with_cors(
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(ErrorResponse {
+                        error: "a vivado synthesis is already running".to_owned(),
+                        log: None,
+                    }),
+                )
+                    .into_response(),
+                origin,
+            );
+        }
+    };
+    let result = run_edif_timing(&state.vivado_bin, &request).await;
+    drop(permit);
+    with_cors(
+        match result {
+            Ok(result) => Json(result).into_response(),
+            Err(error) => error.into_response(),
+        },
+        origin,
+    )
 }
 
 async fn preflight(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -340,6 +405,45 @@ struct ValidatedRequest {
     top: String,
     target: String,
     extra_args: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ValidatedEdifTimingRequest {
+    edif: String,
+    top: String,
+    target: String,
+}
+
+fn validate_edif_timing_request(
+    request: EdifTimingRequest,
+    installed_parts: &[VivadoPart],
+) -> Result<ValidatedEdifTimingRequest, BridgeError> {
+    if request.edif.is_empty() {
+        return Err(validation("EDIF input is empty"));
+    }
+    if request.edif.len() > EDIF_SIZE_LIMIT {
+        return Err(validation("EDIF input exceeds the 16 MiB limit"));
+    }
+    if !valid_identifier(&request.top) {
+        return Err(validation(format!(
+            "invalid top module or entity: {}",
+            request.top
+        )));
+    }
+    if !installed_parts
+        .iter()
+        .any(|part| part.name == request.target)
+    {
+        return Err(validation("Vivado target is not installed locally"));
+    }
+    if request.max_paths != 1 {
+        return Err(validation("EDIF calibration requires max_paths=1"));
+    }
+    Ok(ValidatedEdifTimingRequest {
+        edif: request.edif,
+        top: request.top,
+        target: request.target,
+    })
 }
 
 fn validate_request(
@@ -522,6 +626,7 @@ pub async fn preflight_vivado(vivado_bin: &Path) -> Result<BridgeStatus, BridgeE
         protocol_version: PROTOCOL_VERSION,
         bridge_version: env!("CARGO_PKG_VERSION"),
         vivado_version: version,
+        edif_timing: true,
         parts,
     })
 }
@@ -733,6 +838,50 @@ async fn run_vivado(
     })
 }
 
+async fn run_edif_timing(
+    vivado_bin: &Path,
+    input: &ValidatedEdifTimingRequest,
+) -> Result<EdifTimingResponse, BridgeError> {
+    let temp = TempDir::new()?;
+    fs::write(temp.path().join("netlist.edif"), &input.edif).await?;
+    let tcl_path = temp.path().join("time-edif.tcl");
+    fs::write(&tcl_path, build_edif_tcl(input)).await?;
+    let console_path = temp.path().join("vivado-console.log");
+    let vivado_log_path = temp.path().join("vivado.log");
+    let mut command = Command::new(vivado_bin);
+    command
+        .args(["-mode", "batch", "-nojournal", "-notrace", "-log"])
+        .arg(&vivado_log_path)
+        .arg("-source")
+        .arg(&tcl_path)
+        .current_dir(temp.path())
+        .kill_on_drop(true);
+    apply_vivado_environment(&mut command, vivado_bin);
+    let status = run_command(&mut command, VIVADO_TIMEOUT, &console_path).await;
+    let log = combined_log(&[&vivado_log_path, &console_path]).await;
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(_) => return Err(BridgeError::Vivado { log }),
+        Err(CommandFailure::Timeout) => return Err(BridgeError::Timeout { log }),
+        Err(CommandFailure::Io(error)) => return Err(BridgeError::Io(error)),
+    }
+    if fs::metadata(temp.path().join(TIMING_MARKER_NAME))
+        .await
+        .is_err()
+    {
+        return Err(BridgeError::Vivado { log });
+    }
+    let timing = read_timing(temp.path())
+        .await?
+        .ok_or_else(|| validation("Vivado found no timing path in the EDIF design"))?;
+    Ok(EdifTimingResponse {
+        top: input.top.clone(),
+        target: input.target.clone(),
+        timing,
+        log,
+    })
+}
+
 fn build_tcl(
     input: &ValidatedRequest,
     output: &str,
@@ -825,6 +974,48 @@ fn build_tcl(
     )
     .unwrap();
     writeln!(&mut script, "close [open {{{NETLIST_MARKER_NAME}}} w]").unwrap();
+    script
+}
+
+fn build_edif_tcl(input: &ValidatedEdifTimingRequest) -> String {
+    let mut script = format!(
+        "create_project -in_memory -part {{{target}}}\n\
+         read_edif {{netlist.edif}}\n\
+         link_design -part {{{target}}} -mode out_of_context\n\
+         set synth_explorer_linked_top [get_property TOP [current_design]]\n\
+         if {{![string equal $synth_explorer_linked_top {{{top}}}]}} {{ error \"linked EDIF top does not match request\" }}\n\
+         set synth_explorer_clk_ports [get_ports -quiet clk]\n\
+         if {{[llength $synth_explorer_clk_ports] > 0}} {{\n\
+         \tcreate_clock -name cal_clk -period 10.000 $synth_explorer_clk_ports\n\
+         }} else {{\n\
+         \tcreate_clock -name cal_clk -period 10.000\n\
+         }}\n\
+         set synth_explorer_in_ports [get_ports -quiet -filter {{DIRECTION == IN && NAME !~ \"*clk*\"}}]\n\
+         set synth_explorer_out_ports [get_ports -quiet -filter {{DIRECTION == OUT}}]\n\
+         if {{[llength $synth_explorer_in_ports] > 0}} {{ set_input_delay -clock cal_clk 0.000 $synth_explorer_in_ports }}\n\
+         if {{[llength $synth_explorer_out_ports] > 0}} {{ set_output_delay -clock cal_clk 0.000 $synth_explorer_out_ports }}\n",
+        target = input.target,
+        top = input.top,
+    );
+    let shared = build_tcl(
+        &ValidatedRequest {
+            files: Vec::new(),
+            top: input.top.clone(),
+            target: input.target.clone(),
+            extra_args: Vec::new(),
+        },
+        "unused.v",
+        TIMING_METADATA_NAME,
+        TIMING_REPORT_NAME,
+    );
+    let timing_start = shared
+        .find("proc synth_explorer_prop")
+        .expect("timing Tcl start is present");
+    let timing_end = shared
+        .find("write_verilog")
+        .expect("timing Tcl end is present");
+    script.push_str(&shared[timing_start..timing_end]);
+    writeln!(&mut script, "close [open {{{TIMING_MARKER_NAME}}} w]").unwrap();
     script
 }
 
@@ -1073,6 +1264,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 bridge_version: "test",
                 vivado_version: "Vivado v2026.1".to_owned(),
+                edif_timing: true,
                 parts: vec![part()],
             },
             ["https://synthexplorer.dev".to_owned()],
@@ -1114,6 +1306,7 @@ mod tests {
         let body = allowed.into_body().collect().await.unwrap().to_bytes();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(body["edif_timing"], true);
     }
 
     #[tokio::test]
@@ -1123,6 +1316,7 @@ mod tests {
                 protocol_version: PROTOCOL_VERSION,
                 bridge_version: "test",
                 vivado_version: "Vivado v2026.1".to_owned(),
+                edif_timing: true,
                 parts: vec![part()],
             },
             bridge_allowed_origins([]),
@@ -1173,6 +1367,44 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn edif_timing_validation_is_bounded_and_part_authoritative() {
+        let request = |edif: &str, target: &str, max_paths| EdifTimingRequest {
+            edif: edif.to_owned(),
+            top: "top".to_owned(),
+            target: target.to_owned(),
+            max_paths,
+        };
+        assert!(validate_edif_timing_request(request("", &part().name, 1), &[part()]).is_err());
+        assert!(
+            validate_edif_timing_request(request("(edif x)", "missing", 1), &[part()]).is_err()
+        );
+        assert!(
+            validate_edif_timing_request(request("(edif x)", &part().name, 2), &[part()]).is_err()
+        );
+        assert!(
+            validate_edif_timing_request(request("(edif x)", &part().name, 1), &[part()]).is_ok()
+        );
+    }
+
+    #[test]
+    fn edif_timing_tcl_links_without_top_and_checks_the_linked_design() {
+        let input = ValidatedEdifTimingRequest {
+            edif: "(edif x)".to_owned(),
+            top: "top$generated".to_owned(),
+            target: part().name,
+        };
+        let script = build_edif_tcl(&input);
+        assert!(script.contains("read_edif {netlist.edif}"));
+        assert!(script.contains("link_design -part {xc7a35tcpg236-1} -mode out_of_context"));
+        assert!(!script.contains("link_design -top"));
+        assert!(script.contains("string equal $synth_explorer_linked_top {top$generated}"));
+        assert!(!script.contains("ne \"top$generated\""));
+        assert!(script.contains("linked EDIF top does not match request"));
+        assert!(script.contains("create_clock -name cal_clk -period 10.000"));
+        assert!(script.contains("report_timing -max_paths 1 -delay_type max"));
     }
 
     #[test]
@@ -1370,6 +1602,7 @@ case "$*" in
     printf 'path\t4.016\t3.216\t0.800\t2\t\t\tq_reg[0]/C\tq[0]\t(none)\tSlow\tmax\n' > vivado-timing.tsv
     printf 'Timing Report\n\nSlack:                    inf\n  Data Path Delay:        4.016ns  (logic 3.216ns route 0.800ns)\n' > vivado-timing.rpt
     : > netlist-complete.marker
+    : > timing-complete.marker
     ;;
 esac
 "#,
@@ -1419,5 +1652,14 @@ esac
                 report: "Timing Report\n\nSlack:                    inf\n  Data Path Delay:        4.016ns  (logic 3.216ns route 0.800ns)\n".to_owned(),
             })
         );
+
+        let edif = ValidatedEdifTimingRequest {
+            edif: "(edif top)".to_owned(),
+            top: "top".to_owned(),
+            target: part().name,
+        };
+        let result = run_edif_timing(&executable, &edif).await.unwrap();
+        assert_eq!(result.top, "top");
+        assert_eq!(result.timing.data_path_delay_ns, 4.016);
     }
 }

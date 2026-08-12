@@ -1,0 +1,9 @@
+{
+  "extends": "../web/tsconfig.app.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../web/node_modules/.tmp/tsconfig.calibration.tsbuildinfo",
+    "types": ["node"],
+    "typeRoots": ["../web/node_modules/@types"]
+  },
+  "include": ["*.ts"]
+}

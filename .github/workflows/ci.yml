@@ -74,6 +74,9 @@ jobs:
         working-directory: web/public/ghdl
         run: sha256sum --check SHA256SUMS
 
+      - name: Exercise pinned GHDL fixtures
+        run: tools/ghdl-wasm/test.sh
+
       - name: Verify precomputed example designs
         working-directory: web
         run: npm run verify:precomputed
@@ -85,6 +88,9 @@ jobs:
       - name: Run lint
         working-directory: web
         run: npm run lint
+
+      - name: Type-check calibration scripts
+        run: web/node_modules/.bin/tsc -p calibration/tsconfig.json
 
       - name: Build static application
         working-directory: web

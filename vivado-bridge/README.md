@@ -90,7 +90,7 @@ cargo build --release --locked -p synth-explorer-vivado-bridge \
   user authorizes access by explicitly starting a loopback-only connector.
 - Source filenames, top, target, and `synth_design` tokens are validated before
   a Tcl script is generated; inputs are never interpolated into a shell command.
-- Source input is capped at 4 MiB, the returned structural netlist at 64 MiB,
+- Source input is capped at 4 MiB, calibration EDIF at 16 MiB, the returned structural netlist at 64 MiB,
   timing reports at 256 KiB, logs at 64 KiB, runtime at five minutes, and
   concurrency at one synthesis.
 - The concrete target must exist in the part catalog returned by the local
@@ -99,3 +99,14 @@ cargo build --release --locked -p synth-explorer-vivado-bridge \
 The website receives structural Verilog and normalizes it with its pinned Yosys
 WebAssembly build before running the same browser-local Rust analysis used by
 the regular flow.
+
+## Local calibration endpoint
+
+The bridge also exposes `POST /v1/time-edif` for the repository's manual delay
+calibration workflow. It accepts bounded EDIF content, an expected top, an
+installed target, and `max_paths: 1`; it never accepts a host filesystem path.
+Vivado links that exact Yosys netlist out of context, verifies the linked top,
+and returns the same bounded timing report as ordinary synthesis. The endpoint
+shares the bridge's one-job semaphore, five-minute timeout, process cleanup,
+part catalog, and exact-Origin policy. See `calibration/README.md` for the
+resumable matrix collector and coefficient-tuning discipline.

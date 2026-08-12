@@ -78,8 +78,8 @@ use serde::{Deserialize, Serialize};
 /// silicon those numbers describe. Speed-grade scaling is a property of the
 /// silicon — Series-7 gains far more from a -3 grade than UltraScale+ does — so
 /// it has to key on this rather than on the coefficient values.
-// Deliberately NOT Serialize/Deserialize. API and persisted-design responses
-// use the explicit profile-name mapping in `api.rs`; serde's snake_case would
+// Deliberately NOT Serialize/Deserialize. WASM and persisted-design responses
+// use the explicit profile-name mapping; serde's snake_case would
 // render `UltraScalePlus` as "ultra_scale_plus", disagreeing with `from_name`
 // and the client's union type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, DeepSizeOf)]

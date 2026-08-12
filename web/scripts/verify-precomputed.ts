@@ -15,7 +15,7 @@ import {
 
 interface SourceManifestEntry {
   name: string
-  variants: Record<'verilog' | 'vhdl', { top: string; files: string[] }>
+  variants: Partial<Record<'verilog' | 'vhdl', { top: string; files: string[] }>>
 }
 
 interface PrecomputedEntry {

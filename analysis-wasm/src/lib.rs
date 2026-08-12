@@ -153,11 +153,6 @@ struct SourceSelectionQuery {
     group_memories: Option<bool>,
 }
 
-#[derive(Serialize)]
-struct NodesResponse {
-    nodes: Vec<synth_explorer_analysis::analysis::NodeRef>,
-}
-
 #[wasm_bindgen]
 pub struct AnalysisSession {
     design_id: String,
@@ -414,23 +409,6 @@ impl AnalysisSession {
                 .analysis
                 .fanout(&self.design.graph, limit.unwrap_or(50).min(500)),
         )
-    }
-
-    pub fn source_map_json(&self) -> Result<String, JsValue> {
-        to_json(&self.design.analysis.source_map())
-    }
-
-    pub fn nodes_json(&self, ids_json: &str) -> Result<String, JsValue> {
-        let ids: Vec<u32> = parse_json(ids_json, "node ids")?;
-        if ids.len() > 200 {
-            return Err(js_error("at most 200 node ids may be requested"));
-        }
-        let nodes = ids
-            .into_iter()
-            .filter(|id| self.design.graph.nodes.get(*id as usize).is_some())
-            .map(|id| self.design.analysis.node_ref(&self.design.graph, id))
-            .collect();
-        to_json(&NodesResponse { nodes })
     }
 
     pub fn source_selection_json(&self, query_json: &str) -> Result<String, JsValue> {
@@ -713,48 +691,8 @@ mod tests {
     }
 
     #[test]
-    fn provenance_json_preserves_casing_omission_and_deterministic_order() {
+    fn source_selection_json_preserves_casing_and_deterministic_order() {
         let session = session("gates", "generic");
-        let source_map_raw = session
-            .source_map_json()
-            .expect("source map query succeeds");
-        assert_json_keys_in_order(
-            &source_map_raw,
-            &["files", "by_line", "ranges", "truncated"],
-        );
-        let source_map: serde_json::Value =
-            serde_json::from_str(&source_map_raw).expect("source map JSON parses");
-        assert_eq!(
-            source_map["files"],
-            serde_json::json!(["round_robin_arbiter.sv"])
-        );
-        let ranges = source_map["ranges"]
-            .as_array()
-            .expect("source ranges are an array");
-        assert!(!ranges.is_empty());
-        assert!(ranges.iter().all(|range| {
-            range.get("file").is_some()
-                && range.get("start_line").is_some()
-                && range.get("end_line").is_some()
-                && range.get("node_ids").is_some()
-                && range.get("mapping_incomplete").is_some()
-                && range.get("signal_bits").is_none()
-                && range.get("approximate_signal_bits").is_none()
-        }));
-        let locations = ranges
-            .iter()
-            .map(|range| {
-                (
-                    range["file"].as_str().expect("range file").to_owned(),
-                    range["start_line"].as_u64().expect("range start line"),
-                    range["end_line"].as_u64().expect("range end line"),
-                    range.get("start_column").and_then(|value| value.as_u64()),
-                    range.get("end_column").and_then(|value| value.as_u64()),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert!(locations.windows(2).all(|pair| pair[0] <= pair[1]));
-
         let selection_raw = session
             .source_selection_json(
                 &serde_json::json!({
@@ -780,25 +718,9 @@ mod tests {
         assert!(selection.get("direct_ids").is_none());
         assert!(selection.get("direct_bits").is_none());
 
-        let nodes_raw = session
-            .nodes_json("[0]")
-            .expect("node source query succeeds");
-        let nodes: serde_json::Value = serde_json::from_str(&nodes_raw).expect("node JSON parses");
-        assert_eq!(nodes["nodes"].as_array().map(Vec::len), Some(1));
-        assert!(nodes["nodes"][0].get("src").is_some());
-        assert_eq!(nodes["nodes"][0]["port_direction"], "input");
-
         assert_eq!(
-            [
-                json_digest(&source_map_raw),
-                json_digest(&selection_raw),
-                json_digest(&nodes_raw),
-            ],
-            [
-                0x46a2_3292_4aa2_e2bd,
-                0x7cb9_f6a4_9b9c_718c,
-                0x30f0_c349_fd9b_88b2,
-            ],
+            json_digest(&selection_raw),
+            0x7cb9_f6a4_9b9c_718c,
             "update only after intentionally reviewing all provenance wire changes"
         );
     }

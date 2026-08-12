@@ -8,6 +8,6 @@ export const MAX_GROUP_EXPANSION_RENDER_NODES = 4096
 // analysis-wasm, which rejects a larger open set.
 export const MAX_OPEN_EXPANDED_GROUPS = 8
 
-// Keep this synchronized with the server's merged-edge response cap. Node
+// Keep this synchronized with analysis_core::MAX_SUBGRAPH_EDGES. Node
 // bounds alone do not protect ELK/SVG from a dense, near-complete graph.
 export const MAX_GRAPH_EDGES = 10_000

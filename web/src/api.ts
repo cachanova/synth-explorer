@@ -10,9 +10,7 @@ import {
   localEndpoints,
   localFanout,
   localNetlist,
-  localNodes,
   localPaths,
-  localSourceMap,
   localTiming,
   synthesizeLocally,
 } from './lib/localEngine'
@@ -26,9 +24,7 @@ import type {
   ExamplesResponse,
   FanoutResponse,
   Mode,
-  NodesResponse,
   PathsResponse,
-  SourceMapResponse,
   GroupExpansion,
   Subgraph,
   SynthesizeRequest,
@@ -193,15 +189,6 @@ export function expandGroup(
     group_vectors: opts.group_vectors ?? false,
     group_memories: opts.group_memories ?? false,
   }, signal)
-}
-
-export function getSourceMap(id: string): Promise<SourceMapResponse> {
-  return localSourceMap(id)
-}
-
-/** Resolve node ids to display metadata. Caps at the contract's 200-id limit. */
-export function getNodes(id: string, ids: number[]): Promise<NodesResponse> {
-  return localNodes(id, ids)
 }
 
 export function getExamples(): Promise<ExamplesResponse> {

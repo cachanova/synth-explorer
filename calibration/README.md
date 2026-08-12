@@ -66,6 +66,75 @@ cargo run -p synth-explorer-calibration -- report /home/leela/tmp/est.json calib
 cargo run -p synth-explorer-calibration -- fit calibration/vivado-2026.1.json
 ```
 
+### Collecting through the local Vivado bridge
+
+The preferred manual workflow sends the app's Yosys EDIF to a locally licensed
+Vivado through the same loopback-only bridge used by the application. This
+holds the netlist constant, checks the installed part catalog before starting,
+and saves each result atomically so a long run can resume.
+
+First generate the pinned cases and install the web dependencies. The collector
+also requires a native Yosys whose major/minor version matches the production
+build; it fails closed on a mismatch.
+
+```bash
+cd web && npm ci && cd ..
+cargo run -p synth-explorer-calibration -- gen \
+  web/src/data/examples /home/leela/tmp/cal-cases
+cargo run --release -p synth-explorer-vivado-bridge -- \
+  --vivado /path/to/Vivado/2026.1/bin/vivado \
+  --allow-origin http://127.0.0.1:32126
+```
+
+In another terminal, collect the 120-record production matrix: all 24 designs
+on the -1 part for all three Xilinx families, plus the eight declared
+speed-grade cases on -2 and -3.
+
+```bash
+web/node_modules/.bin/tsx calibration/collect-vivado.ts \
+  /home/leela/tmp/cal-cases /home/leela/tmp/cal-2026.1 production
+```
+
+For mapping sensitivity, run every design at the baseline grade with several
+explicit flag variants. These results are separate holdouts and must not be
+pooled into the production coefficient fit:
+
+```bash
+web/node_modules/.bin/tsx calibration/collect-vivado.ts \
+  /home/leela/tmp/cal-cases /home/leela/tmp/cal-2026.1 \
+  native-carry,wide-lut,no-carry
+```
+
+The variants are derived from the live browser flag registry:
+
+| variant | change from the visible production defaults |
+|---|---|
+| `production` | none |
+| `native-carry` | remove `-narrowcarry 8` |
+| `wide-lut` | remove `-nowidelut` |
+| `no-carry` | remove `-narrowcarry 8`, add `-nocarry` |
+
+Every variant retains `-noiopad`; calibration adds `-noclkbuf` solely to match
+Vivado's out-of-context boundary. The collector stores each variant's Vivado
+records in `<out>/<variant>.json` and the exact Yosys script, JSON netlist, and
+EDIF under `<out>/artifacts/`. It also places production EDIFs under
+`<cases-dir>/edif/` for `vivado_edif.tcl` and `cells.tcl`. Production output
+feeds the existing report and speed-grade fit directly:
+
+```bash
+cargo run -p synth-explorer-calibration -- estimate \
+  /home/leela/tmp/cal-cases /home/leela/tmp/est.json
+cargo run -p synth-explorer-calibration -- report \
+  /home/leela/tmp/est.json /home/leela/tmp/cal-2026.1/production.json
+cargo run -p synth-explorer-calibration -- fit \
+  /home/leela/tmp/cal-2026.1/production.json
+```
+
+Tune candidate values against the saved production netlists and rerun
+`estimate`/`report`; do not fit coefficients to the structurally different
+Vivado-RTL netlist or combine sensitivity variants. The output remains a local
+artifact and the collector never rewrites `delay_model.rs`.
+
 `estimate` runs the three Xilinx families. `estimate-lattice` runs iCE40 and
 ECP5 through the production synthesis modes and shipped visible defaults (ECP5
 includes `-noiopad`; iCE40 has no such synthesis flag). It also records the
@@ -119,7 +188,7 @@ the Yosys netlist itself into Vivado over EDIF and running the same
 - `vivado_edif.tcl` vs `vivado.tcl` = pure **mapping** (netlist-shape) error,
   Vivado's model on both sides.
 
-Export one EDIF per case/family with the app's exact baseline synthesis
+The bridge collector above exports one EDIF per case/family with the app's exact baseline synthesis
 script — the flags must match what `calibrate estimate` runs (`estimate_case`
 in `calibration/src/main.rs`), while the script itself is rendered by the
 canonical `web/src/lib/yosysScript.ts` builder. The app's Xilinx pipeline
@@ -237,7 +306,7 @@ nets are all fanout-2 (no variance) and drag the pooled slope to nothing.
 Acting on the pooled number would have shipped `net_per_fanout_ps = 0` on the
 default profile, quietly making the fanout knob inert.
 
-The harness does **not** do this fit for you — `calibrate fit` only derives the
+The harness does **not** rewrite these values for you — `calibrate fit` only derives the
 speed-grade factors (Vivado -1 vs -N). Fit the net terms yourself, from the
 `NET:` rows `cells.tcl` emits: centre `log2(fanout)` and delay within each
 design, regress on the residuals for the shared slope, and skip designs with no

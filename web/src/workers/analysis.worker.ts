@@ -22,8 +22,6 @@ export type AnalysisMethod =
   | 'netlist'
   | 'expandGroup'
   | 'fanout'
-  | 'sourceMap'
-  | 'nodes'
   | 'source'
   | 'sourceForNodes'
   | 'sourceForNets'
@@ -90,10 +88,6 @@ function query(active: AnalysisSession, method: AnalysisMethod, payload?: unknow
       return parse(active.expand_group_json(JSON.stringify(payload ?? {})))
     case 'fanout':
       return parse(active.fanout_json(typeof payload === 'number' ? payload : undefined))
-    case 'sourceMap':
-      return parse(active.source_map_json())
-    case 'nodes':
-      return parse(active.nodes_json(JSON.stringify(payload ?? [])))
     case 'source':
       return parse(active.source_selection_json(JSON.stringify(payload ?? {})))
     case 'sourceForNodes':

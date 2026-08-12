@@ -2,9 +2,7 @@ import type {
   EndpointsResponse,
   FanoutResponse,
   GroupExpansion,
-  NodesResponse,
   PathsResponse,
-  SourceMapResponse,
   Subgraph,
   SynthesizeRequest,
   SynthesizeResponse,
@@ -227,14 +225,6 @@ export function localExpandGroup(
   signal?: AbortSignal,
 ): Promise<GroupExpansion> {
   return abortable(queryAnalysis('expandGroup', options), signal)
-}
-
-export function localSourceMap(_id: string): Promise<SourceMapResponse> {
-  return queryAnalysis('sourceMap')
-}
-
-export function localNodes(_id: string, ids: number[]): Promise<NodesResponse> {
-  return queryAnalysis('nodes', ids.slice(0, 200))
 }
 
 function runGhdl(

@@ -159,6 +159,7 @@ export interface VivadoBridgeStatus {
   protocol_version: number
   bridge_version: string
   vivado_version: string
+  edif_timing?: boolean
   parts: VivadoPart[]
 }
 
@@ -207,8 +208,8 @@ export interface GateDelays {
   not?: number
 }
 
-// Delay coefficients (picoseconds) — mirrors the server DelayModel. gate_ps is
-// present only for standard-cell profiles; its absence preserves the legacy
+// Delay coefficients (picoseconds) mirrored from the Rust DelayModel. gate_ps is
+// present only for standard-cell profiles; its absence preserves the original
 // eight-field FPGA/generic shape.
 export interface DelayModel {
   lut_ps: number
@@ -395,35 +396,6 @@ export interface FanoutResponse {
   drivers: FanoutDriver[]
 }
 
-// --- Node metadata ---
-// Resolve node ids to display metadata. Returned in request order; unknown
-// ids omitted. At most 200 ids per request (422 above that).
-
-export interface NodesResponse {
-  nodes: NodeRef[]
-}
-
-// --- Source mapping ---
-
-export interface SourceRangeMapping {
-  file: string
-  start_line: number
-  end_line: number
-  start_column?: number
-  end_column?: number
-  node_ids: number[]
-  signalBits?: number[]
-  approximateSignalBits?: number[]
-  mapping_incomplete: boolean
-}
-
-export interface SourceMapResponse {
-  files: string[] // filenames as submitted
-  by_line: Record<string, number[]> // "file.sv:12" -> node ids
-  ranges: SourceRangeMapping[]
-  truncated: boolean
-}
-
 // --- Bundled examples ---
 
 export type ExampleLanguage = 'verilog' | 'vhdl'
@@ -442,11 +414,4 @@ export interface Example {
 
 export interface ExamplesResponse {
   examples: Example[]
-}
-
-// --- Errors ---
-
-export interface ApiError {
-  error: string
-  log?: string
 }

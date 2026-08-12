@@ -20,7 +20,6 @@ export interface SourceNetSelection {
   bits: number[]
 }
 
-/** Backend query lands with the wasm rebuild; the method name is final. */
 export function fetchSourceTiers(nodeIds: number[]): Promise<SourceTiersResponse> {
   return queryAnalysis('sourceForNodes', nodeIds)
 }
