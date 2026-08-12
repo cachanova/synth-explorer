@@ -6,6 +6,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
+import { BUILD_COMMIT, buildCommitUrl, shortBuildCommit } from '../lib/buildInfo'
 import { PALETTES, type Mode } from '../lib/palettes'
 import { useTheme } from '../lib/themeContext'
 import { clearLocalSynthesisCache } from '../lib/designCache'
@@ -117,6 +118,7 @@ export function SettingsMenu() {
   const rootRef = useRef<HTMLDivElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const menuId = useId()
+  const commitUrl = buildCommitUrl(BUILD_COMMIT)
 
   useEffect(() => {
     if (!open) return
@@ -348,6 +350,25 @@ export function SettingsMenu() {
                   ? 'Could not clear local data.'
                   : 'Cached only in this browser profile.'}
             </span>
+          </div>
+
+          <div className="settings-section">
+            <div className="settings-head">About</div>
+            <div className="settings-build">
+              <span>Build</span>
+              {commitUrl ? (
+                <a
+                  href={commitUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`Build commit ${shortBuildCommit(BUILD_COMMIT)} on GitHub (opens in a new tab)`}
+                >
+                  {shortBuildCommit(BUILD_COMMIT)}
+                </a>
+              ) : (
+                <span className="settings-build-unknown">unknown</span>
+              )}
+            </div>
           </div>
         </div>
       )}
