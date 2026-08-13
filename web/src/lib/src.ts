@@ -102,7 +102,7 @@ export function spansSummary(spans: SrcSpan[]): string | null {
  * Spans restricted to files of the current design. Yosys techmap libraries
  * attach src attributes pointing at their own installation (for example
  * /opt/yosys/share/yosys/xilinx/ff_map.v); those paths mean nothing to the
- * user and leak server layout, so they are never shown.
+ * user and expose internal toolchain paths, so they are never shown.
  */
 export function designSrcSpans(
   src: string | undefined | null,

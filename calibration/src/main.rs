@@ -1,6 +1,6 @@
 //! Delay-model calibration harness (developer tool, not part of the web app).
 //!
-//! The estimated timing in [`synth_explorer_server::delay_model`] is fitted
+//! The estimated timing in [`synth_explorer_analysis::delay_model`] is fitted
 //! against real Vivado post-synthesis `report_timing`. This tool makes that fit
 //! reproducible:
 //!
@@ -251,15 +251,7 @@ fn estimate_family(
         // ECP5's explorer default is visible and removable in the flags menu;
         // include it here so calibration measures the shipped default netlist.
         "ecp5" => ("ecp5", "-noiopad".to_owned(), "ecp5", None),
-        _ => {
-            let arg = family_arg(family)?;
-            (
-                "xilinx",
-                format!("-family {arg} -noiopad -noclkbuf"),
-                "xilinx",
-                Some(arg),
-            )
-        }
+        _ => ("xilinx", String::new(), "xilinx", Some(family_arg(family)?)),
     })
 }
 
@@ -288,12 +280,10 @@ fn estimate_case(
     extra_flags: &[String],
 ) -> anyhow::Result<Estimate> {
     let content = std::fs::read_to_string(dir.join(&case.name).join(&case.file))?;
-    // `-noiopad -noclkbuf` matches Vivado's `-mode out_of_context`, so both
-    // tools produce a bare fabric netlist. Without it Yosys inserts
-    // IBUF/OBUF/BUFG that Vivado's OOC run does not have, and the two sides
-    // would be timing different circuits. It also keeps pad and clock-tree
-    // delay — real, but package-dependent and not what these coefficients
-    // model — out of the fit.
+    // The TypeScript calibration adapter derives the app's current visible
+    // defaults and adds `-noclkbuf` to match Vivado out-of-context timing. This
+    // keeps the production request shape authoritative instead of duplicating
+    // its flags in Rust.
     //
     // `extra_flags` (from the CLI) come after the baseline, for sweeping
     // additional `synth_xilinx` options. They go through the same
@@ -312,12 +302,13 @@ fn estimate_case(
         &case.top,
         mode,
         (!extra_args.is_empty()).then_some(extra_args),
+        model_family,
     )
     .map_err(|error| anyhow::anyhow!("synth {}: {error:#}", case.name))?;
     let (top, module) = select_top(&parsed, None)?;
     let graph = Graph::from_netlist(&parsed, top, module)?;
 
-    // Exactly the model the server would pick for this target, so the harness
+    // Exactly the model the browser analysis picks for this target, so the harness
     // measures the shipped default rather than a parallel copy of it.
     let model = DelayModel::for_target(model_target, model_family);
     let analysis = Analysis::with_delay_model(&graph, Vec::new(), &model);
@@ -371,6 +362,7 @@ fn run_yosys(
     top: &str,
     mode: &str,
     extra_args: Option<String>,
+    calibration_family: Option<&str>,
 ) -> anyhow::Result<YosysNetlist> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -379,15 +371,26 @@ fn run_yosys(
     let temp = tempfile::tempdir()?;
     std::fs::write(temp.path().join(file), content)?;
     let request_path = temp.path().join("request.json");
-    std::fs::write(
-        &request_path,
-        serde_json::to_vec(&serde_json::json!({
-            "files": [{ "name": file, "content": content }],
-            "top": top,
-            "mode": mode,
-            "extra_args": extra_args,
-        }))?,
-    )?;
+    let request = serde_json::json!({
+        "files": [{ "name": file, "content": content }],
+        "top": top,
+        "mode": mode,
+        "extra_args": extra_args.clone(),
+    });
+    let rendered_request = match calibration_family {
+        Some(family) => serde_json::json!({
+            "request": request,
+            "family": family,
+            "variant": "production",
+            "additionalArgs": extra_args
+                .as_deref()
+                .unwrap_or_default()
+                .split_whitespace()
+                .collect::<Vec<_>>(),
+        }),
+        None => request,
+    };
+    std::fs::write(&request_path, serde_json::to_vec(&rendered_request)?)?;
 
     let renderer = root.join("web/node_modules/.bin/tsx");
     if !renderer.is_file() {
@@ -409,7 +412,8 @@ fn run_yosys(
     }
     std::fs::write(temp.path().join("script.ys"), rendered.stdout)?;
 
-    let output = Command::new("yosys")
+    let yosys = std::env::var_os("SYNTH_EXPLORER_YOSYS").unwrap_or_else(|| "yosys".into());
+    let output = Command::new(yosys)
         .args(["-q", "-T", "-s", "script.ys", "-l", "yosys.log"])
         .current_dir(temp.path())
         .output()?;

@@ -22,12 +22,13 @@ menu.
 ## Features
 
 - Synthesize generic gates, LUT4/LUT6 mappings, and iCE40, ECP5, or Xilinx
-  target flows automatically after 250 ms without an edit, using a
-  project-pinned Yosys WebAssembly build.
+  target flows with a project-pinned Yosys WebAssembly build. Automatic
+  synthesis uses a configurable 100–2000 ms idle delay (250 ms by default) and
+  can be disabled for manual runs.
 - Analyze and elaborate VHDL-2008 locally with a project-pinned GHDL
   WebAssembly frontend while preserving original file/line provenance.
-- Load every bundled design in either Verilog/SystemVerilog or VHDL from the
-  toolbar's language toggle.
+- Load bundled designs in Verilog/SystemVerilog and, where supplied, VHDL from
+  the toolbar's language toggle.
 - Rank logical paths and endpoints by combinational depth.
 - Explore bounded fanin and fanout cones without rendering the whole netlist.
 - Find high-fanout nets and jump from synthesized cells to source.
@@ -182,6 +183,7 @@ Explorer origins, and permits one Vivado run at a time. See
 | [`analysis-wasm/`](analysis-wasm/) | WebAssembly bindings for the Rust analysis engine |
 | [`web/`](web/) | Static React application, browser workers, bundled examples, and pinned WASM artifacts |
 | [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
+| [`tools/yosys-native/`](tools/yosys-native/) | Exact native Yosys counterpart for local calibration |
 | [`tools/ghdl-wasm/`](tools/ghdl-wasm/) | Reproducible project-owned GHDL synthesis WebAssembly build |
 | [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
 | [`launcher/`](launcher/) | Downloadable loopback Chrome launcher with the built-in Vivado connector |

@@ -7,7 +7,7 @@ and supports navigation in both directions:
 
 - editor selections resolve to graph roots, signal bits, and focus policy;
 - graph nodes and signal bits resolve back to source spans;
-- the browser receives bounded source-map projections for display and lookup.
+- the browser receives bounded selection and reverse-attribution results.
 
 `SourceProvenanceIndex` is the canonical store for these relationships. It is
 built during design analysis and is immutable after construction.
@@ -145,9 +145,10 @@ index uses its bit reverse indexes when that is cheaper than scanning the
 retained mappings. Response ordering and truncation remain deterministic in
 either path.
 
-## Source-map projection
+## Core source-map projection
 
-`source_map` produces the browser-facing bulk view from the canonical index:
+`Analysis::source_map()` retains a bulk diagnostic view for core tests and the
+provenance benchmark:
 
 - submitted file names;
 - bounded native line-to-node associations;
@@ -155,14 +156,13 @@ either path.
 - a truncation indicator.
 
 The projection preserves lexical line-key ordering across files and enforces
-separate entry and association budgets. It is a compatibility surface for the
-browser, not an independently maintained index.
+separate entry and association budgets. It is not exported through the browser
+worker or WASM boundary; the UI uses bounded task-specific queries instead.
 
 The WASM boundary exposes the same provenance through:
 
-- `source_map_json`;
+- `source_for_nodes_json`;
 - `source_for_nets_json`, with both visible names and final-net bits;
-- `nodes_json`, including `NodeRef.src`; and
 - `source_selection_json`.
 
 ## Completeness and bounds
@@ -202,7 +202,7 @@ bit, line, and range collections respect their configured caps.
 ## Architectural boundary
 
 The provenance index does not perform synthesis, graph construction, cone
-traversal, grouping, layout, or editor rendering. It does not replace the
-browser's public source-map contract with internal span IDs. Its responsibility
-ends after returning canonical, bounded provenance facts to `Analysis` or the
-serialization boundary.
+traversal, grouping, layout, or editor rendering. Internal `SpanId` values stay
+encapsulated behind canonical bounded query results. Its responsibility ends
+after returning those provenance facts to `Analysis` or the serialization
+boundary.

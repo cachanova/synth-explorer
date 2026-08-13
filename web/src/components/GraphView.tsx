@@ -1651,7 +1651,7 @@ function edgePaintOrder(batch: {
   dimmed?: boolean
 }): number {
   // Paint context first and highlighted nets last. This makes the semantic
-  // overlay deterministic instead of depending on backend edge order.
+  // overlay deterministic instead of depending on analysis-response edge order.
   return (
     (batch.highlighted ? 8 : 0) +
     (batch.relevant ? 4 : 0) +

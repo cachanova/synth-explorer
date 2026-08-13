@@ -59,20 +59,19 @@ filesystem, stdio, and math imports implemented by
 
 ## Smoke tests
 
-The Node host exercises the same module and standard-library tree without a
-browser:
+The repository suite exercises the production module and packaged
+standard-library tree without a browser:
 
 ```bash
-node tools/ghdl-wasm/ghdl_synth_test.mjs \
-  web/public/ghdl/ghdl-synth.wasm \
-  .cache/ghdl-wasm/ghdl-native/lib/ghdl \
-  counter tools/ghdl-wasm/tests/counter.vhdl
+tools/ghdl-wasm/test.sh
 ```
 
-The checked fixtures cover simple combinational logic, `ieee.numeric_std`, a
-generic counter, an FSM, syntax errors, and semantic errors. The product E2E
-tests additionally run the production-built worker in Chromium and assert
-VHDL provenance and diagnostics.
+The suite extracts the checked-in `libraries.tar.gz` to a temporary directory,
+then checks successful synthesis and provenance for simple combinational logic,
+`ieee.numeric_std`, a generic counter, and an FSM. It also verifies stable
+syntax and semantic failure diagnostics. CI runs this suite after verifying the
+artifact checksums. The product E2E tests additionally run the production-built
+worker in Chromium and assert VHDL provenance and diagnostics.
 
 ## Runtime contract
 

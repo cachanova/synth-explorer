@@ -16,9 +16,11 @@ port to the released connector on a Linux or Windows Vivado host.
 
 ## Runtime flow
 
-1. For Yosys, React waits for 250 ms without an input change, then validates the files,
-   top, synthesis platform, and visible platform-specific flags. A newer edit cancels
-   obsolete work instead of allowing a stale result to land.
+1. When automatic synthesis is enabled, React waits for the configured
+   100–2000 ms idle delay (250 ms by default), then validates the files, top,
+   synthesis platform, and visible platform-specific flags. It can instead be
+   disabled for explicit manual runs. A newer edit cancels obsolete work
+   instead of allowing a stale result to land.
 2. A SHA-256 key covers the cache schema, pinned frontend/tool versions,
    validated input, and exact source text.
 3. IndexedDB returns a matching local artifact. On a miss, an exact generic-gates
@@ -34,8 +36,8 @@ port to the released connector on a Linux or Windows Vivado host.
 6. `analysis.worker.ts` loads those netlists into the canonical Rust
    `analysis-core` compiled to WebAssembly.
 7. UI queries for endpoints, paths, timing estimates, cones, fanout, netlist
-   projections, source maps, source selections, node details, and node source
-   tiers are worker messages. Source selections carry inclusive one-based line
+   projections, source selections, and node/net source tiers are worker
+   messages. Source selections carry inclusive one-based line
    and column spans; declaration mappings retain final synthesized net-bit
    identities so exact visible wires can be highlighted and clicked back to
    source even when nodes are grouped. Selecting a schematic node runs the
@@ -64,8 +66,8 @@ query. No hosted service sees the RTL or result.
 
 There is no hosted HTTP API, application server, remote design identifier,
 account, or shared design store. The optional HTTP protocol exists only on the
-user's loopback interface. The twelve-character design ID shown in the UI is
-only a display prefix of the full local cache digest.
+user's loopback interface. The internal twelve-character design ID is a session
+handle derived from the full local cache digest.
 
 ## Canonical implementations
 
@@ -101,18 +103,18 @@ Corrupt or expired records are deleted. Retention is bounded to 24 entries,
 last access. Browser storage eviction, private browsing, clearing site data, or
 changing devices removes or hides entries.
 
-The default design and both language variants of every bundled example have a
-precomputed generic-gates artifact. Their filenames are the full synthesis
-cache keys and Vercel caches them immutably. The bundled key manifest prevents
-arbitrary user inputs from issuing speculative artifact requests. A missing,
-stale, or malformed artifact falls through to browser-local synthesis.
+The default design and every variant declared by the bundled-example manifest
+have a precomputed generic-gates artifact. Their filenames are the full
+synthesis cache keys and Vercel caches them immutably. The bundled key manifest
+prevents arbitrary user inputs from issuing speculative artifact requests. A
+missing, stale, or malformed artifact falls through to browser-local synthesis.
 
 The editor workspace is a single versioned record containing only editable
 synthesis inputs. Derived analysis state is not restored across page loads.
 
 GHDL has a 30-second wall timeout. Yosys has a 60-second wall timeout and
 128 MiB combined netlist-output limit. The Vivado bridge accepts at most 4 MiB
-of source, returns at most 64 MiB of structural Verilog, caps timing reports at
+of source or 16 MiB of calibration EDIF, returns at most 64 MiB of structural Verilog, caps timing reports at
 256 KiB, caps logs at 64 KiB, allows one run at a time, and has a five-minute
 wall timeout.
 The application runs only one requested synthesis at a time. A completed

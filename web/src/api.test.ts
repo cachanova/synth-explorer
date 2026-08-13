@@ -6,9 +6,7 @@ const engine = vi.hoisted(() => ({
   localEndpoints: vi.fn(),
   localFanout: vi.fn(),
   localNetlist: vi.fn().mockResolvedValue({ nodes: [], edges: [], truncated: false }),
-  localNodes: vi.fn(),
   localPaths: vi.fn(),
-  localSourceMap: vi.fn(),
   localTiming: vi.fn(),
   synthesizeLocally: vi.fn(),
 }))

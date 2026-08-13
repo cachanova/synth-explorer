@@ -1,4 +1,4 @@
-// Synthesis spike driver: node ghdl_synth_test.mjs <ghdl.wasm> <libdir> <top> <vhdl files...>
+// Node smoke-test driver: node ghdl_synth_test.mjs <ghdl.wasm> <libdir> <top> <vhdl files...>
 // Drives libghdl analysis then synth_api__synth_top, capturing the Verilog
 // netlist emitted through the stdio imports. Derived from ghdl_compile_test.mjs.
 import { readFileSync, readdirSync, statSync } from 'fs';
@@ -8,7 +8,6 @@ const [,, wasmPath, libDir, topName, ...vhdFiles] = process.argv;
 if (!vhdFiles.length) { console.error('usage: ghdl_synth_test.mjs <ghdl.wasm> <libdir> <top> <files...>'); process.exit(2); }
 
 const VLIB = '/ghdl/lib/ghdl';
-const VPREFIX = '/ghdl';
 const WORKDIR = '/work';
 
 function normalizePath(p) {
@@ -143,18 +142,8 @@ const env = {
 };
 
 const bytes = readFileSync(wasmPath);
-const missing = [];
-const { instance } = await WebAssembly.instantiate(bytes, {
-  env: new Proxy(env, {
-    get(t, k) {
-      if (k in t) return t[k];
-      missing.push(k);
-      return () => 0;
-    },
-  }),
-});
+const { instance } = await WebAssembly.instantiate(bytes, { env });
 inst = instance; mem = inst.exports.memory;
-if (missing.length) console.error('note: auto-stubbed imports:', missing.join(' '));
 mem.grow(1024 - Math.ceil(mem.buffer.byteLength/65536));
 try { inst.exports.__wasm_call_ctors(); } catch(_) {}
 const E = inst.exports;

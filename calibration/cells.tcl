@@ -1,6 +1,7 @@
 # Extract *physical* per-cell and per-net delays from Vivado.
 #
-# `vivado.tcl` measures whole paths; this dumps the detailed path table so each
+# The input is the app's Yosys EDIF, not a second Vivado synthesis of the RTL.
+# This dumps the detailed path table so each
 # delay can be attributed to the primitive that caused it. That is what lets the
 # coefficients in `delay_model.rs` mean what they say ("a LUT costs this much")
 # rather than being a fudge factor tuned to make totals land.
@@ -18,32 +19,46 @@ set spec_fh [open [file join $cases_dir cases.json] r]
 set spec [read $spec_fh]
 close $spec_fh
 set probes {}
-foreach {_ name file top} [regexp -all -inline \
-        {"name"\s*:\s*"([^"]+)"\s*,\s*"file"\s*:\s*"([^"]+)"\s*,\s*"top"\s*:\s*"([^"]+)"} $spec] {
-    lappend probes [list $name $file $top]
+foreach {_ name top} [regexp -all -inline \
+        {"name"\s*:\s*"([^"]+)"\s*,\s*"file"\s*:\s*"[^"]+"\s*,\s*"top"\s*:\s*"([^"]+)"} $spec] {
+    lappend probes [list $name $top]
 }
 set declared [regexp -all {"name"\s*:\s*"} $spec]
 if {[llength $probes] != $declared} {
     error "parsed [llength $probes] cases but the spec declares $declared"
 }
 puts "PARSED: [llength $probes] cases"
-set parts {
-    series7         xc7a35tcpg236-1
-    ultrascale      xcku035-fbva676-1-c
-    ultrascale_plus xcku5p-ffva676-1-e
+set parts_blob ""
+if {![regexp {"parts"\s*:\s*\{(.*?)\n\s*\},} $spec -> parts_blob]} {
+    error "could not parse the parts table from cases.json"
 }
+set parts {}
+foreach {_ fam body} [regexp -all -inline {"(\w+)"\s*:\s*\{([^\}]*)\}} $parts_blob] {
+    if {![regexp {"-1"\s*:\s*"([^"]+)"} $body -> part]} {
+        error "family $fam has no -1 baseline part"
+    }
+    lappend parts $fam $part
+}
+if {[llength $parts] == 0} { error "parsed no families from cases.json" }
 
 foreach {fam part} $parts {
     foreach p $probes {
-        lassign $p name file top
+        lassign $p name top
+        set edif [file join $cases_dir edif "$name.$fam.edif"]
+        if {![file exists $edif]} {
+            error "missing Yosys EDIF: $edif"
+        }
         close_project -quiet
         create_project -in_memory -part $part
         if {[catch {
-            read_verilog -sv [file join $cases_dir $name $file]
-            synth_design -top $top -part $part -mode out_of_context
+            read_edif $edif
+            link_design -part $part -mode out_of_context
         } err]} {
-            puts "SKIP: $fam $name synth failed: $err"
-            continue
+            error "$fam $name EDIF link failed: $err"
+        }
+        set linked_top [get_property TOP [current_design]]
+        if {$linked_top ne $top} {
+            error "$fam $name linked top '$linked_top' is not '$top'"
         }
         set clk_ports [get_ports -quiet clk]
         if {[llength $clk_ports] > 0} {

@@ -1,4 +1,4 @@
-//! Construction and ownership of one browser- or server-resident analysis session.
+//! Construction and ownership of one browser-resident analysis session.
 
 use crate::analysis::{Analysis, Stats};
 use crate::delay_model::{DelayModel, DelayProfile};

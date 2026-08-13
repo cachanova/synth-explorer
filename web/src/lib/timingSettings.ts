@@ -99,7 +99,7 @@ const SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
 // ECP5's real speed grades are named 6/7/8, with 6 the slowest — the grade the
 // preset is characterized at. The wire format keeps '-1'/'-2'/'-3'; only the
 // labels change: '-2' maps to grade 7 and '-3' to grade 8 (prjtrellis-measured
-// factors on the server).
+// factors in the Rust delay model).
 const ECP5_SPEED_GRADE_OPTIONS: { value: SpeedGrade; label: string }[] = [
   { value: '-1', label: '6 (slowest)' },
   { value: '-2', label: '7' },
@@ -241,14 +241,13 @@ export function withGateDelay(
 
 const STORAGE_KEY = 'synthexplorer.timing.v1'
 
-/** Map settings to a `/timing` request. Precedence mirrors the server: a full
- *  override wins for the coefficients, then a named profile, then (auto) the
- *  design's own model.
+/** Map settings to an analysis-worker timing request. A full override wins for
+ *  the coefficients, then a named profile, then (auto) the design's own model.
  *
- *  `profile` is sent independently of `model`, because the server reads it for
+ *  `profile` is sent independently of `model`, because model resolution uses it for
  *  two different things: which coefficients to start from, and which family's
  *  speed-grade scaling to apply. Suppressing it when overrides exist would
- *  leave the dropdown showing one family while the server scaled by another. */
+ *  leave the dropdown showing one family while analysis scaled by another. */
 function timingRequest(
   view: TimingView,
   overrides: DelayModel | null,
@@ -274,7 +273,7 @@ export function compatibleTimingOverrides(
 }
 
 /** Select the model that may seed the coefficient editor. A compatible active
- * override wins; otherwise a server response is usable only when it belongs to
+ * override wins; otherwise an analysis response is usable only when it belongs to
  * the current request, never to the profile that was selected previously. */
 export function editorModelForRequest(
   activeOverrides: DelayModel | null,

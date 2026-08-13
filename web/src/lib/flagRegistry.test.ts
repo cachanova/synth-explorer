@@ -7,8 +7,46 @@ import {
   stripInvalidFlags,
   VIVADO_FLAG_REGISTRY,
 } from './flagRegistry'
+import {
+  renderCalibrationScript,
+  xilinxCalibrationFlags,
+} from '../../../calibration/xilinx-matrix'
 
 describe('flagRegistry', () => {
+  it('derives calibration variants from the visible Xilinx defaults', () => {
+    expect(xilinxCalibrationFlags('xc7', 'production')).toBe(
+      '-narrowcarry 8 -nowidelut -noiopad -family xc7 -noclkbuf',
+    )
+    expect(xilinxCalibrationFlags('xcu', 'native-carry')).toBe(
+      '-nowidelut -noiopad -family xcu -noclkbuf',
+    )
+    expect(xilinxCalibrationFlags('xcup', 'wide-lut')).toBe(
+      '-narrowcarry 8 -noiopad -family xcup -noclkbuf',
+    )
+    expect(xilinxCalibrationFlags('xc7', 'no-carry')).toBe(
+      '-nowidelut -noiopad -family xc7 -noclkbuf -nocarry',
+    )
+  })
+
+  it('renders the production narrow-carry split and EDIF from the canonical builder', () => {
+    const script = renderCalibrationScript({
+      request: {
+        files: [{ name: 'top.sv', content: 'module top; endmodule' }],
+        top: 'top',
+        mode: 'xilinx',
+      },
+      family: 'xc7',
+      variant: 'production',
+      writeEdif: true,
+    })
+    expect(script).toContain(
+      'synth_xilinx -top top -flatten -nowidelut -noiopad -family xc7 -noclkbuf -run begin:fine',
+    )
+    expect(script).toContain('select -set narrow_alu t:$alu r:Y_WIDTH<=8 %i')
+    expect(script).not.toContain('-narrowcarry')
+    expect(script).toMatch(/write_json -noscopeinfo netlist\.json\nwrite_edif -pvector bra netlist\.edif\n$/)
+  })
+
   it('exposes per-mode flags and none for rtl', () => {
     expect(flagsForMode('xilinx').some((d) => d.flag === '-nocarry')).toBe(true)
     expect(flagsForMode('ecp5').some((d) => d.flag === '-noccu2')).toBe(true)
