@@ -1555,7 +1555,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expect(focus).toBeEnabled()
   await focus.uncheck()
   await expect(focus).not.toBeChecked()
-  await expect(focus).toBeDisabled()
+  await expect(focus).toBeEnabled()
   const fullNodes = page.locator('.g-node-body')
   await expect(fullNodes.first()).toBeVisible()
   const fullNodeIds = await fullNodes.evaluateAll((nodes) =>
@@ -1887,7 +1887,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(refreshMethods.indexOf('source')).toBeLessThan(refreshMethods.indexOf('netlist'))
 
   await page.locator('.cm-content').press('Escape')
-  await expect(focus).toBeDisabled()
+  await expect(focus).toBeEnabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
   await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
