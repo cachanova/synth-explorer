@@ -3,6 +3,23 @@ import { expect, test } from '@playwright/test'
 const RELEASE_DOWNLOAD =
   'https://github.com/cachanova/synth-explorer/releases/latest/download'
 
+test('opens the platform download dialog from the shareable route', async ({
+  page,
+}) => {
+  await page.goto('/download')
+
+  const dialog = page.getByRole('dialog', {
+    name: 'Run Synth Explorer locally',
+  })
+  await expect(dialog).toBeVisible()
+  await expect(
+    dialog.getByRole('link', { name: 'Download Linux x86-64' }),
+  ).toHaveAttribute(
+    'href',
+    `${RELEASE_DOWNLOAD}/synth-explorer-local-linux-x86_64.tar.gz`,
+  )
+})
+
 test('offers the Linux local application and complete run instructions', async ({
   page,
 }) => {
