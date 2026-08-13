@@ -37,9 +37,16 @@ describe('stored workspace validation', () => {
     expect(restored?.vivadoTarget).toBe('')
   })
 
-  it('rejects an unknown tool rather than restoring it', () => {
-    expect(parseStoredWorkspace({ ...valid, synthTool: 'quartus' })).toBeNull()
-    expect(parseStoredWorkspace({ ...valid, vivadoTarget: 7 })).toBeNull()
+  it('keeps the files when the stored tool is not one this build knows', () => {
+    // Discarding the workspace would delete every source file the user has,
+    // so an unusable tool preference degrades instead of failing the parse.
+    const unknownTool = parseStoredWorkspace({ ...valid, synthTool: 'quartus' })
+    expect(unknownTool?.files).toEqual(valid.files)
+    expect(unknownTool?.synthTool).toBe('yosys')
+
+    const unusableTarget = parseStoredWorkspace({ ...valid, vivadoTarget: 7 })
+    expect(unusableTarget?.files).toEqual(valid.files)
+    expect(unusableTarget?.vivadoTarget).toBe('')
   })
 
   it('migrates older workspaces to the visible Vivado default', () => {

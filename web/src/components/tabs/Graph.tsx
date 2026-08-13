@@ -11,6 +11,7 @@ import {
   MAX_GROUP_EXPANSION_RENDER_NODES,
   MAX_OPEN_EXPANDED_GROUPS,
 } from '../../lib/graphLimits'
+import { MIN_GRAPH_MAX_NODES } from '../../lib/graphSettings'
 import { graphProjection } from '../../lib/graphProjection'
 import {
   applyGroupExpansions,
@@ -1068,7 +1069,11 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
         max nodes
         <div className="stepper">
           <button
-            onClick={() => setOpt({ maxNodes: Math.max(50, graphOptions.maxNodes - 100) })}
+            onClick={() =>
+              setOpt({
+                maxNodes: Math.max(MIN_GRAPH_MAX_NODES, graphOptions.maxNodes - 100),
+              })
+            }
           >
             −
           </button>

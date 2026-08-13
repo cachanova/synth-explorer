@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { PLATFORM_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import type { ExampleLanguage, Mode, SynthTool, XilinxFamily } from '../types'
@@ -8,11 +8,6 @@ import { FlagsMenu } from './FlagsMenu'
 import { VIVADO_FLAG_REGISTRY } from '../lib/flagRegistry'
 import { VivadoSetupDialog } from './VivadoSetupDialog'
 import { isLocalLauncher } from '../lib/localLauncher'
-import {
-  loadExampleSelection,
-  saveExampleSelection,
-  type ExampleSelection,
-} from '../lib/exampleSelection'
 
 interface FamilyBucket {
   key: string
@@ -44,21 +39,14 @@ function familyBucket(family: string): FamilyBucket {
 }
 
 export function Toolbar() {
-  // The dropdowns remember what they last showed. They do not reload that
-  // source on their own; the persisted workspace already restores the buffer,
-  // including any edits made to the example.
-  const [{ language: exampleLanguage, name: selectedExample }, setSelection] =
-    useState<ExampleSelection>(loadExampleSelection)
-  const selectExample = useCallback((next: ExampleSelection) => {
-    setSelection(next)
-    saveExampleSelection(next)
-  }, [])
   const [setupOpen, setSetupOpen] = useState(false)
   const [localLauncher] = useState(isLocalLauncher)
   const store = useStore(
     ({
       examples,
       loadExample,
+      exampleSelection,
+      setExampleSelection,
       top,
       setTop,
       synthTool,
@@ -80,6 +68,8 @@ export function Toolbar() {
     }) => ({
       examples,
       loadExample,
+      exampleSelection,
+      setExampleSelection,
       top,
       setTop,
       synthTool,
@@ -101,6 +91,11 @@ export function Toolbar() {
     }),
     shallowEqual,
   )
+  // The dropdowns report what they last showed. They do not reload that source
+  // on their own; the persisted workspace already restores the buffer, edits
+  // included.
+  const { language: exampleLanguage, name: selectedExample } = store.exampleSelection
+  const selectExample = store.setExampleSelection
 
   const familyOptions = useMemo(() => {
     const groups = new Map<FamilyBucket['key'], FamilyBucket & { parts: NonNullable<typeof store.vivadoStatus>['parts'] }>()

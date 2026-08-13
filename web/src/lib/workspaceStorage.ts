@@ -75,9 +75,7 @@ export function parseStoredWorkspace(value: unknown): WorkspaceState | null {
     typeof record.mode !== 'string' ||
     !MODES.has(record.mode as Mode) ||
     typeof record.extraArgs !== 'string' ||
-    (record.vivadoExtraArgs !== undefined && typeof record.vivadoExtraArgs !== 'string') ||
-    (record.synthTool !== undefined && !SYNTH_TOOLS.has(record.synthTool as SynthTool)) ||
-    (record.vivadoTarget !== undefined && typeof record.vivadoTarget !== 'string')
+    (record.vivadoExtraArgs !== undefined && typeof record.vivadoExtraArgs !== 'string')
   ) {
     return null
   }
@@ -92,7 +90,11 @@ export function parseStoredWorkspace(value: unknown): WorkspaceState | null {
       typeof record.vivadoExtraArgs === 'string'
         ? record.vivadoExtraArgs
         : flagsForVivadoChange(''),
-    synthTool: (record.synthTool as SynthTool | undefined) ?? 'yosys',
+    // A tool preference this build cannot use must not cost the user their
+    // files, so an unknown value falls back rather than failing the parse.
+    synthTool: SYNTH_TOOLS.has(record.synthTool as SynthTool)
+      ? (record.synthTool as SynthTool)
+      : 'yosys',
     vivadoTarget: typeof record.vivadoTarget === 'string' ? record.vivadoTarget : '',
   }
 }
