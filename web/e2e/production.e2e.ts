@@ -2339,15 +2339,26 @@ test('clears schematic selections when synthesis changes', async ({ page }) => {
   await expect(page.locator('.node-card')).toHaveCount(1)
 
   const synthesize = page.getByRole('button', { name: 'Synthesize', exact: true })
-  await synthesize.click()
-  await waitForAnalysisReady(page)
+  const resynthesize = async () => {
+    await startAnalysisStateRecording(page)
+    await synthesize.click()
+    await expect.poll(() => recordedAnalysisStates(page)).toContain('refreshing')
+    await expect(page.locator('.pane-right')).toHaveAttribute(
+      'data-analysis-state',
+      'current',
+      { timeout: 120_000 },
+    )
+    await stopAnalysisStateRecording(page)
+    await expect(page.locator('.graph-loading-indicator')).toHaveCount(0)
+  }
+  await resynthesize()
   await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
   await expect(page.locator('.node-card')).toHaveCount(0)
 
   await graphNodes.first().dispatchEvent('click')
   await page.getByRole('button', { name: 'Fanin cone' }).click()
   await expect(page.locator('.graph-toolbar .mono')).toBeVisible()
-  await synthesize.click()
+  await resynthesize()
   await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
   await expect(page.getByText('this cone belongs to the previous synthesis')).toHaveCount(0)
 
@@ -2361,7 +2372,7 @@ test('clears schematic selections when synthesis changes', async ({ page }) => {
   await page.mouse.click(edgePoint.x, edgePoint.y)
   const selectedWires = page.locator('.g-selected-edge-layer .g-edge.hl')
   await expect.poll(() => selectedWires.count()).toBeGreaterThan(0)
-  await synthesize.click()
+  await resynthesize()
   await expect(selectedWires).toHaveCount(0)
 })
 
