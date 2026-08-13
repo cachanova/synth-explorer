@@ -12,6 +12,8 @@ const valid = {
   mode: 'xilinx',
   extraArgs: '-family xc7',
   vivadoExtraArgs: '-mode default -max_dsp 0',
+  synthTool: 'vivado',
+  vivadoTarget: 'xc7a100t-csg324-1',
 }
 
 describe('stored workspace validation', () => {
@@ -23,7 +25,21 @@ describe('stored workspace validation', () => {
       mode: 'xilinx',
       extraArgs: '-family xc7',
       vivadoExtraArgs: '-mode default -max_dsp 0',
+      synthTool: 'vivado',
+      vivadoTarget: 'xc7a100t-csg324-1',
     })
+  })
+
+  it('defaults the selected tool for workspaces saved before it persisted', () => {
+    const { synthTool: _tool, vivadoTarget: _target, ...legacy } = valid
+    const restored = parseStoredWorkspace(legacy)
+    expect(restored?.synthTool).toBe('yosys')
+    expect(restored?.vivadoTarget).toBe('')
+  })
+
+  it('rejects an unknown tool rather than restoring it', () => {
+    expect(parseStoredWorkspace({ ...valid, synthTool: 'quartus' })).toBeNull()
+    expect(parseStoredWorkspace({ ...valid, vivadoTarget: 7 })).toBeNull()
   })
 
   it('migrates older workspaces to the visible Vivado default', () => {

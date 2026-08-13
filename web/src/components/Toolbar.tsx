@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { PLATFORM_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
 import { parseFamily, setFamily } from '../lib/synthFlags'
 import type { ExampleLanguage, Mode, SynthTool, XilinxFamily } from '../types'
@@ -8,6 +8,11 @@ import { FlagsMenu } from './FlagsMenu'
 import { VIVADO_FLAG_REGISTRY } from '../lib/flagRegistry'
 import { VivadoSetupDialog } from './VivadoSetupDialog'
 import { isLocalLauncher } from '../lib/localLauncher'
+import {
+  loadExampleSelection,
+  saveExampleSelection,
+  type ExampleSelection,
+} from '../lib/exampleSelection'
 
 interface FamilyBucket {
   key: string
@@ -39,8 +44,15 @@ function familyBucket(family: string): FamilyBucket {
 }
 
 export function Toolbar() {
-  const [exampleLanguage, setExampleLanguage] = useState<ExampleLanguage>('verilog')
-  const [selectedExample, setSelectedExample] = useState('')
+  // The dropdowns remember what they last showed. They do not reload that
+  // source on their own; the persisted workspace already restores the buffer,
+  // including any edits made to the example.
+  const [{ language: exampleLanguage, name: selectedExample }, setSelection] =
+    useState<ExampleSelection>(loadExampleSelection)
+  const selectExample = useCallback((next: ExampleSelection) => {
+    setSelection(next)
+    saveExampleSelection(next)
+  }, [])
   const [setupOpen, setSetupOpen] = useState(false)
   const [localLauncher] = useState(isLocalLauncher)
   const store = useStore(
@@ -127,13 +139,13 @@ export function Toolbar() {
           value={exampleLanguage}
           onChange={(event) => {
             const language = event.target.value as ExampleLanguage
-            setExampleLanguage(language)
             const example = store.examples.find((entry) => entry.name === selectedExample)
             const variant = example?.variants[language]
             if (variant) {
+              selectExample({ language, name: selectedExample })
               store.loadExample(variant)
             } else {
-              setSelectedExample('')
+              selectExample({ language, name: '' })
             }
           }}
         >
@@ -148,7 +160,7 @@ export function Toolbar() {
           aria-label="Bundled example"
           value={selectedExample}
           onChange={(event) => {
-            setSelectedExample(event.target.value)
+            selectExample({ language: exampleLanguage, name: event.target.value })
             const example = store.examples.find((entry) => entry.name === event.target.value)
             const variant = example?.variants[exampleLanguage]
             if (variant) store.loadExample(variant)
