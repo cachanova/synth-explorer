@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../types'
 import {
   DENSE_LAYOUT_NODE_THRESHOLD,
-  DENSE_LONGEST_PATH_EDGE_DENSITY,
   interpretResult,
   prepareLayoutInput,
   toElkGraph,
@@ -176,7 +175,7 @@ describe('logic-oriented ELK layout policy', () => {
 describe('dense ELK layout policy', () => {
   it('returns bounded orthogonal geometry without crossing nodes', async () => {
     const nodeCount = DENSE_LAYOUT_NODE_THRESHOLD
-    const edgeCount = Math.ceil(nodeCount * DENSE_LONGEST_PATH_EDGE_DENSITY)
+    const edgeCount = 2_000
     const input: LayoutInput = {
       nodes: Array.from({ length: nodeCount }, (_, id) => ({
         id,
