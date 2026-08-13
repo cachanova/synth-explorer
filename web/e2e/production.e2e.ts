@@ -2328,20 +2328,41 @@ test('clears schematic selections when synthesis changes', async ({ page }) => {
 
   const graphNodes = page.locator('.g-node-body')
   await expect(graphNodes.first()).toBeVisible()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('checkbox', { name: 'Synthesize automatically' }).uncheck()
+  await page.getByRole('button', { name: 'Settings' }).click()
+
+  // A same-input synthesis returns the same design id. Local node state must
+  // still reset, independently of any cone projection changing underneath it.
+  await graphNodes.first().dispatchEvent('click')
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(1)
+  await expect(page.locator('.node-card')).toHaveCount(1)
+
+  const synthesize = page.getByRole('button', { name: 'Synthesize', exact: true })
+  await synthesize.click()
+  await waitForAnalysisReady(page)
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
+  await expect(page.locator('.node-card')).toHaveCount(0)
+
   await graphNodes.first().dispatchEvent('click')
   await page.getByRole('button', { name: 'Fanin cone' }).click()
   await expect(page.locator('.graph-toolbar .mono')).toBeVisible()
-
-  await expect(graphNodes.first()).toBeVisible()
-  await graphNodes.first().dispatchEvent('click')
-  await expect(page.locator('.g-node-body.selected')).toHaveCount(1)
-
-  await waitForAutomaticSynthesis(page, () =>
-    page.getByLabel('Bundled example').selectOption('counter'),
-  )
-  await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
+  await synthesize.click()
   await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
   await expect(page.getByText('this cone belongs to the previous synthesis')).toHaveCount(0)
+
+  const edgePoint = await page.locator<SVGPathElement>('.g-edge').first().evaluate((edge) => {
+    const point = edge.getPointAtLength(Math.min(2, edge.getTotalLength()))
+    const matrix = edge.getScreenCTM()
+    if (!matrix) throw new Error('edge has no screen transform')
+    const screen = point.matrixTransform(matrix)
+    return { x: screen.x, y: screen.y }
+  })
+  await page.mouse.click(edgePoint.x, edgePoint.y)
+  const selectedWires = page.locator('.g-selected-edge-layer .g-edge.hl')
+  await expect.poll(() => selectedWires.count()).toBeGreaterThan(0)
+  await synthesize.click()
+  await expect(selectedWires).toHaveCount(0)
 })
 
 test('keeps synthesis failures compact until the full log is requested', async ({ page }) => {

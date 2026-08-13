@@ -233,6 +233,7 @@ export interface Store {
   synthesizing: boolean
   synthesize: () => Promise<void>
   design: SynthesizeResponse | null
+  designRevision: number
   analysisState: AnalysisState
   error: {
     message: string
@@ -349,6 +350,7 @@ export function StoreProvider({
 
   const [synthesizing, setSynthesizing] = useState(false)
   const [design, setDesign] = useState<SynthesizeResponse | null>(null)
+  const [designRevision, setDesignRevision] = useState(0)
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
   const [error, setError] = useState<Store['error']>(null)
 
@@ -977,6 +979,7 @@ export function StoreProvider({
         try {
           const res = await api.synthesize(running.request, controller.signal)
           setDesign(res)
+          setDesignRevision((revision) => revision + 1)
           setDesignInputKey(running.key)
           // A source graph tracks the selected lines across synthesis. Cones
           // and paths belong to the previous netlist and start deselected.
@@ -1298,6 +1301,7 @@ export function StoreProvider({
       synthesizing,
       synthesize: requestSynthesis,
       design,
+      designRevision,
       analysisState,
       error,
       activeTab,
@@ -1357,6 +1361,7 @@ export function StoreProvider({
       setAutoSynthesisDelayMs,
       synthesizing,
       design,
+      designRevision,
       analysisState,
       error,
       activeTab,

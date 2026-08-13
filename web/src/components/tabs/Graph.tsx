@@ -79,6 +79,7 @@ export function Graph({ active }: { active: boolean }) {
     ({
       analysisState,
       design,
+      designRevision,
       coneReq,
       graphOptions,
       clearGraphSelection,
@@ -90,6 +91,7 @@ export function Graph({ active }: { active: boolean }) {
     }) => ({
       analysisState,
       design,
+      designRevision,
       coneReq,
       graphOptions,
       clearGraphSelection,
@@ -104,6 +106,7 @@ export function Graph({ active }: { active: boolean }) {
   const {
     analysisState,
     design,
+    designRevision,
     coneReq,
     graphOptions,
     clearGraphSelection,
@@ -221,9 +224,12 @@ export function Graph({ active }: { active: boolean }) {
     () => selectGraphNode(null),
     [graphOptions.groupMemories, graphOptions.groupVectors, selectGraphNode],
   )
-  // Node and wire selections are owned by one synthesized netlist. Even when
-  // ids happen to overlap, a replacement design starts without a local cone.
-  useEffect(() => selectGraphNode(null), [design?.design_id, selectGraphNode])
+  // Node and wire selections are owned by one synthesis result. Even when a
+  // resynthesis returns the same design id, it starts without a local cone.
+  useEffect(
+    () => selectGraphNode(null),
+    [design?.design_id, designRevision, selectGraphNode],
+  )
 
   // Per-group expansion is a presentation state owned by one synthesized
   // design and grouping policy. A new design or global policy starts clean.
