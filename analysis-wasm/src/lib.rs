@@ -212,7 +212,7 @@ impl AnalysisSession {
         to_json(&Summary {
             design_id: &self.design_id,
             top: &self.top,
-            delay_profile: profile_name(self.profile),
+            delay_profile: self.profile.name(),
             stats: self.design.stats(),
             warnings: self.design.warnings(),
         })
@@ -570,32 +570,13 @@ fn to_json<T: Serialize>(value: &T) -> Result<String, JsValue> {
 }
 
 fn profile_from_name(name: &str) -> Result<DelayProfile, JsValue> {
-    match name {
-        "series7" => Ok(DelayProfile::Series7),
-        "ultrascale" => Ok(DelayProfile::UltraScale),
-        "ultrascale_plus" => Ok(DelayProfile::UltraScalePlus),
-        "ice40" => Ok(DelayProfile::Ice40),
-        "ecp5" => Ok(DelayProfile::Ecp5),
-        "sky130hd" => Ok(DelayProfile::Sky130Hd),
-        "gf180mcu" => Ok(DelayProfile::Gf180Mcu),
-        "asap7" => Ok(DelayProfile::Asap7),
-        "generic" => Ok(DelayProfile::Generic),
-        _ => Err(js_error(format!("unknown delay profile: {name}"))),
-    }
+    DelayProfile::from_name_strict(name).ok_or_else(|| js_error(unknown_profile_message(name)))
 }
 
-fn profile_name(profile: DelayProfile) -> &'static str {
-    match profile {
-        DelayProfile::Series7 => "series7",
-        DelayProfile::UltraScale => "ultrascale",
-        DelayProfile::UltraScalePlus => "ultrascale_plus",
-        DelayProfile::Ice40 => "ice40",
-        DelayProfile::Ecp5 => "ecp5",
-        DelayProfile::Sky130Hd => "sky130hd",
-        DelayProfile::Gf180Mcu => "gf180mcu",
-        DelayProfile::Asap7 => "asap7",
-        DelayProfile::Generic => "generic",
-    }
+// Kept separate from `profile_from_name` so native unit tests can assert the
+// error text: constructing the `JsValue` itself aborts outside a wasm runtime.
+fn unknown_profile_message(name: &str) -> String {
+    format!("unknown delay profile: {name}")
 }
 
 fn js_error(message: impl AsRef<str>) -> JsValue {
@@ -636,6 +617,19 @@ mod tests {
             profile,
         )
         .expect("fixture session builds")
+    }
+
+    #[test]
+    fn unknown_profile_names_error_with_the_offending_name() {
+        // `profile_from_name("bogus")` cannot run natively: building the
+        // JsValue error aborts outside a wasm runtime. Pin the message text
+        // and the delegation to the core parser instead.
+        assert_eq!(profile_from_name("generic").unwrap(), DelayProfile::Generic);
+        assert_eq!(DelayProfile::from_name_strict("bogus"), None);
+        assert_eq!(
+            unknown_profile_message("bogus"),
+            "unknown delay profile: bogus"
+        );
     }
 
     fn path_identities(json: &str) -> BTreeSet<(String, Vec<u64>)> {
