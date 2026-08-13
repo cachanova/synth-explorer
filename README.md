@@ -8,9 +8,9 @@ synthesize it with [Yosys](https://yosyshq.net/yosys/) and
 [GHDL](https://github.com/ghdl/ghdl), and inspect the resulting circuit by path,
 endpoint, fanin, fanout, or source location.
 
-[Try Synth Explorer in your browser](https://www.synthexplorer.dev/) or download
-the self-contained Chrome launcher for Windows, Linux, or macOS from the
-[latest release](https://github.com/cachanova/synth-explorer/releases/latest).
+[Try Synth Explorer in your browser](https://www.synthexplorer.dev/) or
+[download the self-contained Chrome launcher](https://synthexplorer.dev/download)
+for Windows, Linux, or macOS.
 
 Yosys synthesis and all analysis run locally in the browser. An optional
 loopback connector can run Vivado installed on the same computer or through an
@@ -48,7 +48,7 @@ menu.
 
 Install a current Chrome or Chromium browser, then use the download button in
 the website header or open the
-[latest release](https://github.com/cachanova/synth-explorer/releases/latest).
+[download page](https://synthexplorer.dev/download).
 Every push to `main` builds a complete rolling release from that exact commit,
 so this download tracks the latest website source once the build finishes.
 Versioned `local-v*` releases remain available as historical snapshots.
