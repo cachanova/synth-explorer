@@ -967,6 +967,24 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   expect(apiRequests).toEqual([])
 })
 
+test('allows Focus to be enabled without a source or cone selection', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Bundled example').selectOption('reg_mux'),
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeEnabled()
+  await focus.uncheck()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
+
+  await expect(focus).toBeEnabled()
+  await focus.check()
+  await expect(focus).toBeChecked()
+})
+
 test('group toggles reveal on component hover and re-render through ELK', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []

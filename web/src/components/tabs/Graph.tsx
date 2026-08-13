@@ -1136,14 +1136,13 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
               ? 'Show only the logic relevant to this selection'
               : 'Show the full schematic and highlight the relevant logic'
             : graphOptions.focus
-              ? 'Turn Focus off before choosing a source selection or cone'
-              : 'Focus applies to source selections and cones'
+              ? 'Focus is enabled for the next source selection or cone'
+              : 'Focus is disabled for the next source selection or cone'
         }
       >
         <input
           type="checkbox"
           checked={graphOptions.focus}
-          disabled={!focusAvailable && !graphOptions.focus}
           onChange={(event) => setOpt({ focus: event.target.checked })}
         />
         Focus
