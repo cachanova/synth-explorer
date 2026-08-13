@@ -51,7 +51,7 @@ cmake -S "$source_dir" -B "$build_dir" -G Ninja \
   -DBUILD_TESTING=OFF \
   -DYOSYS_WITHOUT_SLANG=ON \
   -DYOSYS_COMPONENTS="$components_arg"
-cmake --build "$build_dir" --target yosys --parallel "$jobs"
+cmake --build "$build_dir" --target yosys yosys-abc --parallel "$jobs"
 
 version=$($build_dir/yosys -V)
 if [[ "$version" != *"Yosys 0.67"* || "$version" != *"2d1509d1b"* ]]; then
