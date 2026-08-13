@@ -14,7 +14,7 @@ function recordApiRequests(page: Page): string[] {
 
 async function waitForAutomaticSynthesis(
   page: Page,
-  changeInput: () => Promise<void>,
+  changeInput: () => Promise<unknown>,
 ) {
   const analysisPane = page.locator('.pane-right')
   await analysisPane.waitFor()
@@ -2397,7 +2397,8 @@ test('clears schematic selections when synthesis changes', async ({ page }) => {
   await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
   await expect(page.getByText('this cone belongs to the previous synthesis')).toHaveCount(0)
 
-  const edgePoint = await page.locator<SVGPathElement>('.g-edge').first().evaluate((edge) => {
+  const edgePoint = await page.locator('.g-edge').first().evaluate((edge) => {
+    if (!(edge instanceof SVGPathElement)) throw new Error('edge is not a path')
     const point = edge.getPointAtLength(Math.min(2, edge.getTotalLength()))
     const matrix = edge.getScreenCTM()
     if (!matrix) throw new Error('edge has no screen transform')
