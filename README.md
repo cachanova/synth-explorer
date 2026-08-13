@@ -181,6 +181,7 @@ Explorer origins, and permits one Vivado run at a time. See
 | --- | --- |
 | [`analysis-core/`](analysis-core/) | Canonical Rust netlist, graph, provenance, grouping, and analysis engine |
 | [`analysis-wasm/`](analysis-wasm/) | WebAssembly bindings for the Rust analysis engine |
+| [`rtl-correlate/`](rtl-correlate/) | RTL↔netlist correlation: Yosys JSON model, dialect name rules, `src` attribution |
 | [`web/`](web/) | Static React application, browser workers, bundled examples, and pinned WASM artifacts |
 | [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
 | [`tools/yosys-native/`](tools/yosys-native/) | Exact native Yosys counterpart for local calibration |
@@ -200,15 +201,23 @@ hosted EDA tools.
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo bench --profile dev -p synth-explorer-analysis --bench provenance -- --test
 
 cd web
 npm ci
 npm test
 npm run lint
 npx tsc -b --pretty false
+npx tsc -p ../calibration/tsconfig.json --noEmit
+npm run verify:precomputed
+npm run generate:palettes   # CI fails if the committed palette outputs differ
 npm run build
 npm run test:e2e
 ```
+
+CI also rebuilds the analysis WebAssembly package and fails if the committed
+artifact under `web/src/wasm/analysis/` differs — after Rust changes, run
+`./analysis-wasm/build.sh` and commit the result.
 
 Rebuild the Rust analysis WebAssembly package with `./analysis-wasm/build.sh`.
 See [`tools/yosys-wasm/README.md`](tools/yosys-wasm/README.md) before rebuilding
@@ -218,6 +227,7 @@ before rebuilding the VHDL frontend and standard libraries.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Source provenance architecture](docs/SOURCE_PROVENANCE_ARCHITECTURE.md)
 - [VHDL runtime](docs/VHDL_GHDL.md)
 - [Web client](web/README.md)
 - [Local calibration](calibration/README.md)
