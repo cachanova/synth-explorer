@@ -540,15 +540,15 @@ struct DepthComputation {
 
 #[derive(Debug, Clone, DeepSizeOf)]
 pub struct Analysis {
-    pub node_depth: Vec<Option<u32>>,
+    node_depth: Vec<Option<u32>>,
     node_delay: Vec<f64>,
     depth_path_delay: Vec<f64>,
-    pub best_pred: Vec<Option<usize>>,
+    best_pred: Vec<Option<usize>>,
     delay_pred: Vec<Option<usize>>,
     delay_startpoint: Vec<Option<NodeId>>,
-    pub comb_loops: Vec<NodeId>,
+    comb_loops: Vec<NodeId>,
     comb_loop_set: HashSet<NodeId>,
-    pub endpoints: EndpointsResponse,
+    endpoints: EndpointsResponse,
     endpoint_targets: Vec<EndpointTarget>,
     endpoint_targets_truncated: bool,
     source_provenance: SourceProvenanceIndex,
@@ -663,6 +663,10 @@ impl Analysis {
 
     pub fn endpoints(&self) -> &EndpointsResponse {
         &self.endpoints
+    }
+
+    pub fn comb_loops(&self) -> &[NodeId] {
+        &self.comb_loops
     }
 
     pub fn stats(&self) -> Stats {

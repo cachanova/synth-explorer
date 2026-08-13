@@ -1605,7 +1605,7 @@ fn srl_address_feedback_is_reported_as_a_combinational_loop() {
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     let analysis = Analysis::new(&graph, vec!["fixture.sv".to_owned()]);
     let loop_types: HashSet<_> = analysis
-        .comb_loops
+        .comb_loops()
         .iter()
         .filter_map(|id| graph.nodes[*id as usize].cell_type.as_deref())
         .collect();
