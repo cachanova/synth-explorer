@@ -21,6 +21,8 @@ vi.mock('../useStore', () => ({
     selector({
       examples: [],
       loadExample: vi.fn(),
+      exampleSelection: { language: 'verilog', name: '' },
+      setExampleSelection: vi.fn(),
       top: '',
       setTop: vi.fn(),
       synthTool: state.synthTool,

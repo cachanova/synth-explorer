@@ -1,4 +1,4 @@
-import type { DesignFile, Mode } from '../types'
+import type { DesignFile, Mode, SynthTool } from '../types'
 import { flagsForVivadoChange } from './flagRegistry'
 
 const DATABASE_NAME = 'synth-explorer-workspace'
@@ -23,6 +23,8 @@ const MODES = new Set<Mode>([
   'xilinx',
 ])
 
+const SYNTH_TOOLS = new Set<SynthTool>(['yosys', 'vivado'])
+
 export interface WorkspaceState {
   files: DesignFile[]
   activeFileName: string
@@ -30,6 +32,9 @@ export interface WorkspaceState {
   mode: Mode
   extraArgs: string
   vivadoExtraArgs: string
+  synthTool: SynthTool
+  // The concrete installed part; only meaningful while a bridge is connected.
+  vivadoTarget: string
 }
 
 interface StoredWorkspace extends WorkspaceState {
@@ -85,6 +90,12 @@ export function parseStoredWorkspace(value: unknown): WorkspaceState | null {
       typeof record.vivadoExtraArgs === 'string'
         ? record.vivadoExtraArgs
         : flagsForVivadoChange(''),
+    // A tool preference this build cannot use must not cost the user their
+    // files, so an unknown value falls back rather than failing the parse.
+    synthTool: SYNTH_TOOLS.has(record.synthTool as SynthTool)
+      ? (record.synthTool as SynthTool)
+      : 'yosys',
+    vivadoTarget: typeof record.vivadoTarget === 'string' ? record.vivadoTarget : '',
   }
 }
 

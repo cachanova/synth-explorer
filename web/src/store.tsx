@@ -10,7 +10,17 @@ import {
 import * as api from './api'
 import { DEFAULT_FILE, defaultWorkspace } from './data/defaultWorkspace'
 import { StoreContext } from './storeContext'
-import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
+import {
+  loadGraphOptions,
+  saveGraphOptions,
+  type GraphOptions,
+} from './lib/graphSettings'
+import {
+  loadExampleSelection,
+  NO_EXAMPLE_SELECTION,
+  saveExampleSelection,
+  type ExampleSelection,
+} from './lib/exampleSelection'
 import {
   createSourceProbeDebouncer,
   normalizeSourceSelection,
@@ -64,6 +74,8 @@ import {
 import { boundaryPathPinSelection } from './lib/endpointCone'
 import {
   connectVivadoBridge,
+  probeVivadoBridge,
+  selectVivadoTarget,
   VivadoBridgeError,
 } from './lib/vivadoBridge'
 import type {
@@ -118,16 +130,6 @@ export type GraphRequest =
   | ConeGraphRequest
   | SourceGraphRequest
 
-export interface GraphOptions {
-  maxDepth: number
-  maxNodes: number
-  hideControl: boolean
-  hideConst: boolean
-  focus: boolean
-  groupVectors: boolean
-  groupMemories: boolean
-}
-
 export interface EditorHighlight {
   spans: SrcSpan[]
   primary: number
@@ -149,16 +151,6 @@ export type AnalysisState =
   | 'error'
 
 type ResolvedInputIdentity = Pick<SynthesisInput, 'key' | 'revision'>
-
-const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
-  maxDepth: 64,
-  maxNodes: DEFAULT_GRAPH_MAX_NODES,
-  hideControl: true,
-  hideConst: true,
-  focus: true,
-  groupVectors: true,
-  groupMemories: true,
-}
 
 function sourceCaret(file: string, line = 1, column = 1): SourceSelection {
   return {
@@ -218,6 +210,8 @@ export interface Store {
   }>
   disconnectVivado: () => void
   loadExample: (variant: ExampleVariant) => void
+  exampleSelection: ExampleSelection
+  setExampleSelection: (selection: ExampleSelection) => void
   confirmWorkspaceReset: boolean
   setConfirmWorkspaceReset: (enabled: boolean) => void
   editorKeymap: EditorKeymap
@@ -326,10 +320,16 @@ export function StoreProvider({
   const [docRevision, setDocRevision] = useState(0)
   const [top, setTopState] = useState(initial.top)
   const [synthTool, setSynthToolState] = useState<SynthTool>('yosys')
+  // The tool the user last chose, which is what the workspace stores. The
+  // active tool above stays on Yosys until a bridge answers, so a refresh
+  // taken while the bridge happens to be down must not erase the choice.
+  const [rememberedSynthTool, setRememberedSynthTool] = useState<SynthTool>(
+    initial.synthTool,
+  )
   const [mode, setModeState] = useState<Mode>(initial.mode)
   const [extraArgs, setExtraArgsState] = useState(initial.extraArgs)
   const [vivadoStatus, setVivadoStatus] = useState<VivadoBridgeStatus | null>(null)
-  const [vivadoTarget, setVivadoTargetState] = useState('')
+  const [vivadoTarget, setVivadoTargetState] = useState(initial.vivadoTarget)
   const [vivadoExtraArgs, setVivadoExtraArgsState] = useState(initial.vivadoExtraArgs)
   const [confirmWorkspaceReset, setConfirmWorkspaceResetState] = useState(
     loadResetConfirmationPreference,
@@ -342,6 +342,11 @@ export function StoreProvider({
   )
   const [editorLineNumbers, setEditorLineNumbersState] = useState(
     loadEditorLineNumbersPreference,
+  )
+  // Which example the toolbar dropdowns show. It is not a synthesis input:
+  // the persisted workspace already restores the buffer, edits included.
+  const [exampleSelection, setExampleSelectionState] = useState<ExampleSelection>(
+    loadExampleSelection,
   )
   const [inputRevision, setInputRevision] = useState(0)
   const [resolvedInputIdentity, setResolvedInputIdentity] =
@@ -374,7 +379,7 @@ export function StoreProvider({
 
   const [coneReq, setConeReq] = useState<GraphRequest | null>(null)
   const [graphOptions, setGraphOptionsState] = useState<GraphOptions>(
-    DEFAULT_GRAPH_OPTIONS,
+    loadGraphOptions,
   )
 
   const [editorHighlight, setEditorHighlight] = useState<EditorHighlight | null>(
@@ -415,6 +420,8 @@ export function StoreProvider({
   vivadoTargetRef.current = vivadoTarget
   const vivadoExtraArgsRef = useRef(vivadoExtraArgs)
   vivadoExtraArgsRef.current = vivadoExtraArgs
+  const graphOptionsRef = useRef(graphOptions)
+  graphOptionsRef.current = graphOptions
   // Historical flags for inactive modes stay session-local. The active mode
   // and its exact flags are part of the persisted workspace.
   const modeFlagMemoryRef = useRef<ModeFlagMemory>({})
@@ -526,6 +533,8 @@ export function StoreProvider({
     mode,
     extraArgs,
     vivadoExtraArgs,
+    synthTool: rememberedSynthTool,
+    vivadoTarget,
   }
 
   const cancelScheduledWorkspaceSave = useCallback(() => {
@@ -547,8 +556,10 @@ export function StoreProvider({
     extraArgs,
     files,
     mode,
+    rememberedSynthTool,
     top,
     vivadoExtraArgs,
+    vivadoTarget,
   ])
 
   useEffect(() => {
@@ -761,10 +772,17 @@ export function StoreProvider({
       mode: modeRef.current,
       extraArgs: extraArgsRef.current,
       vivadoExtraArgs: vivadoExtraArgsRef.current,
+      synthTool: rememberedSynthTool,
+      vivadoTarget: vivadoTargetRef.current,
     }
     filesRef.current = next.files
     topRef.current = next.top
     workspaceSnapshotRef.current = next
+    // The buffer is back to the default file, so the dropdowns must stop
+    // naming an example. Leaving the name also blocks re-picking it, since a
+    // select fires no change event for the option already shown.
+    saveExampleSelection(NO_EXAMPLE_SELECTION)
+    setExampleSelectionState(NO_EXAMPLE_SELECTION)
     markWorkspaceResetPending(next)
     markInputChanged()
     setFiles(next.files)
@@ -787,6 +805,7 @@ export function StoreProvider({
     cancelScheduledWorkspaceSave,
     cancelSourceProbe,
     markInputChanged,
+    rememberedSynthTool,
     selectSchematicNodes,
   ])
 
@@ -818,6 +837,7 @@ export function StoreProvider({
   const setSynthTool = useCallback(
     (value: SynthTool) => {
       if (value === 'vivado' && !vivadoStatusRef.current) return
+      setRememberedSynthTool(value)
       if (synthToolRef.current === value) return
       synthToolRef.current = value
       markInputChanged()
@@ -836,17 +856,17 @@ export function StoreProvider({
     }
   }, [markInputChanged])
 
+  const adoptVivadoStatus = useCallback((status: VivadoBridgeStatus) => {
+    const target = selectVivadoTarget(status.parts, vivadoTargetRef.current)
+    vivadoStatusRef.current = status
+    vivadoTargetRef.current = target
+    setVivadoStatus(status)
+    setVivadoTargetState(target)
+  }, [])
+
   const connectVivado = useCallback(async (vivadoPath?: string) => {
     try {
-      const status = await connectVivadoBridge(vivadoPath)
-      const target = status.parts.some((part) => part.name === vivadoTargetRef.current)
-        ? vivadoTargetRef.current
-        : status.parts.find((part) => part.name === 'xc7a35tcpg236-1')?.name ??
-          status.parts[0].name
-      vivadoStatusRef.current = status
-      vivadoTargetRef.current = target
-      setVivadoStatus(status)
-      setVivadoTargetState(target)
+      adoptVivadoStatus(await connectVivadoBridge(vivadoPath))
       setError(null)
       return { connected: true }
     } catch (error) {
@@ -866,11 +886,37 @@ export function StoreProvider({
         pathRequired: bridgeError.pathRequired,
       }
     }
-  }, [])
+  }, [adoptVivadoStatus])
 
   const disconnectVivado = useCallback(() => {
+    setRememberedSynthTool('yosys')
     clearVivadoConnection()
   }, [clearVivadoConnection])
+
+  // Restoring a remembered Vivado selection asks an already-running bridge for
+  // its status. A user who never chose Vivado never reaches the bridge. When no
+  // bridge answers the session stays on Yosys and forgets the choice: the Tool
+  // control already reads Yosys, so no selection the user can make would clear
+  // it, and it would otherwise probe loopback on every future load forever.
+  useEffect(() => {
+    if (initial.synthTool !== 'vivado') return
+    let cancelled = false
+    void probeVivadoBridge().then(
+      (status) => {
+        if (cancelled) return
+        adoptVivadoStatus(status)
+        setSynthTool('vivado')
+      },
+      () => {
+        if (!cancelled) setRememberedSynthTool('yosys')
+      },
+    )
+    return () => {
+      cancelled = true
+    }
+    // Restores once per mount from the workspace that seeded this store.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const setMode = useCallback(
     (value: Mode) => {
@@ -1056,8 +1102,19 @@ export function StoreProvider({
     [],
   )
 
+  // Only the graph toolbar persists its options. Saving from an effect would
+  // pin a first-time visitor to today's defaults and would make the transient
+  // `hideControl` clear below outlive the cone that asked for it.
+  const setExampleSelection = useCallback((selection: ExampleSelection) => {
+    saveExampleSelection(selection)
+    setExampleSelectionState(selection)
+  }, [])
+
   const setGraphOptions = useCallback((patch: Partial<GraphOptions>) => {
-    setGraphOptionsState((o) => ({ ...o, ...patch }))
+    const next = { ...graphOptionsRef.current, ...patch }
+    graphOptionsRef.current = next
+    saveGraphOptions(next)
+    setGraphOptionsState(next)
   }, [])
 
   const openCone = useCallback(
@@ -1288,6 +1345,8 @@ export function StoreProvider({
       connectVivado,
       disconnectVivado,
       loadExample,
+      exampleSelection,
+      setExampleSelection,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
       editorKeymap,
@@ -1350,6 +1409,8 @@ export function StoreProvider({
       disconnectVivado,
       requestSynthesis,
       loadExample,
+      exampleSelection,
+      setExampleSelection,
       confirmWorkspaceReset,
       setConfirmWorkspaceReset,
       editorKeymap,
