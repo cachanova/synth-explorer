@@ -256,6 +256,55 @@ export interface TimingResponse {
   model: DelayModel // base coefficients used (pre speed-grade)
 }
 
+export interface PathsOptions {
+  limit?: number
+  to?: number
+  sort?: 'depth' | 'delay'
+  // Timing model so per-path delays track the client's retune settings.
+  profile?: string
+  speed_grade?: string
+  model?: DelayModel
+}
+
+export interface ConeOptions {
+  node: number
+  // Multi-root cone: when present (and non-empty) overrides `node`, unioning
+  // every root's cone under one budget. Serialized as nodes=1,2,3.
+  nodes?: number[]
+  dir: 'fanin' | 'fanout'
+  max_depth?: number
+  max_nodes?: number
+  hide_control?: boolean
+  hide_const?: boolean
+  show_infrastructure?: boolean
+  group_vectors?: boolean
+  group_memories?: boolean
+  // Restrict the first hop of a single-root cone to one physical sink pin.
+  root_port?: string
+  root_port_bit?: number
+  root_port_bits?: number[]
+}
+
+export interface NetlistOptions {
+  max_nodes?: number
+  show_infrastructure?: boolean
+  group_vectors?: boolean
+  group_memories?: boolean
+  hide_control?: boolean
+  hide_const?: boolean
+  around?: number[]
+}
+
+export interface GroupExpansionOptions {
+  node: number
+  expanded_nodes: number[]
+  max_nodes?: number
+  hide_control?: boolean
+  hide_const?: boolean
+  group_vectors?: boolean
+  group_memories?: boolean
+}
+
 export interface VivadoTimingReport {
   data_path_delay_ns: number
   logic_delay_ns?: number

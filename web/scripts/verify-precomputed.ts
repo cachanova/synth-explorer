@@ -6,12 +6,12 @@ import {
   isValidSynthesisArtifact,
   synthesisKey,
   type SynthesisArtifact,
-} from '../src/lib/designCache'
+} from '../src/lib/synthesis/designCache'
 import {
   GHDL_VERSION,
   validateSynthesisRequest,
   type ValidatedSynthesis,
-} from '../src/lib/yosysScript'
+} from '../src/lib/synthesis/yosysScript'
 
 interface SourceManifestEntry {
   name: string

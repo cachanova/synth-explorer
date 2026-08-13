@@ -1,4 +1,4 @@
-import { designSrcSpans, spansSummary, srcLabel } from '../lib/src'
+import { designSrcSpans, spansSummary, srcLabel } from '../lib/source/src'
 import { shallowEqual, useStore } from '../useStore'
 
 /** A clickable yosys src reference that highlights the range in the editor. */

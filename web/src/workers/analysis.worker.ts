@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 
 import init, { AnalysisSession } from '../wasm/analysis/analysis'
-import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
+import { EngineLoadError, lazyLoad } from '../lib/synthesis/engineLoad'
 
 export interface AnalysisInitialization {
   designId: string

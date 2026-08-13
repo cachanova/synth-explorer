@@ -2627,7 +2627,8 @@ th.sortable:hover {
   }
 }
 
-/* THEME TOKEN BLOCKS — generated from src/lib/palettes source data.
+/* BEGIN GENERATED PALETTE TOKENS — run scripts/gen-palettes.mjs */
+/* THEME TOKEN BLOCKS — generated from scripts/gen-palettes.mjs.
    One block per palette × mode; JS sets [data-palette]/[data-theme] on <html>.
    Base :root above stays Tidepool dark as the pre-hydration fallback. */
 
@@ -2959,6 +2960,7 @@ th.sortable:hover {
   --blue: #36f9f6;
   color-scheme: dark;
 }
+/* END GENERATED PALETTE TOKENS */
 
 /* Thin schematic marks need stronger separation than panel borders on light
    canvases. Keep these local to the graph instead of darkening all UI chrome. */

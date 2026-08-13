@@ -81,7 +81,8 @@ test('synthesizes VHDL-2008 locally with source provenance', async ({ page }) =>
   await focus.uncheck()
   await page.locator('.cm-content').press('Escape')
   await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
-  const edgePoint = await page.locator<SVGPathElement>('.g-edge').first().evaluate((edge) => {
+  const edgePoint = await page.locator('.g-edge').first().evaluate((edge) => {
+    if (!(edge instanceof SVGPathElement)) throw new Error('VHDL edge is not a path')
     const point = edge.getPointAtLength(edge.getTotalLength() / 2)
     const matrix = edge.getScreenCTM()
     if (!matrix) throw new Error('VHDL edge has no screen transform')
@@ -170,7 +171,7 @@ test('recovers after the GHDL engine download fails', async ({ page }) => {
   await page.goto('/')
   await page.getByLabel('Language').selectOption('vhdl')
   await page.getByLabel('Bundled example').selectOption('counter')
-  await expect(page.locator('.error-strip')).toContainText('Tool failed to load (503)', {
+  await expect(page.locator('.error-strip')).toContainText('Tool failed to load', {
     timeout: 120_000,
   })
 

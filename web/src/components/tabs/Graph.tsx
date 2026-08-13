@@ -1,36 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ApiRequestError,
+  DesignRequestError,
   expandGroup,
   getCone,
   getNetlist,
-} from '../../api'
-import { analyzeSourceInBrowser } from '../../lib/sourceSelectionClient'
+} from '../../lib/designClient'
+import { analyzeSourceInBrowser } from '../../lib/source/sourceSelectionClient'
 import {
   MAX_GRAPH_RENDER_NODES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
   MAX_OPEN_EXPANDED_GROUPS,
-} from '../../lib/graphLimits'
-import { graphProjection } from '../../lib/graphProjection'
+} from '../../lib/graph/graphLimits'
+import { graphProjection } from '../../lib/graph/graphProjection'
 import {
   applyGroupExpansions,
   openExpandedGroup,
   type ExpandedGroup,
   type ExpandedGroupSpec,
-} from '../../lib/groupExpansion'
-import { mergeSubgraphs } from '../../lib/mergeSubgraph'
-import { isDisplayedDesignCurrent } from '../../lib/graphOwnership'
+} from '../../lib/graph/groupExpansion'
+import { mergeSubgraphs } from '../../lib/graph/mergeSubgraph'
+import { isDisplayedDesignCurrent, isRequestDesignMismatch } from '../../lib/graph/graphOwnership'
 import {
   layoutSubgraph,
   prewarmLayoutWorker,
   shouldRefitProjection,
   type LaidOutGraph,
-} from '../../lib/layout'
+} from '../../lib/graph/layout'
 import {
   sourceProbePresentation,
-} from '../../lib/sourceProbe'
-import { sourceTierMessage } from '../../lib/sourceTiers'
-import { controlDriverIds, controlLabel } from '../../lib/symbols'
+} from '../../lib/source/sourceProbe'
+import { sourceTierMessage } from '../../lib/source/sourceTiers'
+import { controlDriverIds, controlLabel } from '../../lib/graph/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
@@ -211,9 +211,7 @@ export function Graph({ active }: { active: boolean }) {
   const currentRequestKey = design
     ? `${design.design_id}|${coneReq?.nonce ?? 'full'}|${optsKey}`
     : null
-  const requestDesignMismatch = Boolean(
-    design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
-  )
+  const requestDesignMismatch = isRequestDesignMismatch(design?.design_id, coneReq)
 
   // Grouped projections use synthetic ids while raw projections use physical
   // ids. Never carry a detail card across a policy change.
@@ -325,7 +323,7 @@ export function Graph({ active }: { active: boolean }) {
       })
       .catch((e) => {
         if (cancelled) return
-        setError(e instanceof ApiRequestError ? e.message : String(e))
+        setError(e instanceof DesignRequestError ? e.message : String(e))
       })
       .finally(() => {
         if (!cancelled) setFetchingFull(false)
@@ -430,7 +428,7 @@ export function Graph({ active }: { active: boolean }) {
       })
       .catch((e) => {
         if (controller.signal.aborted || myReq !== reqSeq.current) return
-        setError(e instanceof ApiRequestError ? e.message : String(e))
+        setError(e instanceof DesignRequestError ? e.message : String(e))
       })
       .finally(() => {
         if (!controller.signal.aborted && myReq === reqSeq.current) {
@@ -510,7 +508,7 @@ export function Graph({ active }: { active: boolean }) {
         const { error } = failures[0]
         setError(
           `Could not expand group ${failures[0].failed.label}: ${
-            error instanceof ApiRequestError ? error.message : String(error)
+            error instanceof DesignRequestError ? error.message : String(error)
           }`,
         )
       })
@@ -845,7 +843,7 @@ export function Graph({ active }: { active: boolean }) {
           ) return
           setError(
             `Could not expand ${node.name || node.id}: ${
-              e instanceof ApiRequestError ? e.message : String(e)
+              e instanceof DesignRequestError ? e.message : String(e)
             }`,
           )
         })
@@ -1023,9 +1021,7 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
     shallowEqual,
   )
   const { coneReq, design, graphOptions } = store
-  const requestDesignMismatch = Boolean(
-    design && coneReq?.kind === 'cone' && coneReq.designId !== design.design_id,
-  )
+  const requestDesignMismatch = isRequestDesignMismatch(design?.design_id, coneReq)
   const setOpt = store.setGraphOptions
   const focusAvailable = coneReq?.kind === 'cone' || coneReq?.kind === 'source'
 

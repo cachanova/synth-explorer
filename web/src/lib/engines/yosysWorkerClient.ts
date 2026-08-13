@@ -1,14 +1,10 @@
-import type { YosysWorkerResult } from '../../workers/yosys.worker'
-import type { MemoryHandling, ValidatedSynthesis } from '../yosysScript'
-import { LocalSynthesisError, abortError } from '../synthesisError'
-
-interface YosysWorkerResponse {
-  ok: boolean
-  result?: YosysWorkerResult
-  error?: string
-  kind?: 'load'
-  log?: string
-}
+import type { MemoryHandling, ValidatedSynthesis } from '../synthesis/yosysScript'
+import { LocalSynthesisError, abortError } from '../synthesis/synthesisError'
+import type {
+  YosysWorkerRequest,
+  YosysWorkerResponse,
+  YosysWorkerResult,
+} from './yosysProtocol'
 
 let idleYosysWorker: Worker | null = null
 
@@ -17,7 +13,7 @@ export function runYosys(
   memory: MemoryHandling,
   signal?: AbortSignal,
 ): Promise<YosysWorkerResult> {
-  return runYosysWorker({ input, memory }, signal)
+  return runYosysWorker({ kind: 'synthesis', input, memory }, signal)
 }
 
 export function runVivadoNormalizer(
@@ -38,16 +34,6 @@ export function runVivadoNormalizer(
     signal,
   )
 }
-
-type YosysWorkerRequest =
-  | { input: ValidatedSynthesis; memory: MemoryHandling }
-  | {
-      kind: 'vivado-normalize'
-      netlist: string
-      top: string
-      sourceNetlistJson: string
-      flatSourceNetlistJson: string
-    }
 
 function runYosysWorker(
   request: YosysWorkerRequest,
@@ -72,10 +58,10 @@ function runYosysWorker(
     worker.onmessage = (event: MessageEvent<YosysWorkerResponse>) => {
       const response = event.data
       finish(() => {
-        if (response.ok && response.result) resolve(response.result)
+        if (response.ok) resolve(response.result)
         else {
           reject(
-            new LocalSynthesisError(response.error ?? 'yosys failed', response.log ?? '', response.kind),
+            new LocalSynthesisError(response.error, response.log ?? '', response.kind),
           )
         }
       }, true)

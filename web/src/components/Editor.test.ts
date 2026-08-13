@@ -1,7 +1,7 @@
 import { EditorSelection, EditorState } from '@codemirror/state'
 import { describe, expect, it } from 'vitest'
-import { editorHighlightDecorations } from '../lib/editorHighlight'
-import { selectedSourceRange } from '../lib/editorSourceSelection'
+import { editorHighlightDecorations } from '../lib/source/editorHighlight'
+import { selectedSourceRange } from '../lib/source/editorSourceSelection'
 
 const document = 'logic first; logic second;\nlogic third;\n'
 

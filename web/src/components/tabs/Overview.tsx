@@ -1,5 +1,5 @@
-import { displayCellType } from '../../lib/prettyType'
-import { formatSynthesisDelay } from '../../lib/synthesisSettings'
+import { displayCellType } from '../../lib/graph/prettyType'
+import { formatSynthesisDelay } from '../../lib/synthesis/synthesisSettings'
 import { fmaxMhz } from '../../lib/timing'
 import type { CellCategoryCounts, VivadoTimingReport } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'

@@ -1,4 +1,4 @@
-import { LocalSynthesisError } from '../synthesisError'
+import { LocalSynthesisError } from '../synthesis/synthesisError'
 import {
   VivadoBridgeError,
   synthesizeWithVivadoBridge,

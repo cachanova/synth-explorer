@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-import { PALETTES } from '../src/lib/palettes'
+import { PALETTES } from '../src/lib/theme/palettes'
 import { waitForAnalysisReady } from './helpers'
 
 async function computedColor(locator: Locator, cssVariable: string) {

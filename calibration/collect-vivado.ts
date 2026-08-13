@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { YOSYS_VERSION } from '../web/src/lib/yosysScript'
+import { YOSYS_VERSION } from '../web/src/lib/synthesis/yosysScript'
 import type { SynthesizeRequest, XilinxFamily } from '../web/src/types'
 import {
   isXilinxCalibrationVariant,
@@ -317,9 +317,9 @@ async function hashSynthesisContract(): Promise<string> {
   const files = [
     'render-yosys-script.ts',
     'xilinx-matrix.ts',
-    '../web/src/lib/yosysScript.ts',
-    '../web/src/lib/flagRegistry.ts',
-    '../web/src/lib/synthFlags.ts',
+    '../web/src/lib/synthesis/yosysScript.ts',
+    '../web/src/lib/synthesis/flagRegistry.ts',
+    '../web/src/lib/synthesis/synthFlags.ts',
   ]
   const hash = createHash('sha256')
   for (const relative of files) {

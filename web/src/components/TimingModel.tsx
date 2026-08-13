@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { retuneTiming } from '../api'
+import { retuneTiming } from '../lib/designClient'
 import { fmaxMhz } from '../lib/timing'
 import {
   ASIC_GATE_FIELDS,

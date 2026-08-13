@@ -1,0 +1,384 @@
+// Pure schematic-symbol classification and geometry. GraphView owns React
+// rendering; keeping these helpers DOM-free makes the visual vocabulary easy
+// to verify without snapshots of generated SVG path strings.
+
+import type { ControlRef, GraphEdge, GraphNode, NodeRef } from '../../types'
+import { shortNetName } from './prettyType'
+
+export type PortDirection = 'input' | 'output'
+export type PortBoundaryRole = PortDirection | 'internal'
+type DeclaredPortDirection = NonNullable<NodeRef['port_direction']>
+
+export type SymbolKind =
+  | 'and'
+  | 'nand'
+  | 'or'
+  | 'nor'
+  | 'xor'
+  | 'xnor'
+  | 'not'
+  | 'buf'
+  | 'mux'
+  | 'nmux'
+  | 'reg'
+  | 'latch'
+  | 'lut'
+  | 'carry'
+  | 'dsp'
+  | 'arith'
+  | 'memory'
+  | 'port-in'
+  | 'port-out'
+  | 'const'
+  | 'box'
+
+export function controlsFor(node: GraphNode): ControlRef[] {
+  return node.controls ?? []
+}
+
+/** A compact conventional net-label caption, never a raw ABC/Yosys path. */
+export function controlLabel(control: ControlRef): string {
+  const role = control.role.toLowerCase()
+  const prefix = role === 'clock' || role === 'clk'
+    ? 'CLK'
+    : role === 'reset' || role === 'rst'
+      ? 'RST'
+      : role === 'enable' || role === 'en' || role === 'ce'
+        ? 'EN'
+        : control.role.toUpperCase()
+  const polarity = control.active_low ? '↓' : ''
+  if ((control.net_count ?? 0) > 1) {
+    return `${prefix}${polarity} ×${control.net_count}`
+  }
+  return `${prefix}${polarity} ${shortNetName(control.net_name)}`
+}
+
+/** The exact caption rendered in the compact control row. */
+export function controlCaption(control: ControlRef): string {
+  return `${control.generated ? '⚠ ' : ''}${controlLabel(control)}`
+}
+
+/** Every real driver represented by a compact grouped-control row. */
+export function controlDriverIds(control: ControlRef): number[] {
+  return control.driver_ids && control.driver_ids.length > 0
+    ? control.driver_ids
+    : [control.driver_id]
+}
+
+/** Infer many top-level port directions in one O(nodes + edges) pass. */
+export function inferPortDirections(
+  nodeIds: Iterable<number>,
+  edges: readonly Pick<GraphEdge, 'from' | 'to'>[],
+  extraDrivers: Iterable<number> = [],
+  declaredDirections: ReadonlyMap<number, DeclaredPortDirection> = new Map(),
+): Map<number, PortDirection> {
+  const boundaries = inferPortBoundaryRoles(
+    nodeIds,
+    edges,
+    extraDrivers,
+    declaredDirections,
+  )
+  return new Map(
+    [...boundaries].map(([id, role]) => {
+      const declared = declaredDirections.get(id)
+      return [
+        id,
+        declared === 'input' || declared === 'output'
+          ? declared
+          : role === 'input'
+            ? 'input'
+            : 'output',
+      ]
+    }),
+  )
+}
+
+/** Infer only unambiguous primary boundaries for graph-layout constraints. */
+export function inferPortBoundaryRoles(
+  nodeIds: Iterable<number>,
+  edges: readonly Pick<GraphEdge, 'from' | 'to'>[],
+  extraDrivers: Iterable<number> = [],
+  declaredDirections: ReadonlyMap<number, DeclaredPortDirection> = new Map(),
+): Map<number, PortBoundaryRole> {
+  const ports = new Set(nodeIds)
+  const drives = new Set([...extraDrivers].filter((id) => ports.has(id)))
+  const driven = new Set<number>()
+  for (const edge of edges) {
+    if (ports.has(edge.from)) drives.add(edge.from)
+    if (ports.has(edge.to)) driven.add(edge.to)
+  }
+  return new Map(
+    [...ports].map((id) => {
+      const declared = declaredDirections.get(id)
+      return [
+        id,
+        declared === 'input'
+          ? driven.has(id)
+            ? 'internal'
+            : 'input'
+          : declared === 'output'
+            ? drives.has(id)
+              ? 'internal'
+              : 'output'
+          : declared === 'inout'
+            ? 'internal'
+            : drives.has(id) && !driven.has(id)
+              ? 'input'
+              : driven.has(id) && !drives.has(id)
+                ? 'output'
+                : 'internal',
+      ]
+    }),
+  )
+}
+
+function canonicalCellType(cellType: string): string {
+  if (cellType.startsWith('$_') && cellType.endsWith('_')) {
+    return cellType.slice(2, -1).toUpperCase()
+  }
+  return (cellType.startsWith('$') ? cellType.slice(1) : cellType).toUpperCase()
+}
+
+const MUX_TYPES = new Set([
+  'MUX',
+  'PMUX',
+  'TERNARY',
+  'TRIBUF',
+  'PFUMX',
+  'L6MUX21',
+  'MUXF7',
+  'MUXF8',
+  'MUXF9',
+  'MUXCY',
+])
+
+const ARITH_GLYPHS: Record<string, string> = {
+  ADD: '+',
+  SUB: '−',
+  NEG: '−',
+  MUL: '×',
+  MACC: '×',
+  DIV: '÷',
+  DIVFLOOR: '÷',
+  MOD: '%',
+  MODFLOOR: '%',
+  POW: '^',
+  EQ: '=',
+  EQX: '=',
+  NE: '≠',
+  NEX: '≠',
+  LT: '<',
+  LE: '≤',
+  GT: '>',
+  GE: '≥',
+  SHL: '≪',
+  SSHL: '≪',
+  SHR: '≫',
+  SSHR: '≫',
+  SHIFT: '≫',
+  SHIFTX: '≫',
+  REDUCE_AND: '&',
+  REDUCE_OR: '≥1',
+  REDUCE_BOOL: '≥1',
+  REDUCE_XOR: '=1',
+}
+
+const XILINX_LUTRAM = String.raw`(?:16X(?:1[DS](?:_1)?|2S|4S|8S)|32(?:M(?:16)?|X(?:1[DS](?:_1)?|2S|4S|8S|16DR8))|64(?:M(?:8)?|X(?:1[DS](?:_1)?|2S|8SW))|128X1(?:D|S(?:_1)?)|256X1[DS]|512X1S)`
+const XILINX_BLOCK_RAM = `(?:${[
+  '4_S1', '4_S1_S1', '4_S1_S2', '4_S1_S4', '4_S1_S8', '4_S1_S16',
+  '4_S2', '4_S2_S2', '4_S2_S4', '4_S2_S8', '4_S2_S16',
+  '4_S4', '4_S4_S4', '4_S4_S8', '4_S4_S16',
+  '4_S8', '4_S8_S8', '4_S8_S16', '4_S16', '4_S16_S16',
+  '8BWER', '16', '16BWER',
+  '16BWE_S18', '16BWE_S18_S9', '16BWE_S18_S18',
+  '16BWE_S36', '16BWE_S36_S9', '16BWE_S36_S18', '16BWE_S36_S36',
+  '16_S1', '16_S1_S1', '16_S1_S2', '16_S1_S4', '16_S1_S9', '16_S1_S18', '16_S1_S36',
+  '16_S2', '16_S2_S2', '16_S2_S4', '16_S2_S9', '16_S2_S18', '16_S2_S36',
+  '16_S4', '16_S4_S4', '16_S4_S9', '16_S4_S18', '16_S4_S36',
+  '16_S9', '16_S9_S9', '16_S9_S18', '16_S9_S36',
+  '16_S18', '16_S18_S18', '16_S18_S36', '16_S36', '16_S36_S36',
+  '18', '18E1', '18E2', '18SDP', '32_S64_ECC', '36', '36E1', '36E2', '36SDP',
+].join('|')})`
+const MEMORY_HINT = new RegExp(String.raw`^(?:MEM(?:ORY|RD|WR|INIT)?(?:_V\d+)?|RAM|ROM|RAM(?:${XILINX_LUTRAM}|B${XILINX_BLOCK_RAM}|D(?:32|64)(?:X1|E)?|S(?:32|64)(?:X1|E)?)|URAM288(?:_BASE)?|DP16KD|TRELLIS_DPR16X4|SPRAM(?:256KA)?|SB_RAM40_4K(?:NR|NW|NRNW)?|SB_SPRAM256KA|SRL(?:16E|C32E))$`, 'i')
+const LATCH_HINT = /(?:^|_)(?:A?DLATCH(?:SR)?|SR)(?:_|$)|^LD(?:CE|PE|CPE)$/i
+const REGISTER_HINT = /(?:^|_)(?:A?S?DFF(?:E|SR|SRE)?|ALDFF(?:E)?|FF)(?:_|$)|^FD(?:RE|CE|PE|SE|CPE|R|S|C|P)(?:_1)?$|^SB_DFF|^TRELLIS_FF$|^FL1P3/i
+const LUT_HINT = /LUT\d*|^TRELLIS_COMB$/i
+const CARRY_HINT = /^(?:CARRY[48]?|SB_CARRY|CCU2C)$/i
+const DSP_HINT = /^(?:DSP48\w*|MULT18X18D|SB_MAC16)$/i
+const SPECIAL_PRIMITIVE_HINT = new RegExp(String.raw`^(?:SB_(?!(?:RAM|SPRAM))|TRELLIS_|CCU2C|CARRY|DSP48|MULT18X18D|MUXF[789]|MUXCY|XORCY|PFUMX|L6MUX21|LUT[1-6](?:_2)?|INV|RAM(?:${XILINX_LUTRAM}|B${XILINX_BLOCK_RAM}|D(?:32|64)(?:X1|E)?|S(?:32|64)(?:X1|E)?)$|URAM288(?:_BASE)?$|DP16KD$|SPRAM(?:256KA)?$|SB_RAM40_4K(?:NR|NW|NRNW)?$|SB_SPRAM256KA$|SRL(?:16E|C32E)$|FD|LD|IBUF|OBUF|IOBUF|BUFG|BUFH)`, 'i')
+
+/** Vendor-specific implementation primitive, independent of its symbol shape. */
+export function isSpecialPrimitive(node: NodeRef): boolean {
+  return node.kind === 'cell' && SPECIAL_PRIMITIVE_HINT.test(canonicalCellType(node.cell_type ?? ''))
+}
+
+/** Map a graph node to a schematic archetype. */
+export function symbolKind(
+  node: NodeRef,
+  portDirection: PortDirection = 'input',
+): SymbolKind {
+  if (node.kind === 'const') return 'const'
+  if (node.kind === 'port') return portDirection === 'output' ? 'port-out' : 'port-in'
+
+  const cellType = node.cell_type ?? ''
+  if (!cellType) return 'box'
+  const token = canonicalCellType(cellType)
+
+  // Memory and unknown black-box boundaries can also carry seq=true. Keep
+  // them as explicit boundaries rather than misrepresenting them as DFFs.
+  if (MEMORY_HINT.test(token)) return 'memory'
+  if (node.register !== false && LATCH_HINT.test(token)) return 'latch'
+  if (node.register === true || (node.register !== false && REGISTER_HINT.test(token))) {
+    return 'reg'
+  }
+  if (CARRY_HINT.test(token)) return 'carry'
+  if (DSP_HINT.test(token)) return 'dsp'
+  if (LUT_HINT.test(token)) return 'lut'
+  if (MUX_TYPES.has(token) || /^MUX\d+$/.test(token)) return 'mux'
+  if (/^NMUX\d*$/.test(token)) return 'nmux'
+
+  switch (token) {
+    case 'AND':
+    case 'ANDNOT':
+    case 'LOGIC_AND':
+      return 'and'
+    case 'NAND':
+      return 'nand'
+    case 'OR':
+    case 'ORNOT':
+    case 'LOGIC_OR':
+      return 'or'
+    case 'NOR':
+      return 'nor'
+    case 'XOR':
+    case 'XORCY':
+      return 'xor'
+    case 'XNOR':
+      return 'xnor'
+    case 'NOT':
+    case 'INV':
+    case 'LOGIC_NOT':
+      return 'not'
+    case 'BUF':
+    case 'SB_GB':
+      return 'buf'
+  }
+
+  if (token.includes('BUF')) return 'buf'
+  if (token in ARITH_GLYPHS) return 'arith'
+  return 'box'
+}
+
+export function arithGlyph(cellType: string | undefined): string | null {
+  if (!cellType) return null
+  return ARITH_GLYPHS[canonicalCellType(cellType)] ?? null
+}
+
+export function hasOutputBubble(kind: SymbolKind): boolean {
+  return kind === 'nand' || kind === 'nor' || kind === 'xnor' || kind === 'not' || kind === 'nmux'
+}
+
+export function hasInputArc(kind: SymbolKind): boolean {
+  return kind === 'xor' || kind === 'xnor'
+}
+
+const BUBBLE_R = 4
+
+/**
+ * Body outline in local node coordinates. Rectangle-based symbols return an
+ * empty string and are drawn by GraphView.
+ */
+export function shapePath(kind: SymbolKind, width: number, height: number): string {
+  const negated = hasOutputBubble(kind)
+  const bodyWidth = negated ? width - BUBBLE_R * 2 : width
+  const cy = height / 2
+
+  switch (kind) {
+    case 'and':
+    case 'nand': {
+      const straight = Math.max(0, bodyWidth - height / 2)
+      return `M 0 0 L ${straight} 0 A ${height / 2} ${height / 2} 0 0 1 ${straight} ${height} L 0 ${height} Z`
+    }
+    case 'or':
+    case 'nor':
+    case 'xor':
+    case 'xnor': {
+      const back = bodyWidth * 0.16
+      return (
+        `M 0 0 Q ${back} ${cy} 0 ${height} ` +
+        `Q ${bodyWidth * 0.62} ${height} ${bodyWidth} ${cy} ` +
+        `Q ${bodyWidth * 0.62} 0 0 0 Z`
+      )
+    }
+    case 'not':
+    case 'buf':
+      return `M 0 0 L ${bodyWidth} ${cy} L 0 ${height} Z`
+    case 'mux':
+    case 'nmux': {
+      const inset = height * 0.18
+      return `M 0 0 L ${bodyWidth} ${inset} L ${bodyWidth} ${height - inset} L 0 ${height} Z`
+    }
+    case 'carry': {
+      const cut = Math.min(9, height * 0.18)
+      return (
+        `M ${cut} 0 L ${width - cut} 0 L ${width} ${cut} ` +
+        `L ${width} ${height - cut} L ${width - cut} ${height} ` +
+        `L ${cut} ${height} L 0 ${height - cut} L 0 ${cut} Z`
+      )
+    }
+    case 'dsp': {
+      const cut = Math.min(13, height * 0.22)
+      return `M 0 0 L ${width - cut} 0 L ${width} ${cut} L ${width} ${height} L 0 ${height} Z`
+    }
+    case 'port-in': {
+      const tip = Math.min(height * 0.45, width * 0.35)
+      return `M 0 0 L ${width - tip} 0 L ${width} ${cy} L ${width - tip} ${height} L 0 ${height} Z`
+    }
+    case 'port-out': {
+      const tip = Math.min(height * 0.38, width * 0.3)
+      return `M 0 0 L ${width - tip} 0 L ${width} ${cy} L ${width - tip} ${height} L 0 ${height} L ${tip} ${cy} Z`
+    }
+    default:
+      return ''
+  }
+}
+
+export function bubbleAt(
+  kind: SymbolKind,
+  width: number,
+  height: number,
+): { cx: number; cy: number; r: number } | null {
+  if (!hasOutputBubble(kind)) return null
+  const bodyWidth = width - BUBBLE_R * 2
+  return { cx: bodyWidth + BUBBLE_R, cy: height / 2, r: BUBBLE_R }
+}
+
+export function inputArcPath(kind: SymbolKind, height: number): string | null {
+  if (!hasInputArc(kind)) return null
+  return `M -5 0 Q ${height * 0.16 - 5} ${height / 2} -5 ${height}`
+}
+
+/** ANDNOT/ORNOT invert their B-side input. */
+export function inputBubbleAt(
+  node: NodeRef,
+  _width: number,
+  height: number,
+): { cx: number; cy: number; r: number } | null {
+  const token = canonicalCellType(node.cell_type ?? '')
+  if (token !== 'ANDNOT' && token !== 'ORNOT') return null
+  return { cx: BUBBLE_R, cy: (height * 2) / 3, r: BUBBLE_R }
+}
+
+export function registerClockPath(height: number, yFraction = 0.72): string {
+  const cy = height * yFraction
+  return `M 0 ${cy - 6} L 7 ${cy} L 0 ${cy + 6}`
+}
+
+export function boxBadge(node: NodeRef): string {
+  const kind = symbolKind(node)
+  if (kind === 'carry') return 'CARRY'
+  if (kind === 'dsp') return 'DSP'
+  if (kind === 'memory') return 'MEM'
+  if (isSpecialPrimitive(node)) return 'PRIM'
+  return (node as GraphNode).is_boundary ? 'BOUNDARY' : 'CELL'
+}

@@ -7,15 +7,15 @@ import {
   type ReactNode,
 } from 'react'
 import { BUILD_COMMIT, buildCommitUrl, shortBuildCommit } from '../lib/buildInfo'
-import { PALETTES, type Mode } from '../lib/palettes'
-import { useTheme } from '../lib/themeContext'
-import { clearLocalSynthesisCache } from '../lib/designCache'
+import { PALETTES, type Mode } from '../lib/theme/palettes'
+import { useTheme } from '../lib/theme/themeContext'
+import { clearLocalSynthesisCache } from '../lib/synthesis/designCache'
 import {
   AUTO_SYNTHESIS_DELAY_STEP_MS,
   formatSynthesisDelay,
   MAX_AUTO_SYNTHESIS_DELAY_MS,
   MIN_AUTO_SYNTHESIS_DELAY_MS,
-} from '../lib/synthesisSettings'
+} from '../lib/synthesis/synthesisSettings'
 import { shallowEqual, useStore } from '../useStore'
 
 function GearIcon() {

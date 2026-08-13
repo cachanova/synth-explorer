@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import type { EndpointsResponse } from '../../types'
-import { boundaryFaninRequest, boundaryPathPinSelection } from '../../lib/endpointCone'
+import { boundaryFaninRequest, boundaryPathPinSelection } from '../../lib/graph/endpointCone'
 
 let endpointsData: EndpointsResponse
 

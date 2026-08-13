@@ -71,14 +71,15 @@ handle derived from the full local cache digest.
 
 ## Canonical implementations
 
-- `web/src/lib/yosysScript.ts` is the only Yosys script builder, including the
+- `web/src/lib/synthesis/yosysScript.ts` is the only Yosys script builder, including the
   Vivado-netlist normalization script.
 - `vivado-bridge/` is the only runtime Vivado executor and Tcl builder.
-- `web/src/lib/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
+- `web/src/lib/synthesis/vhdl.ts` is the only GHDL-to-Yosys source-location rewrite.
 - `web/src/lib/engines/` holds the one `SynthEngine` seam: the Yosys engine
   (script run plus abstract-memory retry) and the Vivado engine (bridge call,
-  RTL snapshot, normalization) behind one interface; `localEngine.ts` keeps
-  the tool-independent caching, GHDL translation, and analysis handoff.
+  RTL snapshot, normalization) behind one interface;
+  `web/src/lib/synthesis/localEngine.ts` keeps the tool-independent caching,
+  GHDL translation, and analysis handoff.
 - `analysis-core/` is the only netlist/graph and source-selection analysis
   implementation.
 - `rtl-correlate/` is the only RTL↔netlist correlation implementation: the

@@ -6,7 +6,7 @@ import { DownloadLauncher } from './components/DownloadLauncher'
 import { LeftPane } from './components/LeftPane'
 import { RightPane } from './components/RightPane'
 import { SettingsMenu } from './components/SettingsMenu'
-import { isLocalLauncher } from './lib/localLauncher'
+import { isLocalLauncher } from './lib/launcher/localLauncher'
 
 const REPOSITORY_URL = 'https://github.com/cachanova/synth-explorer'
 

@@ -32,7 +32,7 @@ vi.mock('@tanstack/react-virtual', () => ({
     }
   },
 }))
-vi.mock('../../api', () => ({ getPaths: getPathsMock }))
+vi.mock('../../lib/designClient', () => ({ getPaths: getPathsMock }))
 vi.mock('../../lib/timingSettings', () => ({
   loadTimingSettings: () => ({
     profile: 'auto',

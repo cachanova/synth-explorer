@@ -31,11 +31,11 @@ import {
   indentOnInput,
   syntaxHighlighting,
 } from '@codemirror/language'
-import { selectedSourceRange } from '../lib/editorSourceSelection'
+import { selectedSourceRange } from '../lib/source/editorSourceSelection'
 import {
   editorHighlightDecorations,
   type HighlightDecorationKind,
-} from '../lib/editorHighlight'
+} from '../lib/source/editorHighlight'
 import {
   closeBrackets,
   closeBracketsKeymap,
@@ -48,7 +48,7 @@ import { verilog } from '@codemirror/legacy-modes/mode/verilog'
 import { vhdl } from '@codemirror/legacy-modes/mode/vhdl'
 import { tags } from '@lezer/highlight'
 import type { EditorHighlight } from '../store'
-import { useTheme } from '../lib/themeContext'
+import { useTheme } from '../lib/theme/themeContext'
 import { shallowEqual, useStore } from '../useStore'
 
 // Keep editor chrome and syntax on the same CSS tokens as the selected app

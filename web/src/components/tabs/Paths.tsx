@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getPaths } from '../../api'
+import { getPaths } from '../../lib/designClient'
 import { formatBitRanges } from '../../lib/bitRanges'
 import { useDesignData } from '../../lib/useDesignData'
 import {
@@ -8,7 +8,7 @@ import {
   isHiddenName,
   nodeSublabel,
   shortNetName,
-} from '../../lib/prettyType'
+} from '../../lib/graph/prettyType'
 import {
   loadTimingSettings,
   resolveTimingView,

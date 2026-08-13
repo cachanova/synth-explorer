@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { flagsForMode, type FlagDef } from '../lib/flagRegistry'
-import { getFlagValue, hasFlag, setFlagValue, toggleFlag } from '../lib/synthFlags'
+import { flagsForMode, type FlagDef } from '../lib/synthesis/flagRegistry'
+import { getFlagValue, hasFlag, setFlagValue, toggleFlag } from '../lib/synthesis/synthFlags'
 import type { Mode } from '../types'
 
 /** Inline editor for a value-taking flag. Fixed choices use a select; integer

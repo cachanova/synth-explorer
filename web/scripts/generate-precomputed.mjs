@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import process from 'node:process'
-import { chromium } from 'playwright'
+import { chromium } from '@playwright/test'
 
 const root = process.cwd()
 const baseURL = 'http://127.0.0.1:4183'

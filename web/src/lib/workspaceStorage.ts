@@ -1,5 +1,5 @@
 import type { DesignFile, Mode } from '../types'
-import { flagsForVivadoChange } from './flagRegistry'
+import { flagsForVivadoChange } from './synthesis/flagRegistry'
 
 const DATABASE_NAME = 'synth-explorer-workspace'
 const STORE_NAME = 'drafts'

@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getEndpoints } from '../../api'
+import { getEndpoints } from '../../lib/designClient'
 import { formatBitRanges } from '../../lib/bitRanges'
 import { fuzzyFilter } from '../../lib/fuzzy'
-import { boundaryFaninRequest } from '../../lib/endpointCone'
+import { boundaryFaninRequest } from '../../lib/graph/endpointCone'
 import {
   displayCellType,
   isHiddenName,
   shortNetName,
-} from '../../lib/prettyType'
+} from '../../lib/graph/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
-import { symbolKind } from '../../lib/symbols'
+import { symbolKind } from '../../lib/graph/symbols'
 import type { Store } from '../../store'
 import type {
   BoundaryEndpoint,

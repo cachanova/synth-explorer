@@ -1,7 +1,7 @@
-import { designSrcSpans, srcLabel } from '../lib/src'
-import { displayNodeName, nodeLabel } from '../lib/prettyType'
-import { coneRootIds } from '../lib/graphProjection'
-import { controlDriverIds, controlLabel, controlsFor, symbolKind } from '../lib/symbols'
+import { designSrcSpans, srcLabel } from '../lib/source/src'
+import { displayNodeName, nodeLabel } from '../lib/graph/prettyType'
+import { coneRootIds } from '../lib/graph/graphProjection'
+import { controlDriverIds, controlLabel, controlsFor, symbolKind } from '../lib/graph/symbols'
 import type { GraphNode } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 

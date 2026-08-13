@@ -1,5 +1,5 @@
-import type { ValidatedSynthesis } from '../yosysScript'
-import type { YosysWorkerResult } from '../../workers/yosys.worker'
+import type { ValidatedSynthesis } from '../synthesis/yosysScript'
+import type { YosysWorkerResult } from './yosysProtocol'
 
 export interface SynthEngineRequest {
   /** The validated request as submitted; Vivado consumes these files natively. */

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ApiRequestError } from '../api'
+import { DesignRequestError } from './designClient'
 
 export interface AsyncData<T> {
   data: T | null
@@ -38,7 +38,7 @@ export function useDesignData<T>(
       })
       .catch((e) => {
         if (cancelled) return
-        const msg = e instanceof ApiRequestError ? e.message : String(e)
+        const msg = e instanceof DesignRequestError ? e.message : String(e)
         setState({ data: null, loading: false, error: msg })
       })
     return () => {
