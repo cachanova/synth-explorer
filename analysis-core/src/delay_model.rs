@@ -19,13 +19,12 @@
 //! ~74% mean error, and physically true per-cell values scored *worse* (91.5%)
 //! against it.
 //!
-//! Against the well-posed target (24-design corpus x 3 families, 56 scored
-//! paths), these coefficients land at **15.6% mean / 10.7% median** absolute
-//! error vs Vivado's data-path estimate: Series-7 12.9%/9.4%, UltraScale
-//! 18.6%/15.8%, UltraScale+ 15.4%/11.5%. Individual paths can still be off by
-//! 40-60% — the worst cases are designs where Vivado's estimator picks a
-//! structurally different worst path than we do (e.g. `inferred_fifo_d16` on
-//! Series-7: our depth-4 memory path vs its 1-level path).
+//! Against the well-posed target (24-design corpus x 3 families, 57 scored
+//! paths), these coefficients land at **13.9% mean / 9.1% median** absolute
+//! error vs Vivado's data-path estimate: Series-7 8.5%/8.4%, UltraScale
+//! 16.8%/11.7%, UltraScale+ 16.5%/12.3%. Individual paths can still be off by
+//! about 50% — the worst cases are designs where Vivado's estimator picks a
+//! structurally different worst path than we do.
 //!
 //! The cell terms are physical: Vivado's own per-cell charges along real paths
 //! of our netlists (path tables / `get_speed_models`). Only the two net terms
@@ -190,12 +189,12 @@ impl DelayProfile {
             // IceStorm timings_hx8k vs timings_lp8k: constant ratio 1.4739.
             (Self::Ice40, Some("lp")) => 1.4739,
             (Self::Ice40, _) => 1.0,
-            (Self::Series7, Some("-2")) => 0.799,
-            (Self::Series7, Some("-3")) => 0.715,
-            (Self::UltraScale, Some("-2")) => 0.838,
-            (Self::UltraScale, Some("-3")) => 0.738,
-            (Self::UltraScalePlus, Some("-2")) => 0.860,
-            (Self::UltraScalePlus, Some("-3")) => 0.795,
+            (Self::Series7, Some("-2")) => 0.803,
+            (Self::Series7, Some("-3")) => 0.719,
+            (Self::UltraScale, Some("-2")) => 0.842,
+            (Self::UltraScale, Some("-3")) => 0.741,
+            (Self::UltraScalePlus, Some("-2")) => 0.869,
+            (Self::UltraScalePlus, Some("-3")) => 0.809,
             // prjtrellis-measured; "-2" = ECP5 grade 7, "-3" = ECP5 grade 8.
             (Self::Ecp5, Some("-2")) => 0.875,
             (Self::Ecp5, Some("-3")) => 0.755,
@@ -316,7 +315,7 @@ impl DelayModel {
             cell_ps: 320.0,
             ff_clk_to_q_ps: 456.0,
             ff_setup_ps: 40.0,
-            net_base_ps: 773.0,
+            net_base_ps: 793.0,
             net_per_fanout_ps: 29.0,
             gate_ps: None,
         }
@@ -949,6 +948,28 @@ mod tests {
             s7 < usp,
             "series7 should gain more from -3 than ultrascale+ ({s7} vs {usp})"
         );
+
+        // Keep the checked-in factors tied to the complete 2026.1 production
+        // matrix. A new calibration run should update these assertions and the
+        // provenance table in calibration/README.md in the same change.
+        assert_eq!(DelayProfile::Series7.speed_grade_factor(Some("-2")), 0.803);
+        assert_eq!(s7, 0.719);
+        assert_eq!(
+            DelayProfile::UltraScale.speed_grade_factor(Some("-2")),
+            0.842
+        );
+        assert_eq!(
+            DelayProfile::UltraScale.speed_grade_factor(Some("-3")),
+            0.741
+        );
+        assert_eq!(
+            DelayProfile::UltraScalePlus.speed_grade_factor(Some("-2")),
+            0.869
+        );
+        assert_eq!(usp, 0.809);
+        assert_eq!(DelayModel::series7().net_base_ps, 793.0);
+        assert_eq!(DelayModel::ultrascale().net_base_ps, 136.0);
+        assert_eq!(DelayModel::ultrascale_plus().net_base_ps, 51.0);
 
         // iCE40's actual axis is HX/LP. Numeric grades must not reach the old
         // generic catch-all; legacy values fall back cleanly to HX.

@@ -7,6 +7,8 @@
 //! ```text
 //!   gen      examples/ out/      # pin each case's parameters into concrete RTL
 //!   estimate out/ est.json       # run Yosys + our estimate over those cases
+//!   estimate-variant out/ native-carry est.json
+//!                                # estimate one mapping-sensitivity holdout
 //!   report   est.json vivado.json# compare, per family and speed grade
 //!   fit      vivado.json         # least-squares speed-grade factors (Vivado vs Vivado)
 //! ```
@@ -51,6 +53,10 @@ struct Spec {
 struct Estimate {
     case: String,
     family: String,
+    /// Synthesis mapping used to produce this estimate. Old estimate files
+    /// predate variant holdouts and therefore mean `production`.
+    #[serde(default = "production_variant")]
+    variant: String,
     /// Worst-case path delay (ns) from the Tier-0 model.
     delay_ns: f64,
     launch_ns: f64,
@@ -92,6 +98,10 @@ struct VivadoTiming {
     case: String,
     family: String,
     speed_grade: String,
+    /// Mapping variant measured by the bridge collector. Legacy artifacts
+    /// without this field are production measurements.
+    #[serde(default = "production_variant")]
+    variant: String,
     /// `Data Path Delay` — clock-to-Q + logic + route. Setup is NOT included
     /// (Vivado folds it into slack), so this is what our launch+logic+net sums to.
     data_path_ns: f64,
@@ -100,11 +110,16 @@ struct VivadoTiming {
     logic_levels: u32,
 }
 
+fn production_variant() -> String {
+    "production".to_owned()
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("gen") => cmd_gen(&args[1..]),
         Some("estimate") => cmd_estimate(&args[1..]),
+        Some("estimate-variant") => cmd_estimate_variant(&args[1..]),
         Some("estimate-lattice") => cmd_estimate_lattice(&args[1..]),
         Some("report") => cmd_report(&args[1..]),
         Some("fit") => cmd_fit(&args[1..]),
@@ -113,6 +128,7 @@ fn main() -> ExitCode {
                 "usage:\n  \
                  calibrate gen <examples-dir> <out-dir>\n  \
                  calibrate estimate <cases-dir> <out.json> [extra-synth-flags...]\n  \
+                 calibrate estimate-variant <cases-dir> <variant> <out.json>\n  \
                  calibrate estimate-lattice <cases-dir> <out.json>\n  \
                  calibrate report <est.json> <vivado.json>\n  \
                  calibrate fit <vivado.json>"
@@ -277,6 +293,7 @@ fn estimate_case(
     dir: &Path,
     case: &Case,
     family: &str,
+    calibration_variant: &str,
     extra_flags: &[String],
 ) -> anyhow::Result<Estimate> {
     let content = std::fs::read_to_string(dir.join(&case.name).join(&case.file))?;
@@ -303,6 +320,7 @@ fn estimate_case(
         mode,
         (!extra_args.is_empty()).then_some(extra_args),
         model_family,
+        calibration_variant,
     )
     .map_err(|error| anyhow::anyhow!("synth {}: {error:#}", case.name))?;
     let (top, module) = select_top(&parsed, None)?;
@@ -337,6 +355,7 @@ fn estimate_case(
     Ok(Estimate {
         case: case.name.clone(),
         family: family.to_owned(),
+        variant: calibration_variant.to_owned(),
         delay_ns,
         launch_ns: bd.launch_ns,
         logic_ns: bd.logic_ns,
@@ -363,6 +382,7 @@ fn run_yosys(
     mode: &str,
     extra_args: Option<String>,
     calibration_family: Option<&str>,
+    calibration_variant: &str,
 ) -> anyhow::Result<YosysNetlist> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -381,7 +401,7 @@ fn run_yosys(
         Some(family) => serde_json::json!({
             "request": request,
             "family": family,
-            "variant": "production",
+            "variant": calibration_variant,
             "additionalArgs": extra_args
                 .as_deref()
                 .unwrap_or_default()
@@ -395,7 +415,7 @@ fn run_yosys(
     let renderer = root.join("web/node_modules/.bin/tsx");
     if !renderer.is_file() {
         anyhow::bail!(
-            "missing {}; run `npm install` in web/ before calibration",
+            "missing {}; run `npm ci` in web/ before calibration",
             renderer.display()
         );
     }
@@ -437,7 +457,21 @@ fn cmd_estimate(args: &[String]) -> anyhow::Result<()> {
     }
     let spec = read_spec(&dir)?;
     let families: Vec<&str> = spec.parts.keys().map(String::as_str).collect();
-    estimate_families(&dir, &out, &spec, &families, &extra_flags)
+    estimate_families(&dir, &out, &spec, &families, "production", &extra_flags)
+}
+
+fn cmd_estimate_variant(args: &[String]) -> anyhow::Result<()> {
+    let (dir, variant, out) = match args {
+        [a, b, c] => (PathBuf::from(a), b.as_str(), PathBuf::from(c)),
+        _ => anyhow::bail!("usage: calibrate estimate-variant <cases-dir> <variant> <out.json>"),
+    };
+    if variant == "production" {
+        anyhow::bail!("use `estimate` for the production variant");
+    }
+    let spec = read_spec(&dir)?;
+    let families: Vec<&str> = spec.parts.keys().map(String::as_str).collect();
+    println!("calibration variant: {variant}");
+    estimate_families(&dir, &out, &spec, &families, variant, &[])
 }
 
 fn cmd_estimate_lattice(args: &[String]) -> anyhow::Result<()> {
@@ -446,7 +480,7 @@ fn cmd_estimate_lattice(args: &[String]) -> anyhow::Result<()> {
         _ => anyhow::bail!("usage: calibrate estimate-lattice <cases-dir> <out.json>"),
     };
     let spec = read_spec(&dir)?;
-    estimate_families(&dir, &out, &spec, &["ice40", "ecp5"], &[])
+    estimate_families(&dir, &out, &spec, &["ice40", "ecp5"], "production", &[])
 }
 
 fn estimate_families(
@@ -454,12 +488,13 @@ fn estimate_families(
     out: &Path,
     spec: &Spec,
     families: &[&str],
+    calibration_variant: &str,
     extra_flags: &[String],
 ) -> anyhow::Result<()> {
     let mut estimates = Vec::new();
     for family in families {
         for case in &spec.cases {
-            match estimate_case(dir, case, family, extra_flags) {
+            match estimate_case(dir, case, family, calibration_variant, extra_flags) {
                 Ok(est) => {
                     println!(
                         "{:<18} {:<16} {:>7.3} ns",
@@ -491,6 +526,17 @@ fn load<T: for<'de> Deserialize<'de>>(path: &str) -> anyhow::Result<Vec<T>> {
     Ok(serde_json::from_value(value)?)
 }
 
+fn one_variant<'a>(variants: impl Iterator<Item = &'a str>, path: &str) -> anyhow::Result<String> {
+    let mut variants = variants;
+    let Some(first) = variants.next() else {
+        anyhow::bail!("{path} contains no records");
+    };
+    if variants.any(|variant| variant != first) {
+        anyhow::bail!("{path} mixes calibration variants");
+    }
+    Ok(first.to_owned())
+}
+
 /// Pair our estimate with Vivado's measurement for the baseline speed grade.
 ///
 /// Compares `launch + logic + net` against Vivado's `Data Path Delay`: Vivado
@@ -512,10 +558,20 @@ fn cmd_report(args: &[String]) -> anyhow::Result<()> {
     };
     let estimates: Vec<Estimate> = load(&est_path)?;
     let vivado: Vec<VivadoTiming> = load(&viv_path)?;
+    let estimate_variant =
+        one_variant(estimates.iter().map(|row| row.variant.as_str()), &est_path)?;
+    let vivado_variant = one_variant(vivado.iter().map(|row| row.variant.as_str()), &viv_path)?;
+    if estimate_variant != vivado_variant {
+        anyhow::bail!(
+            "calibration variant mismatch: {est_path} is `{estimate_variant}`, \
+             but {viv_path} is `{vivado_variant}`"
+        );
+    }
 
     let mut errors = Vec::new();
     let mut zero_level = Vec::new();
     let mut unpaired = Vec::new();
+    println!("variant: {estimate_variant}");
     println!(
         "{:<18} {:<16} {:>8} {:>8} {:>7}  {:>6} {:>6}",
         "case", "family", "est", "vivado", "err", "depth", "levels"
@@ -738,5 +794,18 @@ mod tests {
         );
         assert_eq!(endpoint_kind_name(EndpointKind::Register), "register");
         assert_eq!(endpoint_kind_name(EndpointKind::Output), "output");
+    }
+
+    #[test]
+    fn calibration_artifacts_must_name_one_variant() {
+        assert_eq!(
+            one_variant(["wide-lut", "wide-lut"].into_iter(), "estimate.json").unwrap(),
+            "wide-lut"
+        );
+        let mixed = one_variant(["wide-lut", "native-carry"].into_iter(), "estimate.json")
+            .unwrap_err()
+            .to_string();
+        assert!(mixed.contains("mixes calibration variants"), "{mixed}");
+        assert_eq!(production_variant(), "production");
     }
 }
