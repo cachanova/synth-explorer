@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { retuneTiming } from '../api'
+import { retuneTiming } from '../lib/designClient'
 import { fmaxMhz } from '../lib/timing'
 import {
   ASIC_GATE_FIELDS,
@@ -73,7 +73,7 @@ export function TimingModel({
 
   useEffect(() => {
     let cancelled = false
-    retuneTiming(designId, JSON.parse(debouncedKey))
+    retuneTiming(JSON.parse(debouncedKey))
       .then((r) => {
         if (!cancelled) setResult({ ...r, requestKey: debouncedKey })
       })

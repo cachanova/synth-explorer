@@ -3,7 +3,7 @@ import type {
   VivadoTimingReport,
   VivadoBridgeStatus,
 } from '../types'
-import { isLocalLauncher } from './localLauncher'
+import { isLocalLauncher } from './launcher/localLauncher'
 
 const WEBSITE_BRIDGE_ORIGIN = 'http://127.0.0.1:32123'
 const LOCAL_BRIDGE_ORIGIN = 'http://127.0.0.1:32125'

@@ -4,7 +4,7 @@ import type {
   AnalysisWorkerRequest,
   AnalysisWorkerResponse,
 } from '../workers/analysis.worker'
-import { EngineLoadError } from './engineLoad'
+import { EngineLoadError } from './synthesis/engineLoad'
 
 interface Pending {
   resolve(value: unknown): void

@@ -8,45 +8,18 @@ import {
   PreopenDirectory,
   WASI,
 } from '@bjorn3/browser_wasi_shim'
-import type { MemoryHandling, ValidatedSynthesis } from '../lib/yosysScript'
-import { buildVivadoNormalizeScript, buildYosysScript } from '../lib/yosysScript'
-import { EngineLoadError, lazyLoad } from '../lib/engineLoad'
-import { unpackTar } from '../lib/tar'
-import type { VivadoTimingReport } from '../types'
-
-interface SynthesisRequest {
-  kind?: 'synthesis'
-  input: ValidatedSynthesis
-  memory: MemoryHandling
-}
-
-interface VivadoNormalizeRequest {
-  kind: 'vivado-normalize'
-  netlist: string
-  sourceNetlistJson: string
-  flatSourceNetlistJson: string
-  top: string
-}
-
-type Request = SynthesisRequest | VivadoNormalizeRequest
-
-export interface YosysWorkerResult {
-  netlistJson: string
-  sourceNetlistJson: string
-  flatSourceNetlistJson: string
-  log: string
-  vivadoTiming?: VivadoTimingReport
-}
-
-type WorkerResponse =
-  | { ok: true; result: YosysWorkerResult }
-  | { ok: false; error: string; kind?: 'load'; log?: string }
+import type {
+  YosysWorkerRequest,
+  YosysWorkerResponse,
+  YosysWorkerResult,
+} from '../lib/engines/yosysProtocol'
+import { EngineLoadError, lazyLoad } from '../lib/synthesis/engineLoad'
+import { unpackTar } from '../lib/launcher/tar'
+import { buildVivadoNormalizeScript, buildYosysScript, YOSYS_VERSION } from '../lib/synthesis/yosysScript'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
-const assetVersion = '0.67-2d1509d1b'
-
-self.onmessage = (event: MessageEvent<Request>) => {
+self.onmessage = (event: MessageEvent<YosysWorkerRequest>) => {
   void run(event.data).then(
     (result) => respond({ ok: true, result }),
     (error) =>
@@ -60,7 +33,7 @@ self.onmessage = (event: MessageEvent<Request>) => {
 }
 
 const loadModule = lazyLoad('failed to load Yosys', async () => {
-  const response = await fetch(`/yosys/yosys.wasm?v=${assetVersion}`)
+  const response = await fetch(`/yosys/yosys.wasm?v=${YOSYS_VERSION}`)
   if (!response.ok) throw new Error(`status ${response.status}`)
   const contentType = response.headers.get('Content-Type') ?? ''
   if (!contentType.includes('application/wasm')) {
@@ -73,7 +46,7 @@ const loadModule = lazyLoad('failed to load Yosys', async () => {
 })
 
 const loadShare = lazyLoad('failed to load Yosys resources', async () => {
-  const response = await fetch(`/yosys/share.tar.gz?v=${assetVersion}`)
+  const response = await fetch(`/yosys/share.tar.gz?v=${YOSYS_VERSION}`)
   if (!response.ok) throw new Error(`status ${response.status}`)
   // Some static hosts (including Vite preview) serve .gz files with
   // Content-Encoding: gzip. Fetch has already decoded those response bytes;
@@ -94,7 +67,7 @@ const loadShare = lazyLoad('failed to load Yosys resources', async () => {
 void loadModule().catch(() => {})
 void loadShare().catch(() => {})
 
-async function run(request: Request): Promise<YosysWorkerResult> {
+async function run(request: YosysWorkerRequest): Promise<YosysWorkerResult> {
   const [module, share] = await Promise.all([loadModule(), loadShare()])
   const vivado = request.kind === 'vivado-normalize'
   const root = new Map<string, Directory | File>([
@@ -179,6 +152,6 @@ class YosysFailure extends Error {
   }
 }
 
-function respond(response: WorkerResponse) {
+function respond(response: YosysWorkerResponse) {
   self.postMessage(response)
 }

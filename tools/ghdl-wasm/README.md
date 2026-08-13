@@ -96,7 +96,7 @@ The Verilog emitter patch writes declarations for GHDL black-box modules.
 Upstream tracks those interfaces internally but otherwise omits their module
 declarations, leaving the generated top with unresolved cells when Yosys runs.
 
-After rebuilding, update `GHDL_VERSION` in `web/src/lib/yosysScript.ts` with
+After rebuilding, update `GHDL_VERSION` in `web/src/lib/synthesis/yosysScript.ts` with
 the new `ghdl-synth.wasm` and `libraries.tar.gz` checksum prefixes. The
 precomputed verifier checks both. That value versions browser caches,
 precomputed artifacts, and immutable asset URLs for project-local patches and

@@ -1,5 +1,5 @@
 import type { DesignFile, Mode, SynthTool } from '../types'
-import { flagsForVivadoChange } from '../lib/flagRegistry'
+import { flagsForVivadoChange } from '../lib/synthesis/flagRegistry'
 import defaultSource from './default.sv?raw'
 
 export const DEFAULT_FILE: DesignFile = {

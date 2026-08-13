@@ -12,8 +12,8 @@ import {
   readComputerFiles,
   saveComputerFile,
   saveComputerFiles,
-} from '../lib/computerFiles'
-import { SOURCE_FILE_ACCEPT } from '../lib/sourceFiles'
+} from '../lib/launcher/computerFiles'
+import { SOURCE_FILE_ACCEPT } from '../lib/source/sourceFiles'
 import type { DesignFile } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 

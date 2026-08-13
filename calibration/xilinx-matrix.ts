@@ -1,6 +1,6 @@
-import { flagsForModeChange } from '../web/src/lib/flagRegistry'
-import { setFlagValue, stripFlags, toggleFlag } from '../web/src/lib/synthFlags'
-import { buildYosysScript, validateSynthesisRequest } from '../web/src/lib/yosysScript'
+import { flagsForModeChange } from '../web/src/lib/synthesis/flagRegistry'
+import { setFlagValue, stripFlags, toggleFlag } from '../web/src/lib/synthesis/synthFlags'
+import { buildYosysScript, validateSynthesisRequest } from '../web/src/lib/synthesis/yosysScript'
 import type { SynthesizeRequest, XilinxFamily } from '../web/src/types'
 
 export const XILINX_CALIBRATION_VARIANTS = [

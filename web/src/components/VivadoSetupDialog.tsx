@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { hostPlatform, type HostPlatform } from '../lib/hostPlatform'
-import { isLocalLauncher } from '../lib/localLauncher'
+import { hostPlatform, type HostPlatform } from '../lib/launcher/hostPlatform'
+import { isLocalLauncher } from '../lib/launcher/localLauncher'
 import type { VivadoBridgeStatus } from '../types'
 import { BubbleLoader } from './BubbleLoader'
 

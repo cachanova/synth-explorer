@@ -1,10 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { hostPlatform, type HostPlatform } from '../lib/hostPlatform'
+import { hostPlatform, type HostPlatform } from '../lib/launcher/hostPlatform'
 import {
   localChecksumUrl,
   localDownloadsFor,
   localDownloadUrl,
-} from '../lib/localDownload'
+} from '../lib/launcher/localDownload'
 
 const RELEASE_URL = 'https://github.com/cachanova/synth-explorer/releases/latest'
 

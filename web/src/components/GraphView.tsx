@@ -28,8 +28,8 @@ import {
   type LaidOutNode,
   type Point,
   type ViewportTransform,
-} from '../lib/layout'
-import { groupBadgeText, nodeLabel, nodeSublabel, shortNetName } from '../lib/prettyType'
+} from '../lib/graph/layout'
+import { groupBadgeText, nodeLabel, nodeSublabel, shortNetName } from '../lib/graph/prettyType'
 import {
   arithGlyph,
   boxBadge,
@@ -46,15 +46,15 @@ import {
   symbolKind,
   type PortDirection,
   type SymbolKind,
-} from '../lib/symbols'
+} from '../lib/graph/symbols'
 import type { ControlRef, ControlRole, GraphNode } from '../types'
 import {
   EDGE_HIT_CELL_SIZE,
   edgeHitCellKey,
   edgeHitCellKeys,
-} from '../lib/edgeHitGrid'
-import { relatedCone, type RelatedCone } from '../lib/relatedCone'
-import type { SourceNetSelection } from '../lib/sourceTiers'
+} from '../lib/graph/edgeHitGrid'
+import { relatedCone, type RelatedCone } from '../lib/graph/relatedCone'
+import type { SourceNetSelection } from '../lib/source/sourceTiers'
 
 interface RegisterControlPin {
   pin: string

@@ -14,7 +14,7 @@ function recordApiRequests(page: Page): string[] {
 
 async function waitForAutomaticSynthesis(
   page: Page,
-  changeInput: () => Promise<void>,
+  changeInput: () => Promise<unknown>,
 ) {
   const analysisPane = page.locator('.pane-right')
   await analysisPane.waitFor()
@@ -445,9 +445,9 @@ test('renders and resizes the browser-produced graph without resetting user zoom
       () => (window as typeof window & { __elkRequests?: unknown[] }).__elkRequests ?? [],
     ),
   ).toEqual([])
-  await waitForAutomaticSynthesis(page, () =>
-    page.getByLabel('Bundled example').selectOption('reg_mux'),
-  )
+  await waitForAutomaticSynthesis(page, async () => {
+    await page.getByLabel('Bundled example').selectOption('reg_mux')
+  })
   await expect
     .poll(() =>
       page.evaluate(
@@ -1587,6 +1587,8 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
             request != null &&
             typeof request === 'object' &&
             !Array.isArray(request) &&
+            'kind' in request &&
+            'method' in request &&
             request.kind === 'query' &&
             request.method === 'source',
         )
@@ -1859,6 +1861,8 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
               request != null &&
               typeof request === 'object' &&
               !Array.isArray(request) &&
+              'kind' in request &&
+              'method' in request &&
               request.kind === 'query' &&
               (request.method === 'source' || request.method === 'netlist'),
           )
@@ -1879,6 +1883,8 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
           request != null &&
           typeof request === 'object' &&
           !Array.isArray(request) &&
+          'kind' in request &&
+          'method' in request &&
           request.kind === 'query' &&
           (request.method === 'source' || request.method === 'netlist'),
       )
@@ -1931,6 +1937,8 @@ test('a FIFO source line selects the same logic from Home through End', async ({
           request != null &&
           typeof request === 'object' &&
           !Array.isArray(request) &&
+          'kind' in request &&
+          'method' in request &&
           request.kind === 'query' &&
           request.method === 'source',
       )
@@ -1951,6 +1959,8 @@ test('a FIFO source line selects the same logic from Home through End', async ({
         (request): request is Record<string, unknown> => request != null &&
           typeof request === 'object' &&
           !Array.isArray(request) &&
+          'kind' in request &&
+          'method' in request &&
           request.kind === 'query' &&
           request.method === 'source',
       )
@@ -1968,6 +1978,8 @@ test('a FIFO source line selects the same logic from Home through End', async ({
             request != null &&
             typeof request === 'object' &&
             !Array.isArray(request) &&
+            'kind' in request &&
+            'method' in request &&
             request.kind === 'query' &&
             request.method === 'source',
         )
@@ -2048,6 +2060,8 @@ test('Round-Robin internal declaration fallback keeps Focus local', async ({ pag
               request != null &&
               typeof request === 'object' &&
               !Array.isArray(request) &&
+              'kind' in request &&
+              'method' in request &&
               request.kind === 'query' &&
               request.method === 'source',
           )
@@ -2228,6 +2242,8 @@ endmodule
               request != null &&
               typeof request === 'object' &&
               !Array.isArray(request) &&
+              'kind' in request &&
+              'method' in request &&
               request.kind === 'query' &&
               request.method === 'source',
           )
@@ -2273,7 +2289,8 @@ endmodule
   const firstContinuousEdges = await selectText(continuousLine, 7, 1, 10, 10)
   const secondContinuousEdges = await selectText(continuousLine, 25, 1, 28, 28)
   expect(secondContinuousEdges).not.toEqual(firstContinuousEdges)
-  const edgePoint = await page.locator<SVGPathElement>('.g-edge.hl').first().evaluate((edge) => {
+  const edgePoint = await page.locator('.g-edge.hl').first().evaluate((edge) => {
+    if (!(edge instanceof SVGPathElement)) throw new Error('highlighted edge is not a path')
     const point = edge.getPointAtLength(edge.getTotalLength() / 2)
     const matrix = edge.getScreenCTM()
     if (!matrix) throw new Error('highlighted edge has no screen transform')
@@ -2380,7 +2397,8 @@ test('clears schematic selections when synthesis changes', async ({ page }) => {
   await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
   await expect(page.getByText('this cone belongs to the previous synthesis')).toHaveCount(0)
 
-  const edgePoint = await page.locator<SVGPathElement>('.g-edge').first().evaluate((edge) => {
+  const edgePoint = await page.locator('.g-edge').first().evaluate((edge) => {
+    if (!(edge instanceof SVGPathElement)) throw new Error('edge is not a path')
     const point = edge.getPointAtLength(Math.min(2, edge.getTotalLength()))
     const matrix = edge.getScreenCTM()
     if (!matrix) throw new Error('edge has no screen transform')

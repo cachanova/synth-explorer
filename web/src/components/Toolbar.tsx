@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react'
-import { PLATFORM_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../api'
-import { parseFamily, setFamily } from '../lib/synthFlags'
+import { PLATFORM_LABELS, SYNTH_TOOL_LABELS, XILINX_FAMILY_LABELS } from '../lib/labels'
+import { parseFamily, setFamily } from '../lib/synthesis/synthFlags'
 import type { ExampleLanguage, Mode, SynthTool, XilinxFamily } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 import { BubbleLoader } from './BubbleLoader'
 import { FlagsMenu } from './FlagsMenu'
-import { VIVADO_FLAG_REGISTRY } from '../lib/flagRegistry'
+import { VIVADO_FLAG_REGISTRY } from '../lib/synthesis/flagRegistry'
 import { VivadoSetupDialog } from './VivadoSetupDialog'
-import { isLocalLauncher } from '../lib/localLauncher'
+import { isLocalLauncher } from '../lib/launcher/localLauncher'
 
 interface FamilyBucket {
   key: string

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
-import { buildYosysScript, validateSynthesisRequest } from '../web/src/lib/yosysScript'
+import { buildYosysScript, validateSynthesisRequest } from '../web/src/lib/synthesis/yosysScript'
 import type { SynthesizeRequest } from '../web/src/types'
 import {
   renderCalibrationScript,

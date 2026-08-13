@@ -3,7 +3,7 @@ import { retriggerCurrentInput, waitForAnalysisReady } from './helpers'
 
 // A dropped connection while downloading the analysis WASM used to poison the
 // worker permanently: the rejected load stayed cached, so every later
-// synthesis surfaced the same "Validation error (422)" until a full reload.
+// synthesis surfaced the same validation error until a full reload.
 test('recovers after the analysis engine download fails', async ({ page }) => {
   let blockEngine = true
   await page.route('**/assets/analysis_bg-*.wasm', (route) => {
@@ -16,7 +16,7 @@ test('recovers after the analysis engine download fails', async ({ page }) => {
   // The initial automatic synthesis runs Yosys fine but cannot load the
   // analysis engine, and the failure is labeled as such (not "Validation").
   const errorStrip = page.locator('.error-strip')
-  await expect(errorStrip).toContainText('Tool failed to load (503)', {
+  await expect(errorStrip).toContainText('Tool failed to load', {
     timeout: 90_000,
   })
 
@@ -30,7 +30,7 @@ test('recovers after the analysis engine download fails', async ({ page }) => {
 })
 
 // The worker's own JS chunk failing to fetch is the same failure class as the
-// WASM download and must get the same label and recovery, not a 422.
+// WASM download and must get the same load-failure label and recovery.
 test('recovers after the analysis worker script fails to load', async ({ page }) => {
   let blockWorker = true
   await page.route('**/assets/analysis.worker-*.js', (route) => {
@@ -41,7 +41,7 @@ test('recovers after the analysis worker script fails to load', async ({ page })
   await page.goto('/')
 
   const errorStrip = page.locator('.error-strip')
-  await expect(errorStrip).toContainText('Tool failed to load (503)', {
+  await expect(errorStrip).toContainText('Tool failed to load', {
     timeout: 90_000,
   })
 

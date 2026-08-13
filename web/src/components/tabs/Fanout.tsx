@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import { getFanout } from '../../api'
+import { getFanout } from '../../lib/designClient'
 import { fuzzyFilter } from '../../lib/fuzzy'
 import { naturalCompare } from '../../lib/naturalCompare'
-import { fanoutDriverLabel, shortNetName } from '../../lib/prettyType'
+import { fanoutDriverLabel, shortNetName } from '../../lib/graph/prettyType'
 import { useDesignData } from '../../lib/useDesignData'
 import { shallowEqual, useStore } from '../../useStore'
 import { SrcLink } from '../SrcLink'
@@ -14,7 +14,7 @@ export function Fanout() {
     shallowEqual,
   )
   const id = store.design?.design_id ?? null
-  const { data, loading, error } = useDesignData(id, (i) => getFanout(i, 50))
+  const { data, loading, error } = useDesignData(id, () => getFanout(50))
   const [filter, setFilter] = useState('')
 
   const drivers = useMemo(() => {

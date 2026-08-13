@@ -81,6 +81,13 @@ jobs:
         working-directory: web
         run: npm run verify:precomputed
 
+      - name: Regenerate web palettes
+        working-directory: web
+        run: npm run generate:palettes
+
+      - name: Verify generated web palettes are current
+        run: git diff --exit-code -- web/src/lib/theme/palettes.ts web/src/index.css
+
       - name: Run unit tests
         working-directory: web
         run: npm test

@@ -214,7 +214,7 @@ the Yosys netlist itself into Vivado over EDIF and running the same
 The bridge collector above exports one EDIF per case/family with the app's exact baseline synthesis
 script — the flags must match what `calibrate estimate` runs (`estimate_case`
 in `calibration/src/main.rs`), while the script itself is rendered by the
-canonical `web/src/lib/yosysScript.ts` builder. The app's Xilinx pipeline
+canonical `web/src/lib/synthesis/yosysScript.ts` builder. The app's Xilinx pipeline
 splits `synth_xilinx` at `fine` to soft-map narrow
 (<= 8-bit result) `$alu`/`$lcu` arithmetic away from carry chains, so the
 export must replay the same split:

@@ -7,14 +7,14 @@ import {
   useState,
   type ReactNode,
 } from 'react'
-import * as api from './api'
+import * as designClient from './lib/designClient'
 import { DEFAULT_FILE, defaultWorkspace } from './data/defaultWorkspace'
 import { StoreContext } from './storeContext'
 import {
   loadGraphOptions,
   saveGraphOptions,
   type GraphOptions,
-} from './lib/graphSettings'
+} from './lib/graph/graphSettings'
 import {
   loadExampleSelection,
   NO_EXAMPLE_SELECTION,
@@ -30,25 +30,25 @@ import {
   type QueuedSynthesis,
   type SourceSelection,
   type SynthesisInput,
-} from './lib/liveAnalysis'
+} from './lib/synthesis/liveAnalysis'
 import {
   graphRequestAfterSynthesis,
   sourceGraphRequest,
-} from './lib/graphRequest'
-import { displayNodeName } from './lib/prettyType'
+} from './lib/graph/graphRequest'
+import { displayNodeName } from './lib/graph/prettyType'
 import { createLatestGuard } from './lib/latest'
-import { mergeComputerFiles } from './lib/computerFiles'
-import type { SrcSpan } from './lib/src'
+import { mergeComputerFiles } from './lib/launcher/computerFiles'
+import type { SrcSpan } from './lib/source/src'
 import {
   createSourceTierSelectionController,
   type SourceTierSelection,
-} from './lib/sourceTierSelection'
-import type { SourceTierSpan } from './lib/sourceTiers'
-import type { SourceNetSelection } from './lib/sourceTiers'
+} from './lib/source/sourceTierSelection'
+import type { SourceTierSpan } from './lib/source/sourceTiers'
+import type { SourceNetSelection } from './lib/source/sourceTiers'
 import {
   firstYosysSourceError,
   type SynthesisDiagnostic,
-} from './lib/yosysDiagnostics'
+} from './lib/synthesis/yosysDiagnostics'
 import {
   loadEditorKeymapPreference,
   loadEditorLineNumbersPreference,
@@ -66,12 +66,12 @@ import {
   clampAutoSynthesisDelay,
   loadSynthesisSettings,
   saveSynthesisSettings,
-} from './lib/synthesisSettings'
+} from './lib/synthesis/synthesisSettings'
 import {
   flagsForModeTransition,
   type ModeFlagMemory,
-} from './lib/flagRegistry'
-import { boundaryPathPinSelection } from './lib/endpointCone'
+} from './lib/synthesis/flagRegistry'
+import { boundaryPathPinSelection } from './lib/graph/endpointCone'
 import {
   connectVivadoBridge,
   probeVivadoBridge,
@@ -233,7 +233,7 @@ export interface Store {
     message: string
     log?: string
     status?: number
-    kind?: 'load' | 'timeout' | 'bridge'
+    kind?: designClient.DesignRequestFailureKind
     diagnostic?: SynthesisDiagnostic
   } | null
 
@@ -631,7 +631,7 @@ export function StoreProvider({
   const loadedExamples = useRef(false)
   if (!loadedExamples.current) {
     loadedExamples.current = true
-    api
+    designClient
       .getExamples()
       .then((r) => setExamples(r.examples))
       .catch(() => {
@@ -877,6 +877,7 @@ export function StoreProvider({
         setError({
           message: bridgeError.message,
           log: bridgeError.log,
+          kind: 'bridge',
           status: bridgeError.status || undefined,
         })
       }
@@ -1023,7 +1024,7 @@ export function StoreProvider({
         synthesisAbortRef.current = controller
         setError(null)
         try {
-          const res = await api.synthesize(running.request, controller.signal)
+          const res = await designClient.synthesize(running.request, controller.signal)
           setDesign(res)
           setDesignRevision((revision) => revision + 1)
           setDesignInputKey(running.key)
@@ -1038,11 +1039,10 @@ export function StoreProvider({
           )
         } catch (e) {
           if (!(e instanceof DOMException && e.name === 'AbortError')) {
-            const err = e as api.ApiRequestError
+            const err = e as designClient.DesignRequestError
             setError({
               message: err.message,
               log: err.log,
-              status: err.status,
               kind: err.kind,
               diagnostic: firstYosysSourceError(
                 err.log,

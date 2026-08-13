@@ -5,7 +5,7 @@ import {
   type LayoutGeometry,
   type LayoutInput,
   type NodePlacement,
-} from '../lib/layout'
+} from '../lib/graph/layout'
 
 export interface ElkRequest {
   id: number

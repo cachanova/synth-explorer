@@ -1,5 +1,5 @@
-import type { ValidatedSynthesis } from '../yosysScript'
-import { isAbortError, isResourceFailure } from '../synthesisError'
+import type { ValidatedSynthesis } from '../synthesis/yosysScript'
+import { isAbortError, isResourceFailure } from '../synthesis/synthesisError'
 import type { SynthEngine } from './types'
 import { runYosys } from './yosysWorkerClient'
 
