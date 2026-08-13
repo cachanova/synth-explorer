@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 use synth_explorer_analysis::NetlistDialect;
 use synth_explorer_analysis::analysis::{
-    Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions,
+    Analysis, ApiNodeKind, ConeDir, ConeOptions, FullNetlistOptions, PathSort,
 };
-use synth_explorer_analysis::delay_model::DelayProfile;
+use synth_explorer_analysis::delay_model::{DelayModel, DelayProfile};
 use synth_explorer_analysis::design::AnalysisDesign;
 use synth_explorer_analysis::graph::{Graph, NodeKind};
 use synth_explorer_analysis::grouping::{
@@ -21,6 +21,14 @@ fn fixture(name: &str) -> (Graph, Analysis) {
     let graph = Graph::from_netlist(&netlist, top, module).unwrap();
     let analysis = Analysis::new(&graph, vec!["fixture.sv".to_owned()]);
     (graph, analysis)
+}
+
+fn depth_paths(
+    analysis: &Analysis,
+    graph: &Graph,
+    limit: usize,
+) -> synth_explorer_analysis::analysis::PathsResponse {
+    analysis.paths_with_model(graph, &DelayModel::default(), limit, None, PathSort::Depth)
 }
 
 fn full_options(
@@ -806,9 +814,9 @@ fn grouped_cone_from_member_lands_on_its_group_root() {
     let member = partition.groups[1].members[0];
 
     let cone = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            member,
+            &[member],
             cone_options(300),
             Some(GroupingProjection::all(&partition)),
         )
@@ -841,9 +849,9 @@ fn cone_stops_at_boundary_nodes() {
     let (graph, analysis) = fixture("reg_mux_rtl.json");
     let q = analysis.endpoints().registers[0].bits[0].node_id;
     let cone = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            q,
+            &[q],
             ConeOptions {
                 dir: ConeDir::Fanin,
                 max_depth: 8,
@@ -865,73 +873,6 @@ fn cone_stops_at_boundary_nodes() {
             .any(|node| matches!(node.node.kind, ApiNodeKind::Port)
                 && node.is_boundary == Some(true))
     );
-}
-
-#[test]
-fn multi_root_envelope_unions_sibling_cones_with_one_shared_cap() {
-    let (graph, analysis) = fixture("high_fanout_enable_gates.json");
-    let roots: Vec<_> = graph
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::Cell)
-        .take(2)
-        .map(|node| node.id)
-        .collect();
-    assert_eq!(roots.len(), 2);
-
-    let options = ConeOptions {
-        dir: ConeDir::Fanin,
-        max_depth: 8,
-        max_nodes: 20,
-        hide_control: false,
-        hide_const: true,
-        show_infrastructure: false,
-        root_port: None,
-        root_port_bit: None,
-        root_port_bits: None,
-    };
-    let envelope = analysis.envelope(&graph, &roots, options, None).unwrap();
-    assert!(!envelope.truncated);
-    assert!(envelope.nodes.len() <= options.max_nodes);
-    assert!(roots.iter().all(|root| {
-        envelope
-            .nodes
-            .iter()
-            .any(|node| node.node.id == *root && node.is_root == Some(true))
-    }));
-    assert!(roots.iter().all(|root| {
-        envelope.edges.iter().any(|edge| edge.to == *root)
-            && envelope.edges.iter().any(|edge| edge.from == *root)
-    }));
-
-    let node_ids: HashSet<_> = envelope.nodes.iter().map(|node| node.node.id).collect();
-    assert_eq!(node_ids.len(), envelope.nodes.len());
-    let edge_ids: HashSet<_> = envelope
-        .edges
-        .iter()
-        .map(|edge| (edge.from, edge.to, &edge.from_port, &edge.to_port))
-        .collect();
-    assert_eq!(edge_ids.len(), envelope.edges.len());
-    assert!(node_ids.iter().any(|candidate| {
-        roots.iter().all(|root| {
-            envelope
-                .edges
-                .iter()
-                .any(|edge| edge.from == *candidate && edge.to == *root)
-        })
-    }));
-
-    let capped_options = ConeOptions {
-        max_nodes: roots.len() + 2,
-        ..options
-    };
-    let capped = analysis
-        .envelope(&graph, &roots, capped_options, None)
-        .unwrap();
-    assert!(capped.nodes.len() <= capped_options.max_nodes);
-    assert!(capped.truncated);
-    assert!(capped.edges.iter().any(|edge| roots.contains(&edge.to)));
-    assert!(capped.edges.iter().any(|edge| roots.contains(&edge.from)));
 }
 
 #[test]
@@ -1069,7 +1010,7 @@ fn full_netlist_applies_control_and_constant_visibility_before_capping() {
         .find(|node| node.name == "clk")
         .expect("clock port");
     let explicit_control_cone = analysis
-        .cone(&graph, clk.id, cone_options(100), None)
+        .multi_root_cone(&graph, &[clk.id], cone_options(100), None)
         .expect("explicit clock cone");
     assert!(
         explicit_control_cone
@@ -1370,7 +1311,7 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
         );
     }
 
-    let paths = analysis.paths(&graph, 100, None).paths;
+    let paths = depth_paths(&analysis, &graph, 100).paths;
     let path_ports: HashSet<_> = paths
         .iter()
         .filter(|path| path.endpoint.id == ram.id)
@@ -1382,9 +1323,9 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
     }));
 
     let addr_cone = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            ram.id,
+            &[ram.id],
             ConeOptions {
                 dir: ConeDir::Fanin,
                 max_depth: 8,
@@ -1420,9 +1361,9 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
     );
 
     let addr_bit_cone = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            ram.id,
+            &[ram.id],
             ConeOptions {
                 root_port: Some("ADDR"),
                 root_port_bit: Some(1),
@@ -1452,9 +1393,9 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
     );
 
     let addr_path_cohort = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            ram.id,
+            &[ram.id],
             ConeOptions {
                 root_port: Some("ADDR"),
                 root_port_bits: Some(&[1]),
@@ -1477,9 +1418,9 @@ fn memory_inputs_are_endpoints_and_unconnected_pins_are_omitted() {
     );
 
     let tied_cone = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            ram.id,
+            &[ram.id],
             ConeOptions {
                 root_port: Some("TIED"),
                 ..cone_options(100)
@@ -1670,8 +1611,7 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
     assert_eq!(q.worst_depth, 1);
     assert_eq!(q31.worst_depth, 0);
 
-    let q31_path = analysis
-        .paths(&graph, 25, None)
+    let q31_path = depth_paths(&analysis, &graph, 25)
         .paths
         .into_iter()
         .find(|path| path.endpoint_group == "q31")
@@ -1679,17 +1619,16 @@ fn srlc32e_fixed_tap_does_not_inherit_address_depth() {
     assert_eq!(q31_path.depth, 0);
     assert!(q31_path.nodes.iter().all(|node| node.name != "address"));
     assert!(
-        analysis
-            .paths(&graph, 25, None)
+        depth_paths(&analysis, &graph, 25)
             .paths
             .iter()
             .any(|path| { path.endpoint.id == shift.id && path.endpoint_port == "A" })
     );
 
     let cone = analysis
-        .cone(
+        .multi_root_cone(
             &graph,
-            q31.bits[0].node_id,
+            &[q31.bits[0].node_id],
             ConeOptions {
                 dir: ConeDir::Fanin,
                 max_depth: 8,

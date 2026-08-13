@@ -915,6 +915,18 @@ fn build_tcl(
         write!(&mut script, " {}", input.extra_args.join(" ")).unwrap();
     }
     writeln!(&mut script).unwrap();
+    script.push_str(&timing_tcl(timing_metadata, timing_report));
+    writeln!(
+        &mut script,
+        "write_verilog -force -mode funcsim {{{output}}}"
+    )
+    .unwrap();
+    writeln!(&mut script, "close [open {{{NETLIST_MARKER_NAME}}} w]").unwrap();
+    script
+}
+
+fn timing_tcl(timing_metadata: &str, timing_report: &str) -> String {
+    let mut script = String::new();
     writeln!(
         &mut script,
         "proc synth_explorer_prop {{object prop}} {{\n\
@@ -968,12 +980,6 @@ fn build_tcl(
     writeln!(&mut script, "\tputs $synth_explorer_timing_fp none").unwrap();
     writeln!(&mut script, "}}").unwrap();
     writeln!(&mut script, "close $synth_explorer_timing_fp").unwrap();
-    writeln!(
-        &mut script,
-        "write_verilog -force -mode funcsim {{{output}}}"
-    )
-    .unwrap();
-    writeln!(&mut script, "close [open {{{NETLIST_MARKER_NAME}}} w]").unwrap();
     script
 }
 
@@ -997,24 +1003,7 @@ fn build_edif_tcl(input: &ValidatedEdifTimingRequest) -> String {
         target = input.target,
         top = input.top,
     );
-    let shared = build_tcl(
-        &ValidatedRequest {
-            files: Vec::new(),
-            top: input.top.clone(),
-            target: input.target.clone(),
-            extra_args: Vec::new(),
-        },
-        "unused.v",
-        TIMING_METADATA_NAME,
-        TIMING_REPORT_NAME,
-    );
-    let timing_start = shared
-        .find("proc synth_explorer_prop")
-        .expect("timing Tcl start is present");
-    let timing_end = shared
-        .find("write_verilog")
-        .expect("timing Tcl end is present");
-    script.push_str(&shared[timing_start..timing_end]);
+    script.push_str(&timing_tcl(TIMING_METADATA_NAME, TIMING_REPORT_NAME));
     writeln!(&mut script, "close [open {{{TIMING_MARKER_NAME}}} w]").unwrap();
     script
 }
@@ -1405,6 +1394,9 @@ mod tests {
         assert!(script.contains("linked EDIF top does not match request"));
         assert!(script.contains("create_clock -name cal_clk -period 10.000"));
         assert!(script.contains("report_timing -max_paths 1 -delay_type max"));
+        assert!(script.contains("get_timing_paths -max_paths 1 -delay_type max"));
+        assert!(script.contains("close $synth_explorer_timing_fp"));
+        assert!(!script.contains("write_verilog"));
     }
 
     #[test]
@@ -1443,6 +1435,7 @@ mod tests {
             script.contains("report_timing -max_paths 1 -delay_type max -file {vivado-timing.rpt}")
         );
         assert!(script.contains("get_timing_paths -max_paths 1 -delay_type max"));
+        assert!(script.contains("close $synth_explorer_timing_fp"));
         assert!(script.contains("write_verilog -force -mode funcsim {vivado-netlist.v}"));
     }
 
