@@ -570,8 +570,13 @@ fn to_json<T: Serialize>(value: &T) -> Result<String, JsValue> {
 }
 
 fn profile_from_name(name: &str) -> Result<DelayProfile, JsValue> {
-    DelayProfile::from_name_strict(name)
-        .ok_or_else(|| js_error(format!("unknown delay profile: {name}")))
+    DelayProfile::from_name_strict(name).ok_or_else(|| js_error(unknown_profile_message(name)))
+}
+
+// Kept separate from `profile_from_name` so native unit tests can assert the
+// error text: constructing the `JsValue` itself aborts outside a wasm runtime.
+fn unknown_profile_message(name: &str) -> String {
+    format!("unknown delay profile: {name}")
 }
 
 fn js_error(message: impl AsRef<str>) -> JsValue {
@@ -616,11 +621,14 @@ mod tests {
 
     #[test]
     fn unknown_profile_names_error_with_the_offending_name() {
+        // `profile_from_name("bogus")` cannot run natively: building the
+        // JsValue error aborts outside a wasm runtime. Pin the message text
+        // and the delegation to the core parser instead.
         assert_eq!(profile_from_name("generic").unwrap(), DelayProfile::Generic);
-        let error = profile_from_name("bogus").unwrap_err();
+        assert_eq!(DelayProfile::from_name_strict("bogus"), None);
         assert_eq!(
-            error.as_string().as_deref(),
-            Some("unknown delay profile: bogus")
+            unknown_profile_message("bogus"),
+            "unknown delay profile: bogus"
         );
     }
 
