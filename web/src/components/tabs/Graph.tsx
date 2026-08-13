@@ -11,6 +11,7 @@ import {
   MAX_GROUP_EXPANSION_RENDER_NODES,
   MAX_OPEN_EXPANDED_GROUPS,
 } from '../../lib/graph/graphLimits'
+import { MIN_GRAPH_MAX_NODES } from '../../lib/graph/graphSettings'
 import { graphProjection } from '../../lib/graph/graphProjection'
 import {
   applyGroupExpansions,
@@ -79,6 +80,7 @@ export function Graph({ active }: { active: boolean }) {
     ({
       analysisState,
       design,
+      designRevision,
       coneReq,
       graphOptions,
       clearGraphSelection,
@@ -90,6 +92,7 @@ export function Graph({ active }: { active: boolean }) {
     }) => ({
       analysisState,
       design,
+      designRevision,
       coneReq,
       graphOptions,
       clearGraphSelection,
@@ -104,6 +107,7 @@ export function Graph({ active }: { active: boolean }) {
   const {
     analysisState,
     design,
+    designRevision,
     coneReq,
     graphOptions,
     clearGraphSelection,
@@ -219,7 +223,12 @@ export function Graph({ active }: { active: boolean }) {
     () => selectGraphNode(null),
     [graphOptions.groupMemories, graphOptions.groupVectors, selectGraphNode],
   )
-  useEffect(() => setSelectedNetNames([]), [design?.design_id])
+  // Node and wire selections are owned by one synthesis result. Even when a
+  // resynthesis returns the same design id, it starts without a local cone.
+  useEffect(
+    () => selectGraphNode(null),
+    [design?.design_id, designRevision, selectGraphNode],
+  )
 
   // Per-group expansion is a presentation state owned by one synthesized
   // design and grouping policy. A new design or global policy starts clean.
@@ -1055,7 +1064,11 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
         max nodes
         <div className="stepper">
           <button
-            onClick={() => setOpt({ maxNodes: Math.max(50, graphOptions.maxNodes - 100) })}
+            onClick={() =>
+              setOpt({
+                maxNodes: Math.max(MIN_GRAPH_MAX_NODES, graphOptions.maxNodes - 100),
+              })
+            }
           >
             −
           </button>
@@ -1123,14 +1136,13 @@ function GraphToolbar({ graphInteractive }: { graphInteractive: boolean }) {
               ? 'Show only the logic relevant to this selection'
               : 'Show the full schematic and highlight the relevant logic'
             : graphOptions.focus
-              ? 'Turn Focus off before choosing a source selection or cone'
-              : 'Focus applies to source selections and cones'
+              ? 'Focus is enabled for the next source selection or cone'
+              : 'Focus is disabled for the next source selection or cone'
         }
       >
         <input
           type="checkbox"
           checked={graphOptions.focus}
-          disabled={!focusAvailable && !graphOptions.focus}
           onChange={(event) => setOpt({ focus: event.target.checked })}
         />
         Focus

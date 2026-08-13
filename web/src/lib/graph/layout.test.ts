@@ -8,7 +8,6 @@ import {
   clearLayoutGeometryCache,
   controlRoleForPin,
   DENSE_LAYOUT_NODE_THRESHOLD,
-  DENSE_LONGEST_PATH_EDGE_DENSITY,
   fitViewportToContent,
   hydrateLayoutResult,
   interpretResult,
@@ -26,9 +25,12 @@ import {
   prepareLayoutInput,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
+  SOURCE_FLOW_EDGE_DENSITY,
+  SOURCE_FLOW_NODE_THRESHOLD,
   shouldRefitProjection,
   toElkGraph,
   type LayoutInput,
+  type NodePlacement,
   viewportTransformAttribute,
   zoomViewportAt,
 } from './layout'
@@ -986,7 +988,7 @@ describe('schematic layout sizing', () => {
     ).toBe('3')
   })
 
-  it('uses the benchmarked fast path only for sufficiently dense BK layouts', () => {
+  it('retains the reduced-thoroughness fast path for dense BK layouts', () => {
     const denseInput = {
       nodes: Array.from({ length: DENSE_LAYOUT_NODE_THRESHOLD }, (_, id) => ({
         id,
@@ -997,11 +999,7 @@ describe('schematic layout sizing', () => {
         boundary: 'internal' as const,
       })),
       edges: Array.from(
-        {
-          length: Math.ceil(
-            DENSE_LAYOUT_NODE_THRESHOLD * DENSE_LONGEST_PATH_EDGE_DENSITY,
-          ),
-        },
+        { length: DENSE_LAYOUT_NODE_THRESHOLD * 4 },
         (_, index) => ({
           from: index % (DENSE_LAYOUT_NODE_THRESHOLD / 2),
           to: DENSE_LAYOUT_NODE_THRESHOLD / 2 +
@@ -1014,7 +1012,7 @@ describe('schematic layout sizing', () => {
     }
     const dense = toElkGraph(denseInput, 'BRANDES_KOEPF').layoutOptions
     expect(dense?.['elk.layered.thoroughness']).toBe('1')
-    expect(dense?.['elk.layered.layering.strategy']).toBe('LONGEST_PATH')
+    expect(dense?.['elk.layered.layering.strategy']).toBe('LONGEST_PATH_SOURCE')
 
     const mediumDenseInput = {
       ...denseInput,
@@ -1030,20 +1028,25 @@ describe('schematic layout sizing', () => {
       'BRANDES_KOEPF',
     ).layoutOptions
     expect(mediumDense?.['elk.layered.thoroughness']).toBe('1')
-    expect(mediumDense?.['elk.layered.layering.strategy']).toBeUndefined()
+    expect(mediumDense?.['elk.layered.layering.strategy']).toBe(
+      'LONGEST_PATH_SOURCE',
+    )
 
-    const belowDensity = toElkGraph(
-      {
-        ...denseInput,
-        edges: denseInput.edges.slice(
-          0,
-          DENSE_LAYOUT_NODE_THRESHOLD * REDUCED_THOROUGHNESS_EDGE_DENSITY - 1,
-        ),
-      },
+    const belowFastPath = {
+      ...denseInput,
+      edges: denseInput.edges.slice(
+        0,
+        DENSE_LAYOUT_NODE_THRESHOLD * REDUCED_THOROUGHNESS_EDGE_DENSITY - 1,
+      ),
+    }
+    const belowFastPathOptions = toElkGraph(
+      belowFastPath,
       'BRANDES_KOEPF',
     ).layoutOptions
-    expect(belowDensity?.['elk.layered.thoroughness']).toBe('4')
-    expect(belowDensity?.['elk.layered.layering.strategy']).toBeUndefined()
+    expect(belowFastPathOptions?.['elk.layered.thoroughness']).toBe('4')
+    expect(belowFastPathOptions?.['elk.layered.layering.strategy']).toBe(
+      'LONGEST_PATH_SOURCE',
+    )
 
     const smallDense = toElkGraph(
       {
@@ -1064,6 +1067,82 @@ describe('schematic layout sizing', () => {
     const tightPlacement = toElkGraph(denseInput, 'NETWORK_SIMPLEX').layoutOptions
     expect(tightPlacement?.['elk.layered.thoroughness']).toBeUndefined()
     expect(tightPlacement?.['elk.layered.layering.strategy']).toBeUndefined()
+  })
+
+  it('uses source-oriented layering only for large dense dataflow BK layouts', () => {
+    const sourceFlowInput = (
+      nodeCount: number,
+      edgeCount: number,
+      control = false,
+    ): LayoutInput => {
+      const sourceCount = Math.floor(nodeCount / 2)
+      return {
+        nodes: Array.from({ length: nodeCount }, (_, id) => ({
+          id,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        })),
+        edges: Array.from({ length: edgeCount }, (_, index) => ({
+          from: index % sourceCount,
+          to: sourceCount + (index % (nodeCount - sourceCount)),
+          fromPort: `Y${index}`,
+          toPort: `A${index}`,
+          control,
+        })),
+      }
+    }
+    const eligible = sourceFlowInput(
+      SOURCE_FLOW_NODE_THRESHOLD,
+      SOURCE_FLOW_NODE_THRESHOLD * SOURCE_FLOW_EDGE_DENSITY,
+    )
+    const cases: Array<[
+      LayoutInput,
+      NodePlacement,
+      'LONGEST_PATH_SOURCE' | undefined,
+    ]> = [
+      [eligible, 'BRANDES_KOEPF', 'LONGEST_PATH_SOURCE'],
+      [
+        sourceFlowInput(
+          SOURCE_FLOW_NODE_THRESHOLD - 1,
+          (SOURCE_FLOW_NODE_THRESHOLD - 1) * SOURCE_FLOW_EDGE_DENSITY,
+        ),
+        'BRANDES_KOEPF',
+        undefined,
+      ],
+      [
+        sourceFlowInput(
+          SOURCE_FLOW_NODE_THRESHOLD,
+          SOURCE_FLOW_NODE_THRESHOLD * SOURCE_FLOW_EDGE_DENSITY - 1,
+        ),
+        'BRANDES_KOEPF',
+        undefined,
+      ],
+      [
+        sourceFlowInput(
+          SOURCE_FLOW_NODE_THRESHOLD,
+          SOURCE_FLOW_NODE_THRESHOLD * SOURCE_FLOW_EDGE_DENSITY,
+          true,
+        ),
+        'BRANDES_KOEPF',
+        undefined,
+      ],
+      [
+        { ...eligible, groups: [{ id: 1, members: [0, 1] }] },
+        'BRANDES_KOEPF',
+        undefined,
+      ],
+      [eligible, 'NETWORK_SIMPLEX', undefined],
+    ]
+    for (const [input, placement, expected] of cases) {
+      expect(
+        toElkGraph(input, placement).layoutOptions?.[
+          'elk.layered.layering.strategy'
+        ],
+      ).toBe(expected)
+    }
   })
 
   it('routes flip-flop data edges to D and Q ports, not the box centre', () => {

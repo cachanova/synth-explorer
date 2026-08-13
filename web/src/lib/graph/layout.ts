@@ -665,7 +665,10 @@ export type NodePlacement = 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
 export const REDUCED_THOROUGHNESS_NODE_THRESHOLD = 700
 export const DENSE_LAYOUT_NODE_THRESHOLD = 500
 export const REDUCED_THOROUGHNESS_EDGE_DENSITY = 2.5
-export const DENSE_LONGEST_PATH_EDGE_DENSITY = 4
+// Source-oriented layering improved the large, highly connected datapath
+// fixtures. Count only data edges so clocks and resets cannot select the policy.
+export const SOURCE_FLOW_NODE_THRESHOLD = 250
+export const SOURCE_FLOW_EDGE_DENSITY = 2
 
 // A flip-flop draws as a box with the data pin (D) at the upper-west, the clock
 // triangle lower-west, and the data output (Q) at the east. These fractions of
@@ -1300,7 +1303,9 @@ export function toElkGraph(
     portId: string,
   ): string => `group:${groupId}#${side}:${portId}`
 
+  let dataEdgeCount = 0
   const edges: ElkExtendedEdge[] = input.edges.flatMap((e, i) => {
+    if (!e.control) dataEdgeCount += 1
     const fromGroupId = groupIdByMember.get(e.from)
     const toGroupId = groupIdByMember.get(e.to)
     // Internal member nets are routed inside the compound after layout; an
@@ -1322,14 +1327,16 @@ export function toElkGraph(
         }]
   })
   const edgeDensity = input.edges.length / Math.max(1, input.nodes.length)
+  const dataEdgeDensity = dataEdgeCount / Math.max(1, input.nodes.length)
   const useDenseFastPath =
     nodePlacement === 'BRANDES_KOEPF' &&
     input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
     edgeDensity >= REDUCED_THOROUGHNESS_EDGE_DENSITY
-  const useDenseLayering =
+  const useSourceFlowLayering =
     nodePlacement === 'BRANDES_KOEPF' &&
-    input.nodes.length >= DENSE_LAYOUT_NODE_THRESHOLD &&
-    edgeDensity >= DENSE_LONGEST_PATH_EDGE_DENSITY
+    groupChildren.length === 0 &&
+    input.nodes.length >= SOURCE_FLOW_NODE_THRESHOLD &&
+    dataEdgeDensity >= SOURCE_FLOW_EDGE_DENSITY
   const keepGlobalBoundaries = shouldKeepGlobalBoundaries(input)
 
   return {
@@ -1368,8 +1375,8 @@ export function toElkGraph(
                 : input.nodes.length >= REDUCED_THOROUGHNESS_NODE_THRESHOLD
                 ? '3'
                 : '4',
-            ...(useDenseLayering
-              ? { 'elk.layered.layering.strategy': 'LONGEST_PATH' }
+            ...(useSourceFlowLayering
+              ? { 'elk.layered.layering.strategy': 'LONGEST_PATH_SOURCE' }
               : {}),
           }
         : {}),

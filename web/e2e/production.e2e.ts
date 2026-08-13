@@ -967,6 +967,24 @@ test('stacks mapped primitives from one inferred memory when memories are groupe
   expect(apiRequests).toEqual([])
 })
 
+test('allows Focus to be enabled without a source or cone selection', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Bundled example').selectOption('reg_mux'),
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const focus = page.getByLabel('Focus')
+  await expect(focus).toBeEnabled()
+  await focus.uncheck()
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
+
+  await expect(focus).toBeEnabled()
+  await focus.check()
+  await expect(focus).toBeChecked()
+})
+
 test('group toggles reveal on component hover and re-render through ELK', async ({ page }) => {
   await page.addInitScript(() => {
     const requests: unknown[] = []
@@ -1537,7 +1555,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   await expect(focus).toBeEnabled()
   await focus.uncheck()
   await expect(focus).not.toBeChecked()
-  await expect(focus).toBeDisabled()
+  await expect(focus).toBeEnabled()
   const fullNodes = page.locator('.g-node-body')
   await expect(fullNodes.first()).toBeVisible()
   const fullNodeIds = await fullNodes.evaluateAll((nodes) =>
@@ -1875,7 +1893,7 @@ test('source selections and Focus use the in-browser Rust analysis worker', asyn
   expect(refreshMethods.indexOf('source')).toBeLessThan(refreshMethods.indexOf('netlist'))
 
   await page.locator('.cm-content').press('Escape')
-  await expect(focus).toBeDisabled()
+  await expect(focus).toBeEnabled()
   await expect(page.locator('.g-node-body.hl')).toHaveCount(0)
   await expect(page.locator('.g-edge.hl')).toHaveCount(0)
   await expect(page.locator('.cm-line.cm-src-hl')).toHaveCount(0)
@@ -2334,6 +2352,63 @@ test('clears the schematic while source or top-level changes are pending', async
   await expect(analysisPane).not.toHaveAttribute('data-analysis-state', 'current')
   await expect(schematic).toHaveCount(0)
   await waitForAnalysisReady(page)
+})
+
+test('clears schematic selections when synthesis changes', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Bundled example').selectOption('reg_mux'),
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const graphNodes = page.locator('.g-node-body')
+  await expect(graphNodes.first()).toBeVisible()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await page.getByRole('checkbox', { name: 'Synthesize automatically' }).uncheck()
+  await page.getByRole('button', { name: 'Settings' }).click()
+
+  // A same-input synthesis returns the same design id. Local node state must
+  // still reset, independently of any cone projection changing underneath it.
+  await graphNodes.first().dispatchEvent('click')
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(1)
+  await expect(page.locator('.node-card')).toHaveCount(1)
+
+  const synthesize = page.getByRole('button', { name: 'Synthesize', exact: true })
+  const resynthesize = async () => {
+    await startAnalysisStateRecording(page)
+    await synthesize.click()
+    await expect.poll(() => recordedAnalysisStates(page)).toContain('refreshing')
+    await expect(page.locator('.pane-right')).toHaveAttribute(
+      'data-analysis-state',
+      'current',
+      { timeout: 120_000 },
+    )
+    await stopAnalysisStateRecording(page)
+    await expect(page.locator('.graph-loading-indicator')).toHaveCount(0)
+  }
+  await resynthesize()
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
+  await expect(page.locator('.node-card')).toHaveCount(0)
+
+  await graphNodes.first().dispatchEvent('click')
+  await page.getByRole('button', { name: 'Fanin cone' }).click()
+  await expect(page.locator('.graph-toolbar .mono')).toBeVisible()
+  await resynthesize()
+  await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
+  await expect(page.getByText('this cone belongs to the previous synthesis')).toHaveCount(0)
+
+  const edgePoint = await page.locator<SVGPathElement>('.g-edge').first().evaluate((edge) => {
+    const point = edge.getPointAtLength(Math.min(2, edge.getTotalLength()))
+    const matrix = edge.getScreenCTM()
+    if (!matrix) throw new Error('edge has no screen transform')
+    const screen = point.matrixTransform(matrix)
+    return { x: screen.x, y: screen.y }
+  })
+  await page.mouse.click(edgePoint.x, edgePoint.y)
+  const selectedWires = page.locator('.g-selected-edge-layer .g-edge.hl')
+  await expect.poll(() => selectedWires.count()).toBeGreaterThan(0)
+  await resynthesize()
+  await expect(selectedWires).toHaveCount(0)
 })
 
 test('keeps synthesis failures compact until the full log is requested', async ({ page }) => {

@@ -8,6 +8,10 @@ import {
 
 const RELEASE_URL = 'https://github.com/cachanova/synth-explorer/releases/latest'
 
+function opensFromDownloadRoute(): boolean {
+  return window.location.pathname.replace(/\/+$/, '') === '/download'
+}
+
 function DownloadIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -74,7 +78,7 @@ function VivadoNote({ platform }: { platform: HostPlatform }) {
 }
 
 export function DownloadLauncher() {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(opensFromDownloadRoute)
   const [platform] = useState(hostPlatform)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const closeRef = useRef<HTMLButtonElement | null>(null)

@@ -1,4 +1,4 @@
-import type { DesignFile, Mode } from '../types'
+import type { DesignFile, Mode, SynthTool } from '../types'
 import { flagsForVivadoChange } from '../lib/synthesis/flagRegistry'
 import defaultSource from './default.sv?raw'
 
@@ -15,5 +15,7 @@ export function defaultWorkspace() {
     mode: 'gates' as Mode,
     extraArgs: '',
     vivadoExtraArgs: flagsForVivadoChange(''),
+    synthTool: 'yosys' as SynthTool,
+    vivadoTarget: '',
   }
 }
