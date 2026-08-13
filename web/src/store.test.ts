@@ -8,6 +8,60 @@ import {
   synthesisInput,
 } from './lib/liveAnalysis'
 import { buildSynthesizeRequest } from './lib/synthesize'
+import { graphRequestAfterSynthesis } from './lib/graphRequest'
+import {
+  type ConeGraphRequest,
+  type SourceGraphRequest,
+} from './store'
+
+describe('schematic selection after synthesis', () => {
+  const sourceSelection = {
+    file: 'top.sv',
+    startLine: 4,
+    startColumn: 2,
+    endLine: 6,
+    endColumn: 8,
+  }
+
+  it.each([
+    ['cone', []],
+    ['path', [1, 2, 3]],
+  ])('clears a selected %s', (_selection, highlight) => {
+    const request: ConeGraphRequest = {
+      kind: 'cone',
+      designId: 'previous-design',
+      node: 3,
+      nodes: [3],
+      dir: 'fanin',
+      label: 'Selected logic',
+      highlight,
+      nonce: 1,
+    }
+
+    expect(graphRequestAfterSynthesis(request, sourceSelection, 2)).toBeNull()
+  })
+
+  it('refreshes an active source probe for the new synthesis', () => {
+    const request: SourceGraphRequest = {
+      kind: 'source',
+      ...sourceSelection,
+      selectionTruncated: false,
+      label: 'old selection',
+      highlight: [],
+      nonce: 1,
+    }
+
+    expect(graphRequestAfterSynthesis(request, sourceSelection, 2)).toMatchObject({
+      kind: 'source',
+      file: 'top.sv',
+      startLine: 4,
+      startColumn: 2,
+      endLine: 6,
+      endColumn: 8,
+      nonce: 2,
+    })
+  })
+})
 
 describe('synthesis input identity', () => {
   it('changes for every value sent to synthesis', () => {

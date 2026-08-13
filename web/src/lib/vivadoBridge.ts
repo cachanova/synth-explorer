@@ -8,6 +8,8 @@ import { isLocalLauncher } from './localLauncher'
 const WEBSITE_BRIDGE_ORIGIN = 'http://127.0.0.1:32123'
 const LOCAL_BRIDGE_ORIGIN = 'http://127.0.0.1:32125'
 export const VIVADO_BRIDGE_PROTOCOL = 2
+// The small Artix-7 board part most local installs carry.
+const DEFAULT_VIVADO_TARGET = 'xc7a35tcpg236-1'
 
 export function vivadoBridgeOrigin(
   search = typeof window === 'undefined' ? '' : window.location.search,
@@ -56,6 +58,32 @@ export async function connectVivadoBridge(vivadoPath?: string): Promise<VivadoBr
   } else {
     status = await request<VivadoBridgeStatus>('/v1/status')
   }
+  return usableStatus(status)
+}
+
+/**
+ * Asks an already-running bridge for its status. Restoring a remembered Vivado
+ * selection must not start Vivado, so this never takes the launcher path.
+ */
+export async function probeVivadoBridge(): Promise<VivadoBridgeStatus> {
+  return usableStatus(await request<VivadoBridgeStatus>('/v1/status'))
+}
+
+/**
+ * Resolves which installed part to select. A remembered part wins when the
+ * bridge still reports it, so a reconnect keeps the user's device.
+ */
+export function selectVivadoTarget(
+  parts: VivadoBridgeStatus['parts'],
+  preferred: string,
+): string {
+  if (parts.some((part) => part.name === preferred)) return preferred
+  return (
+    parts.find((part) => part.name === DEFAULT_VIVADO_TARGET)?.name ?? parts[0].name
+  )
+}
+
+function usableStatus(status: VivadoBridgeStatus): VivadoBridgeStatus {
   if (status.protocol_version !== VIVADO_BRIDGE_PROTOCOL) {
     throw new VivadoBridgeError(
       `Bridge protocol ${status.protocol_version} is not supported by this website`,

@@ -12,6 +12,8 @@ const valid = {
   mode: 'xilinx',
   extraArgs: '-family xc7',
   vivadoExtraArgs: '-mode default -max_dsp 0',
+  synthTool: 'vivado',
+  vivadoTarget: 'xc7a100t-csg324-1',
 }
 
 describe('stored workspace validation', () => {
@@ -23,7 +25,28 @@ describe('stored workspace validation', () => {
       mode: 'xilinx',
       extraArgs: '-family xc7',
       vivadoExtraArgs: '-mode default -max_dsp 0',
+      synthTool: 'vivado',
+      vivadoTarget: 'xc7a100t-csg324-1',
     })
+  })
+
+  it('defaults the selected tool for workspaces saved before it persisted', () => {
+    const { synthTool: _tool, vivadoTarget: _target, ...legacy } = valid
+    const restored = parseStoredWorkspace(legacy)
+    expect(restored?.synthTool).toBe('yosys')
+    expect(restored?.vivadoTarget).toBe('')
+  })
+
+  it('keeps the files when the stored tool is not one this build knows', () => {
+    // Discarding the workspace would delete every source file the user has,
+    // so an unusable tool preference degrades instead of failing the parse.
+    const unknownTool = parseStoredWorkspace({ ...valid, synthTool: 'quartus' })
+    expect(unknownTool?.files).toEqual(valid.files)
+    expect(unknownTool?.synthTool).toBe('yosys')
+
+    const unusableTarget = parseStoredWorkspace({ ...valid, vivadoTarget: 7 })
+    expect(unusableTarget?.files).toEqual(valid.files)
+    expect(unusableTarget?.vivadoTarget).toBe('')
   })
 
   it('migrates older workspaces to the visible Vivado default', () => {

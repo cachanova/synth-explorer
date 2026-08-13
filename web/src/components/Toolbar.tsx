@@ -39,14 +39,14 @@ function familyBucket(family: string): FamilyBucket {
 }
 
 export function Toolbar() {
-  const [exampleLanguage, setExampleLanguage] = useState<ExampleLanguage>('verilog')
-  const [selectedExample, setSelectedExample] = useState('')
   const [setupOpen, setSetupOpen] = useState(false)
   const [localLauncher] = useState(isLocalLauncher)
   const store = useStore(
     ({
       examples,
       loadExample,
+      exampleSelection,
+      setExampleSelection,
       top,
       setTop,
       synthTool,
@@ -68,6 +68,8 @@ export function Toolbar() {
     }) => ({
       examples,
       loadExample,
+      exampleSelection,
+      setExampleSelection,
       top,
       setTop,
       synthTool,
@@ -89,6 +91,11 @@ export function Toolbar() {
     }),
     shallowEqual,
   )
+  // The dropdowns report what they last showed. They do not reload that source
+  // on their own; the persisted workspace already restores the buffer, edits
+  // included.
+  const { language: exampleLanguage, name: selectedExample } = store.exampleSelection
+  const selectExample = store.setExampleSelection
 
   const familyOptions = useMemo(() => {
     const groups = new Map<FamilyBucket['key'], FamilyBucket & { parts: NonNullable<typeof store.vivadoStatus>['parts'] }>()
@@ -127,13 +134,13 @@ export function Toolbar() {
           value={exampleLanguage}
           onChange={(event) => {
             const language = event.target.value as ExampleLanguage
-            setExampleLanguage(language)
             const example = store.examples.find((entry) => entry.name === selectedExample)
             const variant = example?.variants[language]
             if (variant) {
+              selectExample({ language, name: selectedExample })
               store.loadExample(variant)
             } else {
-              setSelectedExample('')
+              selectExample({ language, name: '' })
             }
           }}
         >
@@ -148,7 +155,7 @@ export function Toolbar() {
           aria-label="Bundled example"
           value={selectedExample}
           onChange={(event) => {
-            setSelectedExample(event.target.value)
+            selectExample({ language: exampleLanguage, name: event.target.value })
             const example = store.examples.find((entry) => entry.name === event.target.value)
             const variant = example?.variants[exampleLanguage]
             if (variant) store.loadExample(variant)
