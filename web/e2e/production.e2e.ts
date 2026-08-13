@@ -2319,6 +2319,31 @@ test('clears the schematic while source or top-level changes are pending', async
   await waitForAnalysisReady(page)
 })
 
+test('clears schematic selections when synthesis changes', async ({ page }) => {
+  await page.goto('/')
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Bundled example').selectOption('reg_mux'),
+  )
+  await page.getByRole('tab', { name: 'Schematic', exact: true }).click()
+
+  const graphNodes = page.locator('.g-node-body')
+  await expect(graphNodes.first()).toBeVisible()
+  await graphNodes.first().dispatchEvent('click')
+  await page.getByRole('button', { name: 'Fanin cone' }).click()
+  await expect(page.locator('.graph-toolbar .mono')).toBeVisible()
+
+  await expect(graphNodes.first()).toBeVisible()
+  await graphNodes.first().dispatchEvent('click')
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(1)
+
+  await waitForAutomaticSynthesis(page, () =>
+    page.getByLabel('Bundled example').selectOption('counter'),
+  )
+  await expect(page.locator('.g-node-body.selected')).toHaveCount(0)
+  await expect(page.locator('.graph-toolbar .mono')).toHaveCount(0)
+  await expect(page.getByText('this cone belongs to the previous synthesis')).toHaveCount(0)
+})
+
 test('keeps synthesis failures compact until the full log is requested', async ({ page }) => {
   const apiRequests = recordApiRequests(page)
   await page.goto('/')
