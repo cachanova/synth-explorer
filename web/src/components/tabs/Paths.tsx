@@ -68,7 +68,7 @@ export function Paths() {
     // Keep route reconstruction independent of the table's presentation sort.
     // Otherwise switching columns changes which path variants the analysis
     // returns instead of reordering one stable reported result set.
-    (designId) => getPaths(designId, { sort: 'depth', ...timing?.request }),
+    () => getPaths({ sort: 'depth', ...timing?.request }),
     JSON.stringify({ sort: 'depth', ...timing?.request }),
   )
   const [open, setOpen] = useState<number | null>(null)

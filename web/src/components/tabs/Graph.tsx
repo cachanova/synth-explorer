@@ -250,7 +250,7 @@ export function Graph({ active }: { active: boolean }) {
     [],
   )
   const fetchFullGraph = useCallback(
-    (requestDesignId: string) => {
+    () => {
       if (fullGraphKey == null) return Promise.reject(new Error('missing graph cache key'))
       const cached = fullGraphCache.current
       if (cached?.key === fullGraphKey) return cached.promise
@@ -264,7 +264,6 @@ export function Graph({ active }: { active: boolean }) {
         .then(() => {
           fullController.signal.throwIfAborted()
           return getNetlist(
-            requestDesignId,
             {
               max_nodes: graphOptions.maxNodes,
               show_infrastructure: false,
@@ -315,7 +314,7 @@ export function Graph({ active }: { active: boolean }) {
     let cancelled = false
     setFetchingFull(true)
     setError(null)
-    fetchFullGraph(requestDesignId)
+    fetchFullGraph()
       .then((graph) => {
         if (cancelled || fullGraphCache.current?.key !== ownerKey) return
         loadedFullGraphKey.current = ownerKey
@@ -377,7 +376,7 @@ export function Graph({ active }: { active: boolean }) {
             directIds: response.directIds,
             directBits: response.directBits,
           }))
-        : getCone(requestDesignId, {
+        : getCone({
             node: request.node,
             nodes: request.nodes.length > 1 ? request.nodes : undefined,
             dir: request.dir,
@@ -474,7 +473,7 @@ export function Graph({ active }: { active: boolean }) {
     setFetchingGroups(true)
     Promise.all(
       expandedGroupSpecs.map((group) =>
-        expandGroup(designId, {
+        expandGroup({
           node: group.id,
           expanded_nodes: openIds,
           max_nodes: MAX_GROUP_EXPANSION_RENDER_NODES,
@@ -796,8 +795,8 @@ export function Graph({ active }: { active: boolean }) {
         group_memories: graphOptions.groupMemories,
       }
       Promise.all([
-        getCone(designId, { ...shared, dir: 'fanin' }, controller.signal),
-        getCone(designId, { ...shared, dir: 'fanout' }, controller.signal),
+        getCone({ ...shared, dir: 'fanin' }, controller.signal),
+        getCone({ ...shared, dir: 'fanout' }, controller.signal),
       ])
         .then(([fanin, fanout]) => {
           // Drop stale results if the rendered projection changed while fetching.

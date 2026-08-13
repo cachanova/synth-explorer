@@ -73,7 +73,7 @@ export function TimingModel({
 
   useEffect(() => {
     let cancelled = false
-    retuneTiming(designId, JSON.parse(debouncedKey))
+    retuneTiming(JSON.parse(debouncedKey))
       .then((r) => {
         if (!cancelled) setResult({ ...r, requestKey: debouncedKey })
       })

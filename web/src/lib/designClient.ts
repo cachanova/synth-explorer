@@ -19,7 +19,10 @@ import type {
 } from '../types'
 import { EngineLoadError } from './synthesis/engineLoad'
 import { bundledExamples } from './examples'
-import { DEFAULT_GRAPH_MAX_NODES } from './graph/graphLimits'
+import {
+  DEFAULT_GRAPH_MAX_NODES,
+  MAX_GROUP_EXPANSION_RENDER_NODES,
+} from './graph/graphLimits'
 import {
   localCone,
   localEndpoints,
@@ -30,9 +33,17 @@ import {
   localTiming,
   synthesizeLocally,
 } from './synthesis/localEngine'
-import { LocalSynthesisError, type SynthesisFailureKind } from './synthesis/synthesisError'
+import {
+  LocalSynthesisError,
+  RequestValidationError,
+  type SynthesisFailureKind,
+} from './synthesis/synthesisError'
 
-export type DesignRequestFailureKind = SynthesisFailureKind | 'synthesis' | 'validation'
+export type DesignRequestFailureKind =
+  | SynthesisFailureKind
+  | 'synthesis'
+  | 'validation'
+  | 'internal'
 
 export class DesignRequestError extends Error {
   readonly kind: DesignRequestFailureKind
@@ -61,39 +72,40 @@ export async function synthesize(
     if (error instanceof EngineLoadError) {
       throw new DesignRequestError(error.message, 'load')
     }
+    if (error instanceof RequestValidationError) {
+      throw new DesignRequestError(error.message, 'validation')
+    }
     throw new DesignRequestError(
       error instanceof Error ? error.message : String(error),
-      'validation',
+      'internal',
     )
   }
 }
 
-export function retuneTiming(_id: string, request: TimingRequest): Promise<TimingResponse> {
+export function retuneTiming(request: TimingRequest): Promise<TimingResponse> {
   return localTiming(request)
 }
 
-export function getEndpoints(_id: string): Promise<EndpointsResponse> {
+export function getEndpoints(): Promise<EndpointsResponse> {
   return localEndpoints()
 }
 
-export function getPaths(_id: string, options: PathsOptions = {}): Promise<PathsResponse> {
+export function getPaths(options: PathsOptions = {}): Promise<PathsResponse> {
   return localPaths(options)
 }
 
 export function getCone(
-  _id: string,
   options: ConeOptions,
   signal?: AbortSignal,
 ): Promise<Subgraph> {
   return localCone(options, signal)
 }
 
-export function getFanout(_id: string, limit = 50): Promise<FanoutResponse> {
+export function getFanout(limit = 50): Promise<FanoutResponse> {
   return localFanout(limit)
 }
 
 export function getNetlist(
-  _id: string,
   options: NetlistOptions = {},
   signal?: AbortSignal,
 ): Promise<Subgraph> {
@@ -112,14 +124,13 @@ export function getNetlist(
 }
 
 export function expandGroup(
-  _id: string,
   options: GroupExpansionOptions,
   signal?: AbortSignal,
 ): Promise<GroupExpansion> {
   return localExpandGroup(
     {
       ...options,
-      max_nodes: options.max_nodes ?? 4_096,
+      max_nodes: options.max_nodes ?? MAX_GROUP_EXPANSION_RENDER_NODES,
       hide_control: options.hide_control ?? true,
       hide_const: options.hide_const ?? true,
       group_vectors: options.group_vectors ?? false,

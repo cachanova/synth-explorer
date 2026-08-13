@@ -17,7 +17,7 @@ const MAX_EXPANDED_GROUP_ROOTS: usize = 256;
 /// Every open group keeps its members raw in each expansion projection, so the
 /// per-node group lookup scans this list. Keep it short enough that the scan
 /// stays negligible and the client's refetch of all open groups stays bounded.
-/// `web/src/lib/graphLimits.ts` mirrors this cap.
+/// `web/src/lib/graph/graphLimits.ts` mirrors this cap.
 const MAX_EXPANDED_GROUPS: usize = 8;
 
 #[derive(Deserialize)]

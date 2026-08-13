@@ -35,6 +35,7 @@ import { vivadoEngine } from '../engines/vivadoEngine'
 import { yosysEngine } from '../engines/yosysEngine'
 import {
   LocalSynthesisError,
+  RequestValidationError,
   abortError,
   isAbortError,
 } from './synthesisError'
@@ -62,7 +63,14 @@ async function synthesizeLocallyWithFallback(
   allowReuse: boolean,
 ): Promise<SynthesizeResponse> {
   signal?.throwIfAborted()
-  const input = validateSynthesisRequest(request)
+  let input: ValidatedSynthesis
+  try {
+    input = validateSynthesisRequest(request)
+  } catch (error) {
+    throw new RequestValidationError(
+      error instanceof Error ? error.message : String(error),
+    )
+  }
   const key = await synthesisKey(input)
   const designId = key.slice(0, 12)
   const cached = allowReuse ? await getCachedSynthesis(key, input) : null

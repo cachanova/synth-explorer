@@ -14,7 +14,7 @@ export function Fanout() {
     shallowEqual,
   )
   const id = store.design?.design_id ?? null
-  const { data, loading, error } = useDesignData(id, (i) => getFanout(i, 50))
+  const { data, loading, error } = useDesignData(id, () => getFanout(50))
   const [filter, setFilter] = useState('')
 
   const drivers = useMemo(() => {

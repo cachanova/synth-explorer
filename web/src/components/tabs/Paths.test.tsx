@@ -43,8 +43,8 @@ vi.mock('../../lib/timingSettings', () => ({
   timingRequestForView: () => ({ speed_grade: '-1' }),
 }))
 vi.mock('../../lib/useDesignData', () => ({
-  useDesignData: (id: string, fetcher: (designId: string) => unknown) => {
-    fetcher(id)
+  useDesignData: (_id: string, fetcher: () => unknown) => {
+    fetcher()
     return { data: pathsData, loading: false, error: null }
   },
 }))
@@ -93,11 +93,11 @@ describe('Paths result completeness', () => {
 
     const markup = renderToStaticMarkup(<Paths />)
 
-    expect(getPathsMock).toHaveBeenCalledWith('design', {
+    expect(getPathsMock).toHaveBeenCalledWith({
       sort: 'depth',
       speed_grade: '-1',
     })
-    expect(getPathsMock.mock.calls[0][1]).not.toHaveProperty('limit')
+    expect(getPathsMock.mock.calls[0][0]).not.toHaveProperty('limit')
     expect(markup).toContain('Longest logical path variants (26)')
     expect(markup).not.toContain('Est. delay')
     expect(markup.match(/<tr[^>]*class="clickable"/g)).toHaveLength(26)

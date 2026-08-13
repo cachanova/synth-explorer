@@ -3,6 +3,7 @@ import { SynthIcon } from './BubbleLoader'
 
 const KIND_BY_FAILURE = {
   bridge: 'Vivado bridge disconnected',
+  internal: 'Internal error',
   load: 'Tool failed to load',
   synthesis: 'Synthesis failed',
   timeout: 'Timeout',

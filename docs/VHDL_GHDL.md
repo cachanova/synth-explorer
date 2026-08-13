@@ -11,7 +11,7 @@ at `127.0.0.1`.
 VHDL-2008 source files
   -> ghdl.worker.ts
   -> generic Verilog with VHDL location comments
-  -> source-location rewrite in web/src/lib/vhdl.ts
+  -> source-location rewrite in web/src/lib/synthesis/vhdl.ts
   -> yosys.worker.ts
   -> source and mapped JSON netlists
   -> analysis.worker.ts
@@ -64,8 +64,8 @@ Yosys and uses the same Rust analysis worker for downstream queries.
 
 - `web/src/workers/ghdl.worker.ts` hosts the GHDL module, standard-library
   virtual filesystem, diagnostics, and synthesis API.
-- `web/src/lib/vhdl.ts` owns the source-location rewrite.
-- `web/src/lib/localEngine.ts` invokes GHDL only for validated VHDL workspaces,
+- `web/src/lib/synthesis/vhdl.ts` owns the source-location rewrite.
+- `web/src/lib/synthesis/localEngine.ts` invokes GHDL only for validated VHDL workspaces,
   chooses the Yosys or Vivado synthesis branch, and returns to the shared cache
   and analysis path.
 - `vivado-bridge/` owns the local Vivado executor and generated Tcl script for

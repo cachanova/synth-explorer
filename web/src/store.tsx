@@ -880,6 +880,7 @@ export function StoreProvider({
         setError({
           message: bridgeError.message,
           log: bridgeError.log,
+          kind: 'bridge',
           status: bridgeError.status || undefined,
         })
       }

@@ -1,5 +1,12 @@
 export type SynthesisFailureKind = 'load' | 'timeout' | 'bridge'
 
+export class RequestValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'RequestValidationError'
+  }
+}
+
 export class LocalSynthesisError extends Error {
   readonly log: string
   readonly kind?: SynthesisFailureKind

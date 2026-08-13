@@ -13,7 +13,7 @@ export interface AsyncData<T> {
  */
 export function useDesignData<T>(
   id: string | null | undefined,
-  fetcher: (id: string) => Promise<T>,
+  fetcher: () => Promise<T>,
   dep: unknown = null,
 ): AsyncData<T> {
   const [state, setState] = useState<AsyncData<T>>({
@@ -32,7 +32,7 @@ export function useDesignData<T>(
     // payload before fetching so retained rows cannot issue a request against
     // the replacement design with stale numeric ids.
     setState({ data: null, loading: true, error: null })
-    fetcher(id)
+    fetcher()
       .then((data) => {
         if (!cancelled) setState({ data, loading: false, error: null })
       })
