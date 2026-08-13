@@ -99,6 +99,19 @@ pub enum DelayProfile {
 }
 
 impl DelayProfile {
+    /// Every profile; extend together with the `name` match below.
+    pub const ALL: [Self; 9] = [
+        Self::Series7,
+        Self::UltraScale,
+        Self::UltraScalePlus,
+        Self::Ice40,
+        Self::Ecp5,
+        Self::Sky130Hd,
+        Self::Gf180Mcu,
+        Self::Asap7,
+        Self::Generic,
+    ];
+
     /// The baseline (-1 speed grade) coefficients for this family.
     pub fn model(self) -> DelayModel {
         match self {
@@ -114,20 +127,31 @@ impl DelayProfile {
         }
     }
 
+    /// The profile's wire name. Exhaustive so a new variant is a compile
+    /// error here rather than a runtime failure in a consumer.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Series7 => "series7",
+            Self::UltraScale => "ultrascale",
+            Self::UltraScalePlus => "ultrascale_plus",
+            Self::Ice40 => "ice40",
+            Self::Ecp5 => "ecp5",
+            Self::Sky130Hd => "sky130hd",
+            Self::Gf180Mcu => "gf180mcu",
+            Self::Asap7 => "asap7",
+            Self::Generic => "generic",
+        }
+    }
+
+    pub fn from_name_strict(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|profile| profile.name() == name)
+    }
+
     /// Parse a profile name from a request. Unknown names fall back to Series-7,
     /// matching the historical default.
     pub fn from_name(name: Option<&str>) -> Self {
-        match name {
-            Some("ultrascale") => Self::UltraScale,
-            Some("ultrascale_plus") => Self::UltraScalePlus,
-            Some("ice40") => Self::Ice40,
-            Some("ecp5") => Self::Ecp5,
-            Some("sky130hd") => Self::Sky130Hd,
-            Some("gf180mcu") => Self::Gf180Mcu,
-            Some("asap7") => Self::Asap7,
-            Some("generic") => Self::Generic,
-            _ => Self::Series7,
-        }
+        name.and_then(Self::from_name_strict)
+            .unwrap_or(Self::Series7)
     }
 
     /// Pick the default profile for a synthesis target. `mode` is the
@@ -1056,9 +1080,19 @@ mod tests {
             ("asap7", DelayProfile::Asap7),
             ("generic", DelayProfile::Generic),
         ] {
+            assert_eq!(profile.name(), name);
+            assert_eq!(DelayProfile::from_name_strict(name), Some(profile));
             assert_eq!(DelayProfile::from_name(Some(name)), profile);
         }
-        // Unknown / absent names fall back to the historical default.
+        for profile in DelayProfile::ALL {
+            assert_eq!(
+                DelayProfile::from_name_strict(profile.name()),
+                Some(profile)
+            );
+        }
+        assert_eq!(DelayProfile::from_name_strict("bogus"), None);
+        // Unknown / absent names fall back to the historical default only in
+        // the lenient request parser.
         assert_eq!(DelayProfile::from_name(None), DelayProfile::Series7);
         assert_eq!(
             DelayProfile::from_name(Some("bogus")),
