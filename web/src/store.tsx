@@ -12,7 +12,6 @@ import { DEFAULT_FILE, defaultWorkspace } from './data/defaultWorkspace'
 import { StoreContext } from './storeContext'
 import { DEFAULT_GRAPH_MAX_NODES } from './lib/graphLimits'
 import {
-  boundedSourceSelection,
   createSourceProbeDebouncer,
   normalizeSourceSelection,
   queuedSynthesisForRequest,
@@ -22,6 +21,10 @@ import {
   type SourceSelection,
   type SynthesisInput,
 } from './lib/liveAnalysis'
+import {
+  graphRequestAfterSynthesis,
+  sourceGraphRequest,
+} from './lib/graphRequest'
 import { displayNodeName } from './lib/prettyType'
 import { createLatestGuard } from './lib/latest'
 import { mergeComputerFiles } from './lib/computerFiles'
@@ -147,8 +150,6 @@ export type AnalysisState =
 
 type ResolvedInputIdentity = Pick<SynthesisInput, 'key' | 'revision'>
 
-const MAX_SOURCE_LINES = 200
-
 const DEFAULT_GRAPH_OPTIONS: GraphOptions = {
   maxDepth: 64,
   maxNodes: DEFAULT_GRAPH_MAX_NODES,
@@ -166,32 +167,6 @@ function sourceCaret(file: string, line = 1, column = 1): SourceSelection {
     startColumn: column,
     endLine: line,
     endColumn: column,
-  }
-}
-
-function sourceGraphRequest(
-  selection: SourceSelection,
-  nonce: number,
-): SourceGraphRequest {
-  const bounded = boundedSourceSelection(selection, MAX_SOURCE_LINES)
-  const { endLine } = bounded
-  const lineLabel =
-    selection.startLine === endLine
-      ? `line ${selection.startLine}`
-      : `lines ${selection.startLine}–${endLine}`
-  return {
-    kind: 'source',
-    file: selection.file,
-    startLine: bounded.startLine,
-    startColumn: bounded.startColumn,
-    endLine,
-    endColumn: bounded.endColumn,
-    fallbackStartColumn: selection.fallbackStartColumn,
-    fallbackEndColumn: selection.fallbackEndColumn,
-    selectionTruncated: bounded.truncated,
-    label: `${selection.file}:${lineLabel}`,
-    highlight: [],
-    nonce,
   }
 }
 
@@ -258,6 +233,7 @@ export interface Store {
   synthesizing: boolean
   synthesize: () => Promise<void>
   design: SynthesizeResponse | null
+  designRevision: number
   analysisState: AnalysisState
   error: {
     message: string
@@ -374,6 +350,7 @@ export function StoreProvider({
 
   const [synthesizing, setSynthesizing] = useState(false)
   const [design, setDesign] = useState<SynthesizeResponse | null>(null)
+  const [designRevision, setDesignRevision] = useState(0)
   const [designInputKey, setDesignInputKey] = useState<string | null>(null)
   const [error, setError] = useState<Store['error']>(null)
 
@@ -1002,13 +979,16 @@ export function StoreProvider({
         try {
           const res = await api.synthesize(running.request, controller.signal)
           setDesign(res)
+          setDesignRevision((revision) => revision + 1)
           setDesignInputKey(running.key)
-          // A source graph tracks the selected lines across synthesis. Other
-          // explicit cones remain stable until the user asks to replace them.
+          // A source graph tracks the selected lines across synthesis. Cones
+          // and paths belong to the previous netlist and start deselected.
           setConeReq((request) =>
-            request?.kind === 'source'
-              ? sourceGraphRequest(sourceSelectionRef.current, nextNonce())
-              : request,
+            graphRequestAfterSynthesis(
+              request,
+              sourceSelectionRef.current,
+              nextNonce(),
+            ),
           )
         } catch (e) {
           if (!(e instanceof DOMException && e.name === 'AbortError')) {
@@ -1321,6 +1301,7 @@ export function StoreProvider({
       synthesizing,
       synthesize: requestSynthesis,
       design,
+      designRevision,
       analysisState,
       error,
       activeTab,
@@ -1380,6 +1361,7 @@ export function StoreProvider({
       setAutoSynthesisDelayMs,
       synthesizing,
       design,
+      designRevision,
       analysisState,
       error,
       activeTab,
