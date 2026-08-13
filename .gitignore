@@ -2,11 +2,14 @@ target/
 .cache/
 node_modules/
 dist/
-/data/
 *.log
 .env*
 .DS_Store
 abc.history
+
+# Local agent scratch: design notes/plans and machine-local agent memory
+docs/superpowers/
+.claude/agent-memory/
 
 # Vivado-derived calibration ground truth: a local dev artifact for
 # `cargo run -p synth-explorer-calibration -- report|fit`. Nothing at runtime reads it.
