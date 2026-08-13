@@ -1,4 +1,4 @@
-use crate::graph::NodeId;
+use crate::graph::{Graph, NodeId, NodeKind, is_register_type};
 use crate::netlist::PortDirection;
 use deepsize::DeepSizeOf;
 use serde::Serialize;
@@ -28,6 +28,32 @@ pub struct NodeRef {
     pub register: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub src: Option<String>,
+}
+
+pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
+    let node = &graph.nodes[id as usize];
+    let kind = match node.kind {
+        NodeKind::Cell => ApiNodeKind::Cell,
+        NodeKind::PortBit => ApiNodeKind::Port,
+        NodeKind::Const => ApiNodeKind::Const,
+    };
+    NodeRef {
+        id,
+        kind,
+        name: node.name.clone(),
+        port_direction: node.port_dir,
+        cell_type: node.cell_type.clone(),
+        seq: (node.kind == NodeKind::Cell && node.seq).then_some(node.seq),
+        register: (node.kind == NodeKind::Cell && node.seq).then_some(is_register_node(node)),
+        src: node.src.clone(),
+    }
+}
+
+pub(super) fn is_register_node(node: &crate::graph::Node) -> bool {
+    node.kind == NodeKind::Cell
+        && node.seq
+        && !node.blackbox
+        && node.cell_type.as_deref().is_some_and(is_register_type)
 }
 
 #[derive(Debug, Clone, Serialize)]

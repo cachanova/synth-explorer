@@ -1,17 +1,15 @@
-use super::depth::{
-    direct_register_driver, edge_depth, is_depth_node, is_depth_output_edge, is_register_node,
-};
+use super::api::is_register_node;
+use super::depth::{direct_register_driver, edge_depth, is_depth_node, is_depth_output_edge};
 use super::{
-    ApiNodeKind, BoundaryEndpoint, EndpointBit, EndpointKind, EndpointsResponse, InputBit,
-    InputGroup, MAX_BOUNDARY_ENDPOINT_BITS, MAX_BOUNDARY_ENDPOINTS, NodeRef, OutputAlias,
-    OutputAliasBit, OutputGroup, PathClass, PathEntry, PathSort, PathsResponse, RegisterGroup,
+    BoundaryEndpoint, EndpointBit, EndpointKind, EndpointsResponse, InputBit, InputGroup,
+    MAX_BOUNDARY_ENDPOINT_BITS, MAX_BOUNDARY_ENDPOINTS, OutputAlias, OutputAliasBit, OutputGroup,
+    RegisterGroup,
 };
-use crate::delay_model::DelayModel;
 use crate::graph::{Graph, NodeId, NodeKind, is_transparent_data_buffer, strip_bit_suffix};
 use crate::netlist::PortDirection;
 use crate::source::coordinates::parse_src_loc;
 use deepsize::DeepSizeOf;
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, DeepSizeOf)]
@@ -26,177 +24,6 @@ pub(super) struct EndpointTarget {
     pub(super) bit: usize,
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct PathComputation<'a> {
-    pub(super) model: &'a DelayModel,
-    pub(super) sort: PathSort,
-    pub(super) node_delay: &'a [f64],
-    pub(super) depth_path_delay: &'a [f64],
-    pub(super) delay_pred: &'a [Option<usize>],
-    pub(super) delay_startpoint: &'a [Option<NodeId>],
-}
-
-pub(super) struct PathSelection {
-    pub(super) response: PathsResponse,
-    pub(super) reconstructed_nodes: usize,
-}
-
-pub(super) type PathGroupKey = (String, EndpointKind, PathClass, u32, String, Vec<String>);
-pub(super) type EndpointTargetGroupKey<'a> = (EndpointKind, &'a str, &'a str);
-pub(super) type EndpointTargetGroup<'a> = (EndpointTargetGroupKey<'a>, Vec<&'a EndpointTarget>);
-pub(super) fn path_node_signature(node: &NodeRef) -> String {
-    match node.kind {
-        ApiNodeKind::Cell => format!(
-            "cell:{}:{}",
-            node.cell_type.as_deref().unwrap_or("?"),
-            node.seq == Some(true)
-        ),
-        ApiNodeKind::Port => "port".to_owned(),
-        ApiNodeKind::Const => "const".to_owned(),
-    }
-}
-
-pub(super) fn compare_target_rank(a: &EndpointTarget, b: &EndpointTarget) -> Ordering {
-    Reverse(a.depth)
-        .cmp(&Reverse(b.depth))
-        .then_with(|| a.bit.cmp(&b.bit))
-        .then_with(|| a.endpoint.cmp(&b.endpoint))
-        .then_with(|| a.endpoint_port.cmp(&b.endpoint_port))
-}
-
-pub(super) fn compare_path_entries(a: &PathEntry, b: &PathEntry, sort: PathSort) -> Ordering {
-    let tie_break = || compare_path_identity(a, b);
-    match sort {
-        PathSort::Depth => Reverse(a.depth).cmp(&Reverse(b.depth)).then_with(tie_break),
-        PathSort::Delay => b
-            .estimated_delay_ns
-            .unwrap_or(f64::NEG_INFINITY)
-            .total_cmp(&a.estimated_delay_ns.unwrap_or(f64::NEG_INFINITY))
-            .then_with(|| Reverse(a.depth).cmp(&Reverse(b.depth)))
-            .then_with(tie_break),
-    }
-}
-
-pub(super) fn compare_path_membership(a: &PathEntry, b: &PathEntry) -> Ordering {
-    Reverse(a.depth)
-        .cmp(&Reverse(b.depth))
-        .then_with(|| {
-            b.estimated_delay_ns
-                .unwrap_or(f64::NEG_INFINITY)
-                .total_cmp(&a.estimated_delay_ns.unwrap_or(f64::NEG_INFINITY))
-        })
-        .then_with(|| compare_path_identity(a, b))
-}
-
-pub(super) fn compare_path_identity(a: &PathEntry, b: &PathEntry) -> Ordering {
-    a.endpoint_group
-        .cmp(&b.endpoint_group)
-        .then_with(|| a.endpoint_kind.cmp(&b.endpoint_kind))
-        .then_with(|| a.class.cmp(&b.class))
-        .then_with(|| a.endpoint_port.cmp(&b.endpoint_port))
-        .then_with(|| a.bits.cmp(&b.bits))
-        .then_with(|| {
-            a.nodes
-                .iter()
-                .map(|node| node.id)
-                .cmp(b.nodes.iter().map(|node| node.id))
-        })
-}
-
-pub(super) fn classify_path(startpoint: &NodeRef, endpoint_kind: EndpointKind) -> PathClass {
-    let starts_at_register = startpoint.register == Some(true);
-    let starts_at_input = startpoint.kind == ApiNodeKind::Port;
-    match (starts_at_register, starts_at_input, endpoint_kind) {
-        (true, _, EndpointKind::Register) => PathClass::RegisterToRegister,
-        (_, true, EndpointKind::Register) => PathClass::InputToRegister,
-        (true, _, EndpointKind::Output) => PathClass::RegisterToOutput,
-        (_, true, EndpointKind::Output) => PathClass::InputToOutput,
-        _ => PathClass::Other,
-    }
-}
-
-pub(super) type RegisterAliasLookup<'a> =
-    HashMap<(&'a str, usize), Vec<(&'a OutputAlias, &'a OutputAliasBit)>>;
-
-pub(super) fn build_alias_lookup<'a>(
-    endpoints: &'a EndpointsResponse,
-    candidate_keys: &HashSet<(&str, usize)>,
-) -> RegisterAliasLookup<'a> {
-    let mut lookup: RegisterAliasLookup<'_> = HashMap::new();
-    let mut candidate_bits_by_group: HashMap<&str, HashSet<usize>> = HashMap::new();
-    for (group, bit) in candidate_keys {
-        candidate_bits_by_group
-            .entry(*group)
-            .or_default()
-            .insert(*bit);
-    }
-    for group in &endpoints.registers {
-        let Some(candidate_bits) = candidate_bits_by_group.get(group.name.as_str()) else {
-            continue;
-        };
-        for alias in &group.output_aliases {
-            for bit in &alias.bits {
-                if !candidate_bits.contains(&bit.register_bit) {
-                    continue;
-                }
-                lookup
-                    .entry((group.name.as_str(), bit.register_bit))
-                    .or_default()
-                    .push((alias, bit));
-            }
-        }
-    }
-    lookup
-}
-
-pub(super) fn aliases_for_register_bit(
-    lookup: &RegisterAliasLookup<'_>,
-    register_group: &str,
-    register_bit: usize,
-) -> Vec<OutputAlias> {
-    let Some(entries) = lookup.get(&(register_group, register_bit)) else {
-        return Vec::new();
-    };
-    let mut aliases: BTreeMap<(&str, usize), Vec<OutputAliasBit>> = BTreeMap::new();
-    for (alias, bit) in entries {
-        aliases
-            .entry((alias.name.as_str(), alias.width))
-            .or_default()
-            .push((*bit).clone());
-    }
-    aliases
-        .into_iter()
-        .map(|((name, width), mut bits)| {
-            bits.sort_by_key(|bit| (bit.register_bit, bit.output_bit));
-            bits.dedup_by_key(|bit| (bit.register_bit, bit.output_bit));
-            OutputAlias {
-                name: name.to_owned(),
-                width,
-                bits,
-            }
-        })
-        .collect()
-}
-
-pub(super) fn merge_output_aliases(existing: &mut Vec<OutputAlias>, incoming: Vec<OutputAlias>) {
-    for alias in incoming {
-        if let Some(current) = existing
-            .iter_mut()
-            .find(|current| current.name == alias.name)
-        {
-            current.bits.extend(alias.bits);
-            current
-                .bits
-                .sort_by_key(|bit| (bit.register_bit, bit.output_bit));
-            current
-                .bits
-                .dedup_by_key(|bit| (bit.register_bit, bit.output_bit));
-        } else {
-            existing.push(alias);
-        }
-    }
-    existing.sort_by(|a, b| a.name.cmp(&b.name));
-}
 pub(super) fn discover_endpoints(
     graph: &Graph,
     node_depth: &[Option<u32>],

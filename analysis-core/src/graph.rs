@@ -946,20 +946,6 @@ pub(crate) fn is_addressable_sequential_type(cell_type: &str) -> bool {
     cell_type.eq_ignore_ascii_case("SRL16E") || cell_type.eq_ignore_ascii_case("SRLC32E")
 }
 
-#[cfg(test)]
-pub(crate) fn is_blackbox_cell(
-    cell: &YosysCell,
-    blackbox_modules: &HashSet<String>,
-    module_names: &HashSet<&str>,
-) -> bool {
-    is_blackbox_cell_with_vendor(
-        cell,
-        blackbox_modules,
-        module_names,
-        vendor_primitive_class(&cell.cell_type),
-    )
-}
-
 fn is_blackbox_cell_with_vendor(
     cell: &YosysCell,
     blackbox_modules: &HashSet<String>,
@@ -1044,6 +1030,19 @@ fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_blackbox_cell(
+        cell: &YosysCell,
+        blackbox_modules: &HashSet<String>,
+        module_names: &HashSet<&str>,
+    ) -> bool {
+        is_blackbox_cell_with_vendor(
+            cell,
+            blackbox_modules,
+            module_names,
+            vendor_primitive_class(&cell.cell_type),
+        )
+    }
 
     #[test]
     fn only_the_pin_that_clocks_a_cell_is_a_clock_pin() {

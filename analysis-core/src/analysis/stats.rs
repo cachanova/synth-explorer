@@ -1,5 +1,7 @@
-use super::depth::{DelayBreakdownPs, edge_depth, is_register_node, node_ref};
-use super::endpoints::{EndpointTarget, classify_path};
+use super::api::{is_register_node, node_ref};
+use super::depth::{DelayBreakdownPs, edge_depth};
+use super::endpoints::EndpointTarget;
+use super::paths::classify_path;
 use super::{
     CellCategoryCounts, DelayBreakdown, DepthSummary, EndpointsResponse, PathClass, Stats,
 };

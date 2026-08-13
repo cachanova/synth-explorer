@@ -1,8 +1,9 @@
-use super::{ApiNodeKind, DelayBreakdown, EndpointKind, NodeRef};
+use super::api::is_register_node;
+use super::{DelayBreakdown, EndpointKind};
 use crate::delay_model::DelayModel;
 use crate::graph::{
     Edge, Graph, NodeId, NodeKind, cell_depth_weight, is_addressable_sequential_type,
-    is_register_type, is_transparent_data_buffer,
+    is_transparent_data_buffer,
 };
 use crate::netlist::PortDirection;
 use std::collections::{HashSet, VecDeque};
@@ -47,32 +48,6 @@ pub(super) struct DepthComputation {
     /// Arrival following the structural predecessor, for costing depth paths.
     pub(super) depth_path_delay: Vec<f64>,
 }
-pub fn node_ref(graph: &Graph, id: NodeId) -> NodeRef {
-    let node = &graph.nodes[id as usize];
-    let kind = match node.kind {
-        NodeKind::Cell => ApiNodeKind::Cell,
-        NodeKind::PortBit => ApiNodeKind::Port,
-        NodeKind::Const => ApiNodeKind::Const,
-    };
-    NodeRef {
-        id,
-        kind,
-        name: node.name.clone(),
-        port_direction: node.port_dir,
-        cell_type: node.cell_type.clone(),
-        seq: (node.kind == NodeKind::Cell && node.seq).then_some(node.seq),
-        register: (node.kind == NodeKind::Cell && node.seq).then_some(is_register_node(node)),
-        src: node.src.clone(),
-    }
-}
-
-pub(super) fn is_register_node(node: &crate::graph::Node) -> bool {
-    node.kind == NodeKind::Cell
-        && node.seq
-        && !node.blackbox
-        && node.cell_type.as_deref().is_some_and(is_register_type)
-}
-
 pub(super) fn find_comb_loops(graph: &Graph) -> Vec<NodeId> {
     struct Frame {
         node: NodeId,

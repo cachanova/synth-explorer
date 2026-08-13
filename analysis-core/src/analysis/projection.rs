@@ -1,14 +1,19 @@
-use super::controls::is_labeled_control_edge;
+use super::controls::{is_labeled_control_edge, node_controls};
+use super::depth::{is_addressable_sequential_node, is_depth_input_edge, is_depth_output_edge};
 use super::{
-    ApiNodeKind, BoundaryMember, ConeDir, ControlRef, ControlRole, EdgeBoundaryMember, GraphEdge,
-    GraphNode, GroupExpansionBoundaryTrunk, MAX_FULL_GROUP_MEMBERS, MAX_SUBGRAPH_EDGE_BITS,
-    MAX_SUBGRAPH_EDGES, MAX_SUBGRAPH_NODES, NodeRef, ProjectedEdgeKey, Subgraph,
+    Analysis, ApiNodeKind, BoundaryMember, ConeDir, ConeOptions, ControlRef, ControlRole,
+    EdgeBoundaryMember, FULL_NETLIST_CONTEXT_NODE_BUDGET, FullNetlistOptions, GraphEdge, GraphNode,
+    GroupExpansion, GroupExpansionBoundaryTrunk, GroupExpansionOptions, MAX_FULL_GROUP_MEMBERS,
+    MAX_FULL_NETLIST_EDGE_VISITS, MAX_GROUP_EXPANSION_EDGE_VISITS, MAX_GROUP_EXPANSION_NODES,
+    MAX_SUBGRAPH_EDGE_BITS, MAX_SUBGRAPH_EDGES, MAX_SUBGRAPH_NODES, NodeRef, ProjectedEdgeKey,
+    Subgraph,
 };
 use crate::graph::{
     Edge, Graph, NodeId, NodeKind, is_infrastructure_cell, is_register_type,
     is_transparent_data_buffer, strip_bit_suffix,
 };
-use crate::grouping::{GroupId, GroupKind, GroupingProjection};
+use crate::grouping::{GroupId, GroupKind, GroupPartition, GroupingProjection};
+use crate::netlist::PortDirection;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -967,4 +972,943 @@ pub(super) fn cap_subgraph_edges(projected: ProjectedSubgraph) -> ProjectedSubgr
     let (edges, boundary_electrical) = edges_with_provenance.into_iter().unzip();
     subgraph.edges = edges;
     ProjectedSubgraph::new(subgraph, boundary_electrical)
+}
+
+impl Analysis {
+    pub fn multi_root_cone(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions<'_>,
+        grouping: Option<GroupingProjection<'_>>,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[options.dir],
+            options,
+            grouping,
+            SubgraphWorkLimits::for_public_projection(),
+        )
+    }
+
+    pub(super) fn multi_root_source_cone(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+        grouping: Option<GroupingProjection<'_>>,
+        expand_output_register_inputs: bool,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[options.dir],
+            options,
+            grouping,
+            SubgraphWorkLimits::for_source_selection(expand_output_register_inputs),
+        )
+    }
+
+    pub(super) fn multi_root_source_envelope(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        options: ConeOptions,
+        grouping: Option<GroupingProjection<'_>>,
+    ) -> Option<Subgraph> {
+        self.multi_root_subgraph(
+            graph,
+            roots,
+            &[ConeDir::Fanin, ConeDir::Fanout],
+            options,
+            grouping,
+            SubgraphWorkLimits::for_source_selection(false),
+        )
+    }
+
+    pub(super) fn multi_root_subgraph(
+        &self,
+        graph: &Graph,
+        roots: &[NodeId],
+        directions: &[ConeDir],
+        options: ConeOptions<'_>,
+        grouping: Option<GroupingProjection<'_>>,
+        work_limits: SubgraphWorkLimits,
+    ) -> Option<Subgraph> {
+        if roots
+            .iter()
+            .any(|root| graph.nodes.get(*root as usize).is_none())
+        {
+            return None;
+        }
+
+        // With grouping the node budget counts distinct group-or-singleton
+        // units, not member bits, so a wide bus costs one unit. `seen_units`
+        // tracks the paid units; without grouping it mirrors `seen` exactly.
+        let base = graph.nodes.len() as u32;
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
+        let raw_root_cap = work_limits
+            .max_raw_nodes
+            .unwrap_or(MAX_SUBGRAPH_NODES)
+            .saturating_div(2)
+            .max(1);
+        let (bounded_roots, roots_truncated) =
+            bounded_projection_roots(roots, grouping, base, cap, raw_root_cap);
+        let mut seen: HashSet<NodeId> = HashSet::new();
+        let mut seen_units: HashSet<u32> = HashSet::new();
+        let mut unique_roots: HashSet<NodeId> = HashSet::new();
+        let mut included_root_ids = Vec::new();
+        let mut boundary_nodes: HashSet<NodeId> = HashSet::new();
+        let mut edge_set: HashSet<usize> = HashSet::new();
+        let mut raw_edges_per_connection: HashMap<(NodeId, NodeId, String, String), usize> =
+            HashMap::new();
+        let mut expanded_register_inputs: HashSet<NodeId> = HashSet::new();
+        let mut examined_edges = 0usize;
+        let mut truncated = roots_truncated;
+
+        for root in &bounded_roots {
+            if unique_roots.insert(*root) {
+                if work_limits
+                    .max_raw_nodes
+                    .is_some_and(|limit| seen.len() >= limit)
+                {
+                    truncated = true;
+                    continue;
+                }
+                let unit = unit_id(grouping, base, *root);
+                if !seen_units.contains(&unit) && seen_units.len() >= cap {
+                    truncated = true;
+                    continue;
+                }
+                seen_units.insert(unit);
+                seen.insert(*root);
+                included_root_ids.push(*root);
+            }
+        }
+
+        let included_roots = seen.clone();
+        let mut output_register_frontier: HashSet<NodeId> =
+            if work_limits.expand_output_register_inputs {
+                included_roots
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        let node = &graph.nodes[*id as usize];
+                        (node.kind == NodeKind::PortBit
+                            && matches!(
+                                node.port_dir,
+                                Some(PortDirection::Output | PortDirection::Inout)
+                            ))
+                            || node
+                                .cell_type
+                                .as_deref()
+                                .is_some_and(is_transparent_data_buffer)
+                    })
+                    .collect()
+            } else {
+                HashSet::new()
+            };
+        let mut traversals: Vec<Traversal> = directions
+            .iter()
+            .map(|dir| Traversal {
+                dir: *dir,
+                seen: included_roots.clone(),
+                queue: included_root_ids
+                    .iter()
+                    .copied()
+                    .map(|root| TraversalFrame {
+                        id: root,
+                        depth: 0,
+                        next_edge: 0,
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        'walk: loop {
+            let mut advanced = false;
+            for traversal in &mut traversals {
+                'frames: while let Some(mut frame) = traversal.queue.pop_front() {
+                    if frame.next_edge == 0
+                        && !included_roots.contains(&frame.id)
+                        && graph.is_boundary(frame.id)
+                        && !expanded_register_inputs.contains(&frame.id)
+                        && !is_addressable_sequential_node(graph, frame.id)
+                    {
+                        boundary_nodes.insert(frame.id);
+                        continue;
+                    }
+                    if frame.next_edge == 0 && frame.depth >= options.max_depth {
+                        let visible = match has_visible_neighbor(
+                            graph,
+                            frame.id,
+                            traversal.dir,
+                            options.hide_control,
+                            options.hide_const,
+                            &mut examined_edges,
+                            work_limits.max_examined_edges,
+                        ) {
+                            Ok(visible) => visible,
+                            Err(()) => {
+                                truncated = true;
+                                break 'walk;
+                            }
+                        };
+                        if visible {
+                            boundary_nodes.insert(frame.id);
+                            truncated = true;
+                        }
+                        continue;
+                    }
+
+                    let edge_ids = match traversal.dir {
+                        ConeDir::Fanin => &graph.incoming[frame.id as usize],
+                        ConeDir::Fanout => &graph.outgoing[frame.id as usize],
+                    };
+                    let Some(edge_idx) = edge_ids.get(frame.next_edge).copied() else {
+                        continue 'frames;
+                    };
+                    frame.next_edge += 1;
+                    let edge = &graph.edges[edge_idx];
+                    if let Some(limit) = work_limits.max_examined_edges {
+                        if examined_edges >= limit {
+                            truncated = true;
+                            break 'walk;
+                        }
+                        examined_edges += 1;
+                    }
+                    advanced = true;
+                    let frame_id = frame.id;
+                    let next_depth = frame.depth + 1;
+                    if frame.next_edge < edge_ids.len() {
+                        traversal.queue.push_back(frame);
+                    }
+                    let mut selected_root_pin = false;
+                    if included_roots.len() == 1
+                        && included_roots.contains(&frame_id)
+                        && let Some(root_port) = options.root_port
+                    {
+                        let edge_port = match traversal.dir {
+                            ConeDir::Fanin => edge.to_port.as_str(),
+                            ConeDir::Fanout => edge.from_port.as_str(),
+                        };
+                        if edge_port != root_port
+                            || options.root_port_bit.is_some_and(|bit| {
+                                traversal.dir == ConeDir::Fanin && edge.to_port_bit != bit
+                            })
+                            || options.root_port_bits.is_some_and(|bits| {
+                                traversal.dir == ConeDir::Fanin && !bits.contains(&edge.to_port_bit)
+                            })
+                        {
+                            break 'frames;
+                        }
+                        selected_root_pin = true;
+                    }
+                    if !selected_root_pin
+                        && should_hide_edge(graph, edge, options.hide_control, options.hide_const)
+                    {
+                        break 'frames;
+                    }
+                    if traversal.dir == ConeDir::Fanin
+                        && is_addressable_sequential_node(graph, frame_id)
+                        && !included_roots.contains(&frame_id)
+                        && !is_depth_input_edge(graph, edge)
+                    {
+                        break 'frames;
+                    }
+                    if traversal.dir == ConeDir::Fanout
+                        && is_addressable_sequential_node(graph, frame_id)
+                        && !included_roots.contains(&frame_id)
+                        && !is_depth_output_edge(graph, edge)
+                    {
+                        break 'frames;
+                    }
+                    if !edge_set.contains(&edge_idx) {
+                        let key = (
+                            edge.from,
+                            edge.to,
+                            edge.from_port.clone(),
+                            edge.to_port.clone(),
+                        );
+                        let count = raw_edges_per_connection.entry(key).or_default();
+                        if *count >= MAX_FULL_GROUP_MEMBERS {
+                            truncated = true;
+                            break 'frames;
+                        }
+                        if work_limits
+                            .max_raw_edges
+                            .is_some_and(|limit| edge_set.len() >= limit)
+                        {
+                            truncated = true;
+                            break 'walk;
+                        }
+                        *count += 1;
+                    }
+                    let next = match traversal.dir {
+                        ConeDir::Fanin => edge.from,
+                        ConeDir::Fanout => edge.to,
+                    };
+                    if !seen.contains(&next) {
+                        if work_limits
+                            .max_raw_nodes
+                            .is_some_and(|limit| seen.len() >= limit)
+                        {
+                            truncated = true;
+                            break 'walk;
+                        }
+                        let unit = unit_id(grouping, base, next);
+                        if !seen_units.contains(&unit) && seen_units.len() >= cap {
+                            truncated = true;
+                            break;
+                        }
+                        seen_units.insert(unit);
+                        seen.insert(next);
+                    }
+                    if work_limits.expand_output_register_inputs
+                        && traversal.dir == ConeDir::Fanin
+                        && output_register_frontier.contains(&frame_id)
+                    {
+                        if graph.nodes[next as usize]
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_register_type)
+                        {
+                            expanded_register_inputs.insert(next);
+                        } else if graph.nodes[next as usize]
+                            .cell_type
+                            .as_deref()
+                            .is_some_and(is_transparent_data_buffer)
+                        {
+                            output_register_frontier.insert(next);
+                        }
+                    }
+                    let stop_at_state_input = traversal.dir == ConeDir::Fanout
+                        && is_addressable_sequential_node(graph, next)
+                        && !is_depth_input_edge(graph, edge);
+                    let stop_at_fixed_state_output = traversal.dir == ConeDir::Fanin
+                        && is_addressable_sequential_node(graph, next)
+                        && !is_depth_output_edge(graph, edge);
+                    if stop_at_state_input || stop_at_fixed_state_output {
+                        boundary_nodes.insert(next);
+                    } else if traversal.seen.insert(next) {
+                        traversal.queue.push_back(TraversalFrame {
+                            id: next,
+                            depth: next_depth,
+                            next_edge: 0,
+                        });
+                    }
+                    edge_set.insert(edge_idx);
+                    break 'frames;
+                }
+            }
+            if !advanced {
+                break;
+            }
+        }
+
+        // A focused data cone stops at sequential boundaries, but visible
+        // registers still need their clock/reset/enable wiring when controls
+        // are enabled. Attach one control hop without opening a second data
+        // traversal through the boundary.
+        if !options.hide_control {
+            let mut sequential_nodes: Vec<NodeId> = seen
+                .iter()
+                .copied()
+                .filter(|id| {
+                    graph.nodes[*id as usize].seq
+                        && !(options.root_port.is_some() && included_roots.contains(id))
+                })
+                .collect();
+            sequential_nodes.sort_unstable();
+            'controls: for id in sequential_nodes {
+                for edge_idx in graph.incoming[id as usize].iter().copied() {
+                    if edge_set.contains(&edge_idx) {
+                        continue;
+                    }
+                    if let Some(limit) = work_limits.max_examined_edges
+                        && examined_edges >= limit
+                    {
+                        truncated = true;
+                        break 'controls;
+                    }
+                    examined_edges += 1;
+                    let edge = &graph.edges[edge_idx];
+                    if !is_labeled_control_edge(graph, edge)
+                        || should_hide_edge(graph, edge, false, options.hide_const)
+                    {
+                        continue;
+                    }
+                    let key = (
+                        edge.from,
+                        edge.to,
+                        edge.from_port.clone(),
+                        edge.to_port.clone(),
+                    );
+                    if raw_edges_per_connection.get(&key).copied().unwrap_or(0)
+                        >= MAX_FULL_GROUP_MEMBERS
+                    {
+                        truncated = true;
+                        continue;
+                    }
+                    if work_limits
+                        .max_raw_edges
+                        .is_some_and(|limit| edge_set.len() >= limit)
+                    {
+                        truncated = true;
+                        break 'controls;
+                    }
+                    if !seen.contains(&edge.from) {
+                        if work_limits
+                            .max_raw_nodes
+                            .is_some_and(|limit| seen.len() >= limit)
+                        {
+                            truncated = true;
+                            continue;
+                        }
+                        let unit = unit_id(grouping, base, edge.from);
+                        if !seen_units.contains(&unit) && seen_units.len() >= cap {
+                            truncated = true;
+                            continue;
+                        }
+                        seen_units.insert(unit);
+                        seen.insert(edge.from);
+                    }
+                    *raw_edges_per_connection.entry(key).or_default() += 1;
+                    edge_set.insert(edge_idx);
+                }
+            }
+        }
+
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
+        let subgraph = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &included_roots,
+                protected_nodes: &included_roots,
+                boundary_nodes: &boundary_nodes,
+                truncated,
+                hidden_control_ports,
+                show_infrastructure: options.show_infrastructure,
+                max_control_edge_visits: work_limits
+                    .max_examined_edges
+                    .map(|limit| limit.saturating_sub(examined_edges)),
+            },
+        );
+        Some(match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph.into_public(),
+        })
+    }
+
+    pub fn full_netlist(
+        &self,
+        graph: &Graph,
+        options: FullNetlistOptions<'_>,
+        grouping: Option<GroupingProjection<'_>>,
+    ) -> Subgraph {
+        if !options.priority_roots.is_empty() {
+            return self.context_netlist(graph, options, grouping);
+        }
+        let base = graph.nodes.len() as u32;
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
+        let mut seen_units: HashSet<u32> = HashSet::new();
+
+        // A group's members can be non-contiguous, so a full projection scans
+        // all nodes. Selection context takes the bounded adjacency path above.
+        let mut seen = HashSet::new();
+        let mut truncated = false;
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
+        let mut selected_groups: Vec<(GroupId, &crate::grouping::Group)> = Vec::new();
+        let mut selected_group_ids = HashSet::new();
+
+        // Logical memories are the highest-value grouping boundary and their
+        // mapped DFFs may sort after thousands of helper cells. Reserve one raw
+        // representative per memory, but never its whole membership, before
+        // admitting other graph units.
+        if let Some(projection) = grouping.filter(|projection| projection.memories) {
+            for (group_id, group) in projection.partition.groups.iter().enumerate() {
+                if group.kind != GroupKind::Memory {
+                    continue;
+                }
+                if seen_units.len() >= cap || seen.len() >= MAX_SUBGRAPH_NODES {
+                    truncated = true;
+                    continue;
+                }
+                let unit = base + group_id as u32;
+                seen_units.insert(unit);
+                if let Some(&first) = group.members.first() {
+                    seen.insert(first);
+                    selected_group_ids.insert(group_id as GroupId);
+                    selected_groups.push((group_id as GroupId, group));
+                }
+            }
+        }
+
+        // First admit distinct display units in graph order. A wide group pays
+        // for one representative here, so it cannot consume the raw-node cap
+        // before connected singleton/group units have a chance to appear.
+        for node in &graph.nodes {
+            if options.hide_const && node.kind == NodeKind::Const {
+                continue;
+            }
+            if hidden_control_ports.is_some_and(|ports| ports.contains(&node.id)) {
+                continue;
+            }
+            let unit = unit_id(grouping, base, node.id);
+            if seen_units.contains(&unit) {
+                continue;
+            } else if seen_units.len() < cap && seen.len() < MAX_SUBGRAPH_NODES {
+                seen_units.insert(unit);
+                seen.insert(node.id);
+                if let Some((group_id, group)) =
+                    grouping.and_then(|projection| projection.group(node.id))
+                    && selected_group_ids.insert(group_id)
+                {
+                    selected_groups.push((group_id, group));
+                }
+            } else {
+                truncated = true;
+            }
+        }
+
+        // Distribute additional group representatives round-robin. Evenly
+        // spaced indices keep large DFF-backed memories and buses from sampling
+        // only their earliest rows/bits, and every selected unit receives one
+        // member before any unit receives a second.
+        let sample_limits: Vec<usize> = selected_groups
+            .iter()
+            .map(|(_, group)| group.members.len().min(MAX_FULL_GROUP_MEMBERS))
+            .collect();
+        let group_sample_budget = selected_groups
+            .len()
+            .saturating_add(MAX_SUBGRAPH_NODES.saturating_sub(seen.len()));
+        let sample_counts = waterfilled_sample_counts(&sample_limits, group_sample_budget);
+        let max_sample = sample_counts.iter().copied().max().unwrap_or(0);
+        let mut sample_index = 1usize;
+        while sample_index < max_sample {
+            let mut advanced = false;
+            for (index, (_, group)) in selected_groups.iter().enumerate() {
+                let target = sample_counts[index];
+                if sample_index >= target {
+                    continue;
+                }
+                if seen.len() >= MAX_SUBGRAPH_NODES {
+                    truncated = true;
+                    break;
+                }
+                let member_index = sample_index * (group.members.len() - 1) / (target - 1);
+                seen.insert(group.members[member_index]);
+                advanced = true;
+            }
+            if seen.len() >= MAX_SUBGRAPH_NODES || !advanced {
+                break;
+            }
+            sample_index += 1;
+        }
+        truncated |= selected_groups
+            .iter()
+            .any(|(_, group)| group.members.iter().any(|member| !seen.contains(member)));
+        let mut edge_set = HashSet::new();
+        let mut raw_edges_per_connection: HashMap<(NodeId, NodeId, String, String), usize> =
+            HashMap::new();
+        let mut examined_edges = 0usize;
+        let mut edge_frontiers: VecDeque<(NodeId, usize)> = graph
+            .nodes
+            .iter()
+            .filter(|node| seen.contains(&node.id) && !graph.outgoing[node.id as usize].is_empty())
+            .map(|node| (node.id, 0))
+            .collect();
+        while let Some((id, next_edge)) = edge_frontiers.pop_front() {
+            if examined_edges >= MAX_FULL_NETLIST_EDGE_VISITS {
+                truncated = true;
+                break;
+            }
+            let outgoing = &graph.outgoing[id as usize];
+            let Some(&idx) = outgoing.get(next_edge) else {
+                continue;
+            };
+            if next_edge + 1 < outgoing.len() {
+                edge_frontiers.push_back((id, next_edge + 1));
+            }
+            examined_edges += 1;
+            let edge = &graph.edges[idx];
+            if !seen.contains(&edge.to)
+                || (options.hide_control && is_labeled_control_edge(graph, edge))
+            {
+                continue;
+            }
+            let key = (
+                edge.from,
+                edge.to,
+                edge.from_port.clone(),
+                edge.to_port.clone(),
+            );
+            let count = raw_edges_per_connection.entry(key).or_default();
+            if *count >= MAX_FULL_GROUP_MEMBERS {
+                truncated = true;
+                continue;
+            }
+            if edge_set.len() >= MAX_SUBGRAPH_EDGES {
+                truncated = true;
+                break;
+            }
+            *count += 1;
+            edge_set.insert(idx);
+        }
+        let empty = HashSet::new();
+        let subgraph = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &empty,
+                protected_nodes: &empty,
+                boundary_nodes: &empty,
+                truncated,
+                hidden_control_ports,
+                show_infrastructure: options.show_infrastructure,
+                max_control_edge_visits: Some(
+                    MAX_FULL_NETLIST_EDGE_VISITS.saturating_sub(examined_edges),
+                ),
+            },
+        );
+        match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph.into_public(),
+        }
+    }
+
+    /// Bounded undirected context around relevant roots. Unlike a full-netlist
+    /// projection this walks only admitted adjacency, so changing selections
+    /// does not rescan every graph node and edge or fill spare capacity with an
+    /// arbitrary disconnected prefix.
+    fn context_netlist(
+        &self,
+        graph: &Graph,
+        options: FullNetlistOptions<'_>,
+        grouping: Option<GroupingProjection<'_>>,
+    ) -> Subgraph {
+        let base = graph.nodes.len() as u32;
+        let cap = options.max_nodes.clamp(1, MAX_SUBGRAPH_NODES);
+        let (priority_roots, roots_truncated) = bounded_projection_roots(
+            options.priority_roots,
+            grouping,
+            base,
+            cap,
+            MAX_SUBGRAPH_NODES / 2,
+        );
+        let protected_nodes: HashSet<NodeId> = priority_roots.iter().copied().collect();
+        let mut seen_units = HashSet::new();
+        let mut seen = HashSet::new();
+        let mut queued = HashSet::new();
+        let mut queue = VecDeque::new();
+        let mut edge_set = HashSet::new();
+        let mut raw_edges_per_connection: HashMap<(NodeId, NodeId, String, String), usize> =
+            HashMap::new();
+        let mut examined_edges = 0usize;
+        let mut truncated = roots_truncated;
+
+        let admit = |id: NodeId,
+                     seen_units: &mut HashSet<u32>,
+                     seen: &mut HashSet<NodeId>,
+                     queued: &mut HashSet<NodeId>,
+                     queue: &mut VecDeque<(NodeId, usize)>,
+                     truncated: &mut bool| {
+            if seen.contains(&id) {
+                return true;
+            }
+            let unit = unit_id(grouping, base, id);
+            if (!seen_units.contains(&unit) && seen_units.len() >= cap)
+                || seen.len() >= MAX_SUBGRAPH_NODES
+            {
+                return false;
+            }
+            seen_units.insert(unit);
+            seen.insert(id);
+            if queued.len() < FULL_NETLIST_CONTEXT_NODE_BUDGET && queued.insert(id) {
+                queue.push_back((id, 0));
+            } else if !queued.contains(&id) {
+                *truncated = true;
+            }
+            true
+        };
+
+        for root in &priority_roots {
+            if graph.nodes.get(*root as usize).is_none()
+                || (options.hide_const && graph.nodes[*root as usize].kind == NodeKind::Const)
+            {
+                continue;
+            }
+            if !admit(
+                *root,
+                &mut seen_units,
+                &mut seen,
+                &mut queued,
+                &mut queue,
+                &mut truncated,
+            ) {
+                truncated = true;
+                break;
+            }
+        }
+
+        'context: while let Some((id, next_edge)) = queue.pop_front() {
+            let incoming_len = graph.incoming[id as usize].len();
+            let edge_idx = if next_edge < incoming_len {
+                graph.incoming[id as usize].get(next_edge).copied()
+            } else {
+                graph.outgoing[id as usize]
+                    .get(next_edge - incoming_len)
+                    .copied()
+            };
+            let Some(edge_idx) = edge_idx else {
+                continue;
+            };
+            queue.push_back((id, next_edge + 1));
+            if examined_edges >= MAX_FULL_NETLIST_EDGE_VISITS {
+                truncated = true;
+                break 'context;
+            }
+            examined_edges += 1;
+            let edge = &graph.edges[edge_idx];
+            if options.hide_control && is_labeled_control_edge(graph, edge) {
+                continue;
+            }
+            let neighbor = if edge.from == id { edge.to } else { edge.from };
+            if options.hide_const && graph.nodes[neighbor as usize].kind == NodeKind::Const {
+                continue;
+            }
+            if !admit(
+                neighbor,
+                &mut seen_units,
+                &mut seen,
+                &mut queued,
+                &mut queue,
+                &mut truncated,
+            ) {
+                truncated = true;
+                continue;
+            }
+            if seen.contains(&edge.from) && seen.contains(&edge.to) {
+                if !edge_set.contains(&edge_idx) {
+                    let key = (
+                        edge.from,
+                        edge.to,
+                        edge.from_port.clone(),
+                        edge.to_port.clone(),
+                    );
+                    let count = raw_edges_per_connection.entry(key).or_default();
+                    if *count >= MAX_FULL_GROUP_MEMBERS {
+                        truncated = true;
+                        continue;
+                    }
+                    if edge_set.len() >= MAX_SUBGRAPH_EDGES {
+                        truncated = true;
+                        break 'context;
+                    }
+                    *count += 1;
+                }
+                edge_set.insert(edge_idx);
+            }
+        }
+
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
+        let empty = HashSet::new();
+        let subgraph = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &empty,
+                protected_nodes: &protected_nodes,
+                boundary_nodes: &empty,
+                truncated,
+                hidden_control_ports,
+                show_infrastructure: options.show_infrastructure,
+                max_control_edge_visits: Some(
+                    MAX_FULL_NETLIST_EDGE_VISITS.saturating_sub(examined_edges),
+                ),
+            },
+        );
+        match grouping {
+            Some(partition) => quotient_subgraph(graph, subgraph, partition),
+            None => subgraph.into_public(),
+        }
+    }
+
+    /// Expand one quotient node without disabling grouping elsewhere. Every
+    /// physical member is admitted before one-hop context, so an expansion is
+    /// complete whenever the canonical group fits under the renderer cap.
+    pub fn expand_group(
+        &self,
+        graph: &Graph,
+        partition: &GroupPartition,
+        group_id: GroupId,
+        options: GroupExpansionOptions,
+        grouping: Option<GroupingProjection<'_>>,
+    ) -> Option<GroupExpansion> {
+        let group = partition.groups.get(group_id as usize)?;
+        let cap = options.max_nodes.clamp(1, MAX_GROUP_EXPANSION_NODES);
+        let members: Vec<NodeId> = group.members.iter().take(cap).copied().collect();
+        let mut truncated = group.members.len() > members.len();
+
+        let mut seen: HashSet<NodeId> = members.iter().copied().collect();
+        let mut edge_set = HashSet::new();
+        let mut examined_edges = 0usize;
+
+        'members: for &member in &members {
+            let incident = graph.incoming[member as usize]
+                .iter()
+                .chain(&graph.outgoing[member as usize]);
+            for &edge_index in incident {
+                if examined_edges >= MAX_GROUP_EXPANSION_EDGE_VISITS {
+                    truncated = true;
+                    break 'members;
+                }
+                examined_edges += 1;
+                let edge = &graph.edges[edge_index];
+                if options.hide_control && is_labeled_control_edge(graph, edge) {
+                    continue;
+                }
+                let neighbor = if edge.from == member {
+                    edge.to
+                } else {
+                    edge.from
+                };
+                if options.hide_const && graph.nodes[neighbor as usize].kind == NodeKind::Const {
+                    continue;
+                }
+                if !seen.contains(&neighbor) {
+                    if seen.len() >= cap {
+                        truncated = true;
+                        continue;
+                    }
+                    seen.insert(neighbor);
+                }
+                if edge_set.len() < MAX_SUBGRAPH_EDGES {
+                    edge_set.insert(edge_index);
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+
+        let empty = HashSet::new();
+        let hidden_control_ports = options
+            .hide_control
+            .then_some(&self.pure_hidden_control_ports);
+        let raw = self.subgraph_from_sets(
+            graph,
+            &seen,
+            &edge_set,
+            SubgraphProjection {
+                roots: &empty,
+                protected_nodes: &empty,
+                boundary_nodes: &empty,
+                truncated,
+                hidden_control_ports,
+                show_infrastructure: false,
+                max_control_edge_visits: Some(MAX_FULL_NETLIST_EDGE_VISITS),
+            },
+        );
+        let (graph, boundary_trunks) = match grouping {
+            Some(expanded_projection) => {
+                let expanded_graph = quotient_subgraph(graph, raw, expanded_projection);
+                let compact_group_id = graph.nodes.len() as u32 + group_id;
+                let member_set = members.iter().copied().collect();
+                let boundary_trunks =
+                    group_expansion_boundary_trunks(&expanded_graph, compact_group_id, &member_set);
+                (expanded_graph, boundary_trunks)
+            }
+            None => (raw.into_public(), Vec::new()),
+        };
+        Some(GroupExpansion {
+            graph,
+            members,
+            boundary_trunks,
+        })
+    }
+
+    fn subgraph_from_sets(
+        &self,
+        graph: &Graph,
+        seen: &HashSet<NodeId>,
+        edge_set: &HashSet<usize>,
+        projection: SubgraphProjection<'_>,
+    ) -> ProjectedSubgraph {
+        let mut node_ids: Vec<NodeId> = seen
+            .iter()
+            .copied()
+            .filter(|id| {
+                projection.protected_nodes.contains(id)
+                    || !projection
+                        .hidden_control_ports
+                        .is_some_and(|ports| ports.contains(id))
+            })
+            .collect();
+        node_ids.sort_unstable();
+        let visible_node_ids: HashSet<NodeId> = node_ids.iter().copied().collect();
+        let mut control_edge_visits = 0usize;
+        let mut controls_truncated = false;
+        let nodes = node_ids
+            .into_iter()
+            .map(|id| {
+                let node = &graph.nodes[id as usize];
+                let boundary =
+                    !projection.roots.contains(&id) && projection.boundary_nodes.contains(&id);
+                let (controls, truncated) = node_controls(
+                    graph,
+                    id,
+                    &mut control_edge_visits,
+                    projection.max_control_edge_visits,
+                );
+                controls_truncated |= truncated;
+                GraphNode {
+                    node: self.node_ref(graph, id),
+                    is_root: projection.roots.contains(&id).then_some(true),
+                    is_boundary: boundary.then_some(true),
+                    depth: graph
+                        .is_comb(id)
+                        .then(|| self.node_depth[id as usize])
+                        .flatten(),
+                    params: node.params.clone(),
+                    controls,
+                    width: None,
+                    member_count: None,
+                    members: None,
+                    boundary_members: Vec::new(),
+                }
+            })
+            .collect();
+        let mut edges: Vec<&Edge> = edge_set
+            .iter()
+            .filter_map(|idx| graph.edges.get(*idx))
+            .filter(|edge| {
+                visible_node_ids.contains(&edge.from) && visible_node_ids.contains(&edge.to)
+            })
+            .collect();
+        edges.sort_by(|a, b| compare_raw_edges(a, b));
+        let (edges, edges_truncated) =
+            merge_edges(edges, |edge| is_labeled_control_edge(graph, edge));
+        let subgraph = Subgraph {
+            nodes,
+            edges,
+            truncated: projection.truncated || edges_truncated || controls_truncated,
+        };
+        let projected = if projection.show_infrastructure {
+            subgraph.into()
+        } else {
+            collapse_infrastructure(graph, subgraph)
+        };
+        cap_subgraph_edges(projected)
+    }
 }
