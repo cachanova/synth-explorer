@@ -22,6 +22,7 @@ import {
 } from './xilinx-matrix'
 
 const run = promisify(execFile)
+const yosysBin = process.env.SYNTH_EXPLORER_YOSYS?.trim() || 'yosys'
 
 interface Case {
   name: string
@@ -256,7 +257,7 @@ async function synthesizeEdif(
   try {
     await writeFile(join(work, calibrationCase.file), content)
     await writeFile(join(work, 'script.ys'), script)
-    await run('yosys', ['-q', '-T', '-s', 'script.ys', '-l', 'yosys.log'], { cwd: work, maxBuffer: 16 * 1024 * 1024 })
+    await run(yosysBin, ['-q', '-T', '-s', 'script.ys', '-l', 'yosys.log'], { cwd: work, maxBuffer: 16 * 1024 * 1024 })
     const artifactDir = join(input.outDir, 'artifacts', input.variant, family, calibrationCase.name)
     await mkdir(artifactDir, { recursive: true })
     for (const name of ['script.ys', 'netlist.json', 'netlist.edif']) {
@@ -330,7 +331,7 @@ async function hashSynthesisContract(): Promise<string> {
 }
 
 async function yosysVersion(): Promise<string> {
-  const result = await run('yosys', ['-V'])
+  const result = await run(yosysBin, ['-V'])
   return result.stdout || result.stderr
 }
 

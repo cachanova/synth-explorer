@@ -412,7 +412,8 @@ fn run_yosys(
     }
     std::fs::write(temp.path().join("script.ys"), rendered.stdout)?;
 
-    let output = Command::new("yosys")
+    let yosys = std::env::var_os("SYNTH_EXPLORER_YOSYS").unwrap_or_else(|| "yosys".into());
+    let output = Command::new(yosys)
         .args(["-q", "-T", "-s", "script.ys", "-l", "yosys.log"])
         .current_dir(temp.path())
         .output()?;

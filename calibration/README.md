@@ -73,12 +73,14 @@ Vivado through the same loopback-only bridge used by the application. This
 holds the netlist constant, checks the installed part catalog before starting,
 and saves each result atomically so a long run can resume.
 
-First generate the pinned cases and install the web dependencies. The collector
-also requires a native Yosys whose major/minor version matches the production
-build; it fails closed on a mismatch.
+First generate the pinned cases and install the web dependencies. Build the
+exact native counterpart of the production Yosys artifact; the collector checks
+both version and commit and fails closed on a mismatch.
 
 ```bash
 cd web && npm ci && cd ..
+tools/yosys-native/build.sh
+export SYNTH_EXPLORER_YOSYS="$PWD/.cache/yosys-native/build/yosys"
 cargo run -p synth-explorer-calibration -- gen \
   web/src/data/examples /home/leela/tmp/cal-cases
 cargo run --release -p synth-explorer-vivado-bridge -- \

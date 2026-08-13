@@ -183,6 +183,7 @@ Explorer origins, and permits one Vivado run at a time. See
 | [`analysis-wasm/`](analysis-wasm/) | WebAssembly bindings for the Rust analysis engine |
 | [`web/`](web/) | Static React application, browser workers, bundled examples, and pinned WASM artifacts |
 | [`tools/yosys-wasm/`](tools/yosys-wasm/) | Reproducible project-owned Yosys WebAssembly build |
+| [`tools/yosys-native/`](tools/yosys-native/) | Exact native Yosys counterpart for local calibration |
 | [`tools/ghdl-wasm/`](tools/ghdl-wasm/) | Reproducible project-owned GHDL synthesis WebAssembly build |
 | [`calibration/`](calibration/) | Local-only native Yosys and optional licensed Vivado calibration tooling |
 | [`launcher/`](launcher/) | Downloadable loopback Chrome launcher with the built-in Vivado connector |
