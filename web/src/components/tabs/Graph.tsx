@@ -13,6 +13,13 @@ import {
 } from '../../lib/graphLimits'
 import { graphProjection } from '../../lib/graphProjection'
 import {
+  BASELINE_ELK_LAYOUT_LAB_CONFIG,
+  ELK_LAYOUT_LAB_STORAGE_KEY,
+  elkLayoutStudyFromConfig,
+  normalizeElkLayoutLabConfig,
+  type ElkLayoutLabConfig,
+} from '../../lib/elkLayoutLab'
+import {
   applyGroupExpansions,
   openExpandedGroup,
   type ExpandedGroup,
@@ -34,6 +41,10 @@ import { controlDriverIds, controlLabel } from '../../lib/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
+import {
+  ElkLayoutLab,
+  type ElkLayoutLabMetrics,
+} from '../ElkLayoutLab'
 import { GraphView } from '../GraphView'
 import { NodeCard } from '../NodeCard'
 
@@ -72,6 +83,37 @@ interface FullGraphCacheEntry {
   key: string
   controller: AbortController
   promise: Promise<Subgraph>
+}
+
+function initialElkLayoutLabConfig(): ElkLayoutLabConfig {
+  if (!import.meta.env.DEV) return BASELINE_ELK_LAYOUT_LAB_CONFIG
+  try {
+    const stored = window.localStorage.getItem(ELK_LAYOUT_LAB_STORAGE_KEY)
+    return stored
+      ? normalizeElkLayoutLabConfig(JSON.parse(stored))
+      : BASELINE_ELK_LAYOUT_LAB_CONFIG
+  } catch {
+    return BASELINE_ELK_LAYOUT_LAB_CONFIG
+  }
+}
+
+function elkLayoutLabMetrics(
+  graph: LaidOutGraph,
+  durationMs: number,
+): ElkLayoutLabMetrics {
+  return {
+    durationMs,
+    width: graph.width,
+    height: graph.height,
+    routePoints: graph.edges.reduce(
+      (total, edge) => total + edge.points.length,
+      0,
+    ),
+    bends: graph.edges.reduce(
+      (total, edge) => total + Math.max(0, edge.points.length - 2),
+      0,
+    ),
+  }
 }
 
 export function Graph({ active }: { active: boolean }) {
@@ -134,6 +176,12 @@ export function Graph({ active }: { active: boolean }) {
   const [sourceStatus, setSourceStatus] = useState<SourceSelectionStatus | null>(null)
   const [sourceControl, setSourceControl] = useState(false)
   const [fitNonce, setFitNonce] = useState(0)
+  const [layoutLabConfig, setLayoutLabConfig] = useState(
+    initialElkLayoutLabConfig,
+  )
+  const [layoutLabRevision, setLayoutLabRevision] = useState(0)
+  const [layoutLabMetrics, setLayoutLabMetrics] =
+    useState<ElkLayoutLabMetrics | null>(null)
   const selectGraphNode = useCallback(
     (node: GraphNode | null) => {
       setSelected(node)
@@ -154,6 +202,29 @@ export function Graph({ active }: { active: boolean }) {
   const fullGraphCache = useRef<FullGraphCacheEntry | null>(null)
   const currentDesignIdRef = useRef(design?.design_id)
   currentDesignIdRef.current = design?.design_id
+  const layoutStudy = useMemo(
+    () => import.meta.env.DEV
+      ? elkLayoutStudyFromConfig(layoutLabConfig)
+      : undefined,
+    [layoutLabConfig],
+  )
+  const applyLayoutLab = useCallback((config: ElkLayoutLabConfig) => {
+    if (!import.meta.env.DEV) return
+    const normalized = normalizeElkLayoutLabConfig(config)
+    try {
+      window.localStorage.setItem(
+        ELK_LAYOUT_LAB_STORAGE_KEY,
+        JSON.stringify(normalized),
+      )
+    } catch {
+      // Storage is convenient, not required: the applied in-memory setting wins.
+    }
+    layoutCache.current = new WeakMap()
+    laidOutSubgraph.current = null
+    setLayoutLabMetrics(null)
+    setLayoutLabConfig(normalized)
+    setLayoutLabRevision((revision) => revision + 1)
+  }, [])
   const resetGraphProbe = useCallback(() => {
     // Reject an in-flight source result immediately; the replacement request
     // is debounced, so waiting for its effect cleanup leaves a stale commit gap.
@@ -623,7 +694,9 @@ export function Graph({ active }: { active: boolean }) {
     const sameProjection =
       sameDesign &&
       previousDisplay.projectionKey === projectionKey
-    const shouldRefit = shouldRefitProjection(sameDesign, sameProjection)
+    const shouldRefit = import.meta.env.DEV && layoutLabRevision > 0
+      ? true
+      : shouldRefitProjection(sameDesign, sameProjection)
     const cachedLayout = layoutCache.current.get(toLayout)
     if (cachedLayout) {
       const nextDisplay = {
@@ -635,16 +708,25 @@ export function Graph({ active }: { active: boolean }) {
       displayedGraphRef.current = nextDisplay
       setDisplayedGraph(nextDisplay)
       laidOutSubgraph.current = toLayout
+      if (import.meta.env.DEV) {
+        setLayoutLabMetrics(elkLayoutLabMetrics(cachedLayout, 0))
+      }
       if (shouldRefit) setFitNonce((n) => n + 1)
       return
     }
     let cancelled = false
     const controller = new AbortController()
+    const layoutStartedAt = performance.now()
     setLayingOut(true)
     // Opening or closing a group replaces the quotient node with an ELK
     // compound. ELK re-renders the complete projection so the members remain
     // together and surrounding nets route around their dashed boundary.
-    layoutSubgraph(toLayout, controller.signal, expandedGroupsForLayout)
+    layoutSubgraph(
+      toLayout,
+      controller.signal,
+      expandedGroupsForLayout,
+      layoutStudy,
+    )
       .then((g) => {
         if (cancelled) return
         const nextDisplay = {
@@ -658,6 +740,11 @@ export function Graph({ active }: { active: boolean }) {
         setDisplayedGraph(nextDisplay)
         laidOutSubgraph.current = toLayout
         setLayingOut(false)
+        if (import.meta.env.DEV) {
+          setLayoutLabMetrics(
+            elkLayoutLabMetrics(g, performance.now() - layoutStartedAt),
+          )
+        }
         if (shouldRefit) setFitNonce((n) => n + 1)
       })
       .catch((e) => {
@@ -679,6 +766,8 @@ export function Graph({ active }: { active: boolean }) {
     projectionKey,
     relevantSubgraph?.designId,
     expandedGroupsForLayout,
+    layoutLabRevision,
+    layoutStudy,
   ])
 
   const displayedDesignCurrent = isDisplayedDesignCurrent(
@@ -997,6 +1086,15 @@ export function Graph({ active }: { active: boolean }) {
             <span className="graph-count">{sub.nodes.length} nodes · {sub.edges.length} edges</span>
           )}
         </div>
+
+        {import.meta.env.DEV && (
+          <ElkLayoutLab
+            applied={layoutLabConfig}
+            applying={layingOut}
+            metrics={layoutLabMetrics}
+            onApply={applyLayoutLab}
+          />
+        )}
 
         {selected && graphInteractive && (
           <NodeCard

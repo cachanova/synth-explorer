@@ -6,11 +6,13 @@ import {
   type LayoutInput,
   type NodePlacement,
 } from '../lib/layout'
+import type { ElkLayoutStudy } from '../lib/elkLayoutLab'
 
 export interface ElkRequest {
   id: number
   input: LayoutInput
   placement: NodePlacement
+  study?: ElkLayoutStudy
 }
 
 export type ElkResponse =
@@ -65,10 +67,11 @@ export async function runElkRequest(
   ready: Promise<void>,
   request: ElkRequest,
 ): Promise<ElkResponse> {
-  const { id, input, placement } = request
+  const { id, input, placement, study } = request
   try {
     await ready
     const graph = toElkGraph(input, placement)
+    if (study) Object.assign(graph.layoutOptions ??= {}, study.layoutOptions)
     const laidOut = await elk.layout(graph)
     return { id, ok: true, result: interpretResult(input, laidOut) }
   } catch (err) {

@@ -2149,6 +2149,98 @@ th.sortable:hover {
   font-variant-numeric: tabular-nums;
   margin-left: auto;
 }
+.elk-layout-lab {
+  position: absolute;
+  top: 42px;
+  left: 8px;
+  z-index: 7;
+  width: min(340px, calc(100% - 16px));
+  max-height: calc(100% - 52px);
+  overflow: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-2) 96%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+  font-size: 12px;
+}
+.elk-layout-lab > summary {
+  cursor: pointer;
+  padding: 7px 9px;
+  color: var(--text-dim);
+  font-weight: 600;
+  user-select: none;
+}
+.elk-layout-lab-dev {
+  margin-left: 4px;
+  padding: 1px 4px;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  color: var(--amber);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+.elk-layout-lab-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 9px 9px;
+}
+.elk-layout-lab-note {
+  margin: 0;
+  color: var(--text-faint);
+}
+.elk-layout-lab fieldset {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.elk-layout-lab legend {
+  padding: 0 4px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.elk-layout-lab fieldset > label:not(.elk-layout-lab-check) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 142px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+}
+.elk-layout-lab input[type='number'],
+.elk-layout-lab select {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text);
+  background: var(--bg);
+  font: inherit;
+}
+.elk-layout-lab-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-dim);
+}
+.elk-layout-lab-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.elk-layout-lab-actions {
+  display: flex;
+  gap: 6px;
+}
+.elk-layout-lab-actions button {
+  padding: 4px 8px;
+  font-size: 11px;
+}
 .zoom-controls {
   position: absolute;
   bottom: 10px;

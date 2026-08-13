@@ -91,3 +91,30 @@ it('returns an explicit error when the real layout fails after warmup', async ()
     }),
   ).resolves.toEqual({ id: 9, ok: false, error: 'Error: real layout failed' })
 })
+
+it('applies development layout overrides only to the requested graph', async () => {
+  const elk = {
+    layout: vi.fn().mockResolvedValue(result()),
+  }
+
+  await runElkRequest(elk, Promise.resolve(), {
+    id: 11,
+    input,
+    placement: 'NETWORK_SIMPLEX',
+    study: {
+      layoutOptions: {
+        'elk.spacing.nodeNode': '44',
+        'elk.layered.mergeEdges': 'false',
+      },
+    },
+  })
+
+  expect(elk.layout).toHaveBeenCalledWith(
+    expect.objectContaining({
+      layoutOptions: expect.objectContaining({
+        'elk.spacing.nodeNode': '44',
+        'elk.layered.mergeEdges': 'false',
+      }),
+    }),
+  )
+})

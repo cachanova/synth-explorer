@@ -15,6 +15,7 @@ import {
   MAX_GRAPH_EDGES,
   MAX_GROUP_EXPANSION_RENDER_NODES,
 } from './graphLimits'
+import type { ElkLayoutStudy } from './elkLayoutLab'
 import { groupBadgeText, nodeLabel, nodeSublabel } from './prettyType'
 import {
   controlCaption,
@@ -2031,6 +2032,7 @@ function runLayout(
   input: LayoutInput,
   placement: NodePlacement,
   signal?: AbortSignal,
+  study?: ElkLayoutStudy,
 ): Promise<LayoutGeometry> {
   const w = getWorker()
   const id = ++seq
@@ -2065,7 +2067,7 @@ function runLayout(
       () => terminateWorker(w, layoutTimeoutError()),
       LAYOUT_DEADLINE_MS,
     )
-    const req: ElkRequest = { id, input, placement }
+    const req: ElkRequest = { id, input, placement, ...(study ? { study } : {}) }
     w.postMessage(req)
   })
 }
@@ -2090,22 +2092,25 @@ export async function layoutSubgraph(
   sub: Subgraph,
   signal?: AbortSignal,
   expandedGroups: ExpandedGroupLayout[] = [],
+  study?: ElkLayoutStudy,
 ): Promise<LaidOutGraph> {
   assertRenderableSubgraph(sub)
   if (signal?.aborted) throw abortError()
   const input = prepareLayoutInput(sub, expandedGroups)
   const placement = placementForLayout(sub)
   const cacheKey = layoutGeometryKey(input, placement)
-  const cached = cachedLayoutGeometry(cacheKey)
+  // Development experiments must never reuse production/baseline geometry.
+  // The Graph tab owns a short-lived cache for a single applied lab setting.
+  const cached = study ? null : cachedLayoutGeometry(cacheKey)
   if (cached) return hydrateLayoutResult(sub, cached)
   if (placement === 'BRANDES_KOEPF') {
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    cacheLayoutGeometry(cacheKey, geometry)
+    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal, study)
+    if (!study) cacheLayoutGeometry(cacheKey, geometry)
     return hydrateLayoutResult(sub, geometry)
   }
   try {
-    const geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal)
-    cacheLayoutGeometry(cacheKey, geometry)
+    const geometry = await runLayout(input, 'NETWORK_SIMPLEX', signal, study)
+    if (!study) cacheLayoutGeometry(cacheKey, geometry)
     return hydrateLayoutResult(sub, geometry)
   } catch (error) {
     // Never retry an aborted (superseded) request.
@@ -2117,10 +2122,10 @@ export async function layoutSubgraph(
     // placement so the next equivalent request still retries the preferred
     // tight placement, while a repeat topology failure can reuse the fallback.
     const fallbackKey = layoutGeometryKey(input, 'BRANDES_KOEPF')
-    const cachedFallback = cachedLayoutGeometry(fallbackKey)
+    const cachedFallback = study ? null : cachedLayoutGeometry(fallbackKey)
     if (cachedFallback) return hydrateLayoutResult(sub, cachedFallback)
-    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal)
-    cacheLayoutGeometry(fallbackKey, geometry)
+    const geometry = await runLayout(input, 'BRANDES_KOEPF', signal, study)
+    if (!study) cacheLayoutGeometry(fallbackKey, geometry)
     return hydrateLayoutResult(sub, geometry)
   }
 }
