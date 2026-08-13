@@ -58,7 +58,7 @@ neither tool has a path through it to compare.
 a local artifact, not checked in — regenerate it (below) before using them:
 
 ```bash
-cd web && npm install && cd ..
+cd web && npm ci && cd ..
 cargo run -p synth-explorer-calibration -- gen web/src/data/examples /home/leela/tmp/cal-cases
 cargo run -p synth-explorer-calibration -- estimate /home/leela/tmp/cal-cases /home/leela/tmp/est.json
 cargo run -p synth-explorer-calibration -- estimate-lattice /home/leela/tmp/cal-cases /home/leela/tmp/lattice-est.json
@@ -132,10 +132,31 @@ cargo run -p synth-explorer-calibration -- fit \
   /home/leela/tmp/cal-2026.1/production.json
 ```
 
+Generate the model side of each mapping-sensitivity holdout with the same
+named flag variant, then report it only against the matching Vivado artifact.
+Both artifact formats carry the variant name and `report` rejects mixed or
+mismatched inputs; older artifacts without that field are treated as
+`production`:
+
+```bash
+for variant in native-carry wide-lut no-carry; do
+  cargo run -p synth-explorer-calibration -- estimate-variant \
+    /home/leela/tmp/cal-cases "$variant" "/home/leela/tmp/est-$variant.json"
+  cargo run -p synth-explorer-calibration -- report \
+    "/home/leela/tmp/est-$variant.json" \
+    "/home/leela/tmp/cal-2026.1/$variant.json"
+done
+```
+
 Tune candidate values against the saved production netlists and rerun
 `estimate`/`report`; do not fit coefficients to the structurally different
-Vivado-RTL netlist or combine sensitivity variants. The output remains a local
-artifact and the collector never rewrites `delay_model.rs`.
+Vivado-RTL netlist or combine sensitivity variants. Accept a candidate only
+when the aggregate mean and median improve together and the worst error does
+not materially regress; also inspect and report the largest per-design
+regressions. The sensitivity variants are holdouts for checking whether a
+coefficient is merely compensating for one mapping choice, not extra fit rows.
+The output remains a local artifact and the collector never rewrites
+`delay_model.rs`.
 
 `estimate` runs the three Xilinx families. `estimate-lattice` runs iCE40 and
 ECP5 through the production synthesis modes and shipped visible defaults (ECP5
@@ -285,14 +306,43 @@ the flat family coefficients until a split can at least hold aggregate parity.
 fitted numbers, per family:
 
 - `net_per_fanout_ps` comes from the `NET:` rows (see below).
-- `net_base_ps` is then least-squares fitted on the EDIF target's per-case
-  totals with every other term held fixed. The Series-7 fit (773 ps) lands
+- `net_base_ps` is then fitted on the EDIF target's per-case totals with every
+  other term held fixed. The initial Series-7 least-squares fit (773 ps) lands
   above the directly measured per-net median (657 ps, per-design spread
   413–947): partly real spread, partly that our worst path may launch from an
   input (zero launch) where Vivado's data path always starts with a clk-to-Q.
   On UltraScale the per-net measurement (252 ps) actively misfits the target —
   Vivado's US/US+ unplaced route estimates are bimodal and often literally
   0.000 — so the fitted values (136/51 ps) are the ones shipped.
+
+The August 2026 production rerun used the exact Yosys 0.67 build
+(`2d1509d1b`), bridge 0.2.1, and Vivado 2026.1. It produced 120 records: all 24
+cases at -1 in all three families plus the declared -2/-3 speed-grade subset.
+Fifteen zero-logic Vivado paths were held out, leaving 19 comparable paths per
+family. A conservative Series-7 intercept sweep selected 793 ps: mean/median/
+worst absolute error moved from 9.05/9.21/17.85% to 8.46/8.39/16.54%. Larger
+intercepts reduced the mean a little further but worsened the worst path. The
+UltraScale and UltraScale+ sweeps could not improve mean, median, and worst
+together, so their 136/51 ps bases remain unchanged. Across all 57 scored paths,
+the Series-7 change moves mean/median error from 14.13/9.44% to 13.94/9.13%; the
+51.40% overall worst path is unchanged.
+
+The three mapping holdouts each contain 72 baseline-grade records. The same 15
+zero-logic paths are excluded, leaving 57 scored paths per variant:
+
+| mapping | mean abs error | median | worst |
+|---|---:|---:|---:|
+| production | 13.94% | 9.13% | 51.40% |
+| native carry | 15.09% | 9.64% | 65.33% |
+| wide LUT | 46.01% | 35.38% | 152.35% |
+| no carry | 14.28% | 9.35% | 53.65% |
+
+These are sensitivity results, not additional fit rows. In particular, wide-LUT
+mapping changes path structure enough that the production flat-stage constants
+do not transfer. On native-carry, the Series-7 intercept change improves overall
+holdout mean/median from 15.26/10.41% to 15.09/9.64%, but the mapping-specific
+`inferred_fifo_d16` worst error rises from 62.45% to 65.33%; that negative result
+is retained rather than hidden by pooling the variant into the production fit.
 
 When fitting from `NET:` rows, exclude nets whose *sink* is a carry cell —
 `net_delay_to_ps` charges those 0 (dedicated routing), so leaving them in drags
@@ -334,6 +384,15 @@ exist (`xcku025` only has -1/-2, so UltraScale uses `xcku035`):
 
 Presets are characterized at **-1**; `fit` derives the -2/-3 multipliers from
 Vivado's own -1-vs-N measurements on identical designs.
+
+The complete August 2026 production matrix produced these least-squares total
+factors (eight paired cases per family and faster grade):
+
+| family | -2 | -3 |
+|---|---:|---:|
+| Series-7 | 0.803 | 0.719 |
+| UltraScale | 0.842 | 0.741 |
+| UltraScale+ | 0.869 | 0.809 |
 
 ## Lattice validation with open tools
 
