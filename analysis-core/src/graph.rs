@@ -542,14 +542,14 @@ fn resolve_drivers(
     Ok(drivers.get(bit).cloned().unwrap_or_default())
 }
 
-pub fn is_control_pin(port: &str) -> bool {
+pub(crate) fn is_control_pin(port: &str) -> bool {
     matches!(
         port.to_ascii_uppercase().as_str(),
         "CLK" | "EN" | "ARST" | "SRST" | "CLR" | "PRE" | "CE" | "RST" | "LSR" | "SR" | "SET"
     )
 }
 
-pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
+pub(crate) fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
     if is_control_pin(port) || is_clock_pin_for_cell(cell_type, port) {
         return true;
     }
@@ -569,7 +569,7 @@ pub fn is_control_pin_for_cell(cell_type: &str, port: &str) -> bool {
 
 /// Level-sensitive storage: yosys `$dlatch`/`$adlatch`/`$_DLATCH_*` and the
 /// Xilinx `LD*` primitives.
-pub fn is_latch_type(cell_type: &str) -> bool {
+pub(crate) fn is_latch_type(cell_type: &str) -> bool {
     let upper = cell_type.to_ascii_uppercase();
     upper.contains("LATCH") || matches!(upper.as_str(), "LDCE" | "LDPE" | "LDCPE")
 }
@@ -582,7 +582,7 @@ pub fn is_latch_type(cell_type: &str) -> bool {
 /// (`FDRE`'s `CE`, `$dffe`'s `EN`) and a reset (`R`/`S`) are control pins, but
 /// they are still setup-constrained data paths that must keep their timing.
 /// Only the pin that actually clocks the cell belongs to the clock network.
-pub fn is_clock_pin_for_cell(cell_type: &str, port: &str) -> bool {
+pub(crate) fn is_clock_pin_for_cell(cell_type: &str, port: &str) -> bool {
     let upper = port.to_ascii_uppercase();
     // Unambiguous on any cell, including a user blackbox. `$mem` spells its
     // ports `RD_CLK`/`WR_CLK`, while vendor RAMs use WCLK/RCLK, CLKA/CLKB, or
@@ -696,7 +696,7 @@ fn has_bit_suffix(value: &str) -> bool {
     })
 }
 
-pub fn strip_bit_suffix(value: &str) -> &str {
+pub(crate) fn strip_bit_suffix(value: &str) -> &str {
     if has_bit_suffix(value) {
         value.rsplit_once('[').map_or(value, |(prefix, _)| prefix)
     } else {
@@ -752,7 +752,7 @@ fn trim_params(params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     out
 }
 
-pub fn is_sequential_type(cell_type: &str) -> bool {
+pub(crate) fn is_sequential_type(cell_type: &str) -> bool {
     is_sequential_type_with_vendor(cell_type, vendor_primitive_class(cell_type))
 }
 
@@ -784,7 +784,7 @@ fn is_sequential_type_with_vendor(
 /// Stateful memories and addressable shift-register LUTs remain traversal
 /// boundaries, but must not be presented as ordinary registers or registered
 /// top-level-output aliases.
-pub fn is_register_type(cell_type: &str) -> bool {
+pub(crate) fn is_register_type(cell_type: &str) -> bool {
     is_sequential_type(cell_type)
         && !is_memory_type(cell_type)
         && !is_addressable_sequential_type(cell_type)
@@ -793,7 +793,7 @@ pub fn is_register_type(cell_type: &str) -> bool {
 /// Stateful memory cells emitted by the generic and supported FPGA flows.
 /// Keep this aligned with the frontend's memory-symbol vocabulary: these are
 /// traversal boundaries, but they are neither black boxes nor register bits.
-pub fn is_memory_type(cell_type: &str) -> bool {
+pub(crate) fn is_memory_type(cell_type: &str) -> bool {
     let bytes = cell_type.as_bytes();
     let starts_with_ignore_ascii_case = |prefix: &[u8]| {
         bytes
@@ -942,21 +942,8 @@ pub fn is_memory_type(cell_type: &str) -> bool {
 
 /// Stateful primitives whose output also has a combinational address path.
 /// SRL D is a storage input, while A0..A4 select the current Q value.
-pub fn is_addressable_sequential_type(cell_type: &str) -> bool {
+pub(crate) fn is_addressable_sequential_type(cell_type: &str) -> bool {
     cell_type.eq_ignore_ascii_case("SRL16E") || cell_type.eq_ignore_ascii_case("SRLC32E")
-}
-
-pub fn is_blackbox_cell(
-    cell: &YosysCell,
-    blackbox_modules: &HashSet<String>,
-    module_names: &HashSet<&str>,
-) -> bool {
-    is_blackbox_cell_with_vendor(
-        cell,
-        blackbox_modules,
-        module_names,
-        vendor_primitive_class(&cell.cell_type),
-    )
 }
 
 fn is_blackbox_cell_with_vendor(
@@ -984,7 +971,7 @@ fn is_blackbox_cell_with_vendor(
     !cell.cell_type.starts_with('$')
 }
 
-pub fn cell_depth_weight(cell_type: &str) -> u32 {
+pub(crate) fn cell_depth_weight(cell_type: &str) -> u32 {
     match vendor_primitive_class(cell_type) {
         Some(VendorPrimitiveClass::Combinational { depth_weight }) => depth_weight,
         Some(VendorPrimitiveClass::Sequential) | None => 1,
@@ -994,7 +981,7 @@ pub fn cell_depth_weight(cell_type: &str) -> u32 {
 /// Cells that are useful implementation accounting detail but add no logical
 /// depth. Analysis views may collapse these into the net they buffer while the
 /// raw implementation statistics continue to count them.
-pub fn is_infrastructure_cell(cell_type: &str) -> bool {
+pub(crate) fn is_infrastructure_cell(cell_type: &str) -> bool {
     matches!(
         vendor_primitive_class(cell_type),
         Some(VendorPrimitiveClass::Combinational { depth_weight: 0 })
@@ -1005,7 +992,7 @@ pub fn is_infrastructure_cell(cell_type: &str) -> bool {
 /// deliberately narrower than `is_infrastructure_cell`: tri-state and
 /// bidirectional IO primitives must not make an output look like a direct
 /// register alias.
-pub fn is_transparent_data_buffer(cell_type: &str) -> bool {
+pub(crate) fn is_transparent_data_buffer(cell_type: &str) -> bool {
     matches!(
         cell_type.to_ascii_uppercase().as_str(),
         "IBUF" | "OBUF" | "BUFG" | "BUFH" | "SB_GB" | "$_BUF_"
@@ -1043,6 +1030,19 @@ fn vendor_primitive_class(cell_type: &str) -> Option<VendorPrimitiveClass> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn is_blackbox_cell(
+        cell: &YosysCell,
+        blackbox_modules: &HashSet<String>,
+        module_names: &HashSet<&str>,
+    ) -> bool {
+        is_blackbox_cell_with_vendor(
+            cell,
+            blackbox_modules,
+            module_names,
+            vendor_primitive_class(&cell.cell_type),
+        )
+    }
 
     #[test]
     fn only_the_pin_that_clocks_a_cell_is_a_clock_pin() {

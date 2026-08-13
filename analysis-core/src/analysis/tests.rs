@@ -1,3 +1,8 @@
+use super::endpoints::hidden_vector_group_name;
+use super::projection::{
+    SubgraphWorkLimits, bounded_projection_roots, cap_subgraph_edges, collapse_infrastructure,
+    compact_group_controls, merge_edges, projected_edge_key, quotient_subgraph,
+};
 use super::*;
 use crate::graph::{CellInfo, Edge, Graph, Node, NodeKind};
 use crate::grouping::{Group, GroupKind};
@@ -6,6 +11,7 @@ use crate::source::{
     SOURCE_LINE_RESPONSE_CAP, SOURCE_PROBE_TARGET_VISIT_CAP, SOURCE_RANGE_INDEX_CAP,
     SOURCE_RANGE_RESPONSE_CAP, SOURCE_ROOT_COLLECTION_CAP, SourceProbeHintKind,
 };
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 type EdgeSignature = (
