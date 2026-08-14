@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { replaceEditorText } from './helpers'
 
 const structuralNetlist = [
   '`timescale 1 ps / 1 ps',
@@ -42,13 +43,6 @@ const srlNetlist = [
   'endmodule',
   '',
 ].join('\n')
-
-async function replaceEditorText(page: Page, text: string) {
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-  await editor.fill(text)
-}
 
 test('connects to loopback Vivado and analyzes its returned netlist in browser workers', async ({ page }) => {
   let synthesisRequest: Record<string, unknown> | null = null

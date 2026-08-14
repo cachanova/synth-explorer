@@ -41,5 +41,5 @@ jobs:
         env:
           PLAYWRIGHT_BASE_URL: ${{ vars.PRODUCTION_URL || 'https://synthexplorer.dev' }}
         run: >-
-          npx playwright test e2e/production.e2e.ts e2e/vhdl.e2e.ts
+          npx playwright test e2e/production-monitor.e2e.ts
           --grep "synthesizes and analyzes locally|synthesizes VHDL-2008 locally"

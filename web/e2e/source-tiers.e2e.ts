@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { waitForAnalysisReady } from './helpers'
+import { replaceEditorText, waitForAnalysisReady } from './helpers'
 
 const SOURCE = `module top(input clk, input sel, input [3:0] a, b, output reg [3:0] q);
   wire [3:0] sum = a + b;
@@ -21,13 +21,6 @@ function recordExternalRequests(page: Page, appOrigin: string): string[] {
     }
   })
   return requests
-}
-
-async function replaceEditorText(page: Page, text: string) {
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-  await editor.fill(text)
 }
 
 test('highlights exact and contributing source tiers for a schematic register', async ({

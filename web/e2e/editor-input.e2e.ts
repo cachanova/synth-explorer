@@ -1,18 +1,8 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
-
-async function replaceEditorText(page: Page, text: string) {
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-  await editor.fill(text)
-}
+import { editorText, replaceEditorText } from './helpers'
 
 async function lineText(editor: Locator, index: number): Promise<string> {
   return editor.locator('.cm-line').nth(index).evaluate((line) => line.textContent ?? '')
-}
-
-async function editorText(editor: Locator): Promise<string> {
-  return (await editor.locator('.cm-line').allTextContents()).join('\n')
 }
 
 async function visibleLineNumbers(page: Page): Promise<string[]> {
