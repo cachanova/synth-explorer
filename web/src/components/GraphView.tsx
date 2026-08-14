@@ -20,11 +20,7 @@ import {
   REG_DATA_OUT_Y_FRAC,
   registerControlYFraction,
 } from '../lib/graph/nodeGeometry'
-import {
-  type LaidOutGraph,
-  type LaidOutNode,
-  type Point,
-} from '../lib/graph/elkGraph'
+import type { LaidOutGraph, LaidOutNode, Point } from '../lib/graph/elkGraph'
 import {
   fitViewportToContent,
   panViewport,
