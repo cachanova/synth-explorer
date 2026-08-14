@@ -35,10 +35,9 @@ import { controlDriverIds, controlLabel } from '../../lib/graph/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
-import { GraphView } from '../GraphView'
+import { EMPTY_SELECTED_NET_NAMES } from '../../lib/graph/relatedCone'
+import { GraphView } from '../graph/GraphView'
 import { NodeCard } from '../NodeCard'
-
-const EMPTY_SELECTED_NET_NAMES: string[] = []
 
 interface FullSubgraph {
   designId: string
