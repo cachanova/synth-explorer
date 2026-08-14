@@ -441,4 +441,3 @@ test('stacks DFF-mapped rows from one inferred memory in generic gates', async (
   await expect(groupedMemory).toHaveAttribute('data-member-count', '2048')
   expect(apiRequests).toEqual([])
 })
-

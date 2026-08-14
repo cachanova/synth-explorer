@@ -86,4 +86,3 @@ test('cancels obsolete Yosys work and commits only the newest edit', async ({ pa
   expect(xilinxEntries).toBe(1)
   expect(apiRequests).toEqual([])
 })
-

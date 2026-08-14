@@ -1600,4 +1600,3 @@ test('clears schematic selections when synthesis changes', async ({ page }) => {
   await resynthesize()
   await expect(selectedWires).toHaveCount(0)
 })
-

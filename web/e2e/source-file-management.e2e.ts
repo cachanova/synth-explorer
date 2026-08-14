@@ -46,4 +46,3 @@ test('renames and deletes source files with in-page menus', async ({ page }) => 
   await expect(renamedTab).toHaveCount(0)
   expect(browserDialogs).toEqual([])
 })
-

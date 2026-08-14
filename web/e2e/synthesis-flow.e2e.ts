@@ -123,4 +123,3 @@ test('keeps synthesis failures compact until the full log is requested', async (
   await waitForAnalysisReady(page)
   expect(apiRequests).toEqual([])
 })
-
