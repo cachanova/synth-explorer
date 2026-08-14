@@ -23,14 +23,17 @@ const options: GraphOptions = {
 describe('graph data orchestration', () => {
   it('keys the full graph independently of cone depth, focus, and request nonce', () => {
     const first = graphDataKeys('design-1', 11, options)
-    const second = graphDataKeys('design-1', 12, {
+    const nextRequest = graphDataKeys('design-1', 12, options)
+    const nextDepth = graphDataKeys('design-1', 11, {
       ...options,
       maxDepth: 99,
       focus: false,
     })
 
-    expect(first.fullGraphKey).toBe(second.fullGraphKey)
-    expect(first.currentRequestKey).not.toBe(second.currentRequestKey)
+    expect(first.fullGraphKey).toBe(nextRequest.fullGraphKey)
+    expect(first.fullGraphKey).toBe(nextDepth.fullGraphKey)
+    expect(first.currentRequestKey).not.toBe(nextRequest.currentRequestKey)
+    expect(first.currentRequestKey).not.toBe(nextDepth.currentRequestKey)
   })
 
   it('keeps full-graph requests capped and infrastructure-free', () => {
@@ -113,16 +116,26 @@ describe('graph data orchestration', () => {
   })
 
   it('bounds group and one-hop expansion requests independently', () => {
-    expect(groupExpansionRequestOptions(14, [14, 21], options)).toMatchObject({
+    expect(groupExpansionRequestOptions(14, [14, 21], options)).toEqual({
       node: 14,
       expanded_nodes: [14, 21],
       max_nodes: 4_096,
+      hide_control: true,
+      hide_const: false,
+      group_vectors: true,
+      group_memories: false,
     })
-    expect(neighborhoodRequestOptions(14, 'fanout', options)).toMatchObject({
+    expect(neighborhoodRequestOptions(14, 'fanout', options)).toEqual({
       node: 14,
+      nodes: undefined,
       dir: 'fanout',
       max_depth: 1,
       max_nodes: 900,
+      hide_control: true,
+      hide_const: false,
+      show_infrastructure: false,
+      group_vectors: true,
+      group_memories: false,
     })
   })
 })
