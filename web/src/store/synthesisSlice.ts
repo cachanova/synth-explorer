@@ -17,6 +17,7 @@ import {
   firstYosysSourceError,
   type SynthesisDiagnostic,
 } from '../lib/synthesis/yosysDiagnostics'
+import { isAbortError } from '../lib/synthesis/synthesisError'
 import type {
   DesignFile,
   Mode,
@@ -92,7 +93,7 @@ export function createSynthesisQueue(
             )
             callbacks.onSuccess(response, current)
           } catch (error) {
-            if (!(error instanceof DOMException && error.name === 'AbortError')) {
+            if (!isAbortError(error)) {
               callbacks.onError(error, current)
             }
           } finally {
@@ -115,6 +116,7 @@ export function createSynthesisQueue(
       abortController?.abort()
     },
     abort() {
+      queued = null
       abortController?.abort()
     },
   }

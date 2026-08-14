@@ -324,17 +324,14 @@ export function StoreProvider({
     workspaceSaveTimerRef: workspace.workspaceSaveTimerRef,
     workspaceSnapshotRef: workspace.workspaceSnapshotRef,
     cancelScheduledWorkspaceSave: workspace.cancelScheduledWorkspaceSave,
-    dependencies: [
-      workspace.activeFileName,
-      workspace.cancelScheduledWorkspaceSave,
-      workspace.extraArgs,
-      workspace.files,
-      workspace.mode,
-      vivado.rememberedSynthTool,
-      workspace.top,
-      vivado.vivadoExtraArgs,
-      vivado.vivadoTarget,
-    ],
+    activeFileName: workspace.activeFileName,
+    extraArgs: workspace.extraArgs,
+    files: workspace.files,
+    mode: workspace.mode,
+    rememberedSynthTool: vivado.rememberedSynthTool,
+    top: workspace.top,
+    vivadoExtraArgs: vivado.vivadoExtraArgs,
+    vivadoTarget: vivado.vivadoTarget,
   })
   useGraphRequestCleanup(graph.cancelSourceProbe)
   useAnalysisStateEffect({

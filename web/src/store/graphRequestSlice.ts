@@ -46,15 +46,16 @@ export type TabId =
 export interface ConeGraphRequest {
   kind: 'cone'
   designId: string
-  node: number
-  nodes: number[]
+  node: number // primary root (nodes[0]); drives root highlighting
+  nodes: number[] // all cone roots (>= 1); union under one budget
   dir: 'fanin' | 'fanout'
-  label: string
+  label: string // human description for the graph header
+  // Node ids to highlight (for example, a path); empty for plain cones.
   highlight: number[]
   rootPort?: string
   rootPortBit?: number
   rootPortBits?: number[]
-  nonce: number
+  nonce: number // force re-render even if the request is identical
 }
 
 export interface SourceGraphRequest {

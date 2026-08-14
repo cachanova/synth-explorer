@@ -120,4 +120,39 @@ describe('synthesis queue', () => {
     expect(harness.onSuccess).not.toHaveBeenCalled()
     expect(harness.onError).not.toHaveBeenCalled()
   })
+
+  it('aborts the running request and clears queued work on shutdown', async () => {
+    let observedSignal: AbortSignal | undefined
+    synthesizeMock.mockImplementationOnce((_, signal: AbortSignal) => {
+      observedSignal = signal
+      return new Promise((_, reject) => {
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      })
+    })
+    const harness = queueHarness()
+
+    const running = harness.queue.request(input('A', 1))
+    harness.setRevision(2)
+    await harness.queue.request(input('B', 2))
+    harness.queue.abort()
+    await running
+
+    expect(observedSignal?.aborted).toBe(true)
+    expect(synthesizeMock).toHaveBeenCalledTimes(1)
+    expect(harness.onSuccess).not.toHaveBeenCalled()
+    expect(harness.onError).not.toHaveBeenCalled()
+  })
+
+  it('reports non-abort synthesis failures', async () => {
+    const failure = new Error('synthesis failed')
+    synthesizeMock.mockRejectedValueOnce(failure)
+    const harness = queueHarness()
+
+    await harness.queue.request(input('A', 1))
+
+    expect(harness.onSuccess).not.toHaveBeenCalled()
+    expect(harness.onError).toHaveBeenCalledWith(failure, expect.any(Object))
+  })
 })

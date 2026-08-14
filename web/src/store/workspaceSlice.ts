@@ -340,12 +340,26 @@ export function useWorkspacePersistence({
   workspaceSaveTimerRef,
   workspaceSnapshotRef,
   cancelScheduledWorkspaceSave,
-  dependencies,
+  activeFileName,
+  extraArgs,
+  files,
+  mode,
+  rememberedSynthTool,
+  top,
+  vivadoExtraArgs,
+  vivadoTarget,
 }: {
   workspaceSaveTimerRef: RefObject<number | null>
   workspaceSnapshotRef: RefObject<WorkspaceState>
   cancelScheduledWorkspaceSave: () => void
-  dependencies: readonly unknown[]
+  activeFileName: string
+  extraArgs: string
+  files: DesignFile[]
+  mode: Mode
+  rememberedSynthTool: SynthTool
+  top: string
+  vivadoExtraArgs: string
+  vivadoTarget: string
 }) {
   useEffect(() => {
     cancelScheduledWorkspaceSave()
@@ -354,10 +368,19 @@ export function useWorkspacePersistence({
       void saveWorkspace(workspaceSnapshotRef.current)
     }, 250)
     return cancelScheduledWorkspaceSave
-    // The caller supplies the exact persisted fields to retain the provider's
-    // original debounce triggers.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, dependencies)
+  }, [
+    activeFileName,
+    cancelScheduledWorkspaceSave,
+    extraArgs,
+    files,
+    mode,
+    rememberedSynthTool,
+    top,
+    vivadoExtraArgs,
+    vivadoTarget,
+    workspaceSaveTimerRef,
+    workspaceSnapshotRef,
+  ])
 
   useEffect(() => {
     const flush = () => {
