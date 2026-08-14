@@ -1,21 +1,7 @@
-import type { DesignFile } from '../../types'
+import type { VhdlTranslation } from '../engines/ghdlProtocol'
 import type { ValidatedSynthesis } from './yosysScript'
 
 const locationComment = /^(\s*)\/\*\s*([^\s:*][^:*]*):(\d+):(\d+)\s*\*\/\s*$/
-
-export interface VhdlTranslation {
-  verilog: string
-  log: string
-}
-
-export interface VhdlWorkerRequest {
-  files: DesignFile[]
-  top: string
-}
-
-export type VhdlWorkerResponse =
-  | { ok: true; result: VhdlTranslation }
-  | { ok: false; error: string; kind?: 'load'; log?: string }
 
 export function rewriteVhdlSourceLocations(verilog: string): {
   verilog: string

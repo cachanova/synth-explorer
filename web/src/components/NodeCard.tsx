@@ -2,6 +2,7 @@ import { designSrcSpans, srcLabel } from '../lib/source/src'
 import { displayNodeName, nodeLabel } from '../lib/graph/prettyType'
 import { coneRootIds } from '../lib/graph/graphProjection'
 import { controlDriverIds, controlLabel, controlsFor, symbolKind } from '../lib/graph/symbols'
+import { truncateMid } from '../lib/text'
 import type { GraphNode } from '../types'
 import { shallowEqual, useStore } from '../useStore'
 
@@ -205,10 +206,4 @@ export function NodeCard({
       </div>
     </div>
   )
-}
-
-function truncateMid(s: string, n: number): string {
-  if (s.length <= n) return s
-  const half = Math.floor((n - 1) / 2)
-  return `${s.slice(0, half)}…${s.slice(s.length - half)}`
 }

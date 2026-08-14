@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest'
 import type { ElkNode } from 'elkjs/lib/elk-api'
-import type { LayoutInput } from '../lib/graph/layout'
+import type { LayoutInput } from '../lib/graph/elkGraph'
 import { runElkRequest, startElkWarmup } from './elkRuntime'
 
 const input: LayoutInput = {

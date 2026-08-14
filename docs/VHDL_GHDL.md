@@ -65,9 +65,9 @@ Yosys and uses the same Rust analysis worker for downstream queries.
 - `web/src/workers/ghdl.worker.ts` hosts the GHDL module, standard-library
   virtual filesystem, diagnostics, and synthesis API.
 - `web/src/lib/synthesis/vhdl.ts` owns the source-location rewrite.
-- `web/src/lib/synthesis/localEngine.ts` invokes GHDL only for validated VHDL workspaces,
-  chooses the Yosys or Vivado synthesis branch, and returns to the shared cache
-  and analysis path.
+- `web/src/lib/engines/ghdlWorkerClient.ts` invokes GHDL only for validated VHDL
+  workspaces. `web/src/lib/synthesis/localEngine.ts` chooses the Yosys or Vivado
+  synthesis branch and returns to the shared cache and analysis path.
 - `vivado-bridge/` owns the local Vivado executor and generated Tcl script for
   the optional engine.
 - `tools/ghdl-wasm/` owns the reproducible GHDL WebAssembly build and smoke

@@ -24,9 +24,9 @@ import { isDisplayedDesignCurrent, isRequestDesignMismatch } from '../../lib/gra
 import {
   layoutSubgraph,
   prewarmLayoutWorker,
-  shouldRefitProjection,
-  type LaidOutGraph,
-} from '../../lib/graph/layout'
+} from '../../lib/graph/layoutClient'
+import type { LaidOutGraph } from '../../lib/graph/elkGraph'
+import { shouldRefitProjection } from '../../lib/graph/viewport'
 import {
   sourceProbePresentation,
 } from '../../lib/source/sourceProbe'
@@ -35,10 +35,9 @@ import { controlDriverIds, controlLabel } from '../../lib/graph/symbols'
 import type { GraphNode, SourceSelectionStatus, Subgraph } from '../../types'
 import { shallowEqual, useStore } from '../../useStore'
 import { BubbleLoader } from '../BubbleLoader'
-import { GraphView } from '../GraphView'
+import { EMPTY_SELECTED_NET_NAMES } from '../../lib/graph/relatedCone'
+import { GraphView } from '../graph/GraphView'
 import { NodeCard } from '../NodeCard'
-
-const EMPTY_SELECTED_NET_NAMES: string[] = []
 
 interface FullSubgraph {
   designId: string
