@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { VhdlTranslation } from '../engines/ghdlProtocol'
 import { rewriteVhdlSourceLocations, translatedYosysInput } from './vhdl'
 import type { ValidatedSynthesis } from './yosysScript'
 
@@ -19,10 +20,11 @@ describe('VHDL translation', () => {
       extraArgs: ['-noabc'],
       language: 'vhdl',
     }
-    const translated = translatedYosysInput(input, {
+    const translation: VhdlTranslation = {
       verilog: 'module counter;\n/* counter.vhdl:1:1 */\nendmodule\n',
       log: '',
-    })
+    }
+    const translated = translatedYosysInput(input, translation)
     expect(translated).toMatchObject({
       top: 'counter',
       mode: 'gates',
