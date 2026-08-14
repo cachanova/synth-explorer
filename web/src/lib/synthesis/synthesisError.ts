@@ -34,6 +34,16 @@ export function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
-export function abortError(): Error {
+export function abortError(): DOMException {
   return new DOMException('The operation was aborted', 'AbortError')
+}
+
+export function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise
+  if (signal.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(abortError())
+    signal.addEventListener('abort', abort, { once: true })
+    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
 }

@@ -35,7 +35,7 @@ import { vivadoEngine } from '../engines/vivadoEngine'
 import { yosysEngine } from '../engines/yosysEngine'
 import {
   RequestValidationError,
-  abortError,
+  abortable,
   isAbortError,
 } from './synthesisError'
 
@@ -229,14 +229,4 @@ export function localExpandGroup(
   signal?: AbortSignal,
 ): Promise<GroupExpansion> {
   return abortable(queryAnalysis('expandGroup', options), signal)
-}
-
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise
-  if (signal.aborted) return Promise.reject(abortError())
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(abortError())
-    signal.addEventListener('abort', abort, { once: true })
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
-  })
 }

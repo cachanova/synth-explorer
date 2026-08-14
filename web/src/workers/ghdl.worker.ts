@@ -1,13 +1,13 @@
 /// <reference lib="webworker" />
 
 import { EngineLoadError, lazyLoad } from '../lib/synthesis/engineLoad'
-import { unpackTarFiles } from '../lib/launcher/tar'
-import { GHDL_VERSION } from '../lib/synthesis/yosysScript'
 import type {
   VhdlTranslation,
   VhdlWorkerRequest,
   VhdlWorkerResponse,
-} from '../lib/synthesis/vhdl'
+} from '../lib/engines/ghdlProtocol'
+import { unpackTarFiles } from '../lib/launcher/tar'
+import { GHDL_VERSION } from '../lib/synthesis/yosysScript'
 
 const libraryRoot = '/ghdl/lib/ghdl'
 const workDirectory = '/work'

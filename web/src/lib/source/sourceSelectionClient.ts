@@ -1,5 +1,6 @@
 import type { SourceSelectionResult } from '../../types'
 import { queryAnalysis } from '../analysisClient'
+import { abortable } from '../synthesis/synthesisError'
 
 export interface SelectionOptions {
   maxNodes: number
@@ -44,18 +45,4 @@ export function analyzeSourceInBrowser(
     }),
     signal,
   )
-}
-
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise
-  if (signal.aborted) return Promise.reject(abortError())
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(abortError())
-    signal.addEventListener('abort', abort, { once: true })
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
-  })
-}
-
-function abortError(): Error {
-  return new DOMException('The operation was aborted', 'AbortError')
 }
