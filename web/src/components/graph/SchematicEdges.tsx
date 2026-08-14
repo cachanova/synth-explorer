@@ -90,7 +90,7 @@ interface SchematicArrowBatch {
   dimmed: boolean
 }
 
-export interface PreparedSchematicEdges {
+interface PreparedSchematicEdges {
   edges: PreparedSchematicEdge[]
   batches: SchematicEdgeBatch[]
   arrows: SchematicArrowBatch[]
@@ -102,6 +102,8 @@ interface SchematicEdgeGeometryFacts {
   edges: SchematicEdgeGeometry[]
 }
 
+// Shared with the GraphView orchestrator while edge preparation stays beside rendering.
+// eslint-disable-next-line react/only-export-components
 export const EMPTY_PREPARED_SCHEMATIC_EDGES: PreparedSchematicEdge[] = []
 
 function edgeBatchKey(
@@ -187,6 +189,8 @@ function edgeArrowD(points: Point[], strokeWidth: number): string {
   ].join(' ')
 }
 
+// Shared with the GraphView orchestrator while edge preparation stays beside rendering.
+// eslint-disable-next-line react/only-export-components
 export function prepareSchematicEdgeGeometry(
   graph: LaidOutGraph,
 ): SchematicEdgeGeometryFacts {
@@ -249,6 +253,8 @@ export function prepareSchematicEdgeGeometry(
   return { edges: prepared }
 }
 
+// Shared with the GraphView orchestrator while edge preparation stays beside rendering.
+// eslint-disable-next-line react/only-export-components
 export function bucketSchematicEdges(
   facts: SchematicEdgeGeometryFacts,
   relevantIds: Set<number>,

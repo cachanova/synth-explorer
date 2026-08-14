@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
-describe('GraphView LUT labels', () => {
+describe('schematic edges', () => {
   it('tags nodes and edges by relevance independently of overlay highlighting', () => {
     const markup = renderToStaticMarkup(
       <GraphView

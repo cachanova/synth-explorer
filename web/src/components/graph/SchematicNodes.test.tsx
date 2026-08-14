@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { GraphView } from './GraphView'
-describe('GraphView LUT labels', () => {
+describe('schematic nodes', () => {
   it('uses the schematic contrast tokens for constant nodes', () => {
     const markup = renderToStaticMarkup(
       <GraphView

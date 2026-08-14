@@ -29,7 +29,7 @@ import type { SchematicDetailLevel } from './useDetailLevel'
 
 const OVERVIEW_IDENTITY_NODE_LIMIT = 250
 
-export interface RegisterControlPin {
+interface RegisterControlPin {
   pin: string
   role: ControlRole
 }
@@ -788,6 +788,8 @@ function SchematicNodeStack({
   )
 }
 
+// Shared by sibling graph interaction components without owning render state.
+// eslint-disable-next-line react/only-export-components
 export function graphNodeElement(
   target: EventTarget | null,
   boundary: Element,
@@ -797,6 +799,8 @@ export function graphNodeElement(
   return node && boundary.contains(node) ? node : null
 }
 
+// Shared by sibling graph interaction components without owning render state.
+// eslint-disable-next-line react/only-export-components
 export function graphNodeId(element: SVGGElement | null): number | null {
   const value = element?.dataset.graphNodeId
   if (value == null) return null
