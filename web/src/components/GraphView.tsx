@@ -13,22 +13,22 @@ import {
 import {
   canonicalPinNames,
   controlRoleForPin,
-  fitViewportToContent,
   isRegisterControlPin,
-  panViewport,
-  preserveViewportAnchor,
   REG_BODY_HEIGHT,
   REG_CLOCK_Y_FRAC,
   REG_DATA_IN_Y_FRAC,
   REG_DATA_OUT_Y_FRAC,
   registerControlYFraction,
+} from '../lib/graph/nodeGeometry'
+import type { LaidOutGraph, LaidOutNode, Point } from '../lib/graph/elkGraph'
+import {
+  fitViewportToContent,
+  panViewport,
+  preserveViewportAnchor,
   viewportTransformAttribute,
   zoomViewportAt,
-  type LaidOutGraph,
-  type LaidOutNode,
-  type Point,
   type ViewportTransform,
-} from '../lib/graph/layout'
+} from '../lib/graph/viewport'
 import { groupBadgeText, nodeLabel, nodeSublabel, shortNetName } from '../lib/graph/prettyType'
 import {
   arithGlyph,
@@ -575,7 +575,7 @@ function controlPinLetter(role: ControlRef['role']): string | null {
 // Every flip-flop / latch draws the same recognizable pins: D data-in (upper
 // west), the clock triangle (lower west), Q data-out (east), and a letter per
 // remaining control (R/S/EN) so an FDRE shows its enable while a plain DFF
-// shows its reset. Every edge is routed to the matching pin in layout.ts.
+// shows its reset. Every edge is routed to the matching pin in elkGraph.ts.
 function RegisterPins({
   node,
   pins,
@@ -587,7 +587,7 @@ function RegisterPins({
   width: number
   bodyHeight: number
 }) {
-  // Pin positions must use the same primary body height as layout.ts (which
+  // Pin positions must use the same primary body height as nodeGeometry.ts (which
   // routes the data edges to min(fullHeight, REG_BODY_HEIGHT) port offsets), not
   // the full body — otherwise the grouped-badge row shifts the ticks off the
   // incoming/outgoing wires.
