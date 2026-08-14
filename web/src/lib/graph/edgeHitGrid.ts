@@ -1,4 +1,4 @@
-import type { Point } from './layout'
+import type { Point } from './elkGraph'
 
 export const EDGE_HIT_CELL_SIZE = 160
 

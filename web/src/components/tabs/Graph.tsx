@@ -24,9 +24,9 @@ import { isDisplayedDesignCurrent, isRequestDesignMismatch } from '../../lib/gra
 import {
   layoutSubgraph,
   prewarmLayoutWorker,
-  shouldRefitProjection,
-  type LaidOutGraph,
-} from '../../lib/graph/layout'
+} from '../../lib/graph/layoutClient'
+import type { LaidOutGraph } from '../../lib/graph/elkGraph'
+import { shouldRefitProjection } from '../../lib/graph/viewport'
 import {
   sourceProbePresentation,
 } from '../../lib/source/sourceProbe'
