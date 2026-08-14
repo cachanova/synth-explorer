@@ -1,4 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { replaceEditorText } from './helpers'
 
 // Live-bridge validation: requires a running synth-explorer-vivado-bridge on
 // 127.0.0.1:32123 with this preview origin allowed and a real local Vivado.
@@ -26,13 +27,6 @@ async function bridgeAvailable(appOrigin: string): Promise<boolean> {
   } catch {
     return false
   }
-}
-
-async function replaceEditorText(page: Page, text: string) {
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-  await editor.fill(text)
 }
 
 test('attributes tiered source through a real local Vivado synthesis', async ({

@@ -1,15 +1,5 @@
-import { expect, test, type Page } from '@playwright/test'
-
-async function editorText(page: Page): Promise<string> {
-  return page.locator('.cm-content').innerText()
-}
-
-async function replaceEditorText(page: Page, text: string) {
-  const editor = page.locator('.cm-content')
-  await editor.click()
-  await editor.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
-  await editor.fill(text)
-}
+import { expect, test } from '@playwright/test'
+import { editorText, replaceEditorText } from './helpers'
 
 test.beforeEach(async ({ page }) => {
   await page.goto('/')
