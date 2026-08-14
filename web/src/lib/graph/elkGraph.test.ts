@@ -1,40 +1,23 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import ELK from 'elkjs/lib/elk.bundled.js'
+import { describe, expect, it } from 'vitest'
 import type { GraphNode, Subgraph } from '../../types'
 import {
-  MAX_GRAPH_EDGES,
-  MAX_GROUP_EXPANSION_RENDER_NODES,
-} from './graphLimits'
-import {
-  clearLayoutGeometryCache,
-  controlRoleForPin,
   DENSE_LAYOUT_NODE_THRESHOLD,
-  fitViewportToContent,
   hydrateLayoutResult,
   interpretResult,
-  LAYOUT_GEOMETRY_CACHE_MAX_BYTES,
-  LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES,
   MAX_GLOBAL_LAYOUT_COMPONENTS,
-  layoutSubgraph,
-  NETWORK_SIMPLEX_EDGE_LIMIT,
-  NETWORK_SIMPLEX_NODE_LIMIT,
-  nodeDimensions,
-  panViewport,
-  placementForLayout,
-  prewarmLayoutWorker,
-  preserveViewportAnchor,
   prepareLayoutInput,
   REDUCED_THOROUGHNESS_EDGE_DENSITY,
   REDUCED_THOROUGHNESS_NODE_THRESHOLD,
   SOURCE_FLOW_EDGE_DENSITY,
   SOURCE_FLOW_NODE_THRESHOLD,
-  shouldRefitProjection,
   toElkGraph,
   type LayoutInput,
   type NodePlacement,
-  viewportTransformAttribute,
-  zoomViewportAt,
-} from './layout'
+} from './elkGraph'
+import { nodeDimensions } from './nodeGeometry'
 
+{
 const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): GraphNode => ({
   id,
   kind: 'cell',
@@ -44,94 +27,6 @@ const node = (id: number, cellType: string, extra: Partial<GraphNode> = {}): Gra
 })
 
 describe('schematic layout sizing', () => {
-  it('classifies vendor memory clock pin spellings as clocks', () => {
-    for (const pin of ['WCLK', 'RCLK', 'CLKA', 'CLKB', 'CLKARDCLK']) {
-      expect(controlRoleForPin(pin)).toBe('clock')
-    }
-  })
-
-  it('gives gates compact schematic proportions', () => {
-    expect(nodeDimensions(node(1, '$_AND_'))).toEqual({ width: 76, height: 52 })
-  })
-
-  it('gives carry and DSP primitives distinct hard-block proportions', () => {
-    expect(nodeDimensions(node(1, 'CARRY8'))).toEqual({ width: 98, height: 58 })
-    expect(nodeDimensions(node(2, 'DSP48E2'))).toEqual({ width: 112, height: 62 })
-    expect(nodeDimensions(node(3, 'SB_MAC16'))).toEqual({ width: 112, height: 62 })
-  })
-
-  it('sizes Vivado implementation cells from the readable RTL-facing name', () => {
-    expect(nodeDimensions(node(1, 'LUT1', {
-      name: 'one_hot_OBUF[23]_inst_i_6_2',
-    }))).toEqual({ width: 103, height: 54 })
-  })
-
-  it('reserves register space for compact control-net labels', () => {
-    const plain = nodeDimensions(node(1, 'FDRE'))
-    const controlledNode = node(2, 'FDRE')
-    controlledNode.controls = [
-      { role: 'clock', pin: 'C', net_name: 'sys_clk', driver_id: 8, fanout: 2 },
-      { role: 'reset', pin: 'R', net_name: 'rst_n', driver_id: 9, fanout: 2 },
-    ]
-    const controlled = nodeDimensions(controlledNode)
-    expect(controlled.height).toBeGreaterThan(plain.height)
-    expect(controlled.width).toBeGreaterThanOrEqual(plain.width)
-  })
-
-  it('adds a badge row and width for grouped vector nodes', () => {
-    const plain = nodeDimensions(node(1, 'FDRE'))
-    const grouped = nodeDimensions(
-      node(2, 'FDRE', { width: 8, members: [1, 2, 3, 4, 5, 6, 7, 8] }),
-    )
-    // A grouped node reserves an extra row for its "×N" badge.
-    expect(grouped.height).toBe(plain.height + 14)
-    expect(grouped.width).toBeGreaterThanOrEqual(plain.width)
-    // A single-bit node (width 1) is not treated as grouped.
-    expect(nodeDimensions(node(3, 'FDRE', { width: 1 }))).toEqual(plain)
-  })
-
-  it('reserves one row for every label-connected control', () => {
-    const controlledNode = node(2, 'FDRE', {
-      controls: [
-        { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 8, fanout: 2 },
-        { role: 'reset', pin: 'R', net_name: 'rst', driver_id: 9, fanout: 2 },
-        { role: 'enable', pin: 'CE', net_name: 'ce', driver_id: 10, fanout: 2 },
-        { role: 'set', pin: 'S', net_name: 'set', driver_id: 11, fanout: 2 },
-      ],
-    })
-
-    expect(nodeDimensions(controlledNode).height).toBe(58 + 4 * 13)
-
-    const controlledSrl = node(3, 'SRL16E', {
-      register: false,
-      seq: true,
-      controls: [
-        { role: 'clock', pin: 'CLK', net_name: 'clk', driver_id: 8, fanout: 2 },
-      ],
-    })
-    expect(nodeDimensions(controlledSrl).height).toBe(62 + 13)
-  })
-
-  it('reserves one row for a compact multi-net grouped control', () => {
-    const groupedMemory = node(4, '$mem_v2', {
-      member_count: 1_024,
-      controls: [
-        { role: 'clock', pin: 'CLK', net_name: 'clk', driver_id: 8, fanout: 1_024 },
-        {
-          role: 'enable',
-          pin: 'EN',
-          net_name: 'row_en[0]',
-          driver_id: 9,
-          driver_ids: Array.from({ length: 64 }, (_, index) => index + 9),
-          net_count: 64,
-          fanout: 1_024,
-        },
-      ],
-    })
-
-    expect(nodeDimensions(groupedMemory).height).toBe(62 + 2 * 13 + 14)
-  })
-
   it('passes per-symbol dimensions to bounded ELK layout', () => {
     const sub: Subgraph = {
       nodes: [node(1, '$_XOR_'), node(2, '$mem_v2', { is_boundary: true })],
@@ -1434,38 +1329,6 @@ describe('schematic layout sizing', () => {
     ])
   })
 
-  it('picks robust placement for large or dense graphs, tight for small', () => {
-    const small: Subgraph = {
-      nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
-      edges: [],
-      truncated: false,
-    }
-    expect(placementForLayout(small)).toBe('NETWORK_SIMPLEX')
-
-    const manyNodes: Subgraph = {
-      nodes: Array.from({ length: NETWORK_SIMPLEX_NODE_LIMIT + 1 }, (_, i) =>
-        node(i, '$_AND_'),
-      ),
-      edges: [],
-      truncated: false,
-    }
-    expect(placementForLayout(manyNodes)).toBe('BRANDES_KOEPF')
-
-    const denseEdges: Subgraph = {
-      nodes: [node(1, '$_AND_'), node(2, '$_AND_')],
-      edges: Array.from({ length: NETWORK_SIMPLEX_EDGE_LIMIT + 1 }, () => ({
-        from: 1,
-        to: 2,
-        from_port: 'Y',
-        to_port: 'A',
-        net_name: 'n',
-        bits: [1],
-      })),
-      truncated: false,
-    }
-    expect(placementForLayout(denseEdges)).toBe('BRANDES_KOEPF')
-  })
-
   it('defaults to NETWORK_SIMPLEX but can request the robust placement', () => {
     const sub: Subgraph = { nodes: [node(1, '$_AND_')], edges: [], truncated: false }
     expect(
@@ -1484,687 +1347,691 @@ describe('schematic layout sizing', () => {
     expect(graph.children?.[0]).not.toHaveProperty('y')
   })
 
-  it('enforces the bounded group-expansion renderer cap before starting ELK', async () => {
-    expect(MAX_GROUP_EXPANSION_RENDER_NODES).toBe(4096)
-    const oversized: Subgraph = {
-      nodes: Array.from({ length: MAX_GROUP_EXPANSION_RENDER_NODES + 1 }, (_, index) =>
-        node(index, '$_AND_'),
-      ),
-      edges: [],
-      truncated: true,
-    }
+})
+}
 
-    await expect(layoutSubgraph(oversized)).rejects.toThrow('cone too large')
-  })
+{
+const node = (
+  id: number,
+  name: string,
+  extra: Partial<GraphNode> = {},
+): GraphNode => ({
+  id,
+  kind: 'port',
+  name,
+  ...extra,
+})
 
-  it('enforces the shared 10000 merged-edge cap before starting ELK', async () => {
-    expect(MAX_GRAPH_EDGES).toBe(10_000)
-    const edge = {
-      from: 1,
-      to: 2,
-      from_port: 'Y',
-      to_port: 'A',
-      net_name: 'dense',
-      bits: [1],
+describe('logic-oriented ELK layout policy', () => {
+  it('aligns primary boundaries and routes an acyclic datapath from left to right', async () => {
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'a'),
+        node(2, 'substantially_wider_input_name'),
+        node(10, 'and_gate', { kind: 'cell', cell_type: '$_AND_' }),
+        node(20, 'y'),
+        node(21, 'substantially_wider_output_name'),
+      ],
+      edges: [
+        { from: 1, to: 10, from_port: 'a', to_port: 'A', net_name: 'a', bits: [1] },
+        { from: 2, to: 10, from_port: 'b', to_port: 'B', net_name: 'b', bits: [2] },
+        { from: 10, to: 20, from_port: 'Y', to_port: 'y', net_name: 'y', bits: [3] },
+        { from: 10, to: 21, from_port: 'Y', to_port: 'wide', net_name: 'wide', bits: [4] },
+      ],
+      truncated: false,
     }
-    const oversized: Subgraph = {
-      nodes: [node(1, '$_BUF_'), node(2, '$_BUF_')],
-      edges: Array.from({ length: MAX_GRAPH_EDGES + 1 }, () => edge),
-      truncated: true,
-    }
+    const input = prepareLayoutInput(subgraph)
+    const result = interpretResult(input, await new ELK().layout(toElkGraph(input)))
+    const nodes = new Map(result.nodes.map((candidate) => [candidate.id, candidate]))
+    const inputA = nodes.get(1)!
+    const inputB = nodes.get(2)!
+    const gate = nodes.get(10)!
+    const outputA = nodes.get(20)!
+    const outputB = nodes.get(21)!
 
-    await expect(layoutSubgraph(oversized)).rejects.toThrow(
-      '10001 merged edges; limit 10000',
+    expect(inputA.x).toBeCloseTo(inputB.x)
+    expect(outputA.x + outputA.width).toBeCloseTo(outputB.x + outputB.width)
+    expect(gate.x).toBeGreaterThan(
+      Math.max(inputA.x + inputA.width, inputB.x + inputB.width),
     )
+    expect(Math.min(outputA.x, outputB.x)).toBeGreaterThan(gate.x + gate.width)
+    for (const edge of result.edges) {
+      const inputEdge = input.edges[edge.inputIndex]
+      const source = nodes.get(inputEdge.from)!
+      const target = nodes.get(inputEdge.to)!
+      expect(edge.points[0].x).toBeCloseTo(source.x + source.width)
+      expect(edge.points.at(-1)!.x).toBeCloseTo(target.x)
+      expect(target.x).toBeGreaterThan(source.x + source.width)
+    }
   })
 
-  class FakeWorker {
-      static instances: FakeWorker[] = []
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: ((event: ErrorEvent) => void) | null = null
-      terminate = vi.fn()
-      requests: Array<{
-        id: number
-        input: ReturnType<typeof prepareLayoutInput>
-        placement: 'NETWORK_SIMPLEX' | 'BRANDES_KOEPF'
-      }> = []
+  it('keeps hidden control-only primary inputs on the shared left boundary', async () => {
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'clk'),
+        node(2, 'rst'),
+        node(3, 'data'),
+        node(10, 'state', {
+          kind: 'cell',
+          cell_type: 'FDRE',
+          seq: true,
+          register: true,
+          controls: [
+            { role: 'clock', pin: 'C', net_name: 'clk', driver_id: 1, fanout: 1 },
+            { role: 'reset', pin: 'R', net_name: 'rst', driver_id: 2, fanout: 1 },
+          ],
+        }),
+        node(20, 'result'),
+      ],
+      edges: [
+        { from: 3, to: 10, from_port: 'data', to_port: 'D', net_name: 'data', bits: [1] },
+        { from: 10, to: 20, from_port: 'Q', to_port: 'result', net_name: 'result', bits: [2] },
+      ],
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph)
+    const result = interpretResult(input, await new ELK().layout(toElkGraph(input)))
+    const nodes = new Map(result.nodes.map((candidate) => [candidate.id, candidate]))
 
-      constructor() {
-        FakeWorker.instances.push(this)
-      }
+    expect(nodes.get(1)!.x).toBeCloseTo(nodes.get(3)!.x)
+    expect(nodes.get(2)!.x).toBeCloseTo(nodes.get(3)!.x)
+    for (const edge of result.edges) {
+      const inputEdge = input.edges[edge.inputIndex]
+      const source = nodes.get(inputEdge.from)!
+      const target = nodes.get(inputEdge.to)!
+      expect(edge.points[0].x).toBeCloseTo(source.x + source.width)
+      expect(edge.points.at(-1)!.x).toBeCloseTo(target.x)
+    }
+  })
 
-      postMessage(request: FakeWorker['requests'][number]) {
-        this.requests.push(request)
-      }
+  it('packs orphan-heavy views without producing an extreme vertical ribbon', async () => {
+    const isolatedNodes = 128
+    const input: LayoutInput = {
+      nodes: [
+        {
+          id: 1,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+        },
+        {
+          id: 2,
+          baseWidth: 76,
+          baseHeight: 52,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal',
+        },
+        {
+          id: 3,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'output',
+        },
+        {
+          id: 4,
+          baseWidth: 74,
+          baseHeight: 34,
+          controlHeight: 0,
+          register: false,
+          boundary: 'input',
+        },
+        ...Array.from({ length: isolatedNodes }, (_, index) => ({
+          id: index + 10,
+          baseWidth: 62,
+          baseHeight: 46,
+          controlHeight: 0,
+          register: false,
+          boundary: 'internal' as const,
+        })),
+      ],
+      edges: [
+        {
+          from: 1,
+          to: 2,
+          fromPort: 'Y',
+          toPort: 'A',
+          control: false,
+        },
+        {
+          from: 2,
+          to: 3,
+          fromPort: 'Y',
+          toPort: 'A',
+          control: false,
+        },
+      ],
     }
 
-  const workerSubgraph = (id = 1): Subgraph => ({
-    nodes: [node(id, '$_AND_', { members: [1, 2], params: { secret: 'resident' } })],
-    edges: [],
-    truncated: false,
-  })
+    const result = await new ELK().layout(toElkGraph(input, 'BRANDES_KOEPF'))
 
-  const geometry = {
-    nodes: [{ id: 1, x: 0, y: 0, width: 76, height: 66 }],
-    edges: [],
-    width: 76,
-    height: 66,
+    expect(result.children).toHaveLength(isolatedNodes + 4)
+    expect(result.height).toBeLessThan(5_000)
+  })
+})
+
+describe('dense ELK layout policy', () => {
+  it('returns bounded orthogonal geometry without crossing nodes', async () => {
+    const nodeCount = DENSE_LAYOUT_NODE_THRESHOLD
+    const edgeCount = 2_000
+    const input: LayoutInput = {
+      nodes: Array.from({ length: nodeCount }, (_, id) => ({
+        id,
+        baseWidth: 62,
+        baseHeight: 46,
+        controlHeight: 0,
+        register: false,
+        boundary: 'internal',
+      })),
+      edges: Array.from({ length: edgeCount }, (_, index) => ({
+        from: index % (nodeCount / 2),
+        to: nodeCount / 2 +
+          ((index * 7 + Math.floor(index / (nodeCount / 2))) % (nodeCount / 2)),
+        fromPort: `Y${index % 8}`,
+        toPort: `A${Math.floor(index / (nodeCount / 2))}`,
+        control: false,
+      })),
+    }
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input, 'BRANDES_KOEPF')),
+    )
+
+    expect(result.nodes).toHaveLength(nodeCount)
+    expect(result.edges).toHaveLength(edgeCount)
+    const nodes = new Map(result.nodes.map((node) => [node.id, node]))
+    let edgeNodeIntersections = 0
+    for (const node of result.nodes) {
+      expect(Number.isFinite(node.x) && node.x >= 0).toBe(true)
+      expect(Number.isFinite(node.y) && node.y >= 0).toBe(true)
+      expect(node.x + node.width).toBeLessThanOrEqual(result.width)
+      expect(node.y + node.height).toBeLessThanOrEqual(result.height)
+    }
+    for (const edge of result.edges) {
+      const inputEdge = input.edges[edge.inputIndex]
+      const source = nodes.get(inputEdge.from)!
+      const target = nodes.get(inputEdge.to)!
+      expect(edge.points.length).toBeGreaterThanOrEqual(2)
+      expect(edge.points[0].x).toBeCloseTo(source.x + source.width)
+      expect(edge.points.at(-1)!.x).toBeCloseTo(target.x)
+      for (let index = 1; index < edge.points.length; index += 1) {
+        const previous = edge.points[index - 1]
+        const point = edge.points[index]
+        expect(point.x === previous.x || point.y === previous.y).toBe(true)
+        for (const node of result.nodes) {
+          if (node.id === inputEdge.from || node.id === inputEdge.to) continue
+          const crossesInterior = previous.y === point.y
+            ? node.x < Math.max(previous.x, point.x) &&
+              Math.min(previous.x, point.x) < node.x + node.width &&
+              node.y < point.y && point.y < node.y + node.height
+            : node.y < Math.max(previous.y, point.y) &&
+              Math.min(previous.y, point.y) < node.y + node.height &&
+              node.x < point.x && point.x < node.x + node.width
+          if (crossesInterior) edgeNodeIntersections += 1
+        }
+      }
+    }
+    expect(edgeNodeIntersections).toBe(0)
+  }, 20_000)
+})
+
+describe('expanded group boundary routing', () => {
+  // A tall reference keeps the group in one column; a short one forces the
+  // lattice grid, where nets ride channels between the rows.
+  for (const [shape, referenceHeight] of
+    [['stacked', 1_000], ['grid', 170]] as const) {
+  it(`routes every crossing net to its member pin (${shape})`, async () => {
+    const BITS = 16
+    const members = Array.from({ length: BITS }, (_, index) =>
+      node(100 + index, 'count', {
+        kind: 'cell',
+        cell_type: 'FDRE',
+        seq: true,
+      }),
+    )
+    const drivers = Array.from({ length: BITS }, (_, index) =>
+      node(200 + index, `d${index}`, { kind: 'cell', cell_type: '$_XOR_' }),
+    )
+    const sinks = Array.from({ length: BITS }, (_, index) =>
+      node(300 + index, `s${index}`, { kind: 'cell', cell_type: '$_AND_' }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'clk', { port_direction: 'input' }),
+        node(2, 'rst', { port_direction: 'input' }),
+        node(3, 'en', { kind: 'cell', cell_type: '$_AND_' }),
+        ...drivers,
+        ...members,
+        ...sinks,
+      ],
+      edges: members.flatMap((member, index) => [
+        {
+          from: drivers[index].id, to: member.id,
+          from_port: 'Y', to_port: 'D', net_name: `d${index}`, bits: [index],
+        },
+        {
+          from: 1, to: member.id, from_port: 'clk', to_port: 'C',
+          net_name: 'clk', bits: [90], control: true,
+        },
+        {
+          from: 2, to: member.id, from_port: 'rst', to_port: 'R',
+          net_name: 'rst', bits: [91], control: true,
+        },
+        {
+          from: 3, to: member.id, from_port: 'Y', to_port: 'E',
+          net_name: 'en', bits: [92], control: true,
+        },
+        {
+          from: member.id, to: sinks[index].id,
+          from_port: 'Q', to_port: 'A', net_name: `q${index}`, bits: [index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: members.map((member) => member.id),
+      referenceHeight,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+
+    const frame = result.groups?.find((group) => group.id === 500)
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(members.map((member) => member.id))
+    expect(frame).toBeDefined()
+    const insideFrame = (point: { x: number }) =>
+      point.x >= frame!.x && point.x <= frame!.x + frame!.width
+
+    let crossings = 0
+    const entryHeights = new Set<number>()
+    input.edges.forEach((edge, index) => {
+      const entering = memberIds.has(edge.to) && !memberIds.has(edge.from)
+      const leaving = memberIds.has(edge.from) && !memberIds.has(edge.to)
+      if (!entering && !leaving) return
+      crossings += 1
+      const member = laidOut.get(entering ? edge.to : edge.from)!
+      const points = result.edges[index].points
+      const pin = entering ? points.at(-1)! : points[0]
+
+      // Where the net meets the west edge of the frame.
+      if (entering) {
+        const crossing = points.find((point) => point.x >= frame!.x)
+        if (crossing) entryHeights.add(Math.round(crossing.y))
+      }
+
+      // Every net terminates on its own member's pin.
+      expect(pin.x).toBe(entering ? member.x : member.x + member.width)
+      expect(pin.y).toBeGreaterThan(member.y)
+      expect(pin.y).toBeLessThan(member.y + member.height)
+
+      if (shape === 'stacked') {
+        // One column: the net enters at its pin's height and goes straight in.
+        // A perimeter-rail detour would leave the member's vertical band.
+        for (const point of points) {
+          if (!insideFrame(point)) continue
+          expect(point.y).toBeGreaterThanOrEqual(member.y)
+          expect(point.y).toBeLessThanOrEqual(member.y + member.height)
+        }
+      }
+
+      for (let i = 1; i < points.length; i += 1) {
+        const a = points[i - 1]
+        const b = points[i]
+        // Inside the frame every leg lies in reserved wire space: orthogonal,
+        // and never across another member's cell.
+        if (insideFrame(a) && insideFrame(b)) {
+          expect(a.x === b.x || a.y === b.y).toBe(true)
+        }
+        for (const other of result.nodes) {
+          if (other.id === edge.from || other.id === edge.to) continue
+          if (!memberIds.has(other.id)) continue
+          const overlaps =
+            Math.max(a.x, b.x) > other.x &&
+            Math.min(a.x, b.x) < other.x + other.width &&
+            Math.max(a.y, b.y) > other.y &&
+            Math.min(a.y, b.y) < other.y + other.height
+          expect(overlaps).toBe(false)
+        }
+      }
+    })
+    expect(crossings).toBe(BITS * 5)
+
+    const cells = members.flatMap((member) => {
+      const laid = laidOut.get(member.id)
+      return laid ? [laid] : []
+    })
+    const xs = [...new Set(cells.map((cell) => Math.round(cell.x)))]
+      .sort((left, right) => left - right)
+    const ys = [...new Set(cells.map((cell) => Math.round(cell.y)))]
+      .sort((left, right) => left - right)
+
+    // The defect this replaces funnelled every crossing net through one point
+    // on the frame edge. Each net now meets the frame at its own height --
+    // its channel track, or its pin.
+    expect(entryHeights.size).toBeGreaterThan(ys.length)
+
+    // The header band carries the group's label, so no wire may run through it.
+    const labelBandBottom = frame!.y + 30
+    input.edges.forEach((edge, index) => {
+      if (memberIds.has(edge.to) === memberIds.has(edge.from)) return
+      for (const point of result.edges[index].points) {
+        if (!insideFrame(point)) continue
+        expect(point.y).toBeGreaterThanOrEqual(labelBandBottom)
+      }
+    })
+
+    if (shape === 'grid') {
+      // A real lattice: a single column pitch and a single row pitch.
+      expect(xs.length).toBeGreaterThan(1)
+      expect(new Set(xs.slice(1).map((x, i) => x - xs[i])).size).toBe(1)
+      expect(new Set(ys.slice(1).map((y, i) => y - ys[i])).size).toBe(1)
+      // Uniform cells, so the block reads as an array.
+      expect(new Set(cells.map((cell) => cell.width)).size).toBe(1)
+      expect(new Set(cells.map((cell) => cell.height)).size).toBe(1)
+    } else {
+      expect(xs).toHaveLength(1)
+    }
+  }, 30_000)
+  }
+})
+
+describe('expanded grid lattice', () => {
+  // Partial last rows and odd member counts must not break the lattice: the
+  // block only reads as an array if one column pitch and one row pitch cover
+  // every cell.
+  it.each([
+    [7, 120], [13, 140], [16, 140], [17, 140], [32, 200],
+  ])('keeps a uniform lattice for %i members', async (count, referenceHeight) => {
+    const cellsIn = Array.from({ length: count }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'a', { port_direction: 'input' }),
+        node(2, 'b', { port_direction: 'input' }),
+        ...cellsIn,
+        node(3, 'y', { port_direction: 'output' }),
+      ],
+      edges: cellsIn.flatMap((member, index) => [
+        { from: 1, to: member.id, from_port: 'a', to_port: 'I1',
+          net_name: `a${index}`, bits: [index] },
+        { from: 2, to: member.id, from_port: 'b', to_port: 'I2',
+          net_name: `b${index}`, bits: [100 + index] },
+        { from: member.id, to: 3, from_port: 'O', to_port: 'y',
+          net_name: `y${index}`, bits: [200 + index] },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cellsIn.map((member) => member.id),
+      referenceHeight,
+    }])
+    const memberIds = new Set(cellsIn.map((member) => member.id))
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const cells = result.nodes.filter((laid) => memberIds.has(laid.id))
+    const xs = [...new Set(cells.map((cell) => cell.x))]
+      .sort((left, right) => left - right)
+    const ys = [...new Set(cells.map((cell) => cell.y))]
+      .sort((left, right) => left - right)
+
+    expect(new Set(xs.slice(1).map((x, i) => x - xs[i])).size).toBe(1)
+    expect(new Set(ys.slice(1).map((y, i) => y - ys[i])).size).toBe(1)
+    expect(new Set(cells.map((cell) => cell.width)).size).toBe(1)
+    expect(new Set(cells.map((cell) => cell.height)).size).toBe(1)
+    expect(xs.length * ys.length).toBeGreaterThanOrEqual(count)
+  }, 30_000)
+})
+
+describe('expanded grid fanout bundling', () => {
+  // Build a grid group of `count` members. `shared` decides whether one driver
+  // pin feeds every member (one net fanning out) or each member gets its own
+  // driver pin (`count` independent nets).
+  const build = async (count: number, shared: boolean, referenceHeight = 140) => {
+    const cells = Array.from({ length: count }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'drv', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          from: 1,
+          to: member.id,
+          from_port: shared ? 'Y' : `Y${index}`,
+          to_port: 'I1',
+          net_name: shared ? 'bus' : `n${index}`,
+          bits: [shared ? 1 : index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `y${index}`, bits: [900 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const frame = (result.groups ?? []).find((group) => group.id === 500)
+    expect(frame).toBeDefined()
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+    return { input, result, frame: frame!, laidOut, memberIds }
   }
 
-  afterEach(() => {
-    clearLayoutGeometryCache()
-    FakeWorker.instances = []
-    vi.useRealTimers()
-    vi.unstubAllGlobals()
-  })
+  it('gives a fanout net one track per row instead of one per sink', async () => {
+    const { input, result, frame, laidOut, memberIds } = await build(16, true)
 
-  it('prewarms one worker without posting layout work', () => {
-    vi.stubGlobal('Worker', FakeWorker)
+    const members = [...memberIds].map((id) => laidOut.get(id)!)
+    const rowCount = new Set(members.map((member) => member.y)).size
+    const firstColumnX = Math.min(...members.map((member) => member.x))
 
-    prewarmLayoutWorker()
-    prewarmLayoutWorker()
-
-    expect(FakeWorker.instances).toHaveLength(1)
-    expect(FakeWorker.instances[0].requests).toEqual([])
-    FakeWorker.instances[0].onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('recreates a worker that crashes during otherwise-idle prewarm', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-
-    prewarmLayoutWorker()
-    const crashed = FakeWorker.instances[0]
-    crashed.onerror?.({ message: 'warmup crashed' } as ErrorEvent)
-    expect(crashed.terminate).toHaveBeenCalledOnce()
-
-    const pending = layoutSubgraph(workerSubgraph())
-    const replacement = FakeWorker.instances[1]
-    expect(replacement.requests).toHaveLength(1)
-    replacement.onmessage?.({
-      data: { id: replacement.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await expect(pending).resolves.toMatchObject({ width: 76 })
-    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('sends compact layout input and terminates a superseded worker', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const sub = workerSubgraph()
-    const controller = new AbortController()
-
-    const superseded = layoutSubgraph(sub, controller.signal)
-    const first = FakeWorker.instances[0]
-    expect(first.requests[0]).toEqual({
-      id: expect.any(Number),
-      input: prepareLayoutInput(sub),
-      placement: 'NETWORK_SIMPLEX',
-    })
-    expect(first.requests[0].input.nodes[0]).not.toHaveProperty('members')
-    expect(first.requests[0].input.nodes[0]).not.toHaveProperty('params')
-    controller.abort()
-    await expect(superseded).rejects.toMatchObject({ name: 'AbortError' })
-    expect(first.terminate).toHaveBeenCalledOnce()
-
-    const current = layoutSubgraph(sub)
-    const second = FakeWorker.instances[1]
-    const request = second.requests[0]
-    second.onmessage?.({
-      data: { id: request.id, ok: true, result: geometry },
-    } as MessageEvent)
-    const result = await current
-    expect(result.nodes[0].node).toBe(sub.nodes[0])
-    expect(FakeWorker.instances).toHaveLength(2)
-    second.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('reuses completed geometry for an equivalent fresh subgraph', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const firstSubgraph: Subgraph = {
-      nodes: [node(1, '$_BUF_'), node(2, '$_BUF_')],
-      edges: [{
-        from: 1,
-        to: 2,
-        from_port: 'Y',
-        to_port: 'A',
-        net_name: 'first',
-        bits: [1],
-      }],
-      truncated: false,
-    }
-    const edgeGeometry = {
-      nodes: [
-        { id: 1, x: 0, y: 0, width: 62, height: 46 },
-        { id: 2, x: 128, y: 0, width: 62, height: 46 },
-      ],
-      edges: [{ inputIndex: 0, points: [{ x: 62, y: 23 }, { x: 128, y: 23 }] }],
-      width: 190,
-      height: 46,
-    }
-    const firstLayout = layoutSubgraph(firstSubgraph)
-    const instance = FakeWorker.instances[0]
-    instance.onmessage?.({
-      data: { id: instance.requests[0].id, ok: true, result: edgeGeometry },
-    } as MessageEvent)
-    await firstLayout
-
-    const equivalent: Subgraph = structuredClone(firstSubgraph)
-    equivalent.nodes[0] = { ...equivalent.nodes[0], src: 'current.sv:9.1-9.2' }
-    equivalent.edges[0] = { ...equivalent.edges[0], net_name: 'current' }
-    const cached = await layoutSubgraph(equivalent)
-
-    expect(instance.requests).toHaveLength(1)
-    expect(cached.nodes[0].node).toBe(equivalent.nodes[0])
-    expect(cached.edges[0].edge).toBe(equivalent.edges[0])
-
-    const changedPort: Subgraph = structuredClone(equivalent)
-    changedPort.edges[0].to_port = 'B'
-    const changedLayout = layoutSubgraph(changedPort)
-    expect(instance.requests).toHaveLength(2)
-    instance.onmessage?.({
-      data: { id: instance.requests[1].id, ok: true, result: edgeGeometry },
-    } as MessageEvent)
-    await changedLayout
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('normalizes boundary metadata for cache identity and invalidates changed mappings', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const bundled = (): Subgraph => ({
-      nodes: [
-        node(1, 'port', {
-          kind: 'port',
-          port_direction: 'input',
-          boundary_members: [
-            { member: 11, bit: 1 },
-            { member: 10, bit: 0 },
-          ],
-        }),
-        node(2, 'port', {
-          kind: 'port',
-          port_direction: 'output',
-          boundary_members: [
-            { member: 21, bit: 1 },
-            { member: 20, bit: 0 },
-          ],
-        }),
-      ],
-      edges: [{
-        from: 1,
-        to: 2,
-        from_port: 'a',
-        to_port: 'A',
-        net_name: 'a',
-        bits: [100, 101],
-        source_boundary_members: [
-          { member: 11, net_bits: [101] },
-          { member: 10, net_bits: [100] },
-        ],
-        target_boundary_members: [
-          { member: 21, net_bits: [101] },
-          { member: 20, net_bits: [100] },
-        ],
-      }],
-      truncated: false,
-    })
-    const bundledGeometry = {
-      nodes: [
-        { id: 1, x: 0, y: 0, width: 62, height: 46 },
-        { id: 2, x: 128, y: 0, width: 62, height: 46 },
-      ],
-      edges: [{ inputIndex: 0, points: [{ x: 62, y: 23 }, { x: 128, y: 23 }] }],
-      width: 190,
-      height: 46,
-    }
-
-    const first = layoutSubgraph(bundled())
-    const instance = FakeWorker.instances[0]
-    instance.onmessage?.({
-      data: { id: instance.requests[0].id, ok: true, result: bundledGeometry },
-    } as MessageEvent)
-    await first
-    expect(instance.requests[0].input.nodes[0].boundaryMembers).toEqual([
-      { member: 10, bit: 0 },
-      { member: 11, bit: 1 },
-    ])
-
-    const equivalent = bundled()
-    equivalent.nodes[0].boundary_members = [
-      { member: 10, bit: 0 },
-      { member: 11, bit: 1 },
-      { member: 10, bit: 0 },
-    ]
-    equivalent.edges[0].source_boundary_members = [
-      { member: 10, net_bits: [100, 100] },
-      { member: 11, net_bits: [101] },
-    ]
-    equivalent.edges[0].target_boundary_members = [
-      { member: 20, net_bits: [100, 100] },
-      { member: 21, net_bits: [101] },
-    ]
-    await layoutSubgraph(equivalent)
-    expect(instance.requests).toHaveLength(1)
-
-    const changedNode = bundled()
-    changedNode.nodes[0].boundary_members![1].bit = 2
-    const changedNodeLayout = layoutSubgraph(changedNode)
-    expect(instance.requests).toHaveLength(2)
-    instance.onmessage?.({
-      data: { id: instance.requests[1].id, ok: true, result: bundledGeometry },
-    } as MessageEvent)
-    await changedNodeLayout
-
-    const changedEdge = bundled()
-    changedEdge.edges[0].target_boundary_members![1].net_bits = [102]
-    const changedEdgeLayout = layoutSubgraph(changedEdge)
-    expect(instance.requests).toHaveLength(3)
-    instance.onmessage?.({
-      data: { id: instance.requests[2].id, ok: true, result: bundledGeometry },
-    } as MessageEvent)
-    await changedEdgeLayout
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('does not reuse geometry when compact layout input changes', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const firstLayout = layoutSubgraph(workerSubgraph())
-    const instance = FakeWorker.instances[0]
-    instance.onmessage?.({
-      data: { id: instance.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await firstLayout
-
-    const changed = workerSubgraph()
-    changed.nodes[0] = node(1, '$_DFF_P_')
-    const changedLayout = layoutSubgraph(changed)
-    expect(instance.requests).toHaveLength(2)
-    expect(instance.requests[1].input.nodes[0].register).toBe(true)
-    instance.onmessage?.({
-      data: {
-        id: instance.requests[1].id,
-        ok: true,
-        result: geometry,
-      },
-    } as MessageEvent)
-    await expect(changedLayout).resolves.toMatchObject({ width: 76 })
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('does not retain one geometry estimate above the byte budget', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const subgraph: Subgraph = {
-      nodes: [node(1, '$_BUF_'), node(2, '$_BUF_')],
-      edges: [{
-        from: 1,
-        to: 2,
-        from_port: 'Y',
-        to_port: 'A',
-        net_name: 'wide-route',
-        bits: [1],
-      }],
-      truncated: false,
-    }
-    const oversizedGeometry = {
-      nodes: [
-        { id: 1, x: 0, y: 0, width: 62, height: 46 },
-        { id: 2, x: 128, y: 0, width: 62, height: 46 },
-      ],
-      edges: [{
-        inputIndex: 0,
-        points: Array(Math.ceil(LAYOUT_GEOMETRY_CACHE_MAX_BYTES / 48) + 1)
-          .fill({ x: 0, y: 0 }),
-      }],
-      width: 190,
-      height: 46,
-    }
-    const first = layoutSubgraph(subgraph)
-    const instance = FakeWorker.instances[0]
-    instance.onmessage?.({
-      data: { id: instance.requests[0].id, ok: true, result: oversizedGeometry },
-    } as MessageEvent)
-    await first
-
-    const repeated = layoutSubgraph(structuredClone(subgraph))
-    expect(instance.requests).toHaveLength(2)
-    instance.onmessage?.({
-      data: {
-        id: instance.requests[1].id,
-        ok: true,
-        result: {
-          ...oversizedGeometry,
-          edges: [{
-            inputIndex: 0,
-            points: [{ x: 62, y: 23 }, { x: 128, y: 23 }],
-          }],
-        },
-      },
-    } as MessageEvent)
-    await expect(repeated).resolves.toMatchObject({ width: 190, height: 46 })
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('evicts at the cumulative byte budget before reaching the entry bound', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const pointsPerEntry = Math.ceil(
-      (LAYOUT_GEOMETRY_CACHE_MAX_BYTES / LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1) / 48,
-    )
-    const subgraphFor = (index: number): Subgraph => ({
-      nodes: [node(index * 2, '$_BUF_'), node(index * 2 + 1, '$_BUF_')],
-      edges: [{
-        from: index * 2,
-        to: index * 2 + 1,
-        from_port: 'Y',
-        to_port: 'A',
-        net_name: `route-${index}`,
-        bits: [index],
-      }],
-      truncated: false,
-    })
-    const geometryFor = (index: number, large: boolean) => ({
-      nodes: [
-        { id: index * 2, x: 0, y: 0, width: 62, height: 46 },
-        { id: index * 2 + 1, x: 128, y: 0, width: 62, height: 46 },
-      ],
-      edges: [{
-        inputIndex: 0,
-        points: large
-          ? Array(pointsPerEntry).fill({ x: 0, y: 0 })
-          : [{ x: 62, y: 23 }, { x: 128, y: 23 }],
-      }],
-      width: 190,
-      height: 46,
+    // Members in the first column are reached straight from the frame edge and
+    // need no track. Every other member's net must ride one.
+    const trackYs: number[] = []
+    let needingTrack = 0
+    input.edges.forEach((edge, index) => {
+      if (!memberIds.has(edge.to) || memberIds.has(edge.from)) return
+      const member = laidOut.get(edge.to)!
+      if (member.x <= firstColumnX) return
+      needingTrack += 1
+      // The track is the long horizontal run that carries the net across the
+      // frame; the short one at the end is just the hop onto the pin. Pick the
+      // horizontal segment with the most travel inside the frame.
+      const points = result.edges[index].points
+      let best = { span: 0, y: Number.NaN }
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        const [a, b] = [points[i], points[i + 1]]
+        if (Math.abs(a.y - b.y) > 0.5) continue
+        const span =
+          Math.min(Math.max(a.x, b.x), frame.x + frame.width) -
+          Math.max(Math.min(a.x, b.x), frame.x)
+        if (span > best.span) best = { span, y: a.y }
+      }
+      if (Number.isFinite(best.y)) trackYs.push(Math.round(best.y))
     })
 
-    for (let index = 1; index <= LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES; index += 1) {
-      const pendingLayout = layoutSubgraph(subgraphFor(index))
-      const instance = FakeWorker.instances[0]
-      const request = instance.requests.at(-1)!
-      instance.onmessage?.({
-        data: { id: request.id, ok: true, result: geometryFor(index, true) },
-      } as MessageEvent)
-      await pendingLayout
-    }
+    expect(needingTrack).toBeGreaterThan(rowCount)
+    // The whole point: sinks of one net share a track. Before bundling this was
+    // one distinct track per sink, so this count equalled `needingTrack`.
+    expect(new Set(trackYs).size).toBeLessThanOrEqual(rowCount)
+    expect(new Set(trackYs).size).toBeLessThan(needingTrack)
+  }, 30_000)
 
-    const instance = FakeWorker.instances[0]
-    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES)
-    const evicted = layoutSubgraph(subgraphFor(1))
-    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1)
-    const request = instance.requests.at(-1)!
-    instance.onmessage?.({
-      data: { id: request.id, ok: true, result: geometryFor(1, false) },
-    } as MessageEvent)
-    await evicted
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('keeps cached hits abortable without starting worker work', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const firstLayout = layoutSubgraph(workerSubgraph())
-    const instance = FakeWorker.instances[0]
-    instance.onmessage?.({
-      data: { id: instance.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await firstLayout
-
-    const controller = new AbortController()
-    controller.abort()
-    await expect(layoutSubgraph(workerSubgraph(), controller.signal)).rejects.toMatchObject({
-      name: 'AbortError',
-    })
-    expect(instance.requests).toHaveLength(1)
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('promotes hits and evicts least-recently-used geometry at the entry bound', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    for (let id = 1; id <= LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES; id += 1) {
-      const pendingLayout = layoutSubgraph(workerSubgraph(id))
-      const instance = FakeWorker.instances[0]
-      const request = instance.requests.at(-1)!
-      instance.onmessage?.({
-        data: {
-          id: request.id,
-          ok: true,
-          result: {
-            ...geometry,
-            nodes: [{ ...geometry.nodes[0], id }],
-          },
-        },
-      } as MessageEvent)
-      await pendingLayout
-    }
-
-    const instance = FakeWorker.instances[0]
-    await layoutSubgraph(workerSubgraph(1))
-    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES)
-
-    const fifth = layoutSubgraph(workerSubgraph(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1))
-    const request = instance.requests.at(-1)!
-    instance.onmessage?.({
-      data: {
-        id: request.id,
-        ok: true,
-        result: {
-          ...geometry,
-          nodes: [{ ...geometry.nodes[0], id: LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1 }],
-        },
-      },
-    } as MessageEvent)
-    await fifth
-
-    await layoutSubgraph(workerSubgraph(1))
-    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 1)
-    const secondAgain = layoutSubgraph(workerSubgraph(2))
-    expect(instance.requests).toHaveLength(LAYOUT_GEOMETRY_CACHE_MAX_ENTRIES + 2)
-    const secondRequest = instance.requests.at(-1)!
-    instance.onmessage?.({
-      data: {
-        id: secondRequest.id,
-        ok: true,
-        result: {
-          ...geometry,
-          nodes: [{ ...geometry.nodes[0], id: 2 }],
-        },
-      },
-    } as MessageEvent)
-    await secondAgain
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('retries a failed tight layout with the same compact input', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const sub = workerSubgraph()
-    const pendingLayout = layoutSubgraph(sub)
-    const instance = FakeWorker.instances[0]
-    const first = instance.requests[0]
-    instance.onmessage?.({
-      data: { id: first.id, ok: false, error: 'stack overflow' },
-    } as MessageEvent)
-    await vi.waitFor(() => expect(instance.requests).toHaveLength(2))
-    const retry = instance.requests[1]
-    expect(retry.placement).toBe('BRANDES_KOEPF')
-    expect(retry.input).toEqual(first.input)
-    instance.onmessage?.({
-      data: { id: retry.id, ok: true, result: geometry },
-    } as MessageEvent)
-    await expect(pendingLayout).resolves.toMatchObject({ width: 76, height: 66 })
-
-    const repeated = layoutSubgraph(workerSubgraph())
-    expect(instance.requests).toHaveLength(3)
-    expect(instance.requests[2].placement).toBe('NETWORK_SIMPLEX')
-    instance.onmessage?.({
-      data: { id: instance.requests[2].id, ok: false, error: 'stack overflow' },
-    } as MessageEvent)
-    await expect(repeated).resolves.toMatchObject({ width: 76, height: 66 })
-    expect(instance.requests).toHaveLength(3)
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('recovers from a worker crash using a fresh worker', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const pendingLayout = layoutSubgraph(workerSubgraph())
-    const first = FakeWorker.instances[0]
-    first.onerror?.({ message: 'worker crashed' } as ErrorEvent)
-    await vi.waitFor(() => expect(FakeWorker.instances).toHaveLength(2))
-    const replacement = FakeWorker.instances[1]
-    expect(replacement.requests[0].placement).toBe('BRANDES_KOEPF')
-    replacement.onmessage?.({
-      data: { id: replacement.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await expect(pendingLayout).resolves.toMatchObject({ width: 76 })
-    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('reuses the warm worker after an independent successful layout', async () => {
-    vi.stubGlobal('Worker', FakeWorker)
-    const firstLayout = layoutSubgraph(workerSubgraph())
-    const instance = FakeWorker.instances[0]
-    instance.onmessage?.({
-      data: { id: instance.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await firstLayout
-
-    const secondLayout = layoutSubgraph(workerSubgraph(2))
-    expect(FakeWorker.instances).toHaveLength(1)
-    expect(instance.requests).toHaveLength(2)
-    instance.onmessage?.({
-      data: {
-        id: instance.requests[1].id,
-        ok: true,
-        result: {
-          ...geometry,
-          nodes: [{ ...geometry.nodes[0], id: 2 }],
-        },
-      },
-    } as MessageEvent)
-    await secondLayout
-    instance.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('times out without retrying and lets the next layout use a fresh worker', async () => {
-    vi.useFakeTimers()
-    vi.stubGlobal('Worker', FakeWorker)
-    const timedOut = layoutSubgraph(workerSubgraph())
-    const first = FakeWorker.instances[0]
-    const timeoutExpectation = expect(timedOut).rejects.toMatchObject({
-      name: 'LayoutTimeoutError',
-    })
-    await vi.advanceTimersByTimeAsync(10_000)
-    await timeoutExpectation
-    expect(first.requests).toHaveLength(1)
-    expect(first.terminate).toHaveBeenCalledOnce()
-
-    const current = layoutSubgraph(workerSubgraph())
-    const replacement = FakeWorker.instances[1]
-    replacement.onmessage?.({
-      data: { id: replacement.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await expect(current).resolves.toMatchObject({ width: 76 })
-    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-
-  it('rejects every pending request when the shared worker times out', async () => {
-    vi.useFakeTimers()
-    vi.stubGlobal('Worker', FakeWorker)
-    const firstLayout = layoutSubgraph(workerSubgraph())
-    const secondLayout = layoutSubgraph(workerSubgraph())
-    const firstExpectation = expect(firstLayout).rejects.toMatchObject({
-      name: 'LayoutTimeoutError',
-    })
-    const secondExpectation = expect(secondLayout).rejects.toMatchObject({
-      name: 'LayoutTimeoutError',
-    })
-    const instance = FakeWorker.instances[0]
-    expect(instance.requests).toHaveLength(2)
-
-    await vi.advanceTimersByTimeAsync(10_000)
-    await Promise.all([firstExpectation, secondExpectation])
-    expect(instance.terminate).toHaveBeenCalledOnce()
-
-    const replacementLayout = layoutSubgraph(workerSubgraph())
-    const replacement = FakeWorker.instances[1]
-    replacement.onmessage?.({
-      data: { id: replacement.requests[0].id, ok: true, result: geometry },
-    } as MessageEvent)
-    await replacementLayout
-    replacement.onerror?.({ message: 'cleanup' } as ErrorEvent)
-  })
-})
-
-describe('viewport transforms', () => {
-  it('refits centered graph content when the containing pane changes size', () => {
-    expect(fitViewportToContent(1000, 600, 800, 400)).toEqual({
-      x: 20,
-      y: 60,
-      k: 1.2,
-    })
-    expect(fitViewportToContent(600, 400, 800, 400)).toEqual({
-      x: 20,
-      y: 60,
-      k: 0.7,
-    })
-  })
-
-  it('fits graph content inside overlay-safe viewport insets', () => {
-    expect(
-      fitViewportToContent(1000, 600, 800, 400, 40, 1.5, {
-        top: 40,
-        right: 280,
-        bottom: 30,
-        left: 0,
+  it('keeps distinct bus slices from one driver pin on separate tracks', async () => {
+    // A grouped bus driver emits one edge per sink from the same pin, each
+    // carrying a different slice. Those are different nets: sharing a track
+    // would draw them as one wire and claim they are connected.
+    const cells = Array.from({ length: 16 }, (_, index) =>
+      node(100 + index, `lut_${index}`, {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
       }),
-    ).toEqual({
-      x: 20,
-      y: 135,
-      k: 0.85,
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'bus', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          // Same driver pin for every sink, but a distinct bit each.
+          from: 1, to: member.id, from_port: 'Q', to_port: 'I1',
+          net_name: `bus[${index}]`, bits: [index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `q${index}`, bits: [500 + index],
+        },
+      ]),
+      truncated: false,
+    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight: 140,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const frame = (result.groups ?? []).find((group) => group.id === 500)!
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
+    const members = [...memberIds].map((id) => laidOut.get(id)!)
+    const firstColumnX = Math.min(...members.map((member) => member.x))
+
+    const trackYs: number[] = []
+    input.edges.forEach((edge, index) => {
+      if (!memberIds.has(edge.to) || memberIds.has(edge.from)) return
+      const member = laidOut.get(edge.to)!
+      if (member.x <= firstColumnX) return
+      const points = result.edges[index].points
+      let best = { span: 0, y: Number.NaN }
+      for (let i = 0; i + 1 < points.length; i += 1) {
+        const [a, b] = [points[i], points[i + 1]]
+        if (Math.abs(a.y - b.y) > 0.5) continue
+        const span =
+          Math.min(Math.max(a.x, b.x), frame.x + frame.width) -
+          Math.max(Math.min(a.x, b.x), frame.x)
+        if (span > best.span) best = { span, y: a.y }
+      }
+      if (Number.isFinite(best.y)) trackYs.push(Math.round(best.y))
     })
-  })
 
-  it('ignores transient hidden-pane measurements instead of corrupting the transform', () => {
-    expect(fitViewportToContent(0, 0, 800, 400)).toBeNull()
-    expect(fitViewportToContent(1000, 0, 800, 400)).toBeNull()
-    expect(fitViewportToContent(Number.NaN, 600, 800, 400)).toBeNull()
-  })
+    expect(trackYs.length).toBeGreaterThan(0)
+    // Every slice is its own net, so no two may share a track.
+    expect(new Set(trackYs).size).toBe(trackYs.length)
+  }, 30_000)
 
-  it('pans without changing scale and emits the SVG transform', () => {
-    const moved = panViewport({ x: 10, y: 20, k: 2 }, 5, -7)
-    expect(moved).toEqual({ x: 15, y: 13, k: 2 })
-    expect(viewportTransformAttribute(moved)).toBe('translate(15,13) scale(2)')
-  })
+  it('keeps a fanout group shorter than the same group with private nets', async () => {
+    const [shared, private_] = await Promise.all([
+      build(16, true),
+      build(16, false),
+    ])
+    expect(shared.frame.height).toBeLessThan(private_.frame.height)
+  }, 30_000)
 
-  it('preserves a retained anchor on screen without changing zoom', () => {
-    const graphNode = node(1, '$_AND_')
-    const previous = {
-      nodes: [{ id: 1, x: 20, y: 30, width: 80, height: 50, node: graphNode }],
-      edges: [],
-      width: 100,
-      height: 80,
+  it('lands every net on its pin when member widths differ', async () => {
+    // Column count is derived from member width and is computed twice: once in
+    // toElkGraph to place the ports, once in interpretResult to place the cells.
+    // Uniform members hide any disagreement, so vary the label widths.
+    const cells = Array.from({ length: 20 }, (_, index) =>
+      node(100 + index, 'x'.repeat(1 + (index % 7) * 9), {
+        kind: 'cell',
+        cell_type: 'SB_LUT4',
+      }),
+    )
+    const subgraph: Subgraph = {
+      nodes: [
+        node(1, 'd', { port_direction: 'input' }),
+        ...cells,
+        node(90, 'y', { port_direction: 'output' }),
+      ],
+      edges: cells.flatMap((member, index) => [
+        {
+          from: 1, to: member.id, from_port: `Y${index}`, to_port: 'I1',
+          net_name: `n${index}`, bits: [index],
+        },
+        {
+          from: member.id, to: 90, from_port: 'O', to_port: 'y',
+          net_name: `q${index}`, bits: [500 + index],
+        },
+      ]),
+      truncated: false,
     }
-    const next = {
-      ...previous,
-      nodes: [{ ...previous.nodes[0], x: 120, y: 70 }],
-    }
+    const input = prepareLayoutInput(subgraph, [{
+      id: 500,
+      members: cells.map((member) => member.id),
+      referenceHeight: 140,
+    }])
+    const result = interpretResult(
+      input,
+      await new ELK().layout(toElkGraph(input)),
+    )
+    const laidOut = new Map(result.nodes.map((laid) => [laid.id, laid]))
+    const memberIds = new Set(cells.map((member) => member.id))
 
-    expect(
-      preserveViewportAnchor({ x: 10, y: 15, k: 2 }, previous, next, [1]),
-    ).toEqual({ x: -190, y: -65, k: 2 })
-  })
+    const misplaced: unknown[] = []
+    let checked = 0
+    input.edges.forEach((edge, index) => {
+      const entering = memberIds.has(edge.to) && !memberIds.has(edge.from)
+      const leaving = memberIds.has(edge.from) && !memberIds.has(edge.to)
+      if (!entering && !leaving) return
+      checked += 1
+      const member = laidOut.get(entering ? edge.to : edge.from)!
+      const points = result.edges[index].points
+      const pin = entering ? points.at(-1)! : points[0]
+      const wantX = entering ? member.x : member.x + member.width
+      if (Math.abs(pin.x - wantX) > 1.5) {
+        misplaced.push({ id: member.id, pinX: pin.x, wantX })
+      }
+      if (pin.y < member.y - 1 || pin.y > member.y + member.height + 1) {
+        misplaced.push({ id: member.id, pinY: pin.y, top: member.y })
+      }
+    })
+    expect(checked).toBe(40)
+    expect(misplaced).toEqual([])
+  }, 30_000)
 
-  it('refits every new sub-schematic and keeps the camera within one', () => {
-    // An additive change to the displayed projection keeps its camera.
-    expect(shouldRefitProjection(true, true)).toBe(false)
-    // A different projection is a different sub-schematic, even when it
-    // overlaps the previous one.
-    expect(shouldRefitProjection(true, false)).toBe(true)
-    expect(shouldRefitProjection(false, false)).toBe(true)
-  })
-
-  it('zooms around a fixed screen-space anchor and clamps scale', () => {
-    const previous = { x: 10, y: 20, k: 1 }
-    const zoomed = zoomViewportAt(previous, 110, 70, 2)
-    expect(zoomed).toEqual({ x: -90, y: -30, k: 2 })
-    expect((110 - zoomed.x) / zoomed.k).toBe((110 - previous.x) / previous.k)
-    expect((70 - zoomed.y) / zoomed.k).toBe((70 - previous.y) / previous.k)
-    expect(zoomViewportAt(previous, 0, 0, 100).k).toBe(4)
-    expect(zoomViewportAt(previous, 0, 0, 0.001).k).toBe(0.08)
-  })
+  it('sizes a grid group independently of the reference height', async () => {
+    // Once a group is a grid, `EXPANDED_GROUP_VERTICAL_LIMIT_MULTIPLIER` has no
+    // further say: channel height is set by how many nets cross, not by the
+    // reference, so pretending to solve for a height target only distorted the
+    // shape. Both references below are small enough to force a grid.
+    const [tight, loose] = await Promise.all([
+      build(16, true, 140),
+      build(16, true, 200),
+    ])
+    expect(tight.frame.height).toBe(loose.frame.height)
+    expect(tight.frame.width).toBe(loose.frame.width)
+  }, 30_000)
 })
+}

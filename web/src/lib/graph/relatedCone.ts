@@ -1,3 +1,5 @@
+export const EMPTY_SELECTED_NET_NAMES: string[] = []
+
 export interface RelatedConeNode {
   id: number
   members?: readonly number[]

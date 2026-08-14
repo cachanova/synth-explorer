@@ -78,8 +78,11 @@ handle derived from the full local cache digest.
 - `web/src/lib/engines/` holds the one `SynthEngine` seam: the Yosys engine
   (script run plus abstract-memory retry) and the Vivado engine (bridge call,
   RTL snapshot, normalization) behind one interface;
+  `web/src/lib/engines/pooledWorker.ts` owns the shared idle-worker, timeout,
+  abort, and termination lifecycle for the caller-serialized Yosys and GHDL
+  clients. `web/src/lib/engines/ghdlWorkerClient.ts` invokes GHDL, while
   `web/src/lib/synthesis/localEngine.ts` keeps the tool-independent caching,
-  GHDL translation, and analysis handoff.
+  synthesis orchestration, and analysis handoff.
 - `analysis-core/` is the only netlist/graph and source-selection analysis
   implementation.
 - `rtl-correlate/` is the only RTL↔netlist correlation implementation: the

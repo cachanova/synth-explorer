@@ -14,8 +14,8 @@ import type {
   TimingResponse,
 } from '../../types'
 import type { YosysWorkerResult } from '../engines/yosysProtocol'
-import type { VhdlTranslation, VhdlWorkerResponse } from './vhdl'
 import { initializeAnalysis, queryAnalysis } from '../analysisClient'
+import { runGhdl } from '../engines/ghdlWorkerClient'
 import { EngineLoadError } from './engineLoad'
 import { getPrecomputedSynthesis } from './precomputedSynthesis'
 import {
@@ -34,9 +34,8 @@ import type { SynthEngine } from '../engines/types'
 import { vivadoEngine } from '../engines/vivadoEngine'
 import { yosysEngine } from '../engines/yosysEngine'
 import {
-  LocalSynthesisError,
   RequestValidationError,
-  abortError,
+  abortable,
   isAbortError,
 } from './synthesisError'
 
@@ -47,8 +46,6 @@ interface AnalysisSummary {
   stats: SynthesizeResponse['stats']
   warnings: string[]
 }
-
-let idleGhdlWorker: Worker | null = null
 
 export async function synthesizeLocally(
   request: SynthesizeRequest,
@@ -232,93 +229,4 @@ export function localExpandGroup(
   signal?: AbortSignal,
 ): Promise<GroupExpansion> {
   return abortable(queryAnalysis('expandGroup', options), signal)
-}
-
-function runGhdl(
-  input: ValidatedSynthesis,
-  signal?: AbortSignal,
-): Promise<VhdlTranslation> {
-  if (!input.top) return Promise.reject(new Error('VHDL synthesis requires an explicit top entity'))
-  const worker = acquireGhdlWorker()
-  return new Promise((resolve, reject) => {
-    let settled = false
-    const finish = (action: () => void, reusable: boolean) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      signal?.removeEventListener('abort', onAbort)
-      if (reusable) releaseGhdlWorker(worker)
-      else discardGhdlWorker(worker)
-      action()
-    }
-    const onAbort = () => finish(() => reject(abortError()), false)
-    const timeout = setTimeout(() => {
-      finish(() => reject(new LocalSynthesisError('GHDL timed out', '', 'timeout')), false)
-    }, 30_000)
-    worker.onmessage = (event: MessageEvent<VhdlWorkerResponse>) => {
-      const response = event.data
-      finish(() => {
-        if (response.ok) resolve(response.result)
-        else {
-          reject(
-            new LocalSynthesisError(
-              response.error || 'GHDL failed',
-              response.log ?? '',
-              response.kind,
-            ),
-          )
-        }
-      }, true)
-    }
-    worker.onerror = (event) => {
-      finish(
-        () =>
-          reject(
-            new LocalSynthesisError(event.message || 'failed to load the GHDL worker', '', 'load'),
-          ),
-        false,
-      )
-    }
-    if (signal?.aborted) return onAbort()
-    signal?.addEventListener('abort', onAbort, { once: true })
-    try {
-      worker.postMessage({ files: input.files, top: input.top })
-    } catch (error) {
-      finish(() => reject(error), false)
-    }
-  })
-}
-
-function createGhdlWorker(): Worker {
-  return new Worker(new URL('../../workers/ghdl.worker.ts', import.meta.url), {
-    type: 'module',
-  })
-}
-
-function acquireGhdlWorker(): Worker {
-  const worker = idleGhdlWorker ?? createGhdlWorker()
-  idleGhdlWorker = null
-  return worker
-}
-
-function releaseGhdlWorker(worker: Worker): void {
-  idleGhdlWorker?.terminate()
-  worker.onmessage = null
-  worker.onerror = null
-  idleGhdlWorker = worker
-}
-
-function discardGhdlWorker(worker: Worker): void {
-  worker.terminate()
-  if (!idleGhdlWorker) idleGhdlWorker = createGhdlWorker()
-}
-
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return promise
-  if (signal.aborted) return Promise.reject(abortError())
-  return new Promise((resolve, reject) => {
-    const abort = () => reject(abortError())
-    signal.addEventListener('abort', abort, { once: true })
-    promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
-  })
 }
