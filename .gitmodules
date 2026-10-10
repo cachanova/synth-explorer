@@ -1,3 +1,0 @@
-[submodule ".agents"]
-	path = .agents
-	url = https://github.com/cachanova/Agents.git
