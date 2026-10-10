@@ -1,8 +1,6 @@
-# Synth Explorer Repository Rules
+# Synth Explorer
 
-These workspace-level rules apply to every Synth Explorer worktree. Start agent
-sessions from `/home/leela/code/synth_explorer`. A worktree-local `AGENTS.md` is
-only a bootstrap back to this parent workspace policy.
+Shared rules live in `~/agents`. This file holds only Synth Explorer facts.
 
 ## Product and contracts
 
@@ -23,58 +21,10 @@ Analysis is structural and logical, not post-place-and-route timing. Keep that
 caveat visible anywhere the product shows timing-like values. Real timing closure
 requires tools such as nextpnr, OpenSTA, Vivado, or Quartus.
 
-For high-judgment design work, the root coordinator directly inspects graph-model
+For high-judgment design work, inspect graph-model
 types, the analysis core, worker contracts, and Yosys script construction.
 Treat endpoint semantics, path dynamic programming, cycle handling, and synthesis
 script shapes as architectural decisions.
-
-## Workspace
-
-The workspace root is a container, not a checkout:
-
-```text
-/home/leela/code/synth_explorer/
-  repo.git/       canonical bare repository
-  main/           main branch and persistent .agents checkout
-  <worktree>/     feature branches
-```
-
-Shared agent policy is pinned as the `main/.agents` submodule. Project-specific
-policy is tracked separately at `main/.agent/Repo.md`. The parent `AGENTS.md`,
-`CLAUDE.md`, and shared `.agent/` entries are symlinks into `main`; the parent
-`.agent/Repo.md` symlink targets the project file instead of the submodule.
-
-- Only `main` maintains a persistent `.agents` checkout. Leave it uninitialized
-  in feature worktrees, except temporarily in a dedicated policy-update
-  worktree.
-- After a policy gitlink changes on `main`, run
-  `git -C /home/leela/code/synth_explorer/main submodule update --init --checkout .agents`.
-- For `claude_start`, use `main/.agents` as `policy_root`, the workspace parent
-  as `workspace_root`, and `main/.agent/Repo.md` as `repo_policy_file`.
-
-- Run bare-repository commands with
-  `git --git-dir=/home/leela/code/synth_explorer/repo.git ...`.
-- Run normal git commands with `git -C <worktree> ...`.
-- Keep `main/` on `main`. Never use it for feature work.
-- Before new work, inspect worktrees, branches, and status; fetch with prune;
-  then fast-forward `main` from `origin/main`.
-- Continue an existing task branch when it has a worktree. Otherwise create a
-  branch and same-named worktree from updated `main`.
-- Merge PRs with squash. Delete merged feature worktrees after completion is
-  confirmed.
-
-Typical start:
-
-```bash
-git --git-dir=/home/leela/code/synth_explorer/repo.git worktree list
-git --git-dir=/home/leela/code/synth_explorer/repo.git branch -vv
-git --git-dir=/home/leela/code/synth_explorer/repo.git fetch origin --prune
-git -C /home/leela/code/synth_explorer/main checkout main
-git -C /home/leela/code/synth_explorer/main pull --ff-only origin main
-git --git-dir=/home/leela/code/synth_explorer/repo.git worktree add \
-  /home/leela/code/synth_explorer/<feature-slug> \
-  -b <feature-slug> main
-```
 
 ## Performance
 
